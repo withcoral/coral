@@ -1,0 +1,302 @@
+name: lm_studio
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query local LM Studio models and run bounded OpenAI-compatible response, chat, and embedding checks through SQL.
+base_url: "{{input.LM_STUDIO_BASE_URL}}"
+inputs:
+  LM_STUDIO_BASE_URL:
+    kind: variable
+    default: http://localhost:1234/v1
+    hint: |
+      LM Studio OpenAI-compatible API base URL.
+
+      Start the LM Studio local server from the Developer tab. The default
+      OpenAI-compatible API base URL is:
+      http://localhost:1234/v1
+
+      This first version targets the default unauthenticated local LM Studio
+      API server. Servers configured to require API tokens are out of scope for
+      this initial source.
+test_queries:
+  - SELECT id, object, owned_by FROM lm_studio.models LIMIT 5
+tables:
+  - name: models
+    description: Models visible to the LM Studio OpenAI-compatible server from GET /models.
+    request:
+      method: GET
+      path: /models
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Model identifier to use in OpenAI-compatible LM Studio requests.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Creation timestamp when returned by the API.
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: Owning provider or local owner metadata when returned by the API.
+
+  - name: chat_completions
+    description: Run one non-streaming, single-turn LM Studio chat completion request.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: max_tokens
+        required: true
+    request:
+      method: POST
+      path: /chat/completions
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - max_tokens
+          from: filter_int
+          key: max_tokens
+        - path:
+            - stream
+          from: literal
+          value: false
+    response:
+      rows_path:
+        - choices
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: max_tokens
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Positive max_tokens value supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: max_tokens
+      - name: index
+        type: Int64
+        nullable: true
+        description: Choice index.
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Why the model stopped.
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Assistant response text.
+        expr:
+          kind: path
+          path:
+            - message
+            - content
+      - name: reasoning_content
+        type: Utf8
+        nullable: true
+        description: Reasoning text returned by reasoning models when present.
+        expr:
+          kind: path
+          path:
+            - message
+            - reasoning_content
+      - name: message_role
+        type: Utf8
+        nullable: true
+        description: Assistant message role.
+        expr:
+          kind: path
+          path:
+            - message
+            - role
+
+  - name: responses
+    description: Run one non-streaming LM Studio Responses API request with a positive max_output_tokens bound.
+    filters:
+      - name: model
+        required: true
+      - name: input
+        required: true
+      - name: max_output_tokens
+        required: true
+    request:
+      method: POST
+      path: /responses
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - input
+          from: filter
+          key: input
+        - path:
+            - max_output_tokens
+          from: filter_int
+          key: max_output_tokens
+        - path:
+            - stream
+          from: literal
+          value: false
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        description: Model used for the response.
+      - name: input
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Input supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input
+      - name: max_output_tokens
+        type: Int64
+        nullable: false
+        description: Positive max_output_tokens value supplied in SQL filter.
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Response ID.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Response status.
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Response creation timestamp.
+      - name: completed_at
+        type: Int64
+        nullable: true
+        description: Response completion timestamp.
+      - name: previous_response_id
+        type: Utf8
+        nullable: true
+        description: Previous response ID when returned.
+      - name: output
+        type: Json
+        nullable: true
+        description: Response output array, including reasoning or message items.
+      - name: usage
+        type: Json
+        nullable: true
+        description: Token usage metadata.
+
+  - name: embeddings
+    description: Generate one embedding vector through the OpenAI-compatible POST /embeddings endpoint.
+    filters:
+      - name: model
+        required: true
+      - name: input
+        required: true
+    request:
+      method: POST
+      path: /embeddings
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - input
+          from: filter
+          key: input
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Embedding model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: input
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Input text supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: index
+        type: Int64
+        nullable: true
+        description: Embedding row index.
+      - name: embedding
+        type: Json
+        nullable: true
+        description: Embedding vector returned by LM Studio.

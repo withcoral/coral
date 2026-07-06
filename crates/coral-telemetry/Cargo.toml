@@ -1,0 +1,20 @@
+[package]
+name = "coral-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tracing-subscriber.workspace = true

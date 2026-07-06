@@ -1,0 +1,5 @@
+{"hostname":"rhel-control","role":"coral_control","environment":"homelab","source_file":"group_vars/control.yml","expected_service":"coral-backend.service"}
+{"hostname":"alpine-api","role":"checkout_app","environment":"homelab","source_file":"group_vars/app.yml","expected_service":"checkout-api"}
+{"hostname":"arch-observe","role":"observability_agent","environment":"homelab","source_file":"group_vars/observability.yml","expected_service":"datadog-agent.service"}
+{"hostname":"suse-auth","role":"auth_gateway","environment":"homelab","source_file":"group_vars/auth.yml","expected_service":"auth-gateway.service"}
+{"hostname":"debian-db","role":"message_broker","environment":"homelab","source_file":"group_vars/database.yml","expected_service":"rabbitmq-server.service"}

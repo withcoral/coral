@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "useTabs": false,
+  "tabWidth": 2,
+  "printWidth": 100,
+  "endOfLine": "lf",
+  "singleQuote": true,
+  "jsxSingleQuote": false,
+  "semi": false,
+  "trailingComma": "all",
+  "arrowParens": "always",
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "dist/**",
+    "build/**",
+    "coverage/**",
+    "node_modules/**",
+    "src/generated/**",
+    "test-results/**",
+    "playwright-report/**"
+  ]
+}

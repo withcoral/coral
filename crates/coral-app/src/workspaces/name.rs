@@ -26,6 +26,11 @@ impl WorkspaceName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[must_use]
+    pub(crate) fn is_default(&self) -> bool {
+        self.0 == DEFAULT_WORKSPACE_ID
+    }
 }
 
 impl fmt::Display for WorkspaceName {

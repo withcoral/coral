@@ -1,0 +1,846 @@
+dsl_version: 3
+name: outlook
+version: 1.0.0
+description: >-
+  Query Microsoft Outlook mail folders, messages, attachments, and contacts
+  via the Microsoft Graph API v1.0.
+backend: http
+base_url: https://graph.microsoft.com/v1.0
+inputs:
+  OUTLOOK_TENANT_ID:
+    kind: variable
+    default: organizations
+    hint: |
+      Azure AD tenant identifier controlling which accounts can sign in.
+
+        organizations  — any work or school (Microsoft 365) account [default]
+        consumers      — personal Microsoft accounts (Outlook.com) only
+        common         — work/school AND personal Microsoft accounts
+        <tenant-uuid>  — a specific Azure AD tenant ID (required for
+                         single-tenant app registrations)
+
+      Find your tenant ID at portal.azure.com → Azure Active Directory →
+      Overview → Tenant ID.
+  OUTLOOK_OAUTH_CLIENT_ID:
+    kind: variable
+    hint: |
+      Client ID (Application ID) from your Azure AD app registration.
+
+      Register an app at portal.azure.com → Azure Active Directory →
+      App registrations → New registration:
+        1. Choose the account type matching your mailbox — "Personal Microsoft
+           accounts only" for Outlook.com, or "Accounts in this organizational
+           directory" for work/school accounts. Use "Any Azure AD directory +
+           personal accounts" to support both.
+        2. Under Authentication, add a platform: Mobile and desktop apps,
+           and add the loopback redirect URI: http://localhost
+        3. Under API permissions, add delegated permissions:
+             Mail.Read, Contacts.Read, offline_access
+        4. Copy the Application (client) ID and paste it here.
+
+      No client secret is needed — this is a public desktop client.
+  OUTLOOK_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Microsoft Graph OAuth 2.0 access token with the Mail.Read and
+      Contacts.Read delegated scopes. Paste the access token value itself,
+      without a `Bearer ` prefix.
+
+      For interactive setup, choose "Sign in with Microsoft" and provide an
+      Azure AD app registration client ID (see OUTLOOK_OAUTH_CLIENT_ID). The
+      guided flow uses the OAuth 2.0 authorization code grant with PKCE and
+      requests:
+        https://graph.microsoft.com/Mail.Read
+        https://graph.microsoft.com/Contacts.Read
+        offline_access
+      offline_access lets the flow obtain a refresh token, which Coral stores
+      for when automatic refresh is supported. Access tokens expire in ~1 hour
+      and are not auto-refreshed yet, so re-run sign-in when one expires.
+      See https://learn.microsoft.com/graph/auth-v2-user.
+    credential:
+      methods:
+        - type: oauth
+          label: Sign in with Microsoft
+          description: >-
+            Authenticate with your Microsoft account to grant Coral read
+            access to your Outlook mail and contacts.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://localhost
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize
+              token_url: https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token
+            client:
+              id:
+                input: OUTLOOK_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://graph.microsoft.com/Mail.Read
+                  - https://graph.microsoft.com/Contacts.Read
+                  - offline_access
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Microsoft Graph access token.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.OUTLOOK_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM outlook.mail_folders LIMIT 5
+  - SELECT * FROM outlook.messages LIMIT 1
+tables:
+  - name: mail_folders
+    description: Mail folders in the authenticated user's Outlook mailbox
+    guide: |
+      Returns all top-level mail folders. Well-known folder names that can
+      be used as the `folder_id` filter on `outlook.folder_messages`:
+        Inbox, Drafts, SentItems, DeletedItems, JunkEmail, Archive, Outbox.
+
+      Use `id` values from this table with `outlook.folder_messages` to scope
+      message queries to a specific folder.
+
+      Set `include_hidden = true` to include system-managed hidden folders
+      (those with `is_hidden = true`).
+    filters:
+      - name: include_hidden
+        required: false
+    request:
+      method: GET
+      path: /me/mailFolders
+      query:
+        - name: includeHiddenFolders
+          from: filter_bool
+          key: include_hidden
+    response:
+      rows_path:
+        - value
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+      offset_start: 0
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Folder ID — use as folder_id filter on outlook.folder_messages
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Folder display name
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: parent_folder_id
+        type: Utf8
+        nullable: true
+        description: ID of the parent folder; null for root-level folders
+        expr:
+          kind: path
+          path:
+            - parentFolderId
+      - name: child_folder_count
+        type: Int64
+        nullable: true
+        description: Number of child folders
+        expr:
+          kind: path
+          path:
+            - childFolderCount
+      - name: unread_item_count
+        type: Int64
+        nullable: true
+        description: Number of unread messages in this folder
+        expr:
+          kind: path
+          path:
+            - unreadItemCount
+      - name: total_item_count
+        type: Int64
+        nullable: true
+        description: Total number of messages in this folder
+        expr:
+          kind: path
+          path:
+            - totalItemCount
+      - name: is_hidden
+        type: Boolean
+        nullable: true
+        description: Whether this folder is hidden from the Outlook UI
+        expr:
+          kind: path
+          path:
+            - isHidden
+
+  - name: messages
+    description: Most recent email messages across the authenticated user's Outlook mailbox (single page)
+    guide: |
+      Returns the most recent messages across all folders, ordered by
+      receivedDateTime descending. Use this table for cross-folder reads.
+
+      Result scope: this table returns a single page of the most recent ~50
+      messages. Microsoft Graph paginates mail by following the @odata.nextLink
+      URL it returns; this source does not follow it yet, so messages beyond the
+      first page are not returned. To read a specific folder, use
+      `outlook.folder_messages`.
+
+      Column predicates such as is_read, is_draft, has_attachments, importance,
+      and from_address are evaluated by Coral over the returned page only — they
+      are NOT pushed to Microsoft Graph, so a WHERE clause does not search the
+      whole mailbox.
+
+      `body_preview` is the first 255 characters of the message body.
+      `to_recipients` and `cc_recipients` are JSON arrays of email address
+      objects, each with `emailAddress.address` and `emailAddress.name`.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /me/messages
+      query:
+        - name: $select
+          from: literal
+          value: id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,bodyPreview,importance,isRead,isDraft,hasAttachments,conversationId,internetMessageId,parentFolderId,webLink
+        - name: $orderby
+          from: literal
+          value: receivedDateTime DESC
+        - name: $top
+          from: literal
+          value: "50"
+    response:
+      rows_path:
+        - value
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Message ID — use as message_id filter on outlook.attachments
+        expr:
+          kind: path
+          path:
+            - id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Message subject line
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: from_address
+        type: Utf8
+        nullable: true
+        description: Sender email address
+        expr:
+          kind: path
+          path:
+            - from
+            - emailAddress
+            - address
+      - name: from_name
+        type: Utf8
+        nullable: true
+        description: Sender display name
+        expr:
+          kind: path
+          path:
+            - from
+            - emailAddress
+            - name
+      - name: to_recipients
+        type: Json
+        nullable: true
+        description: Array of To recipient objects with emailAddress.address and emailAddress.name
+        expr:
+          kind: path
+          path:
+            - toRecipients
+      - name: cc_recipients
+        type: Json
+        nullable: true
+        description: Array of CC recipient objects
+        expr:
+          kind: path
+          path:
+            - ccRecipients
+      - name: received_date_time
+        type: Timestamp
+        nullable: true
+        description: Time the message was received
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - receivedDateTime
+      - name: sent_date_time
+        type: Timestamp
+        nullable: true
+        description: Time the message was sent
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - sentDateTime
+      - name: body_preview
+        type: Utf8
+        nullable: true
+        description: First 255 characters of the message body
+        expr:
+          kind: path
+          path:
+            - bodyPreview
+      - name: importance
+        type: Utf8
+        nullable: true
+        description: "Message priority: low, normal, or high"
+        expr:
+          kind: path
+          path:
+            - importance
+      - name: is_read
+        type: Boolean
+        nullable: true
+        description: Whether the message has been read
+        expr:
+          kind: path
+          path:
+            - isRead
+      - name: is_draft
+        type: Boolean
+        nullable: true
+        description: Whether the message is a draft
+        expr:
+          kind: path
+          path:
+            - isDraft
+      - name: has_attachments
+        type: Boolean
+        nullable: true
+        description: Whether the message has file or item attachments
+        expr:
+          kind: path
+          path:
+            - hasAttachments
+      - name: conversation_id
+        type: Utf8
+        nullable: true
+        description: Conversation thread this message belongs to
+        expr:
+          kind: path
+          path:
+            - conversationId
+      - name: internet_message_id
+        type: Utf8
+        nullable: true
+        description: RFC 2822 Message-ID header value
+        expr:
+          kind: path
+          path:
+            - internetMessageId
+      - name: parent_folder_id
+        type: Utf8
+        nullable: true
+        description: ID of the folder containing this message
+        expr:
+          kind: path
+          path:
+            - parentFolderId
+      - name: web_link
+        type: Utf8
+        nullable: true
+        description: URL to open the message in Outlook Web App
+        expr:
+          kind: path
+          path:
+            - webLink
+
+  - name: folder_messages
+    description: Most recent email messages in a specific Outlook mail folder (single page)
+    guide: |
+      Returns messages from a single folder. The `folder_id` filter is required
+      and can be either a folder UUID from `outlook.mail_folders.id` or one
+      of these well-known names:
+        Inbox, Drafts, SentItems, DeletedItems, JunkEmail, Archive, Outbox
+
+      Example:
+        SELECT subject, from_address, received_date_time
+        FROM outlook.folder_messages
+        WHERE folder_id = 'Inbox'
+        ORDER BY received_date_time DESC
+        LIMIT 20;
+
+      Like `outlook.messages`, this returns a single page of the most recent
+      ~50 messages in the folder; @odata.nextLink traversal is not implemented
+      yet. Predicates other than `folder_id` are evaluated by Coral over that
+      page and are not pushed to Microsoft Graph.
+
+      For cross-folder queries use `outlook.messages` instead.
+    fetch_limit_default: 50
+    filters:
+      - name: folder_id
+        required: true
+    request:
+      method: GET
+      path: /me/mailFolders/{{filter.folder_id}}/messages
+      query:
+        - name: $select
+          from: literal
+          value: id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,bodyPreview,importance,isRead,isDraft,hasAttachments,conversationId,internetMessageId,parentFolderId,webLink
+        - name: $orderby
+          from: literal
+          value: receivedDateTime DESC
+        - name: $top
+          from: literal
+          value: "50"
+    response:
+      rows_path:
+        - value
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: folder_id
+        type: Utf8
+        nullable: false
+        description: Folder ID or well-known name used to scope this query
+        expr:
+          kind: from_filter
+          key: folder_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Message ID — use as message_id filter on outlook.attachments
+        expr:
+          kind: path
+          path:
+            - id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Message subject line
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: from_address
+        type: Utf8
+        nullable: true
+        description: Sender email address
+        expr:
+          kind: path
+          path:
+            - from
+            - emailAddress
+            - address
+      - name: from_name
+        type: Utf8
+        nullable: true
+        description: Sender display name
+        expr:
+          kind: path
+          path:
+            - from
+            - emailAddress
+            - name
+      - name: to_recipients
+        type: Json
+        nullable: true
+        description: Array of To recipient objects with emailAddress.address and emailAddress.name
+        expr:
+          kind: path
+          path:
+            - toRecipients
+      - name: cc_recipients
+        type: Json
+        nullable: true
+        description: Array of CC recipient objects
+        expr:
+          kind: path
+          path:
+            - ccRecipients
+      - name: received_date_time
+        type: Timestamp
+        nullable: true
+        description: Time the message was received
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - receivedDateTime
+      - name: sent_date_time
+        type: Timestamp
+        nullable: true
+        description: Time the message was sent
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - sentDateTime
+      - name: body_preview
+        type: Utf8
+        nullable: true
+        description: First 255 characters of the message body
+        expr:
+          kind: path
+          path:
+            - bodyPreview
+      - name: importance
+        type: Utf8
+        nullable: true
+        description: "Message priority: low, normal, or high"
+        expr:
+          kind: path
+          path:
+            - importance
+      - name: is_read
+        type: Boolean
+        nullable: true
+        description: Whether the message has been read
+        expr:
+          kind: path
+          path:
+            - isRead
+      - name: is_draft
+        type: Boolean
+        nullable: true
+        description: Whether the message is a draft
+        expr:
+          kind: path
+          path:
+            - isDraft
+      - name: has_attachments
+        type: Boolean
+        nullable: true
+        description: Whether the message has file or item attachments
+        expr:
+          kind: path
+          path:
+            - hasAttachments
+      - name: conversation_id
+        type: Utf8
+        nullable: true
+        description: Conversation thread this message belongs to
+        expr:
+          kind: path
+          path:
+            - conversationId
+      - name: internet_message_id
+        type: Utf8
+        nullable: true
+        description: RFC 2822 Message-ID header value
+        expr:
+          kind: path
+          path:
+            - internetMessageId
+      - name: parent_folder_id
+        type: Utf8
+        nullable: true
+        description: Actual folder ID of this message in the mailbox
+        expr:
+          kind: path
+          path:
+            - parentFolderId
+      - name: web_link
+        type: Utf8
+        nullable: true
+        description: URL to open the message in Outlook Web App
+        expr:
+          kind: path
+          path:
+            - webLink
+
+  - name: attachments
+    description: File and item attachments on a specific Outlook message
+    guide: |
+      Returns all attachments on a single message. The `message_id` filter
+      is required — obtain message IDs from `outlook.messages.id` or
+      `outlook.folder_messages.id`.
+
+      `attachment_type` indicates the kind of attachment:
+        #microsoft.graph.fileAttachment      — a file attachment
+        #microsoft.graph.itemAttachment      — an embedded Outlook item
+        #microsoft.graph.referenceAttachment — a cloud file link
+
+      `size` is in bytes. `is_inline` is true for attachments embedded in
+      the HTML body (e.g. inline images). `content_bytes` (base64-encoded
+      file content) is not included in this table — fetch it via the Graph
+      API directly when needed.
+    filters:
+      - name: message_id
+        required: true
+    request:
+      method: GET
+      path: /me/messages/{{filter.message_id}}/attachments
+      query:
+        - name: $select
+          from: literal
+          value: id,name,contentType,size,isInline,lastModifiedDateTime
+    response:
+      rows_path:
+        - value
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Message ID this attachment belongs to
+        expr:
+          kind: from_filter
+          key: message_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Attachment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Attachment file name or display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: content_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the attachment (e.g. application/pdf, image/png)
+        expr:
+          kind: path
+          path:
+            - contentType
+      - name: size
+        type: Int64
+        nullable: true
+        description: Attachment size in bytes
+        expr:
+          kind: path
+          path:
+            - size
+      - name: is_inline
+        type: Boolean
+        nullable: true
+        description: Whether the attachment is embedded inline in the message body
+        expr:
+          kind: path
+          path:
+            - isInline
+      - name: last_modified_date_time
+        type: Timestamp
+        nullable: true
+        description: Time the attachment was last modified
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModifiedDateTime
+      - name: attachment_type
+        type: Utf8
+        nullable: true
+        description: "OData type: fileAttachment, itemAttachment, or referenceAttachment"
+        expr:
+          kind: path
+          path:
+            - "@odata.type"
+
+  - name: contacts
+    description: Personal contacts in the authenticated user's Outlook contact store
+    guide: |
+      Returns contacts from the user's default Contacts folder.
+
+      `email_addresses` is a JSON array where each entry has `address` and
+      `name` fields. `primary_email` extracts the first address for convenience.
+
+      `business_phones` is a JSON array of phone number strings.
+
+      Use `created_date_time` and `last_modified_date_time` to detect
+      recently added or changed contacts.
+    request:
+      method: GET
+      path: /me/contacts
+      query:
+        - name: $select
+          from: literal
+          value: id,displayName,givenName,surname,emailAddresses,businessPhones,mobilePhone,jobTitle,companyName,department,officeLocation,birthday,createdDateTime,lastModifiedDateTime
+    response:
+      rows_path:
+        - value
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+      offset_start: 0
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Contact ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Contact display name
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: Contact first name
+        expr:
+          kind: path
+          path:
+            - givenName
+      - name: surname
+        type: Utf8
+        nullable: true
+        description: Contact last name
+        expr:
+          kind: path
+          path:
+            - surname
+      - name: primary_email
+        type: Utf8
+        nullable: true
+        description: First email address in the contact's email list
+        expr:
+          kind: first_array_item_path
+          path:
+            - emailAddresses
+          item_path:
+            - address
+      - name: email_addresses
+        type: Json
+        nullable: true
+        description: All email addresses as a JSON array of address/name objects
+        expr:
+          kind: path
+          path:
+            - emailAddresses
+      - name: business_phones
+        type: Json
+        nullable: true
+        description: Business phone numbers as a JSON array of strings
+        expr:
+          kind: path
+          path:
+            - businessPhones
+      - name: mobile_phone
+        type: Utf8
+        nullable: true
+        description: Mobile phone number
+        expr:
+          kind: path
+          path:
+            - mobilePhone
+      - name: job_title
+        type: Utf8
+        nullable: true
+        description: Contact's job title
+        expr:
+          kind: path
+          path:
+            - jobTitle
+      - name: company_name
+        type: Utf8
+        nullable: true
+        description: Contact's company name
+        expr:
+          kind: path
+          path:
+            - companyName
+      - name: department
+        type: Utf8
+        nullable: true
+        description: Contact's department
+        expr:
+          kind: path
+          path:
+            - department
+      - name: office_location
+        type: Utf8
+        nullable: true
+        description: Contact's office location
+        expr:
+          kind: path
+          path:
+            - officeLocation
+      - name: birthday
+        type: Utf8
+        nullable: true
+        description: Contact's birthday in ISO 8601 date format
+        expr:
+          kind: path
+          path:
+            - birthday
+      - name: created_date_time
+        type: Timestamp
+        nullable: true
+        description: Time the contact was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdDateTime
+      - name: last_modified_date_time
+        type: Timestamp
+        nullable: true
+        description: Time the contact was last modified
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModifiedDateTime

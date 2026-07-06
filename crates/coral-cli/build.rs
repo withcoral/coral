@@ -39,8 +39,8 @@ fn main() {
     }
 
     if std::env::var_os("CARGO_FEATURE_EMBEDDED_UI").is_some() {
-        println!("cargo:rerun-if-changed=../../ui/dist");
-        println!("cargo:rerun-if-changed=../../ui/dist/index.html");
+        println!("cargo:rerun-if-changed=../../apps/ui/dist");
+        println!("cargo:rerun-if-changed=../../apps/ui/dist/index.html");
     }
 }
 

@@ -1,10 +1,12 @@
 //! Filesystem helpers for private directories, atomic writes, and file locks.
 
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
+use uuid::Uuid;
 
 pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
     if path.as_os_str().is_empty() || path == Path::new(".") {
@@ -15,6 +17,22 @@ pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
         set_dir_permissions_private(path)?;
     }
     Ok(())
+}
+
+pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(());
+    }
+    fs::create_dir_all(path)?;
+    set_dir_permissions_private(path)?;
+    Ok(())
+}
+
+pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+    open_create_new_file_private(path)
 }
 
 /// Write to a temp file then rename to avoid partial writes on crash.
@@ -33,7 +51,18 @@ pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = open_append_file_private(path)?;
     set_file_permissions_private(path)?;
     file.write_all(bytes)?;
-    file.sync_all()
+    file.sync_all()?;
+    // Best-effort: try to durably link the (possibly freshly created) file into
+    // its directory so a crash is less likely to lose it. Like `replace_atomic`,
+    // the parent-directory fsync is best-effort — opening or fsyncing a directory
+    // is not portable (e.g. it fails on Windows), so a failure here is ignored
+    // rather than surfaced.
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        drop(dir.sync_all());
+    }
+    Ok(())
 }
 
 pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
@@ -46,6 +75,56 @@ pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct DirectoryBackup {
+    original: PathBuf,
+    backup: PathBuf,
+    moved: bool,
+}
+
+impl DirectoryBackup {
+    pub(crate) fn move_for_delete(path: &Path, name: impl fmt::Display) -> io::Result<Self> {
+        let backup = path.with_file_name(format!("{name}.delete.rollback.{}", Uuid::new_v4()));
+        if !path.try_exists()? {
+            return Ok(Self {
+                original: path.to_path_buf(),
+                backup,
+                moved: false,
+            });
+        }
+        if backup.try_exists()? {
+            fs::remove_dir_all(&backup)?;
+        }
+        fs::rename(path, &backup)?;
+        Ok(Self {
+            original: path.to_path_buf(),
+            backup,
+            moved: true,
+        })
+    }
+
+    pub(crate) fn backup_path(&self) -> &Path {
+        &self.backup
+    }
+
+    pub(crate) fn restore(&self) -> io::Result<()> {
+        if self.moved && self.backup.try_exists()? {
+            if self.original.try_exists()? {
+                fs::remove_dir_all(&self.original)?;
+            }
+            fs::rename(&self.backup, &self.original)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit(&self) -> io::Result<()> {
+        if self.moved && self.backup.try_exists()? {
+            fs::remove_dir_all(&self.backup)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -115,6 +194,22 @@ fn open_append_file_private(path: &Path) -> io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
 
+#[cfg(unix)]
+fn open_create_new_file_private(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_create_new_file_private(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
 fn temp_path_for(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -166,4 +261,63 @@ fn set_file_permissions_private(path: &Path) -> io::Result<()> {
 #[cfg(not(unix))]
 fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DirectoryBackup;
+
+    #[test]
+    fn directory_backup_moves_and_restores_delete_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_dir = temp.path().join("github");
+        std::fs::create_dir(&source_dir).expect("create source dir");
+        std::fs::write(source_dir.join("manifest.yaml"), "name: github\n").expect("write file");
+
+        let backup = DirectoryBackup::move_for_delete(&source_dir, "github").expect("move backup");
+
+        assert!(!source_dir.exists());
+        assert!(backup.backup_path().exists());
+        assert!(
+            backup
+                .backup_path()
+                .file_name()
+                .expect("backup filename")
+                .to_string_lossy()
+                .starts_with("github.delete.rollback.")
+        );
+
+        backup.restore().expect("restore backup");
+
+        assert!(source_dir.join("manifest.yaml").exists());
+        assert!(!backup.backup_path().exists());
+    }
+
+    #[test]
+    fn directory_backup_commits_delete_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join("workspace");
+        std::fs::create_dir(&workspace_dir).expect("create workspace dir");
+
+        let backup =
+            DirectoryBackup::move_for_delete(&workspace_dir, "workspace").expect("move backup");
+        backup.commit().expect("commit backup");
+
+        assert!(!workspace_dir.exists());
+        assert!(!backup.backup_path().exists());
+    }
+
+    #[test]
+    fn directory_backup_noops_for_missing_delete_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_dir = temp.path().join("missing");
+
+        let backup =
+            DirectoryBackup::move_for_delete(&missing_dir, "missing").expect("prepare backup");
+        backup.restore().expect("restore missing");
+        backup.commit().expect("commit missing");
+
+        assert!(!missing_dir.exists());
+        assert!(!backup.backup_path().exists());
+    }
 }

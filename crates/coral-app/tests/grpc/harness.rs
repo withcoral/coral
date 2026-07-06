@@ -7,7 +7,7 @@ use coral_api::v1::{
     ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    AppClient, CatalogClient, QueryClient, SourceClient, WorkspaceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
@@ -18,6 +18,7 @@ use tonic::Request;
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
     config_dir: PathBuf,
+    local_trace_store_dir: Option<PathBuf>,
     app: AppClient,
     _server: RunningServer,
 }
@@ -40,17 +41,20 @@ impl GrpcHarness {
     }
 
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+        ensure_file_credentials_config(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
             .start()
             .await
             .expect("start server");
+        let local_trace_store_dir = server.local_trace_store_dir().map(Path::to_path_buf);
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");
         Self {
             temp_dir,
             config_dir,
+            local_trace_store_dir,
             app,
             _server: server,
         }
@@ -64,6 +68,10 @@ impl GrpcHarness {
         &self.config_dir
     }
 
+    pub(crate) fn local_trace_store_dir(&self) -> Option<&Path> {
+        self.local_trace_store_dir.as_deref()
+    }
+
     pub(crate) fn source_client(&self) -> SourceClient {
         self.app.source_client()
     }
@@ -74,6 +82,10 @@ impl GrpcHarness {
 
     pub(crate) fn query_client(&self) -> QueryClient {
         self.app.query_client()
+    }
+
+    pub(crate) fn workspace_client(&self) -> WorkspaceClient {
+        self.app.workspace_client()
     }
 
     pub(crate) async fn import_source(
@@ -169,6 +181,22 @@ impl GrpcHarness {
     }
 }
 
+fn ensure_file_credentials_config(config_dir: &Path) {
+    std::fs::create_dir_all(config_dir).expect("create config dir");
+    let config_file = config_dir.join("config.toml");
+    let raw = std::fs::read_to_string(&config_file).unwrap_or_default();
+    if raw.contains("[credentials]") {
+        return;
+    }
+    let separator = if raw.is_empty() || raw.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let updated = format!("{raw}{separator}\n[credentials]\nstorage = \"file\"\n");
+    std::fs::write(config_file, updated).expect("write test credential config");
+}
+
 impl FailingHttpFixture {
     pub(crate) async fn new() -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -249,23 +277,26 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [
             {
                 "name": "events",
                 "description": "Fixture events",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "messages",
                 "description": "Fixture messages",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "sessions",
                 "description": "Fixture sessions",
+                "format": "jsonl",
                 "source": table_source,
                 "columns": table_columns,
             },
@@ -424,11 +455,12 @@ pub(crate) fn fixture_manifest_with_test_queries_yaml(
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "test_queries": test_queries,
         "tables": [{
             "name": "messages",
             "description": "Fixture messages",
+            "format": "jsonl",
             "source": {
                 "location": format!("file://{}/", data_dir.display()),
                 "glob": "**/*.jsonl",

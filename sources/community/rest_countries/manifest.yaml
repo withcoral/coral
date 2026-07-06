@@ -1,0 +1,480 @@
+name: rest_countries
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query country data from the REST Countries API (no auth).
+base_url: https://restcountries.com/v3.1
+test_queries:
+  - SELECT * FROM rest_countries."all" LIMIT 1
+  - SELECT * FROM rest_countries.by_name WHERE name = 'france' LIMIT 1
+  - SELECT * FROM rest_countries.by_code WHERE code = 'us' LIMIT 1
+  - SELECT * FROM rest_countries.by_region WHERE region = 'europe' LIMIT 1
+  - SELECT * FROM rest_countries.by_currency WHERE currency = 'eur' LIMIT 1
+tables:
+  - name: all
+    description: Fetch all countries.
+    request:
+      method: GET
+      path: /all?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name_common
+        type: Utf8
+        description: Common name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, common]
+      - name: name_official
+        type: Utf8
+        description: Official name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, official]
+      - name: cca2
+        type: Utf8
+        description: ISO 3166-1 alpha-2 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca2]
+      - name: cca3
+        type: Utf8
+        description: ISO 3166-1 alpha-3 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca3]
+      - name: region
+        type: Utf8
+        description: Region of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [region]
+      - name: subregion
+        type: Utf8
+        description: Subregion of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [subregion]
+      - name: population
+        type: Int64
+        description: Population of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [population]
+      - name: area
+        type: Float64
+        description: Area of the country in square kilometers.
+        nullable: true
+        expr:
+          kind: path
+          path: [area]
+      - name: flags_png
+        type: Utf8
+        description: URL to the country's flag in PNG format.
+        nullable: true
+        expr:
+          kind: path
+          path: [flags, png]
+      - name: currencies
+        type: Json
+        description: Currencies used in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [currencies]
+      - name: languages
+        type: Json
+        description: Languages spoken in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [languages]
+
+  - name: by_name
+    description: Search for a country by its common or official name.
+    filters:
+      - name: name
+        required: true
+    request:
+      method: GET
+      path: /name/{{filter.name}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
+    response:
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: from_filter
+          key: name
+      - name: name_common
+        type: Utf8
+        description: Common name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, common]
+      - name: name_official
+        type: Utf8
+        description: Official name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, official]
+      - name: cca2
+        type: Utf8
+        description: ISO 3166-1 alpha-2 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca2]
+      - name: cca3
+        type: Utf8
+        description: ISO 3166-1 alpha-3 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca3]
+      - name: region
+        type: Utf8
+        description: Region of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [region]
+      - name: subregion
+        type: Utf8
+        description: Subregion of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [subregion]
+      - name: population
+        type: Int64
+        description: Population of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [population]
+      - name: area
+        type: Float64
+        description: Area of the country in square kilometers.
+        nullable: true
+        expr:
+          kind: path
+          path: [area]
+      - name: flags_png
+        type: Utf8
+        description: URL to the country's flag in PNG format.
+        nullable: true
+        expr:
+          kind: path
+          path: [flags, png]
+      - name: currencies
+        type: Json
+        description: Currencies used in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [currencies]
+      - name: languages
+        type: Json
+        description: Languages spoken in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [languages]
+
+  - name: by_code
+    description: Search for a country by its ISO 3166-1 alpha-2, alpha-3, numeric code, or CIOC.
+    filters:
+      - name: code
+        required: true
+    request:
+      method: GET
+      path: /alpha/{{filter.code}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
+    response:
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: code
+        type: Utf8
+        nullable: true
+        expr:
+          kind: from_filter
+          key: code
+      - name: name_common
+        type: Utf8
+        description: Common name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, common]
+      - name: name_official
+        type: Utf8
+        description: Official name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, official]
+      - name: cca2
+        type: Utf8
+        description: ISO 3166-1 alpha-2 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca2]
+      - name: cca3
+        type: Utf8
+        description: ISO 3166-1 alpha-3 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca3]
+      - name: region
+        type: Utf8
+        description: Region of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [region]
+      - name: subregion
+        type: Utf8
+        description: Subregion of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [subregion]
+      - name: population
+        type: Int64
+        description: Population of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [population]
+      - name: area
+        type: Float64
+        description: Area of the country in square kilometers.
+        nullable: true
+        expr:
+          kind: path
+          path: [area]
+      - name: flags_png
+        type: Utf8
+        description: URL to the country's flag in PNG format.
+        nullable: true
+        expr:
+          kind: path
+          path: [flags, png]
+      - name: currencies
+        type: Json
+        description: Currencies used in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [currencies]
+      - name: languages
+        type: Json
+        description: Languages spoken in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [languages]
+
+  - name: by_region
+    description: Search for countries by region.
+    filters:
+      - name: region
+        required: true
+    request:
+      method: GET
+      path: /region/{{filter.region}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
+    response:
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: region
+        type: Utf8
+        nullable: true
+        expr:
+          kind: from_filter
+          key: region
+      - name: name_common
+        type: Utf8
+        description: Common name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, common]
+      - name: name_official
+        type: Utf8
+        description: Official name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, official]
+      - name: cca2
+        type: Utf8
+        description: ISO 3166-1 alpha-2 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca2]
+      - name: cca3
+        type: Utf8
+        description: ISO 3166-1 alpha-3 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca3]
+      - name: subregion
+        type: Utf8
+        description: Subregion of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [subregion]
+      - name: population
+        type: Int64
+        description: Population of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [population]
+      - name: area
+        type: Float64
+        description: Area of the country in square kilometers.
+        nullable: true
+        expr:
+          kind: path
+          path: [area]
+      - name: flags_png
+        type: Utf8
+        description: URL to the country's flag in PNG format.
+        nullable: true
+        expr:
+          kind: path
+          path: [flags, png]
+      - name: currencies
+        type: Json
+        description: Currencies used in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [currencies]
+      - name: languages
+        type: Json
+        description: Languages spoken in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [languages]
+
+  - name: by_currency
+    description: Search for countries by currency code or name.
+    filters:
+      - name: currency
+        required: true
+    request:
+      method: GET
+      path: /currency/{{filter.currency}}?fields=name,cca2,cca3,region,subregion,population,area,flags,currencies,languages
+    response:
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: currency
+        type: Utf8
+        nullable: true
+        expr:
+          kind: from_filter
+          key: currency
+      - name: name_common
+        type: Utf8
+        description: Common name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, common]
+      - name: name_official
+        type: Utf8
+        description: Official name of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [name, official]
+      - name: cca2
+        type: Utf8
+        description: ISO 3166-1 alpha-2 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca2]
+      - name: cca3
+        type: Utf8
+        description: ISO 3166-1 alpha-3 code.
+        nullable: true
+        expr:
+          kind: path
+          path: [cca3]
+      - name: region
+        type: Utf8
+        description: Region of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [region]
+      - name: subregion
+        type: Utf8
+        description: Subregion of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [subregion]
+      - name: population
+        type: Int64
+        description: Population of the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [population]
+      - name: area
+        type: Float64
+        description: Area of the country in square kilometers.
+        nullable: true
+        expr:
+          kind: path
+          path: [area]
+      - name: flags_png
+        type: Utf8
+        description: URL to the country's flag in PNG format.
+        nullable: true
+        expr:
+          kind: path
+          path: [flags, png]
+      - name: currencies
+        type: Json
+        description: Currencies used in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [currencies]
+      - name: languages
+        type: Json
+        description: Languages spoken in the country.
+        nullable: true
+        expr:
+          kind: path
+          path: [languages]

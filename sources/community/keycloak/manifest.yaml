@@ -1,0 +1,413 @@
+name: keycloak
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Keycloak realms, clients, groups, realm roles, users, and admin events
+  via the Admin REST API (self-hosted or managed).
+base_url: "{{input.KEYCLOAK_BASE_URL}}"
+
+inputs:
+  KEYCLOAK_BASE_URL:
+    kind: variable
+    hint: |
+      Keycloak server base URL with no trailing slash, for example
+      `http://localhost:8080` or `https://auth.example.com`.
+  KEYCLOAK_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Bearer access token for the Admin REST API. Obtain with the admin-cli
+      client (password grant) or a service account with client credentials.
+      The token must include roles such as view-realm, view-users, and
+      view-events for the tables you query.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.KEYCLOAK_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT realm, enabled FROM keycloak.realms LIMIT 1
+
+tables:
+  - name: realms
+    description: Keycloak realms on the server.
+    request:
+      method: GET
+      path: /admin/realms
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Realm ID (usually matches realm name).
+        expr: {kind: path, path: [id]}
+      - name: realm
+        type: Utf8
+        nullable: false
+        description: Realm name (URL segment).
+        expr: {kind: path, path: [realm]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable realm name.
+        expr: {kind: path, path: [displayName]}
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the realm is enabled.
+        expr: {kind: path, path: [enabled]}
+      - name: ssl_required
+        type: Utf8
+        nullable: true
+        description: SSL requirement policy for the realm.
+        expr: {kind: path, path: [sslRequired]}
+
+  - name: clients
+    description: OAuth/OIDC clients in a realm.
+    filters:
+      - name: realm
+        required: true
+    request:
+      method: GET
+      path: /admin/realms/{{filter.realm}}/clients
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: first
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: max
+    columns:
+      - name: realm
+        type: Utf8
+        nullable: false
+        description: Realm from the required realm filter.
+        expr: {kind: from_filter, key: realm}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Internal client UUID.
+        expr: {kind: path, path: [id]}
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Client identifier (clientId).
+        expr: {kind: path, path: [clientId]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Client display name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Client description.
+        expr: {kind: path, path: [description]}
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the client is enabled.
+        expr: {kind: path, path: [enabled]}
+      - name: protocol
+        type: Utf8
+        nullable: true
+        description: Protocol (openid-connect, saml, etc.).
+        expr: {kind: path, path: [protocol]}
+      - name: public_client
+        type: Boolean
+        nullable: true
+        description: Whether this is a public client.
+        expr: {kind: path, path: [publicClient]}
+
+  - name: groups
+    description: >-
+      Top-level groups in a realm (id and name only). Coral emits the top-level
+      JSON array from GET /admin/realms/{realm}/groups; nested subGroups are not
+      flattened in v1.
+    filters:
+      - name: realm
+        required: true
+    request:
+      method: GET
+      path: /admin/realms/{{filter.realm}}/groups
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: first
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: max
+    columns:
+      - name: realm
+        type: Utf8
+        nullable: false
+        description: Realm from the required realm filter.
+        expr: {kind: from_filter, key: realm}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Group ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Group name.
+        expr: {kind: path, path: [name]}
+
+  - name: roles
+    description: Realm-level roles in a realm.
+    filters:
+      - name: realm
+        required: true
+      - name: search
+        mode: search
+    request:
+      method: GET
+      path: /admin/realms/{{filter.realm}}/roles
+      query:
+        - name: search
+          from: filter
+          key: search
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: first
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: max
+    columns:
+      - name: realm
+        type: Utf8
+        nullable: false
+        description: Realm from the required realm filter.
+        expr: {kind: from_filter, key: realm}
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Role ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Role name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Role description.
+        expr: {kind: path, path: [description]}
+      - name: composite
+        type: Boolean
+        nullable: true
+        description: Whether the role is composite.
+        expr: {kind: path, path: [composite]}
+      - name: client_role
+        type: Boolean
+        nullable: true
+        description: Whether this is a client role (false for realm roles).
+        expr: {kind: path, path: [clientRole]}
+
+  - name: users
+    description: Users in a realm (minimal profile columns).
+    filters:
+      - name: realm
+        required: true
+      - name: search
+        mode: search
+      - name: q
+        mode: search
+      - name: username
+      - name: email
+      - name: enabled
+    request:
+      method: GET
+      path: /admin/realms/{{filter.realm}}/users
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: q
+          from: filter
+          key: q
+        - name: username
+          from: filter
+          key: username
+        - name: email
+          from: filter
+          key: email
+        - name: enabled
+          from: filter_bool
+          key: enabled
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: first
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: max
+    columns:
+      - name: realm
+        type: Utf8
+        nullable: false
+        description: Realm from the required realm filter.
+        expr: {kind: from_filter, key: realm}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID.
+        expr: {kind: path, path: [id]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username.
+        expr: {kind: path, path: [username]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address.
+        expr: {kind: path, path: [email]}
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name.
+        expr: {kind: path, path: [firstName]}
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name.
+        expr: {kind: path, path: [lastName]}
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the user account is enabled.
+        expr: {kind: path, path: [enabled]}
+      - name: email_verified
+        type: Boolean
+        nullable: true
+        description: Whether the email address is verified.
+        expr: {kind: path, path: [emailVerified]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Account creation time (Keycloak epoch milliseconds).
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [createdTimestamp]}
+
+  - name: admin_events
+    description: Admin audit events for a realm.
+    filters:
+      - name: realm
+        required: true
+      - name: date_from
+      - name: date_to
+      - name: operation_types
+      - name: resource_path
+      - name: auth_client
+      - name: auth_user
+      - name: auth_ip_address
+    request:
+      method: GET
+      path: /admin/realms/{{filter.realm}}/admin-events
+      query:
+        - name: dateFrom
+          from: filter
+          key: date_from
+        - name: dateTo
+          from: filter
+          key: date_to
+        - name: operationTypes
+          from: filter
+          key: operation_types
+        - name: resourcePath
+          from: filter
+          key: resource_path
+        - name: authClient
+          from: filter
+          key: auth_client
+        - name: authUser
+          from: filter
+          key: auth_user
+        - name: authIpAddress
+          from: filter
+          key: auth_ip_address
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: first
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: max
+    columns:
+      - name: realm
+        type: Utf8
+        nullable: false
+        description: Realm from the required realm filter.
+        expr: {kind: from_filter, key: realm}
+      - name: time
+        type: Timestamp
+        nullable: true
+        description: Event time (epoch milliseconds).
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [time]}
+      - name: realm_id
+        type: Utf8
+        nullable: true
+        description: Realm ID on the event.
+        expr: {kind: path, path: [realmId]}
+      - name: operation_type
+        type: Utf8
+        nullable: true
+        description: Operation type (CREATE, UPDATE, DELETE, etc.).
+        expr: {kind: path, path: [operationType]}
+      - name: resource_type
+        type: Utf8
+        nullable: true
+        description: Resource type affected.
+        expr: {kind: path, path: [resourceType]}
+      - name: resource_path
+        type: Utf8
+        nullable: true
+        description: Resource path affected.
+        expr: {kind: path, path: [resourcePath]}
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Error message when the operation failed.
+        expr: {kind: path, path: [error]}
+      - name: representation
+        type: Utf8
+        nullable: true
+        description: >-
+          Serialized resource representation as returned by Keycloak (JSON text
+          string when present).
+        expr: {kind: path, path: [representation]}
