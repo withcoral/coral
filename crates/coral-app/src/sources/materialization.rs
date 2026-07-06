@@ -183,7 +183,6 @@ pub(crate) fn load_v4_materialization(
     let diagnostics: Vec<Diagnostic> =
         read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
     let mut surfaces = Vec::new();
-    let mut semantic_irs = Vec::new();
     for fingerprint_surface in &fingerprint.surfaces {
         let surface = manifest
             .surface(&fingerprint_surface.surface_id)
@@ -212,7 +211,6 @@ pub(crate) fn load_v4_materialization(
             &surface.id,
             &mut semantic_ir,
         )?;
-        semantic_irs.push(semantic_ir.clone());
         surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir,
@@ -226,7 +224,11 @@ pub(crate) fn load_v4_materialization(
     } else {
         ProjectionPaginationInputSyncMode::RecomputeRestInputExposure
     };
-    sync_projection_pagination_inputs(&semantic_irs, &mut projections, projection_sync_mode);
+    sync_projection_pagination_inputs(
+        surfaces.iter().map(|surface| &surface.semantic_ir),
+        &mut projections,
+        projection_sync_mode,
+    );
     let materialized = V4MaterializedSource {
         fingerprint,
         surfaces,

@@ -100,13 +100,13 @@ pub enum ProjectionPaginationInputSyncMode {
     PreserveExistingExposure,
 }
 
-pub fn sync_projection_pagination_inputs(
-    surfaces: &[SemanticIr],
+pub fn sync_projection_pagination_inputs<'a>(
+    surfaces: impl IntoIterator<Item = &'a SemanticIr>,
     projections: &mut ProjectionCatalog,
     mode: ProjectionPaginationInputSyncMode,
 ) {
     let pagination_by_operation = surfaces
-        .iter()
+        .into_iter()
         .flat_map(|surface| {
             surface.operations.iter().filter_map(|operation| {
                 let IrExecutionAttachment::Rest(rest) = &operation.execution else {
