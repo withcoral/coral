@@ -1,37 +1,99 @@
 use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::CoralDb;
 use super::session::DbRepos;
 use crate::bootstrap::AppError;
+use crate::sources::model::InstalledSource;
 use crate::state::ConfigStore;
+use crate::workspaces::{WorkspaceName, WorkspaceRecord};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceCatalogImportReport {
+pub(crate) struct LegacyConfigImportReport {
     pub(crate) workspace_count: usize,
     pub(crate) source_count: usize,
 }
 
-pub(crate) async fn import_config_source_catalog(
+pub(crate) async fn import_legacy_config(
+    db: &CoralDb,
+    config_store: &ConfigStore,
+) -> Result<LegacyConfigImportReport, AppError> {
+    import_legacy_config_at(db, config_store, now_unix_nanos_i64()?).await
+}
+
+async fn import_legacy_config_at(
     db: &CoralDb,
     config_store: &ConfigStore,
     now_unix_nanos: i64,
-) -> Result<SourceCatalogImportReport, AppError> {
+) -> Result<LegacyConfigImportReport, AppError> {
     let _state_lock = config_store.state_lock_exclusive()?;
-    let entries = config_store
-        .load_config_unlocked()?
-        .source_catalog_entries();
+    let config = config_store.load_config_unlocked()?;
+    let workspaces = config.workspaces();
+    let source_entries = config.source_catalog_entries();
 
     let mut tx = db.begin().await?;
-    let mut workspaces = BTreeSet::new();
-    for (workspace_name, source) in &entries {
-        workspaces.insert(workspace_name.clone());
-        tx.workspaces()
+    let mut imported_workspaces = BTreeSet::new();
+    import_legacy_workspaces(
+        &mut tx,
+        &workspaces,
+        now_unix_nanos,
+        &mut imported_workspaces,
+    )
+    .await?;
+    import_legacy_source_catalog(
+        &mut tx,
+        &source_entries,
+        now_unix_nanos,
+        &mut imported_workspaces,
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(LegacyConfigImportReport {
+        workspace_count: imported_workspaces.len(),
+        source_count: source_entries.len(),
+    })
+}
+
+async fn import_legacy_workspaces<S>(
+    session: &mut S,
+    workspaces: &[WorkspaceRecord],
+    now_unix_nanos: i64,
+    imported_workspaces: &mut BTreeSet<WorkspaceName>,
+) -> Result<(), AppError>
+where
+    S: DbRepos,
+{
+    for workspace in workspaces {
+        session
+            .workspaces()
+            .ensure(workspace.name.as_str(), now_unix_nanos)
+            .await?;
+        imported_workspaces.insert(workspace.name.clone());
+    }
+    Ok(())
+}
+
+async fn import_legacy_source_catalog<S>(
+    session: &mut S,
+    entries: &[(WorkspaceName, InstalledSource)],
+    now_unix_nanos: i64,
+    imported_workspaces: &mut BTreeSet<WorkspaceName>,
+) -> Result<(), AppError>
+where
+    S: DbRepos,
+{
+    for (workspace_name, source) in entries {
+        imported_workspaces.insert(workspace_name.clone());
+        session
+            .workspaces()
             .ensure(workspace_name.as_str(), now_unix_nanos)
             .await?;
-        tx.sources()
+        session
+            .sources()
             .upsert_source(workspace_name, source, now_unix_nanos)
             .await?;
-        let imported = tx
+        let imported = session
             .sources()
             .get_source(workspace_name, &source.name)
             .await?;
@@ -42,11 +104,18 @@ pub(crate) async fn import_config_source_catalog(
             )));
         }
     }
-    tx.commit().await?;
+    Ok(())
+}
 
-    Ok(SourceCatalogImportReport {
-        workspace_count: workspaces.len(),
-        source_count: entries.len(),
+fn now_unix_nanos_i64() -> Result<i64, AppError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "system clock timestamp exceeds i64 nanoseconds: {error}"
+        ))
     })
 }
 
@@ -56,7 +125,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{SourceCatalogImportReport, import_config_source_catalog};
+    use super::{LegacyConfigImportReport, import_legacy_config_at};
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
@@ -66,7 +135,7 @@ mod tests {
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
-    async fn imports_config_source_catalog_into_database() {
+    async fn imports_legacy_config_sources_into_database() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
@@ -85,13 +154,13 @@ mod tests {
             .expect("write config source");
         let db = open_sqlite(&layout).await;
 
-        let report = import_config_source_catalog(&db, &config_store, 11)
+        let report = import_legacy_config_at(&db, &config_store, 11)
             .await
-            .expect("import source catalog");
+            .expect("import legacy config");
 
         assert_eq!(
             report,
-            SourceCatalogImportReport {
+            LegacyConfigImportReport {
                 workspace_count: 1,
                 source_count: 1,
             }
@@ -127,7 +196,7 @@ mod tests {
             .upsert_source(&workspace, source.clone())
             .expect("write config source");
         let db = open_sqlite(&layout).await;
-        import_config_source_catalog(&db, &config_store, 11)
+        import_legacy_config_at(&db, &config_store, 11)
             .await
             .expect("initial import");
 
@@ -137,9 +206,9 @@ mod tests {
         config_store
             .upsert_source(&workspace, source.clone())
             .expect("update config source");
-        import_config_source_catalog(&db, &config_store, 99)
+        import_legacy_config_at(&db, &config_store, 99)
             .await
-            .expect("reimport source catalog");
+            .expect("reimport legacy config");
 
         let mut session = &db;
         let workspace_record = session
@@ -160,32 +229,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_config_catalog_import_is_noop() {
+    async fn imports_legacy_workspaces_without_sources() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
+        let analytics_workspace = WorkspaceName::parse("analytics").expect("workspace");
+        config_store
+            .create_workspace(&analytics_workspace)
+            .expect("create workspace");
         let db = open_sqlite(&layout).await;
 
-        let report = import_config_source_catalog(&db, &config_store, 11)
+        let report = import_legacy_config_at(&db, &config_store, 11)
             .await
-            .expect("import empty catalog");
+            .expect("import legacy config");
 
         assert_eq!(
             report,
-            SourceCatalogImportReport {
-                workspace_count: 0,
+            LegacyConfigImportReport {
+                workspace_count: 2,
                 source_count: 0,
             }
         );
         let mut session = &db;
-        assert!(
+        assert_eq!(
             session
                 .workspaces()
                 .list()
                 .await
                 .expect("list workspaces")
-                .is_empty()
+                .into_iter()
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "analytics".to_string(),
+                WorkspaceName::default().as_str().to_string(),
+            ]
         );
     }
 
