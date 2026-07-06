@@ -10,6 +10,11 @@ const electronViteBin = resolve(
   process.platform === 'win32' ? 'electron-vite.cmd' : 'electron-vite',
 )
 
+// Shared between the Vite dev server (which proxies `/__coral__` to the sidecar)
+// and the sidecar spawn in the Electron main process. Fixed so Vite's config,
+// loaded before the sidecar exists, has a known proxy target.
+const sidecarPort = process.env.CORAL_DEV_SIDECAR_PORT ?? '8778'
+
 const children = new Set()
 let shuttingDown = false
 
@@ -88,6 +93,7 @@ const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/reef'], 
   env: {
     ...process.env,
     CORAL_DESKTOP_APP: '1',
+    CORAL_DEV_SIDECAR_PORT: sidecarPort,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -109,6 +115,7 @@ try {
     env: {
       ...process.env,
       ELECTRON_RENDERER_URL: appUrl,
+      CORAL_DEV_SIDECAR_PORT: sidecarPort,
     },
     stdio: 'inherit',
   })

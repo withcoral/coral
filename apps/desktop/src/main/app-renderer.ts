@@ -14,7 +14,9 @@ export const APP_ENTRY_URL = `${APP_ORIGIN}/`
 
 // gRPC-web requests are proxied to the loopback sidecar under this same-origin
 // path, so the strict CSP ('self') covers them and no CORS layer is involved.
-const GRPC_PATH_PREFIX = '/__coral__'
+// In dev the Vite server proxies this same prefix to the sidecar, so the client
+// stays same-origin there too — hence the export.
+export const GRPC_PATH_PREFIX = '/__coral__'
 export const APP_GRPC_BASE = `${APP_ORIGIN}${GRPC_PATH_PREFIX}`
 
 const MIME_TYPES: Record<string, string> = {

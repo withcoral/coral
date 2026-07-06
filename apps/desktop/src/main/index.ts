@@ -7,6 +7,7 @@ import {
   APP_ENTRY_URL,
   APP_GRPC_BASE,
   APP_ORIGIN,
+  GRPC_PATH_PREFIX,
   registerAppProtocol,
   registerAppSchemePrivileges,
 } from './app-renderer'
@@ -238,9 +239,13 @@ function registerIpcHandlers() {
     if (rendererUrl() === null) {
       return { grpcBaseUrl: APP_GRPC_BASE, packaged: app.isPackaged }
     }
-    // Dev (Vite http origin) hits the sidecar directly, so wait for its endpoint.
+    // Dev: the Vite server proxies the same-origin `/__coral__` prefix to the
+    // sidecar (see apps/reef/vite.config.ts), so the renderer stays same-origin
+    // and needs no CORS — mirroring the packaged app:// proxy. Still wait for the
+    // sidecar so the proxy target is live before the UI starts issuing requests.
     const started = await ensureSidecar()
-    return { grpcBaseUrl: started.url, packaged: started.packaged }
+    const devOrigin = new URL(rendererUrl()!).origin
+    return { grpcBaseUrl: `${devOrigin}${GRPC_PATH_PREFIX}`, packaged: started.packaged }
   })
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
