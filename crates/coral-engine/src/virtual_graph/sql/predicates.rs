@@ -196,10 +196,18 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
                 ProjectionPredicateRhs::Literal(Literal::String(value)),
-            ) => Ok(format!(
-                "{alias} LIKE {} ESCAPE '\\'",
-                render_like_pattern(predicate.operator, value)
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal(
+                            "validated projected string predicate used a non-string operator",
+                        )
+                    })?;
+                Ok(format!(
+                    "{alias} LIKE {} ESCAPE '\\'",
+                    render_like_pattern(operator, value)
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
@@ -265,10 +273,16 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::Contains,
                 PredicateRhs::Literal(Literal::String(value))
                 | PredicateRhs::TemporalCoercion { source: value },
-            ) => Ok(format!(
-                "{property} LIKE {} ESCAPE '\\'",
-                render_like_pattern(predicate.operator, value)
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal("validated string predicate used a non-string operator")
+                    })?;
+                Ok(format!(
+                    "{property} LIKE {} ESCAPE '\\'",
+                    render_like_pattern(operator, value)
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
@@ -341,22 +355,32 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
                 ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(value))),
-            ) => Ok(format!(
-                "{lhs} LIKE {} ESCAPE '\\'",
-                render_like_pattern(predicate.operator, value)
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal(
+                            "validated scalar string predicate used a non-string operator",
+                        )
+                    })?;
+                Ok(format!(
+                    "{lhs} LIKE {} ESCAPE '\\'",
+                    render_like_pattern(operator, value)
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
                 ScalarPredicateRhs::Expression(expression),
             ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal(
+                            "validated scalar string predicate used a non-string operator",
+                        )
+                    })?;
                 let rhs = self.render_scalar_expression(expression)?;
-                Ok(render_string_function_predicate(
-                    predicate.operator,
-                    &lhs,
-                    &rhs,
-                ))
+                Ok(render_string_function_predicate(operator, &lhs, &rhs))
             }
             (
                 ComparisonOperator::StartsWith
@@ -449,10 +473,18 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::Contains,
                 PredicateRhs::Literal(Literal::String(value))
                 | PredicateRhs::TemporalCoercion { source: value },
-            ) => Ok(format!(
-                "{key} LIKE {} ESCAPE '\\'",
-                render_like_pattern(predicate.operator, value)
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal(
+                            "validated id() string predicate used a non-string operator",
+                        )
+                    })?;
+                Ok(format!(
+                    "{key} LIKE {} ESCAPE '\\'",
+                    render_like_pattern(operator, value)
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
@@ -527,10 +559,18 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::Contains,
                 PredicateRhs::Literal(Literal::String(value))
                 | PredicateRhs::TemporalCoercion { source: value },
-            ) => Ok(format!(
-                "{element_id} LIKE {} ESCAPE '\\'",
-                render_like_pattern(predicate.operator, value)
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal(
+                            "validated elementId() string predicate used a non-string operator",
+                        )
+                    })?;
+                Ok(format!(
+                    "{element_id} LIKE {} ESCAPE '\\'",
+                    render_like_pattern(operator, value)
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
@@ -669,10 +709,18 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::Contains,
                 PredicateRhs::Literal(Literal::String(value))
                 | PredicateRhs::TemporalCoercion { source: value },
-            ) => Ok(format!(
-                "{property} LIKE {} ESCAPE '\\'",
-                render_like_pattern(predicate.operator, value)
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal(
+                            "validated EXISTS string predicate used a non-string operator",
+                        )
+                    })?;
+                Ok(format!(
+                    "{property} LIKE {} ESCAPE '\\'",
+                    render_like_pattern(operator, value)
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith

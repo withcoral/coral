@@ -239,6 +239,24 @@ pub(super) fn render_operator(operator: ComparisonOperator) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StringMatchOperator {
+    StartsWith,
+    EndsWith,
+    Contains,
+}
+
+impl StringMatchOperator {
+    pub(super) fn from_comparison(operator: ComparisonOperator) -> Option<Self> {
+        match operator {
+            ComparisonOperator::StartsWith => Some(Self::StartsWith),
+            ComparisonOperator::EndsWith => Some(Self::EndsWith),
+            ComparisonOperator::Contains => Some(Self::Contains),
+            _ => None,
+        }
+    }
+}
+
 fn render_aggregate_function(function: AggregateFunction) -> &'static str {
     match function {
         AggregateFunction::Count => "COUNT",
@@ -410,27 +428,25 @@ fn render_typed_list_element(literal: &Literal, element_type: LiteralListElement
     }
 }
 
-pub(super) fn render_like_pattern(operator: ComparisonOperator, value: &str) -> String {
+pub(super) fn render_like_pattern(operator: StringMatchOperator, value: &str) -> String {
     let escaped = escape_like_literal(value);
     let pattern = match operator {
-        ComparisonOperator::StartsWith => format!("{escaped}%"),
-        ComparisonOperator::EndsWith => format!("%{escaped}"),
-        ComparisonOperator::Contains => format!("%{escaped}%"),
-        _ => unreachable!("LIKE pattern requested for non-string predicate operator"),
+        StringMatchOperator::StartsWith => format!("{escaped}%"),
+        StringMatchOperator::EndsWith => format!("%{escaped}"),
+        StringMatchOperator::Contains => format!("%{escaped}%"),
     };
     quote_string_literal(&pattern)
 }
 
 pub(super) fn render_string_function_predicate(
-    operator: ComparisonOperator,
+    operator: StringMatchOperator,
     lhs: &str,
     rhs: &str,
 ) -> String {
     let function_name = match operator {
-        ComparisonOperator::StartsWith => "starts_with",
-        ComparisonOperator::EndsWith => "ends_with",
-        ComparisonOperator::Contains => "contains",
-        _ => unreachable!("string function requested for non-string predicate operator"),
+        StringMatchOperator::StartsWith => "starts_with",
+        StringMatchOperator::EndsWith => "ends_with",
+        StringMatchOperator::Contains => "contains",
     };
     format!("{function_name}({lhs}, {rhs})")
 }

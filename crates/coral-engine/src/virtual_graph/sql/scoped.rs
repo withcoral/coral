@@ -1782,10 +1782,17 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::Contains,
                 PredicateRhs::Literal(Literal::String(value))
                 | PredicateRhs::TemporalCoercion { source: value },
-            ) => Ok(format!(
-                "{lhs} LIKE {} ESCAPE '\\'",
-                render_like_pattern(operator, value)
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(operator).ok_or_else(|| {
+                    CoreError::internal(
+                        "validated scoped string predicate used a non-string operator",
+                    )
+                })?;
+                Ok(format!(
+                    "{lhs} LIKE {} ESCAPE '\\'",
+                    render_like_pattern(operator, value)
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
@@ -1874,16 +1881,24 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
                 ScalarPredicateRhs::Expression(rhs),
-            ) => Ok(render_string_function_predicate(
-                predicate.operator,
-                &lhs,
-                &self.render_scoped_scalar_expression(
-                    rhs,
-                    relationships,
-                    local_nodes,
-                    local_aliases,
-                )?,
-            )),
+            ) => {
+                let operator = StringMatchOperator::from_comparison(predicate.operator)
+                    .ok_or_else(|| {
+                        CoreError::internal(
+                            "validated scoped scalar string predicate used a non-string operator",
+                        )
+                    })?;
+                Ok(render_string_function_predicate(
+                    operator,
+                    &lhs,
+                    &self.render_scoped_scalar_expression(
+                        rhs,
+                        relationships,
+                        local_nodes,
+                        local_aliases,
+                    )?,
+                ))
+            }
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
