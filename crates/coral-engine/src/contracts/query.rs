@@ -434,20 +434,6 @@ impl FromIterator<(String, QueryParameterValue)> for QueryParameters {
     }
 }
 
-/// Scalar types supported by named SQL query parameters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum QueryParameterType {
-    /// UTF-8 string.
-    String,
-    /// 64-bit signed integer.
-    Integer,
-    /// 64-bit floating point value.
-    Float,
-    /// Boolean.
-    Boolean,
-}
-
 /// One typed SQL query parameter value.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]

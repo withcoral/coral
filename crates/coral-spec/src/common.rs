@@ -1319,4 +1319,32 @@ mod tests {
                 .contains("demo.items pagination.mode=offset requires offset_step or page_size")
         );
     }
+
+    #[test]
+    fn manifest_data_type_all_round_trips_through_spelling_and_serde() {
+        for data_type in ManifestDataType::ALL {
+            let spelled = data_type.to_string();
+            assert_eq!(
+                spelled.parse::<ManifestDataType>().expect("round trip"),
+                data_type,
+                "Display/FromStr round trip failed for {spelled}"
+            );
+            assert_eq!(
+                serde_json::to_value(data_type).expect("serialize"),
+                Value::String(spelled.clone()),
+                "serde spelling diverged from as_manifest_str for {spelled}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_data_type_rejects_unknown_spelling() {
+        let error = "Banana"
+            .parse::<ManifestDataType>()
+            .expect_err("unknown spelling should fail");
+        assert!(
+            error.to_string().contains("unsupported data type 'Banana'"),
+            "unexpected error: {error}"
+        );
+    }
 }

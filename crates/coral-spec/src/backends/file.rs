@@ -743,7 +743,7 @@ impl FileSourceManifest {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileFormat, FileSourceManifest};
+    use super::{FileFormat, FilePartitionDataType, FileSourceManifest};
     use crate::ManifestInputKind;
     use serde_json::json;
 
@@ -1332,5 +1332,29 @@ mod tests {
         .expect_err("non-csv option should fail");
 
         assert!(error.to_string().contains("only supported for format=csv"));
+    }
+
+    #[test]
+    fn partition_data_type_is_the_partition_legal_subset() {
+        use crate::ManifestDataType;
+
+        for data_type in ManifestDataType::ALL {
+            match FilePartitionDataType::try_from(data_type) {
+                Ok(partition_type) => assert_eq!(
+                    ManifestDataType::from(partition_type),
+                    data_type,
+                    "partition subset must round trip through the upcast"
+                ),
+                Err(error) => {
+                    assert_eq!(data_type, ManifestDataType::Timestamp);
+                    assert!(
+                        error.to_string().contains(
+                            "type=Timestamp is not supported for backend=file path partitions"
+                        ),
+                        "unexpected error: {error}"
+                    );
+                }
+            }
+        }
     }
 }

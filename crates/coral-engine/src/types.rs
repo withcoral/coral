@@ -31,7 +31,7 @@ pub(crate) fn arrow_column_type(data_type: ManifestDataType) -> DataType {
 /// Whether an Arrow type is one of the string representations
 /// (`Utf8`, `LargeUtf8`, `Utf8View`).
 ///
-/// DataFusion may materialize any of the three for logically-string data,
+/// `DataFusion` may materialize any of the three for logically-string data,
 /// so string-typed checks must accept the whole family.
 pub(crate) fn is_string_family(data_type: &DataType) -> bool {
     matches!(
