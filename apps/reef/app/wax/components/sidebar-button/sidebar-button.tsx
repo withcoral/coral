@@ -68,7 +68,7 @@ export function SidebarButton<T extends ElementType = 'button'>(
   return (
     <Component {...componentProps}>
       <Icon className={iconStyles({ variant })} color="inherit" name={icon} size="18" />
-      {children && <span className={textStyles({ variant })}>{children}</span>}
+      {!isMinimized && children && <span className={textStyles({ variant })}>{children}</span>}
     </Component>
   )
 }
