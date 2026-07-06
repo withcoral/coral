@@ -315,17 +315,15 @@ impl ServerBuilder {
                     service: Some(TraceService::new(store.dir, store.retention)),
                 }
             });
-        start_server(
+        let managers = ServerManagers {
             source_manager,
             workspace_manager,
             query_manager,
             search_manager,
             feedback_manager,
             episode_store,
-            trace_components,
-            self.config.mode,
-        )
-        .await
+        };
+        start_server(managers, trace_components, self.config.mode).await
     }
 }
 
@@ -413,16 +411,28 @@ struct TraceServerComponents {
     local_trace_store_dir: Option<PathBuf>,
 }
 
-async fn start_server(
+struct ServerManagers {
     source_manager: SourceManager,
     workspace_manager: WorkspaceManager,
     query_manager: QueryManager,
     search_manager: SearchManager,
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
+}
+
+async fn start_server(
+    managers: ServerManagers,
     trace_components: TraceServerComponents,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
+    let ServerManagers {
+        source_manager,
+        workspace_manager,
+        query_manager,
+        search_manager,
+        feedback_manager,
+        episode_store,
+    } = managers;
     let TraceServerComponents {
         service: trace_service,
         local_trace_store_dir,
@@ -706,8 +716,8 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, TraceServerComponents,
-        is_grpc_web_content_type, is_native_grpc_content_type, start_server,
+        ServerBuilder, ServerManagers, ServerMode, StaticAsset, StaticAssetsProvider,
+        TraceServerComponents, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
@@ -846,13 +856,16 @@ enabled = false
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
-        let server = start_server(
+        let managers = ServerManagers {
             source_manager,
             workspace_manager,
             query_manager,
             search_manager,
             feedback_manager,
             episode_store,
+        };
+        let server = start_server(
+            managers,
             TraceServerComponents {
                 service: Some(trace_service),
                 local_trace_store_dir: None,
@@ -1239,13 +1252,16 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(
+        let managers = ServerManagers {
             source_manager,
             workspace_manager,
             query_manager,
             search_manager,
             feedback_manager,
             episode_store,
+        };
+        let running = start_server(
+            managers,
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
@@ -1349,13 +1365,16 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(
+        let managers = ServerManagers {
             source_manager,
             workspace_manager,
             query_manager,
             search_manager,
             feedback_manager,
             episode_store,
+        };
+        let running = start_server(
+            managers,
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
@@ -1459,13 +1478,16 @@ tables:
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let running = start_server(
+        let managers = ServerManagers {
             source_manager,
             workspace_manager,
             query_manager,
             search_manager,
             feedback_manager,
             episode_store,
+        };
+        let running = start_server(
+            managers,
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
