@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { CardList, type CardItem } from '@/wax/components/card'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
 import { ErrorBanner } from '@/components/error-banner'
@@ -156,29 +156,13 @@ export function SourcesIndex() {
 
         {connected.length > 0 ? (
           <Section title="Configured" count={connected.length}>
-            <div className={styles.cardGrid}>
-              {connected.map((entry) => (
-                <SourceCard
-                  key={`${entry.origin}:${entry.name}`}
-                  entry={entry}
-                  onClick={() => onPick(entry)}
-                />
-              ))}
-            </div>
+            <SourceCardList entries={connected} onPick={onPick} />
           </Section>
         ) : null}
 
         {sections.map((section) => (
           <Section key={section.key} title={section.label} count={section.entries.length}>
-            <div className={styles.cardGrid}>
-              {section.entries.map((entry) => (
-                <SourceCard
-                  key={`${entry.origin}:${entry.name}`}
-                  entry={entry}
-                  onClick={() => onPick(entry)}
-                />
-              ))}
-            </div>
+            <SourceCardList entries={section.entries} onPick={onPick} />
           </Section>
         ))}
 
@@ -234,37 +218,52 @@ function Section({
   )
 }
 
-function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void }) {
-  const icon = providerIcon(entry.name)
+function SourceCardList({
+  entries,
+  onPick,
+}: {
+  entries: IndexEntry[]
+  onPick: (entry: IndexEntry) => void
+}) {
+  const entryById = new Map(entries.map((entry) => [sourceCardId(entry), entry]))
+  const items = entries.map(toCardItem)
+
   return (
-    <button type="button" onClick={onClick} className={styles.card}>
-      <div className={styles.cardHeader}>
-        <div className={styles.cardLogo}>
-          {icon ? (
-            <img alt="" src={icon} className={styles.cardLogoImg} />
-          ) : (
-            <Icon name="Plug" size="18" color="tertiary" />
-          )}
-        </div>
-        <Typography.BodyLargeStrong as="span" className={styles.cardTitle}>
-          {entry.name}
-        </Typography.BodyLargeStrong>
-        {entry.origin === 'imported' ? (
-          <Pill>Imported</Pill>
-        ) : entry.origin === 'bundled' ? (
-          <Pill>Core</Pill>
-        ) : null}
-      </div>
-      {entry.description ? (
-        <Typography.Body variant="tertiary" className={styles.cardDescription}>
-          {entry.description}
-        </Typography.Body>
-      ) : null}
-      {entry.installed ? (
-        <div className={styles.cardFooter}>
-          <Pill>Configured</Pill>
-        </div>
-      ) : null}
-    </button>
+    <CardList
+      items={items}
+      onSelect={(item) => {
+        const entry = entryById.get(item.id)
+        if (entry) onPick(entry)
+      }}
+    />
+  )
+}
+
+function toCardItem(entry: IndexEntry): CardItem {
+  return {
+    description: entry.description,
+    headerPill: sourceOriginPill(entry),
+    icon: sourceIcon(entry.name),
+    id: sourceCardId(entry),
+    title: entry.name,
+  }
+}
+
+function sourceOriginPill(entry: IndexEntry): CardItem['headerPill'] {
+  if (entry.origin === 'bundled') return { label: 'Core' }
+  if (entry.origin === 'imported') return { label: 'Imported' }
+  return undefined
+}
+
+function sourceCardId(entry: IndexEntry) {
+  return `${entry.origin}:${entry.name}`
+}
+
+function sourceIcon(name: string) {
+  const icon = providerIcon(name)
+  return icon ? (
+    <img alt="" className={styles.sourceIcon} src={icon} />
+  ) : (
+    <Icon color="tertiary" name="Plug" size="20" />
   )
 }

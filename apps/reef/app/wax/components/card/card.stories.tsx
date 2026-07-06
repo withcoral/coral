@@ -38,6 +38,15 @@ export const WithIcon: Story = {
   },
 }
 
+export const WithHeaderPill: Story = {
+  args: {
+    description: 'A source with a compact status pill in the card header.',
+    headerPill: { label: 'Imported' },
+    icon: <Icon name="Plug" size="20" />,
+    title: 'Custom source',
+  },
+}
+
 export const NoIcon: Story = {
   args: {
     description: 'A source rendered without an icon.',

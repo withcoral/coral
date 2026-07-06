@@ -38,7 +38,13 @@ export const header = style({
 })
 
 export const title = style({
+  flexShrink: 1,
   minWidth: 0,
+})
+
+export const headerPill = style({
+  flexShrink: 0,
+  marginLeft: 'auto',
 })
 
 export const description = style({

@@ -2,18 +2,24 @@ import classNames from 'classnames'
 import { ReactNode } from 'react'
 
 import { Button } from '@/wax/components'
+import { Pill, type PillProps } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './card.css'
 
+export type CardHeaderPill = Omit<PillProps, 'children' | 'size'> & {
+  label: string
+}
+
 export interface CardProps {
   description: string
+  headerPill?: CardHeaderPill
   icon?: ReactNode
   onSelect?: () => void
   title: string
 }
 
-export function Card({ description, icon, onSelect, title }: CardProps) {
+export function Card({ description, headerPill, icon, onSelect, title }: CardProps) {
   const content = (
     <>
       <span className={styles.header}>
@@ -21,6 +27,7 @@ export function Card({ description, icon, onSelect, title }: CardProps) {
         <Typography.BodyLargeStrong className={styles.title} truncate>
           {title}
         </Typography.BodyLargeStrong>
+        {headerPill ? <HeaderPill {...headerPill} /> : null}
       </span>
       <Typography.Body className={styles.description} variant="tertiary">
         {description}
@@ -41,4 +48,12 @@ export function Card({ description, icon, onSelect, title }: CardProps) {
   }
 
   return <div className={styles.card}>{content}</div>
+}
+
+function HeaderPill({ className, label, ...props }: CardHeaderPill) {
+  return (
+    <Pill {...props} className={classNames(styles.headerPill, className)}>
+      {label}
+    </Pill>
+  )
 }
