@@ -3,25 +3,10 @@ use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use crate::state::db::schema::Workspaces;
 use crate::state::db::{DbError, DbSession};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub(crate) struct WorkspaceRecord {
     pub(crate) id: String,
     pub(crate) created_at_unix_nanos: i64,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct WorkspaceRow {
-    id: String,
-    created_at_unix_nanos: i64,
-}
-
-impl From<WorkspaceRow> for WorkspaceRecord {
-    fn from(value: WorkspaceRow) -> Self {
-        Self {
-            id: value.id,
-            created_at_unix_nanos: value.created_at_unix_nanos,
-        }
-    }
 }
 
 pub(crate) struct WorkspacesRepo<'a, S> {
@@ -56,8 +41,7 @@ where
             .from(Workspaces::Table)
             .and_where(Expr::col(Workspaces::Id).eq(id))
             .to_owned();
-        let row: Option<WorkspaceRow> = self.session.fetch_optional(statement).await?;
-        Ok(row.map(Into::into))
+        self.session.fetch_optional(statement).await
     }
 
     pub(crate) async fn list(&mut self) -> Result<Vec<WorkspaceRecord>, DbError> {
@@ -66,8 +50,7 @@ where
             .from(Workspaces::Table)
             .order_by(Workspaces::Id, sea_query::Order::Asc)
             .to_owned();
-        let rows: Vec<WorkspaceRow> = self.session.fetch_all(statement).await?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        self.session.fetch_all(statement).await
     }
 }
 
@@ -78,7 +61,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::WorkspaceRecord;
-    use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
@@ -95,7 +77,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn workspace_repository_round_trips_against_postgres() {
-        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
+        let Some(url) = postgres_test_url() else {
             return;
         };
         let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
@@ -188,5 +170,15 @@ mod tests {
             .expect("system clock before Unix epoch")
             .as_nanos();
         format!("workspace_{}_{}", std::process::id(), nanos)
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "The ignored Postgres repository harness is explicitly gated by this CI/test-only variable."
+    )]
+    fn postgres_test_url() -> Option<String> {
+        std::env::var("CORAL_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
     }
 }
