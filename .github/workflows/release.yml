@@ -3,11 +3,6 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to (re)build and upload artifacts for (e.g. v0.1.4)"
-        required: true
-        type: string
 permissions:
   contents: read
 concurrency:
@@ -15,21 +10,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-ui:
+  validate-release-ref:
     runs-on: ubuntu-latest
     env:
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG_NAME: ${{ github.event.release.tag_name || github.ref_name }}
+    outputs:
+      commit-sha: ${{ steps.verified-ref.outputs.commit-sha }}
+      tag-name: ${{ steps.verified-ref.outputs.tag-name }}
+    steps:
+      - name: Validate release ref
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must look like vX.Y.Z, got '${TAG_NAME}'." >&2
+            exit 1
+          fi
+
+          expected_ref="refs/tags/${TAG_NAME}"
+          if [ "$GITHUB_REF" != "$expected_ref" ]; then
+            echo "Release workflow must run on ${expected_ref}, got ${GITHUB_REF}." >&2
+            echo "For a manual rerun, choose the release tag in the workflow ref picker." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TAG_NAME }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release tag is reachable from main
+        id: verified-ref
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse "${TAG_NAME}^{commit}")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [ "$checked_out_commit" != "$tag_commit" ]; then
+            echo "Checked-out commit ${checked_out_commit} does not match ${TAG_NAME} (${tag_commit})." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "Release tag ${TAG_NAME} (${tag_commit}) is not reachable from origin/main." >&2
+            exit 1
+          fi
+          echo "commit-sha=${tag_commit}" >> "$GITHUB_OUTPUT"
+          echo "tag-name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+
+  build-ui:
+    needs: validate-release-ref
+    runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     outputs:
       has-ui: ${{ steps.detect-ui.outputs.has-ui }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ env.TAG_NAME }}
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           persist-credentials: false
       - name: Detect UI package
         id: detect-ui
         run: |
-          if [ -f ui/package.json ]; then
+          if [ -f apps/ui/package.json ]; then
             echo "has-ui=true" >> "$GITHUB_OUTPUT"
           else
             echo "has-ui=false" >> "$GITHUB_OUTPUT"
@@ -38,26 +85,28 @@ jobs:
         if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
           package-manager-cache: false
       - name: Install UI dependencies
         if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm ci --prefix ui
+        run: npm ci --prefix apps/ui
       - name: Build UI
         if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm run build --prefix ui
+        run: npm run build --prefix apps/ui
       - name: Verify UI entrypoint
         if: steps.detect-ui.outputs.has-ui == 'true'
-        run: test -s ui/dist/index.html
+        run: test -s apps/ui/dist/index.html
       - name: Upload UI artifact
         if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ui-dist
-          path: ui/dist
+          path: apps/ui/dist
 
   build:
-    needs: build-ui
+    needs:
+      - validate-release-ref
+      - build-ui
     strategy:
       matrix:
         include:
@@ -74,11 +123,11 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     env:
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ env.TAG_NAME }}
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup show
@@ -89,7 +138,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ui-dist
-          path: ui/dist
+          path: apps/ui/dist
       # No Rust cache here — release builds must compile from a clean state
       # to guard against cache poisoning attacks.
       - name: Install cross
@@ -141,8 +190,8 @@ jobs:
           & $coral --version
           & $coral source discover
 
-      - name: Package Unix
-        if: runner.os != 'Windows'
+      - name: Package Linux
+        if: runner.os == 'Linux'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -151,6 +200,17 @@ jobs:
           cd "target/${TARGET}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
+
+      - name: Stage unsigned macOS binary
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          staging="unsigned-${TARGET}"
+          mkdir -p "$staging"
+          cp "target/${TARGET}/release/coral" "$staging/coral"
 
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -166,6 +226,7 @@ jobs:
           Pop-Location
 
       - name: Upload artifact
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
@@ -173,8 +234,94 @@ jobs:
             coral-${{ matrix.target }}.tar.gz
             coral-${{ matrix.target }}.zip
 
+      - name: Upload unsigned macOS binary
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-unsigned-${{ matrix.target }}
+          path: unsigned-${{ matrix.target }}/coral
+
+  sign-notarize-macos:
+    needs:
+      - validate-release-ref
+      - build
+    environment: release
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    env:
+      TARGET: ${{ matrix.target }}
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Download unsigned macOS binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-unsigned-${{ matrix.target }}
+          path: unsigned-${{ matrix.target }}
+
+      - name: Build release helper
+        run: cargo build --locked -p xtask
+
+      - name: Sign, package, and notarize macOS artifact
+        shell: bash
+        env:
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ./target/debug/xtask release-macos-sign-notarize \
+            --target "$TARGET" \
+            --binary "unsigned-${TARGET}/coral" \
+            --zip "coral-${TARGET}.zip" \
+            --tar "coral-${TARGET}.tar.gz" \
+            --work-dir "$RUNNER_TEMP/coral-signing-${TARGET}"
+
+      - name: Clean up Apple signing assets
+        if: always()
+        shell: bash
+        run: |
+          work_dir="$RUNNER_TEMP/coral-signing-${TARGET}"
+          original_keychains_path="$work_dir/original-keychains.txt"
+          if [ -s "$original_keychains_path" ]; then
+            keychains=()
+            while IFS= read -r existing_keychain; do
+              [ -n "$existing_keychain" ] && keychains+=("$existing_keychain")
+            done < "$original_keychains_path"
+            if [ "${#keychains[@]}" -gt 0 ]; then
+              security list-keychains -d user -s "${keychains[@]}" || true
+            fi
+          fi
+          security delete-keychain "$work_dir/coral-signing.keychain-db" || true
+          rm -rf "$work_dir"
+
+      - name: Upload signed macOS artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-${{ matrix.target }}
+          path: |
+            coral-${{ matrix.target }}.zip
+            coral-${{ matrix.target }}.tar.gz
+
   checksums:
-    needs: build
+    needs:
+      - build
+      - sign-notarize-macos
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -186,9 +333,8 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -maxdepth 1 -type f \( -name 'coral-*.tar.gz' -o -name 'coral-*.zip' \) -print0 |
-            sort -z |
-            xargs -0 sha256sum > checksums.sha256
+          sha256sum coral-*.tar.gz > checksums.sha256
+          sha256sum coral-*.zip >> checksums.sha256
           test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -197,13 +343,15 @@ jobs:
           path: artifacts/checksums.sha256
 
   publish-version:
-    needs: checksums
+    needs:
+      - validate-release-ref
+      - checksums
     environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -253,7 +401,8 @@ jobs:
             release_json="$(gh api \
               --method PATCH \
               "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-              -F prerelease=false)"
+              -F prerelease=false \
+              -F make_latest=true)"
           fi
 
           {
@@ -265,6 +414,26 @@ jobs:
             printf '%s' "$release_json" | jq -r '.body // ""'
             echo "__RELEASE_BODY__"
           } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
+          fetch-depth: 0
+          token: ${{ steps.github-app-token.outputs.token }}
+          persist-credentials: false
+
+      # Force push targets `docs` only — never `main`. Runs on both the
+      # `release` event and manual `workflow_dispatch` against a tag, so docs
+      # can be (re)pointed at a shipped tag by re-running this workflow.
+      - name: Point docs branch at released commit
+        env:
+          GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
+          RELEASE_COMMIT_SHA: ${{ needs.validate-release-ref.outputs.commit-sha }}
+        run: |
+          set -euo pipefail
+          git push --force \
+            "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${RELEASE_COMMIT_SHA}:refs/heads/docs"
 
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event

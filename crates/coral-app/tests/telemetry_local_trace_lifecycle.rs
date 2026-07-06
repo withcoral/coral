@@ -105,7 +105,11 @@ fn write_trace(dir: &Path, trace_id: &str) {
         "trace_state": "",
         "is_remote": false
     });
-    std::fs::write(dir.join("spans.jsonl"), format!("{record}\n")).expect("write trace");
+    std::fs::write(
+        dir.join("spans-00000000000000000001-test-0000000000000000.jsonl"),
+        format!("{record}\n"),
+    )
+    .expect("write trace");
 }
 
 async fn list_trace_ids(endpoint_uri: &str) -> Vec<String> {

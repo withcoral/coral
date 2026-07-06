@@ -45,6 +45,15 @@ pub struct CatalogInfo {
     pub table_functions: Vec<TableFunctionInfo>,
 }
 
+/// Result of a table lookup from one runtime snapshot.
+#[derive(Debug, Clone)]
+pub struct DescribeTableInfo {
+    /// Exact table match, when present.
+    pub table: Option<TableInfo>,
+    /// Lightweight table metadata for missing-table context.
+    pub missing_context_tables: Vec<TableInfo>,
+}
+
 /// Describes one argument accepted by a source-scoped table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionArgumentInfo {

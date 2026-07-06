@@ -1,0 +1,82 @@
+name: universities
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Search universities worldwide by name or country via the HipoLabs Universities API.
+base_url: http://universities.hipolabs.com
+test_queries:
+  - SELECT name, country FROM universities.universities WHERE country = 'United States' LIMIT 1
+tables:
+  - name: universities
+    description: List of universities filtered by name or country.
+    filters:
+      - name: name
+      - name: country
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: country
+          from: filter
+          key: country
+    response:
+      rows_path: []
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the university.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: country
+        type: Utf8
+        nullable: false
+        description: Country where the university is located.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: alpha_two_code
+        type: Utf8
+        nullable: false
+        description: Two-letter country code (ISO 3166-1 alpha-2).
+        expr:
+          kind: path
+          path:
+            - alpha_two_code
+      - name: state_province
+        type: Utf8
+        nullable: true
+        description: State or province where the university is located.
+        expr:
+          kind: path
+          path:
+            - state-province
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of domains belonging to the university.
+        expr:
+          kind: join_array
+          path:
+            - domains
+      - name: web_pages
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of web pages for the university.
+        expr:
+          kind: join_array
+          path:
+            - web_pages

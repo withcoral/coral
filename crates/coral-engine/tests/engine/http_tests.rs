@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
@@ -13,10 +14,12 @@ use coral_engine::{
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use wiremock::matchers::{
     body_json, body_string, header, method, path, query_param, query_param_is_missing,
 };
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::harness::{
     build_source, build_source_with_secrets, execution_to_rows, test_runtime, users_rows,
@@ -102,6 +105,61 @@ fn function_only_search_manifest(name: &str, base_url: &str) -> Value {
         .expect("manifest is an object")
         .remove("tables");
     manifest
+}
+
+async fn spawn_raw_http_path_recorder(
+    response_body: &str,
+) -> (String, tokio::task::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("raw HTTP listener should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("raw HTTP listener should have a local address")
+    );
+    let response_body = response_body.to_string();
+    let handle = tokio::spawn(async move {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("raw HTTP listener should accept one request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream
+                .read(&mut buffer)
+                .await
+                .expect("raw HTTP listener should read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request_text = String::from_utf8_lossy(&request);
+        let request_target = request_text
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("request line should include a target")
+            .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("raw HTTP listener should write response");
+        request_target
+    });
+
+    (base_url, handle)
 }
 
 fn split_function_manifest(name: &str, base_url: &str) -> Value {
@@ -208,8 +266,8 @@ fn notionish_search_function_manifest(base_url: &str) -> Value {
 }
 
 fn internal_table_function_name(schema: &str, function: &str) -> String {
-    // PR #306 only registers DataFusion's flat internal UDTF. The public
-    // source-scoped planner in the next stack PR owns this mapping for users.
+    // Mangled names from the retired hidden-UDTF design. Kept only to prove
+    // the engine no longer registers them as a callable surface.
     format!(
         "__coral_udtf_{}_{}",
         hex_encode(schema),
@@ -421,13 +479,695 @@ async fn select_with_where_filter_pushdown() {
 }
 
 #[tokio::test]
-async fn internal_table_function_builds_http_search_request() {
+async fn contradictory_exact_filters_return_empty_without_fetching() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 1, "name": "Ada", "email": "ada@example.com"})] }),
+        ))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "id" }]);
+    table["request"]["query"] = json!([
+        { "name": "id", "from": "filter", "key": "id" }
+    ]);
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_filter.users WHERE id = 1 AND id = 2",
+        )
+        .await
+        .expect("contradictory filters should produce an empty result"),
+    );
+
+    assert_eq!(rows, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn route_filter_not_consumed_by_selected_request_is_filtered_locally() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 1,
+            "name": "Ada",
+            "state": "closed"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_filter.users WHERE id = 1 AND state = 'open'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn local_route_filter_is_applied_before_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "state": "closed" },
+                { "id": 1, "name": "Grace", "state": "open" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_filter_limit",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_filter_limit.users \
+             WHERE id = 1 AND state = 'open' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Grace" })]);
+}
+
+#[tokio::test]
+async fn local_route_filter_can_use_request_filter_values_in_template_column() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "name": "Ada" },
+                { "name": "Grace" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_local_template_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "lookup_key" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                {
+                    "name": "id",
+                    "type": "Utf8",
+                    "expr": { "kind": "from_filter", "key": "id" }
+                },
+                {
+                    "name": "name",
+                    "type": "Utf8",
+                    "expr": { "kind": "path", "path": ["name"] }
+                },
+                {
+                    "name": "lookup_key",
+                    "type": "Utf8",
+                    "expr": {
+                        "kind": "template",
+                        "template": "{{filter.id}}:{{expr.name}}",
+                        "values": {
+                            "name": { "kind": "path", "path": ["name"] }
+                        }
+                    }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT name FROM http_local_template_filter.users \
+             WHERE id = '1' AND lookup_key = '1:Grace'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "name": "Grace" })]);
+}
+
+#[tokio::test]
+async fn exact_local_from_filter_column_survives_residual_recheck() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("tenant"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_local_from_filter_residual",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "tenant" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "tenant",
+                    "type": "Utf8",
+                    "nullable": true,
+                    "expr": { "kind": "from_filter", "key": "tenant" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, tenant FROM http_local_from_filter_residual.users \
+             WHERE id = 1 AND tenant = 'acme'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({ "id": 1, "name": "Ada", "tenant": "acme" })]
+    );
+}
+
+#[tokio::test]
+async fn unconsumed_search_filter_does_not_populate_from_filter_column() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("q"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_search_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "q", "mode": "search" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "q",
+                    "type": "Utf8",
+                    "nullable": true,
+                    "expr": { "kind": "from_filter", "key": "q" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, q FROM http_route_search_filter.users \
+             WHERE id = 1 AND q LIKE '%open%'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn source_request_header_filter_is_sent_to_http_client() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("X-Tenant", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_source_header_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "request_headers": [{
+            "name": "X-Tenant",
+            "from": "filter",
+            "key": "tenant"
+        }],
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "tenant", "required": true }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "tenant",
+                    "type": "Utf8",
+                    "expr": { "kind": "from_filter", "key": "tenant" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_source_header_filter.users WHERE tenant = 'acme'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Ada" })]);
+}
+
+#[tokio::test]
+async fn unconsumed_like_filter_is_applied_before_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("q"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "q": "closed item" },
+                { "id": 1, "name": "Grace", "q": "open item" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_like_limit",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "q", "mode": "search" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "q", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_like_limit.users \
+             WHERE id = 1 AND q LIKE '%open%' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Grace" })]);
+}
+
+#[tokio::test]
+async fn exact_local_filter_does_not_apply_limit_before_residual_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("q"))
+        .and(query_param_is_missing("state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "state": "closed", "q": "needle item" },
+                { "id": 1, "name": "Grace", "state": "open", "q": "closed item" },
+                { "id": 1, "name": "Linus", "state": "open", "q": "needle item" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_local_residual_limit",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" },
+                { "name": "q", "mode": "search" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" },
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+                { "name": "q", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_local_residual_limit.users \
+             WHERE id = 1 AND state = 'open' AND q LIKE '%needle%' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Linus" })]);
+}
+
+#[tokio::test]
+async fn complete_search_fetch_preserves_candidates_for_residual_filters() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/users"))
+        .and(query_param("q", "needle"))
+        .and(query_param("per_page", "2"))
+        .and(query_param_is_missing("state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "title": "First", "state": "closed", "q": "needle" },
+                { "title": "Second", "state": "closed", "q": "needle" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/users"))
+        .and(query_param("q", "needle"))
+        .and(query_param("per_page", "3"))
+        .and(query_param_is_missing("state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "title": "First", "state": "closed", "q": "needle" },
+                { "title": "Second", "state": "closed", "q": "needle" },
+                { "title": "Third", "state": "open", "q": "needle" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_search_complete",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP search users",
+            "search_limits": {
+                "default_top_k": 2,
+                "max_top_k": 3,
+                "max_calls_per_query": 1
+            },
+            "filters": [
+                { "name": "q", "mode": "search" },
+                { "name": "state" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/users",
+                "query": [
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "pagination": {
+                "page_size": {
+                    "default": 50,
+                    "max": 50,
+                    "query_param": "per_page"
+                }
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+                { "name": "q", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title, state FROM http_search_complete.users \
+             WHERE q LIKE '%needle%' AND state = 'open'",
+        )
+        .await
+        .expect("complete search fetch should preserve candidates for local filtering"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Third", "state": "open" })]);
+}
+
+#[tokio::test]
+async fn internal_table_function_names_are_not_registered() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("search", &server.uri()));
     let function_name = internal_table_function_name("search", "search_issues");
-    assert_search_function_query(&format!(
-        "SELECT title, score \
-         FROM {function_name}('flaky cleanup repo:withcoral/coral', 'hybrid')"
-    ))
-    .await;
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        &format!("SELECT title FROM {function_name}('flaky')"),
+    )
+    .await
+    .expect_err("internal UDTF names must not be a callable surface");
+
+    assert!(
+        error.to_string().contains("not found"),
+        "unexpected error: {error}"
+    );
 }
 
 #[tokio::test]
@@ -437,6 +1177,42 @@ async fn source_scoped_table_function_builds_http_search_request() {
          FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')",
     )
     .await;
+}
+
+#[tokio::test]
+async fn execution_provenance_records_source_scoped_table_functions() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let sql = "SELECT title, score \
+               FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')";
+    let execution = CoralQuery::execute_sql(&[source], test_runtime(), sql)
+        .await
+        .expect("query should succeed");
+
+    let provenance = execution.provenance();
+    assert_eq!(provenance.sql(), sql);
+    assert_eq!(provenance.sources(), ["search".to_string()]);
+    assert!(provenance.tables().is_empty());
+    assert_eq!(provenance.table_functions().len(), 1);
+    let function = &provenance.table_functions()[0];
+    assert_eq!(function.source_name(), "search");
+    assert_eq!(function.schema_name(), "search");
+    assert_eq!(function.function_name(), "search_issues");
+    assert_eq!(provenance.row_count(), 1);
 }
 
 #[tokio::test]
@@ -900,6 +1676,141 @@ async fn assert_search_function_query(sql: &str) {
 }
 
 #[tokio::test]
+async fn source_scoped_table_function_columns_qualify_like_table_columns() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("qual_search", &server.uri()));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT qual_search.search_issues.title, search_issues.score \
+             FROM qual_search.search_issues(q => 'flaky')",
+        )
+        .await
+        .expect("function result columns should qualify like table columns"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_resolves_inside_scalar_subquery() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("scalar_subquery", &server.uri()));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT (SELECT count(*) FROM scalar_subquery.search_issues(q => 'flaky')) AS n",
+        )
+        .await
+        .expect("source function calls should resolve inside scalar subqueries"),
+    );
+
+    assert_eq!(rows, vec![json!({ "n": 1 })]);
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_resolves_inside_exists_subquery() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("exists_subquery", &server.uri()));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT 1 AS ok \
+             WHERE EXISTS (SELECT 1 FROM exists_subquery.search_issues(q => 'flaky'))",
+        )
+        .await
+        .expect("source function calls should resolve inside EXISTS subqueries"),
+    );
+
+    assert_eq!(rows, vec![json!({ "ok": 1 })]);
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_rejects_unsupported_relation_modifiers() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("modifier_search", &server.uri()));
+
+    let cases = [
+        (
+            "SELECT title FROM modifier_search.search_issues(q => 'flaky') WITH ORDINALITY",
+            "WITH ORDINALITY",
+        ),
+        (
+            "SELECT title FROM modifier_search.search_issues(q => 'flaky') \
+             TABLESAMPLE BERNOULLI(50)",
+            "TABLESAMPLE",
+        ),
+        (
+            "SELECT title FROM modifier_search.search_issues(q => 'flaky') AS s WITH (NOLOCK)",
+            "table hints",
+        ),
+    ];
+
+    for (sql, modifier) in cases {
+        let error = CoralQuery::execute_sql(std::slice::from_ref(&source), test_runtime(), sql)
+            .await
+            .expect_err("unsupported relation modifiers must fail instead of being ignored");
+        assert!(
+            error.to_string().contains(&format!(
+                "modifier_search.search_issues does not support {modifier}"
+            )),
+            "unexpected error for {modifier}: {error}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn table_function_treats_typed_null_as_omitted_optional_argument() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -917,16 +1828,13 @@ async fn table_function_treats_typed_null_as_omitted_optional_argument() {
         .await;
 
     let source = build_source(search_function_manifest("null_arg_search", &server.uri()));
-    let function_name = internal_table_function_name("null_arg_search", "search_issues");
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
             test_runtime(),
-            &format!(
-                "SELECT title, score FROM {function_name}(\
-                 'flaky cleanup repo:withcoral/coral', CAST(NULL AS VARCHAR))"
-            ),
+            "SELECT title, score FROM null_arg_search.search_issues(\
+             q => 'flaky cleanup repo:withcoral/coral', mode => CAST(NULL AS VARCHAR))",
         )
         .await
         .expect("typed null optional argument should be omitted"),
@@ -938,6 +1846,97 @@ async fn table_function_treats_typed_null_as_omitted_optional_argument() {
             "title": "Flaky workspace cleanup",
             "score": 9.5
         })]
+    );
+}
+
+#[tokio::test]
+async fn path_template_default_filter_sends_encoded_dot_segment() {
+    let (base_url, request_target) = spawn_raw_http_path_recorder(r#"{"data":[{"id":1}]}"#).await;
+
+    let manifest = json!({
+        "name": "http_path_default_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "items",
+            "description": "Items",
+            "filters": [{ "name": "tenant" }],
+            "request": {
+                "method": "GET",
+                "path": "/api/tenants/{{filter.tenant|%252E%252E}}/items"
+            },
+            "response": { "rows_path": ["data"] },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id FROM http_path_default_filter.items",
+        )
+        .await
+        .expect("omitted optional filter should use template default"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1 })]);
+    assert_eq!(
+        request_target
+            .await
+            .expect("raw HTTP listener should finish"),
+        "/api/tenants/%252E%252E/items"
+    );
+}
+
+#[tokio::test]
+async fn path_template_default_arg_sends_encoded_dot_segment() {
+    let (base_url, request_target) =
+        spawn_raw_http_path_recorder(r#"{"items":[{"title":"default namespace"}]}"#).await;
+
+    let manifest = json!({
+        "name": "http_path_default_arg",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "functions": [{
+            "name": "search_items",
+            "description": "Search items",
+            "args": [{
+                "name": "tenant",
+                "required": false,
+                "bind": { "arg": "tenant" }
+            }],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/{{arg.tenant|%252E}}/items"
+            },
+            "response": { "rows_path": ["items"] },
+            "columns": [{ "name": "title", "type": "Utf8" }]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM http_path_default_arg.search_items()",
+        )
+        .await
+        .expect("omitted optional argument should use template default"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "default namespace" })]);
+    assert_eq!(
+        request_target
+            .await
+            .expect("raw HTTP listener should finish"),
+        "/api/search/%252E/items"
     );
 }
 
@@ -1020,12 +2019,11 @@ async fn table_function_request_headers_do_not_resolve_filters_from_args() {
         "template": "{{filter.q}}"
     }]);
     let source = build_source(manifest);
-    let function_name = internal_table_function_name("function_filter_header", "search_issues");
 
     let error = CoralQuery::execute_sql(
         &[source],
         test_runtime(),
-        &format!("SELECT title FROM {function_name}('flaky')"),
+        "SELECT title FROM function_filter_header.search_issues(q => 'flaky')",
     )
     .await
     .expect_err("function args must not populate table filters");
@@ -1256,8 +2254,8 @@ async fn auth_headers_sent_correctly() {
         "type": "HeaderAuth",
         "headers": [{
             "name": "Authorization",
-            "from": "template",
-            "template": "Bearer {{input.API_TOKEN}}"
+            "from": "bearer",
+            "key": "API_TOKEN"
         }]
     });
     let source = build_source_with_secrets(manifest, [("API_TOKEN", "secret-token")]);
@@ -1267,6 +2265,48 @@ async fn auth_headers_sent_correctly() {
             &[source],
             test_runtime(),
             "SELECT COUNT(*) AS n FROM http_auth.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn auth_header_one_of_uses_bearer_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Bearer oauth-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_auth_fallback", &server.uri());
+    manifest["inputs"] = json!({
+        "API_KEY": { "kind": "secret", "required": false },
+        "OAUTH_TOKEN": { "kind": "secret", "required": false }
+    });
+    manifest["auth"] = json!({
+        "type": "HeaderAuth",
+        "headers": [{
+            "name": "Authorization",
+            "from": "one_of",
+            "values": [
+                { "from": "input", "key": "API_KEY" },
+                { "from": "bearer", "key": "OAUTH_TOKEN" }
+            ]
+        }]
+    });
+    let source = build_source_with_secrets(manifest, [("OAUTH_TOKEN", "oauth-token")]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT COUNT(*) AS n FROM http_auth_fallback.users",
         )
         .await
         .expect("query should succeed"),
@@ -1611,6 +2651,181 @@ async fn api_returns_malformed_json() {
             assert!(sqe.detail().contains("response decoding failed"));
         }
         other => panic!("unexpected malformed-json error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn api_does_not_retry_empty_or_whitespace_json_response() {
+    for (schema, body) in [("http_empty_json", ""), ("http_whitespace_json", " \n\t")] {
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let responder_attempts = Arc::clone(&attempts);
+        let body = body.to_string();
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .respond_with(move |_request: &Request| {
+                responder_attempts.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_string(body.clone())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let source = build_source(base_http_manifest(schema, &server.uri()));
+        let query = format!("SELECT id, name, email FROM {schema}.users ORDER BY id");
+
+        let error = CoralQuery::execute_sql(&[source], test_runtime(), &query)
+            .await
+            .expect_err("stable empty JSON response should be a permanent decode failure");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+        match error {
+            CoreError::QueryFailure(sqe) => {
+                assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+                assert_eq!(sqe.summary(), "Source response decode failed");
+                assert!(!sqe.retryable());
+                assert_eq!(
+                    sqe.metadata().get("provider_failure_stage").unwrap(),
+                    "decode"
+                );
+                assert!(
+                    sqe.hint()
+                        .expect("empty decode failures should include guidance")
+                        .contains("source manifest")
+                );
+            }
+            other => panic!("unexpected stable-empty-json error variant: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn api_retries_truncated_json_response() {
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(move |_request: &Request| {
+            if responder_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"data":[{"id":1,"name":"Ada","email":"ada@example.com"#)
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() }))
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest("http_truncated_json", &server.uri()));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_truncated_json.users ORDER BY id",
+        )
+        .await
+        .expect("truncated JSON EOF should be retried"),
+    );
+
+    assert_eq!(rows, users_rows());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn api_reports_exhausted_truncated_get_json_as_retryable() {
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(move |_request: &Request| {
+            responder_attempts.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"data":[{"id":1,"name":"Ada","email":"ada@example.com"#)
+        })
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest(
+        "http_exhausted_truncated_json",
+        &server.uri(),
+    ));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id, name, email FROM http_exhausted_truncated_json.users ORDER BY id",
+    )
+    .await
+    .expect_err("exhausted truncated GET JSON should surface as retryable");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(error.status_code(), StatusCode::Unavailable);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source response decode failed");
+            assert!(sqe.retryable());
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "decode"
+            );
+            assert!(
+                sqe.hint()
+                    .expect("retryable decode failures should include guidance")
+                    .contains("could not be fully decoded")
+            );
+        }
+        other => panic!("unexpected exhausted truncated-json error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn api_does_not_retry_truncated_json_response_for_post() {
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    Mock::given(method("POST"))
+        .and(path("/api/users"))
+        .respond_with(move |_request: &Request| {
+            responder_attempts.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"data":[{"id":1,"name":"Ada","email":"ada@example.com"#)
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_truncated_post_json", &server.uri());
+    manifest["tables"][0]["request"]["method"] = json!("POST");
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id, name, email FROM http_truncated_post_json.users ORDER BY id",
+    )
+    .await
+    .expect_err("truncated JSON EOF should not retry non-idempotent requests");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source response decode failed");
+            assert!(!sqe.retryable());
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "decode"
+            );
+        }
+        other => panic!("unexpected truncated-json error variant: {other:?}"),
     }
 }
 

@@ -1,0 +1,239 @@
+name: prometheus
+version: 0.1.2
+dsl_version: 3
+backend: http
+description: >-
+  Query Prometheus scrape health and active alerts from Prometheus (self-hosted).
+  Read-only v1 tables: query_up, alerts. Uses /api/v1/query (up) and /api/v1/alerts.
+  No arbitrary PromQL table in v1.
+inputs:
+  PROMETHEUS_BASE_URL:
+    kind: variable
+    default: http://127.0.0.1:9090
+    hint: |
+      Prometheus server root URL with no trailing slash. Use the default for a local
+      server on port 9090. For secured deployments, point at a reverse proxy or
+      gateway that injects authentication. v1 does not send bearer tokens from Coral.
+base_url: "{{input.PROMETHEUS_BASE_URL}}"
+test_queries:
+  - SELECT metric_name, instance, sample_value FROM prometheus.query_up LIMIT 5
+  - SELECT alert_name, alert_state FROM prometheus.alerts WHERE alert_state = 'firing' LIMIT 10
+tables:
+  - name: query_up
+    description: Instant vector for the `up` metric (target scrape health).
+    guide: |
+      Fixed PromQL `up`. Sends Prometheus `limit=500` on the query API. Scalar and
+      matrix results are not returned by this table. Native histogram samples expose
+      `sample_histogram` JSON; classic samples use `sample_at` and `sample_value`.
+    fetch_limit_default: 500
+    request:
+      method: GET
+      path: /api/v1/query
+      query:
+        - name: query
+          from: literal
+          value: "up"
+        - name: limit
+          from: literal
+          value: "500"
+    response:
+      rows_path:
+        - data
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: metric_name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - "__name__"
+      - name: instance
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - instance
+      - name: job
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - metric
+            - job
+      - name: sample_at
+        type: Timestamp
+        nullable: true
+        description: Sample timestamp (Unix seconds) from the value tuple.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - value
+              - "0"
+      - name: sample_value
+        type: Float64
+        nullable: true
+        description: Numeric sample value from the value tuple.
+        expr:
+          kind: path
+          path:
+            - value
+            - "1"
+      - name: sample_value_raw
+        type: Utf8
+        nullable: true
+        description: Raw JSON sample value string (preserves NaN/Inf encoding).
+        expr:
+          kind: path
+          path:
+            - value
+            - "1"
+      - name: sample_histogram
+        type: Json
+        nullable: true
+        description: Native histogram payload when the sample uses `histogram` instead of `value`.
+        expr:
+          kind: path
+          path:
+            - histogram
+      - name: metric_labels
+        type: Json
+        expr:
+          kind: path
+          path:
+            - metric
+
+  - name: alerts
+    description: Active alerts from the Prometheus alerts API.
+    guide: |
+      Uses `GET /api/v1/alerts` (not the internal `ALERTS` metric). The endpoint
+      only returns active alerts, so `alert_state` is `firing` or `pending`
+      (inactive alerts are not exposed by this API). The alerts API has no
+      `limit` parameter; Coral caps fetched rows at 200 via `fetch_limit_default`.
+      Use SQL `LIMIT` on large alert sets. For custom PromQL, use a follow-on table
+      or query Prometheus directly.
+    fetch_limit_default: 200
+    request:
+      method: GET
+      path: /api/v1/alerts
+    response:
+      rows_path:
+        - data
+        - alerts
+    pagination:
+      mode: none
+    columns:
+      - name: alert_name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - labels
+            - alertname
+      - name: alert_state
+        type: Utf8
+        nullable: true
+        description: Alert state from the active alerts endpoint (`firing` or `pending`).
+        expr:
+          kind: path
+          path:
+            - state
+      - name: active_at
+        type: Timestamp
+        nullable: true
+        description: When the alert became active.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - activeAt
+      - name: summary
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - annotations
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - annotations
+            - description
+      - name: severity
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - labels
+            - severity
+      - name: pod
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - labels
+            - pod
+      - name: namespace
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - labels
+            - namespace
+      - name: instance
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - labels
+            - instance
+      - name: job
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - labels
+            - job
+      - name: value
+        type: Float64
+        nullable: true
+        description: Alert value when present.
+        expr:
+          kind: path
+          path:
+            - value
+      - name: labels
+        type: Json
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: annotations
+        type: Json
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - annotations

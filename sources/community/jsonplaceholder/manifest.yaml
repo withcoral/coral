@@ -1,0 +1,176 @@
+name: jsonplaceholder
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query fake data from JSONPlaceholder (jsonplaceholder.typicode.com).
+  Provides users, posts, comments, and todos.
+base_url: https://jsonplaceholder.typicode.com
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name, email FROM jsonplaceholder.users LIMIT 1
+  - SELECT id, title, completed FROM jsonplaceholder.todos WHERE user_id_filter = 1 LIMIT 1
+  - SELECT id, name, email FROM jsonplaceholder.comments WHERE post_id_filter = 1 LIMIT 1
+
+tables:
+  # ─────────────────────────────────────────────────────────────
+  # users
+  # ─────────────────────────────────────────────────────────────
+  - name: users
+    description: Get all users. Returns 10 fake users.
+    fetch_limit_default: 10
+    request:
+      method: GET
+      path: /users
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: name
+        type: Utf8
+      - name: username
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: phone
+        type: Utf8
+      - name: website
+        type: Utf8
+
+  # ─────────────────────────────────────────────────────────────
+  # posts
+  # ─────────────────────────────────────────────────────────────
+  - name: posts
+    description: Get fake posts. Use user_id_filter to filter by user.
+    fetch_limit_default: 10
+    filters:
+      - name: user_id_filter
+    request:
+      method: GET
+      path: /posts
+      query:
+        - name: userId
+          from: filter
+          key: user_id_filter
+    pagination:
+      mode: page
+      page_start: 1
+      page_param: _page
+      page_size:
+        default: 10
+        max: 100
+        query_param: _limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: user_id
+        type: Int64
+        expr:
+          kind: path
+          path: [userId]
+      - name: title
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: user_id_filter
+        type: Int64
+        virtual: true
+        description: Echoes the user_id filter value.
+        expr:
+          kind: from_filter
+          key: user_id_filter
+
+  # ─────────────────────────────────────────────────────────────
+  # comments
+  # ─────────────────────────────────────────────────────────────
+  - name: comments
+    description: Get fake comments. Use post_id_filter to filter by post.
+    fetch_limit_default: 10
+    filters:
+      - name: post_id_filter
+    request:
+      method: GET
+      path: /comments
+      query:
+        - name: postId
+          from: filter
+          key: post_id_filter
+    pagination:
+      mode: page
+      page_start: 1
+      page_param: _page
+      page_size:
+        default: 10
+        max: 100
+        query_param: _limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: post_id
+        type: Int64
+        expr:
+          kind: path
+          path: [postId]
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: post_id_filter
+        type: Int64
+        virtual: true
+        description: Echoes the post_id filter value.
+        expr:
+          kind: from_filter
+          key: post_id_filter
+
+  # ─────────────────────────────────────────────────────────────
+  # todos
+  # ─────────────────────────────────────────────────────────────
+  - name: todos
+    description: Get fake todos. Use user_id_filter to filter by user.
+    fetch_limit_default: 10
+    filters:
+      - name: user_id_filter
+    request:
+      method: GET
+      path: /todos
+      query:
+        - name: userId
+          from: filter
+          key: user_id_filter
+    pagination:
+      mode: page
+      page_start: 1
+      page_param: _page
+      page_size:
+        default: 10
+        max: 100
+        query_param: _limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: user_id
+        type: Int64
+        expr:
+          kind: path
+          path: [userId]
+      - name: title
+        type: Utf8
+      - name: completed
+        type: Boolean
+      - name: user_id_filter
+        type: Int64
+        virtual: true
+        description: Echoes the user_id filter value.
+        expr:
+          kind: from_filter
+          key: user_id_filter

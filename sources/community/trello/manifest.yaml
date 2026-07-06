@@ -1,0 +1,333 @@
+---
+name: trello
+version: "0.1.0"
+dsl_version: 3
+backend: http
+description: >-
+  Query Trello boards, lists, cards, and members via the Trello REST API.
+base_url: "https://api.trello.com/1"
+
+inputs:
+  TRELLO_API_KEY:
+    kind: secret
+    required: true
+    hint: >-
+      Your Trello API Key. You can get this from the Trello Power-Up Admin
+      page (https://trello.com/power-ups/admin).
+  TRELLO_API_TOKEN:
+    kind: secret
+    required: true
+    hint: >-
+      Your Trello User API Token. Keep this secret. You can generate a token
+      by visiting the authorization URL after getting your API Key.
+
+
+test_queries:
+  - SELECT id, name FROM trello.boards LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # boards — list all boards for the authenticated user
+  # ──────────────────────────────────────────────────────────────────────
+  - name: boards
+    description: >
+      Lists all boards the authenticated user belongs to.
+    request:
+      method: GET
+      path: /members/me/boards
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: The unique ID of the board.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the board.
+        expr: {kind: path, path: [name]}
+      - name: desc
+        type: Utf8
+        nullable: true
+        description: The description of the board.
+        expr: {kind: path, path: [desc]}
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the board is closed (archived).
+        expr: {kind: path, path: [closed]}
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: The ID of the organization this board belongs to.
+        expr: {kind: path, path: [idOrganization]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: The URL of the board.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw board object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # lists — list all lists on a specific board
+  # ──────────────────────────────────────────────────────────────────────
+  - name: lists
+    description: >
+      Lists all lists (columns) on a specific board.
+      Requires the `board_id` filter.
+    filters:
+      - name: board_id
+        required: true
+      - name: filter
+        required: false
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/lists
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
+        - name: filter
+          from: filter
+          key: filter
+          default: all
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: The unique ID of the list.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the list.
+        expr: {kind: path, path: [name]}
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the list is closed (archived).
+        expr: {kind: path, path: [closed]}
+      - name: pos
+        type: Float64
+        nullable: true
+        description: The position of the list on the board.
+        expr: {kind: path, path: [pos]}
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: The ID of the board this list belongs to.
+        expr: {kind: from_filter, key: board_id}
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter lists by status (all, closed, none, open).
+        expr: {kind: from_filter, key: filter}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw list object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # cards — list all cards on a specific board
+  # ──────────────────────────────────────────────────────────────────────
+  - name: cards
+    description: >
+      Lists cards on a specific board. Requires the `board_id` filter.
+      Use `limit` to cap results (default 50, max 1000), and `since`/`before`
+      to scope by date or card ID to avoid large fetches on active boards.
+    guide: >
+      Start with `SELECT id, name, list_id, due FROM trello.cards
+      WHERE board_id = 'your_board_id' LIMIT 50`. For large boards,
+      add `since` or `before` to narrow the window.
+    filters:
+      - name: board_id
+        required: true
+      - name: filter
+        required: false
+      - name: limit
+        required: false
+      - name: since
+        required: false
+      - name: before
+        required: false
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/cards
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
+        - name: filter
+          from: filter
+          key: filter
+          default: all
+        - name: limit
+          from: filter
+          key: limit
+          default: "50"
+        - name: since
+          from: filter
+          key: since
+        - name: before
+          from: filter
+          key: before
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: The unique ID of the card.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the card.
+        expr: {kind: path, path: [name]}
+      - name: desc
+        type: Utf8
+        nullable: true
+        description: The description of the card.
+        expr: {kind: path, path: [desc]}
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the card is closed (archived).
+        expr: {kind: path, path: [closed]}
+      - name: due
+        type: Timestamp
+        nullable: true
+        description: The due date of the card.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [due]}
+      - name: due_complete
+        type: Boolean
+        nullable: true
+        description: Whether the due date is marked complete.
+        expr: {kind: path, path: [dueComplete]}
+      - name: pos
+        type: Float64
+        nullable: true
+        description: The position of the card in its list.
+        expr: {kind: path, path: [pos]}
+      - name: list_id
+        type: Utf8
+        nullable: true
+        description: The ID of the list the card belongs to.
+        expr: {kind: path, path: [idList]}
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: The ID of the board the card belongs to.
+        expr: {kind: from_filter, key: board_id}
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Card status filter used (all, closed, none, open, visible).
+        expr: {kind: from_filter, key: filter}
+      - name: limit
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Maximum number of cards fetched (default 50, max 1000).
+        expr: {kind: from_filter, key: limit}
+      - name: since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Return cards created on or after this ISO 8601 date or card ID.
+        expr: {kind: from_filter, key: since}
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Return cards created on or before this ISO 8601 date or card ID.
+        expr: {kind: from_filter, key: before}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: The URL of the card.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw card object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # members — list all members on a specific board
+  # ──────────────────────────────────────────────────────────────────────
+  - name: members
+    description: >
+      Lists all members on a specific board.
+      Requires the `board_id` filter.
+    filters:
+      - name: board_id
+        required: true
+    request:
+      method: GET
+      path: /boards/{{filter.board_id}}/members
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: The unique ID of the member.
+        expr: {kind: path, path: [id]}
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: The full name of the member.
+        expr: {kind: path, path: [fullName]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: The username of the member.
+        expr: {kind: path, path: [username]}
+      - name: initials
+        type: Utf8
+        nullable: true
+        description: The initials of the member.
+        expr: {kind: path, path: [initials]}
+      - name: board_id
+        type: Utf8
+        nullable: false
+        description: The ID of the board.
+        expr: {kind: from_filter, key: board_id}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw member object.
+        expr:
+          kind: current_row
