@@ -8,7 +8,7 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, TableInfo,
+    RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -22,7 +22,7 @@ use crate::episode::EpisodeId;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, SourceCredentialSnapshot,
-    engine_extensions_for_providers,
+    StoredCredentialInputResolver, engine_extensions_for_providers,
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
@@ -44,6 +44,12 @@ pub(crate) enum QueryManagerError {
 pub(crate) struct ValidatedSource {
     pub(crate) source: InstalledSource,
     pub(crate) report: SourceValidationReport,
+}
+
+#[derive(Clone, Copy)]
+enum CredentialResolutionMode {
+    Refreshing,
+    StoredOnly,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +103,12 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &loaded_sources, &config)
+                    .runtime_config_with_credential_mode(
+                        workspace_name,
+                        &loaded_sources,
+                        &config,
+                        CredentialResolutionMode::StoredOnly,
+                    )
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
@@ -127,7 +138,12 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &loaded_sources, &config)
+                    .runtime_config_with_credential_mode(
+                        workspace_name,
+                        &loaded_sources,
+                        &config,
+                        CredentialResolutionMode::StoredOnly,
+                    )
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::list_catalog(&sources, runtime, schema_filter)
@@ -424,28 +440,53 @@ impl QueryManager {
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, AppError> {
+        self.runtime_config_with_credential_mode(
+            workspace_name,
+            selected_sources,
+            config,
+            CredentialResolutionMode::Refreshing,
+        )
+    }
+
+    fn runtime_config_with_credential_mode(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+        credential_resolution_mode: CredentialResolutionMode,
+    ) -> Result<QueryRuntimeConfig, AppError> {
         let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, &query_sources);
         let provider_input_resolver = extensions.source_input_resolver.take();
-        extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
-            workspace_name.clone(),
-            self.config_store.clone(),
-            self.credential_manager.clone(),
-            selected_sources
-                .iter()
-                .map(|source| {
-                    (
-                        source.query_source.source_name().to_string(),
-                        SourceCredentialSnapshot {
-                            source: source.source.clone(),
-                            material: source.credential_material.clone(),
-                        },
-                    )
-                })
-                .collect(),
-            provider_input_resolver,
-        )));
+        let source_credentials = selected_sources
+            .iter()
+            .map(|source| {
+                (
+                    source.query_source.source_name().to_string(),
+                    SourceCredentialSnapshot {
+                        source: source.source.clone(),
+                        material: source.credential_material.clone(),
+                    },
+                )
+            })
+            .collect();
+        let input_resolver: Arc<dyn SourceInputResolver> = match credential_resolution_mode {
+            CredentialResolutionMode::Refreshing => {
+                Arc::new(CredentialRefreshingInputResolver::new(
+                    workspace_name.clone(),
+                    self.config_store.clone(),
+                    self.credential_manager.clone(),
+                    source_credentials,
+                    provider_input_resolver,
+                ))
+            }
+            CredentialResolutionMode::StoredOnly => Arc::new(StoredCredentialInputResolver::new(
+                source_credentials,
+                provider_input_resolver,
+            )),
+        };
+        extensions.source_input_resolver = Some(input_resolver);
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
         let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);

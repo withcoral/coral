@@ -84,13 +84,28 @@ fn truncation_note(
     total_count: usize,
     max_results: usize,
 ) -> String {
-    if total_count > max_results {
-        format!("returned {max_results} of {total_count} search hints")
-    } else if provider_has_more {
+    if provider_has_more {
         "one or more search providers had more matches than were returned".to_string()
+    } else if total_count > max_results {
+        format!("returned {max_results} of {total_count} search hints")
     } else if truncated {
         "search results were truncated".to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncation_note;
+
+    #[test]
+    fn truncation_note_does_not_report_retrieved_count_as_total_when_provider_has_more() {
+        let note = truncation_note(true, true, 50, 10);
+
+        assert_eq!(
+            note,
+            "one or more search providers had more matches than were returned"
+        );
     }
 }

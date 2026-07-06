@@ -86,25 +86,56 @@ impl CredentialRefreshingInputResolver {
         source_credentials: BTreeMap<String, SourceCredentialSnapshot>,
         delegate: Option<Arc<dyn SourceInputResolver>>,
     ) -> Self {
-        let source_credentials = source_credentials
-            .into_iter()
-            .map(|(source_name, snapshot)| {
-                (
-                    source_name,
-                    SharedSourceCredentialSnapshot {
-                        source: snapshot.source,
-                        material: Arc::new(Mutex::new(snapshot.material)),
-                    },
-                )
-            })
-            .collect();
         Self {
             workspace_name,
             config_store,
             credential_manager,
-            source_credentials: Arc::new(source_credentials),
+            source_credentials: shared_source_credentials(source_credentials),
             delegate,
         }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct StoredCredentialInputResolver {
+    source_credentials: Arc<SourceCredentialSnapshotByName>,
+    delegate: Option<Arc<dyn SourceInputResolver>>,
+}
+
+impl StoredCredentialInputResolver {
+    pub(crate) fn new(
+        source_credentials: BTreeMap<String, SourceCredentialSnapshot>,
+        delegate: Option<Arc<dyn SourceInputResolver>>,
+    ) -> Self {
+        Self {
+            source_credentials: shared_source_credentials(source_credentials),
+            delegate,
+        }
+    }
+}
+
+impl fmt::Debug for StoredCredentialInputResolver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredCredentialInputResolver")
+            .field("source_count", &self.source_credentials.len())
+            .field("has_delegate", &self.delegate.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+#[tonic::async_trait]
+impl SourceInputResolver for StoredCredentialInputResolver {
+    async fn resolve_inputs(
+        &self,
+        source: &SourceInputResolutionContext,
+    ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+        let material =
+            if let Some(source_credentials) = self.source_credentials.get(source.source_name()) {
+                source_credentials.material.lock().await.clone()
+            } else {
+                BTreeMap::new()
+            };
+        resolve_inputs_from_material(source, &material, self.delegate.as_ref()).await
     }
 }
 
@@ -132,30 +163,7 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
             } else {
                 BTreeMap::new()
             };
-        let mut resolved = resolve_from_material(source, &material);
-        if let Some(delegate) = &self.delegate {
-            let delegated_source = source_with_refreshed_secrets(source, &material);
-            for (key, value) in delegate.resolve_inputs(&delegated_source).await? {
-                resolved.entry(key).or_insert(value);
-            }
-        }
-        let missing_secrets: Vec<String> = source
-            .required_secret_names()
-            .into_iter()
-            .filter(|name| !resolved.contains_key(name))
-            .collect();
-        if let Some((first, rest)) = missing_secrets.split_first() {
-            let detail = if rest.is_empty() {
-                format!("secret '{first}'")
-            } else {
-                format!("secret '{first}' and {} other(s)", rest.len())
-            };
-            return Err(SourceInputResolverError::failed_precondition(format!(
-                "source '{}' is missing {detail}",
-                source.source_name()
-            )));
-        }
-        Ok(resolved)
+        resolve_inputs_from_material(source, &material, self.delegate.as_ref()).await
     }
 }
 
@@ -231,6 +239,37 @@ fn resolve_from_material(
     coral_spec::resolve_inputs(source.declared_inputs(), material, source.variables())
 }
 
+async fn resolve_inputs_from_material(
+    source: &SourceInputResolutionContext,
+    material: &BTreeMap<String, String>,
+    delegate: Option<&Arc<dyn SourceInputResolver>>,
+) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+    let mut resolved = resolve_from_material(source, material);
+    if let Some(delegate) = delegate {
+        let delegated_source = source_with_material_secrets(source, material);
+        for (key, value) in delegate.resolve_inputs(&delegated_source).await? {
+            resolved.entry(key).or_insert(value);
+        }
+    }
+    let missing_secrets: Vec<String> = source
+        .required_secret_names()
+        .into_iter()
+        .filter(|name| !resolved.contains_key(name))
+        .collect();
+    if let Some((first, rest)) = missing_secrets.split_first() {
+        let detail = if rest.is_empty() {
+            format!("secret '{first}'")
+        } else {
+            format!("secret '{first}' and {} other(s)", rest.len())
+        };
+        return Err(SourceInputResolverError::failed_precondition(format!(
+            "source '{}' is missing {detail}",
+            source.source_name()
+        )));
+    }
+    Ok(resolved)
+}
+
 fn has_oauth_credential_inputs(inputs: &[ManifestInputSpec]) -> bool {
     inputs.iter().any(|input| {
         input.kind == ManifestInputKind::Secret
@@ -243,7 +282,7 @@ fn has_oauth_credential_inputs(inputs: &[ManifestInputSpec]) -> bool {
     })
 }
 
-fn source_with_refreshed_secrets(
+fn source_with_material_secrets(
     source: &SourceInputResolutionContext,
     material: &BTreeMap<String, String>,
 ) -> SourceInputResolutionContext {
@@ -259,6 +298,25 @@ fn source_with_refreshed_secrets(
         })
         .collect();
     source.with_secrets(refreshed_secrets)
+}
+
+fn shared_source_credentials(
+    source_credentials: BTreeMap<String, SourceCredentialSnapshot>,
+) -> Arc<SourceCredentialSnapshotByName> {
+    Arc::new(
+        source_credentials
+            .into_iter()
+            .map(|(source_name, snapshot)| {
+                (
+                    source_name,
+                    SharedSourceCredentialSnapshot {
+                        source: snapshot.source,
+                        material: Arc::new(Mutex::new(snapshot.material)),
+                    },
+                )
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn engine_extensions_for_providers(

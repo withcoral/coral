@@ -260,11 +260,11 @@ fn query_terms(query: &str) -> Vec<String> {
 }
 
 fn is_query_token_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '#' | '/' | '@')
+    ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '#' | '/' | '@')
 }
 
 fn normalize_query_part(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
+    value.trim().to_lowercase()
 }
 
 #[cfg(test)]
@@ -301,6 +301,15 @@ mod tests {
 
         assert!(request.terms.iter().any(|term| term == "github"));
         assert!(request.terms.iter().any(|term| term == "q"));
+    }
+
+    #[test]
+    fn query_terms_use_unicode_lowercasing() {
+        let request =
+            SearchRequest::new(WorkspaceName::default(), "ÜBER café", 10).expect("search request");
+
+        assert!(request.terms.iter().any(|term| term == "über"));
+        assert!(request.terms.iter().any(|term| term == "café"));
     }
 
     #[test]

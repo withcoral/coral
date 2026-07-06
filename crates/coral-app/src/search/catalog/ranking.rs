@@ -57,16 +57,16 @@ pub(crate) fn rank_catalog_hits(
 }
 
 fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
-    let source_name = hit.source_name.to_ascii_lowercase();
-    let surface_name = hit.surface_name.to_ascii_lowercase();
-    let field_name = hit.field_name.to_ascii_lowercase();
+    let source_name = hit.source_name.to_lowercase();
+    let surface_name = hit.surface_name.to_lowercase();
+    let field_name = hit.field_name.to_lowercase();
     let title = if field_name.is_empty() {
         surface_name.as_str()
     } else {
         field_name.as_str()
     };
     let qualified_name = qualified_name(hit);
-    let description = hit.description.to_ascii_lowercase();
+    let description = hit.description.to_lowercase();
     let searchable_text = searchable_text(hit, &description);
     let mut score = doc_kind_boost(hit.doc_kind);
     let required_term_count = terms
@@ -142,13 +142,13 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
 
 fn qualified_name(hit: &CatalogSearchHit) -> String {
     if hit.field_name.is_empty() {
-        format!("{}.{}", hit.source_name, hit.surface_name).to_ascii_lowercase()
+        format!("{}.{}", hit.source_name, hit.surface_name).to_lowercase()
     } else {
         format!(
             "{}.{}.{}",
             hit.source_name, hit.surface_name, hit.field_name
         )
-        .to_ascii_lowercase()
+        .to_lowercase()
     }
 }
 
@@ -157,7 +157,7 @@ fn searchable_text(hit: &CatalogSearchHit, description: &str) -> String {
         "{} {} {} {} {}",
         hit.source_name, hit.surface_name, hit.field_name, hit.surface_kind, description
     )
-    .to_ascii_lowercase()
+    .to_lowercase()
 }
 
 fn identifier_token_matches(value: &str, term: &str) -> bool {
@@ -181,12 +181,12 @@ fn identifier_token_starts_with(value: &str, term: &str) -> bool {
 
 fn identifier_tokens(value: &str) -> impl Iterator<Item = &str> {
     value
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
 }
 
 fn compact_identifier(value: &str) -> String {
-    value.chars().filter(char::is_ascii_alphanumeric).collect()
+    value.chars().filter(|ch| ch.is_alphanumeric()).collect()
 }
 
 fn is_required_query_term(term: &str) -> bool {
@@ -265,6 +265,44 @@ mod tests {
         assert_eq!(
             hits.first().expect("top ranked hit").hit.doc_id,
             "catalog:function:github.search_code"
+        );
+    }
+
+    #[test]
+    fn unicode_case_folded_surface_terms_receive_ranking_boost() {
+        let hits = rank_catalog_hits(
+            vec![
+                hit(HitInput {
+                    doc_id: "catalog:table:a_fallback",
+                    doc_kind: CatalogIndexDocumentKind::CatalogTable,
+                    source_name: "fixture",
+                    surface_kind: "table",
+                    surface_name: "fallback",
+                    field_name: "",
+                    field_role: "",
+                    description: "",
+                    matched_fields: Vec::new(),
+                    retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+                }),
+                hit(HitInput {
+                    doc_id: "catalog:table:z_unicode",
+                    doc_kind: CatalogIndexDocumentKind::CatalogTable,
+                    source_name: "fixture",
+                    surface_kind: "table",
+                    surface_name: "Überblick",
+                    field_name: "",
+                    field_role: "",
+                    description: "",
+                    matched_fields: Vec::new(),
+                    retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+                }),
+            ],
+            &["überblick".to_string()],
+        );
+
+        assert_eq!(
+            hits.first().expect("top hit").hit.doc_id,
+            "catalog:table:z_unicode"
         );
     }
 

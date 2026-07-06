@@ -171,10 +171,12 @@ async fn search_returns_catalog_metadata_for_search_functions_and_column_hints()
     assert!(
         harness
             .config_dir()
+            .join("workspaces")
+            .join("default")
             .join("search")
             .join("search.sqlite3")
             .exists(),
-        "search should create the app-level SQLite search database"
+        "search should create the workspace SQLite search database"
     );
     assert!(response.results.iter().any(|result| matches!(
         result.payload.as_ref(),

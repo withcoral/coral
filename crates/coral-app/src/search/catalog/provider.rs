@@ -12,7 +12,7 @@ use crate::search::catalog::snapshot::{
     CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
 };
 use crate::search::catalog::sqlite_index::{
-    CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, SqliteCatalogIndex,
+    CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
 };
 use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
@@ -28,44 +28,73 @@ const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
 const MAX_COLUMN_HINTS_PER_SURFACE: usize = 3;
 const TABLE_COLUMN_PREVIEW_LIMIT: usize = 5;
 
+struct CatalogProjection {
+    store: SqliteSearchStore,
+    refresh: CatalogRefreshResult,
+    stale_index: bool,
+    refresh_lock_error: Option<String>,
+    expected_document_count: u32,
+}
+
+struct CatalogProjectionState {
+    refresh: CatalogRefreshResult,
+    stale_index: bool,
+    refresh_lock_error: Option<String>,
+    expected_document_count: u32,
+}
+
 #[derive(Clone)]
 pub(crate) struct CatalogMetadataProvider {
     layout: AppStateLayout,
     queries: QueryManager,
-    index: SqliteCatalogIndex,
 }
 
 impl CatalogMetadataProvider {
     pub(crate) fn new(layout: AppStateLayout, queries: QueryManager) -> Self {
-        Self {
-            layout,
-            queries,
-            index: SqliteCatalogIndex::new(),
-        }
+        Self { layout, queries }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "catalog provider search still owns refresh, retrieval, ranking, and mapping until provider internals are split"
-    )]
     pub(crate) async fn search(
         &self,
         request: &SearchRequest,
         attribution: &QueryAttribution,
     ) -> ProviderSearchOutcome {
-        let catalog = match self
-            .queries
-            .list_catalog(&request.workspace_name, None, attribution)
-            .await
-        {
+        let catalog = match self.load_catalog(request, attribution).await {
             Ok(catalog) => catalog,
             Err(error) => return catalog_query_error_outcome(&error),
         };
-        let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(&catalog);
-        let store = match SqliteSearchStore::open_app(&self.layout) {
-            Ok(store) => store,
+        let projection = match self.prepare_projection(request, &catalog) {
+            Ok(projection) => projection,
             Err(error) => return catalog_index_error_outcome(&error),
         };
+        let search_hits = match Self::search_projection(request, &projection.store) {
+            Ok(search_hits) => search_hits,
+            Err(error) => return catalog_index_error_outcome(&error),
+        };
+        if let Some(outcome) = missing_cached_projection_outcome(&projection, &search_hits) {
+            return outcome;
+        }
+
+        catalog_search_outcome(request, &catalog, search_hits, &projection)
+    }
+
+    async fn load_catalog(
+        &self,
+        request: &SearchRequest,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogInfo, QueryManagerError> {
+        self.queries
+            .list_catalog(&request.workspace_name, None, attribution)
+            .await
+    }
+
+    fn prepare_projection(
+        &self,
+        request: &SearchRequest,
+        catalog: &CatalogInfo,
+    ) -> Result<CatalogProjection, SqliteSearchError> {
+        let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(catalog);
+        let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
         let capabilities = store.capabilities();
         tracing::debug!(
             workspace = %request.workspace_name,
@@ -74,140 +103,151 @@ impl CatalogMetadataProvider {
             trigram = capabilities.trigram,
             "using SQLite catalog search store"
         );
-        let mut connection = match store.connect() {
-            Ok(connection) => connection,
-            Err(error) => return catalog_index_error_outcome(&error),
-        };
+        let state = Self::prepare_projection_state(request, catalog, &store, &catalog_fingerprint)?;
+        tracing::debug!(
+            workspace = %request.workspace_name,
+            refreshed = state.refresh.refreshed,
+            document_count = state.refresh.document_count,
+            stale_index = state.stale_index,
+            "prepared SQLite catalog search projection"
+        );
+        Ok(CatalogProjection {
+            store,
+            refresh: state.refresh,
+            stale_index: state.stale_index,
+            refresh_lock_error: state.refresh_lock_error,
+            expected_document_count: state.expected_document_count,
+        })
+    }
 
-        let projection_current = match self.index.projection_is_current(
-            &connection,
-            &request.workspace_name,
-            &catalog_fingerprint,
-        ) {
-            Ok(current) => current,
-            Err(error) => return catalog_index_error_outcome(&error),
-        };
-        let (refresh, stale_index, refresh_lock_error, expected_document_count) =
-            if projection_current {
-                let document_count = match self
-                    .index
-                    .document_count(&connection, &request.workspace_name)
-                {
-                    Ok(count) => count,
-                    Err(error) => return catalog_index_error_outcome(&error),
-                };
-                (
-                    CatalogRefreshResult {
+    fn prepare_projection_state(
+        request: &SearchRequest,
+        catalog: &CatalogInfo,
+        store: &SqliteSearchStore,
+        catalog_fingerprint: &str,
+    ) -> Result<CatalogProjectionState, SqliteSearchError> {
+        if store.catalog_projection_is_current(catalog_fingerprint)? {
+            let document_count = store.catalog_document_count()?;
+            return Ok(CatalogProjectionState {
+                refresh: CatalogRefreshResult {
+                    refreshed: false,
+                    document_count,
+                },
+                stale_index: false,
+                refresh_lock_error: None,
+                expected_document_count: document_count,
+            });
+        }
+
+        let snapshot = CatalogSearchSnapshot::from_catalog(catalog);
+        let expected_document_count = u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
+        let index_snapshot = snapshot.index_snapshot();
+        match store.refresh_catalog_projection(&index_snapshot) {
+            Ok(refresh) => Ok(CatalogProjectionState {
+                refresh,
+                stale_index: false,
+                refresh_lock_error: None,
+                expected_document_count,
+            }),
+            Err(error) if error.is_lock_contention() => {
+                tracing::debug!(
+                    workspace = %request.workspace_name,
+                    error = %error,
+                    "using cached SQLite catalog search projection after refresh lock contention"
+                );
+                let document_count = store.catalog_document_count()?;
+                Ok(CatalogProjectionState {
+                    refresh: CatalogRefreshResult {
                         refreshed: false,
                         document_count,
                     },
-                    false,
-                    None,
-                    document_count,
-                )
-            } else {
-                let snapshot = CatalogSearchSnapshot::from_catalog(&catalog);
-                let expected_document_count =
-                    u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
-                let index_snapshot = snapshot.index_snapshot();
-                match self
-                    .index
-                    .refresh(&mut connection, &request.workspace_name, &index_snapshot)
-                {
-                    Ok(refresh) => (refresh, false, None, expected_document_count),
-                    Err(error) if error.is_lock_contention() => {
-                        tracing::debug!(
-                            workspace = %request.workspace_name,
-                            error = %error,
-                            "using cached SQLite catalog search projection after refresh lock contention"
-                        );
-                        let document_count = match self
-                            .index
-                            .document_count(&connection, &request.workspace_name)
-                        {
-                            Ok(count) => count,
-                            Err(error) => return catalog_index_error_outcome(&error),
-                        };
-                        (
-                            CatalogRefreshResult {
-                                refreshed: false,
-                                document_count,
-                            },
-                            true,
-                            Some(error.to_string()),
-                            expected_document_count,
-                        )
-                    }
-                    Err(error) => return catalog_index_error_outcome(&error),
-                }
-            };
-        tracing::debug!(
-            workspace = %request.workspace_name,
-            refreshed = refresh.refreshed,
-            document_count = refresh.document_count,
-            stale_index,
-            "prepared SQLite catalog search projection"
-        );
+                    stale_index: true,
+                    refresh_lock_error: Some(error.to_string()),
+                    expected_document_count,
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
 
+    fn search_projection(
+        request: &SearchRequest,
+        store: &SqliteSearchStore,
+    ) -> Result<CatalogSearchHits, SqliteSearchError> {
         let retrieval_limit = usize::try_from(request.limit)
             .unwrap_or(usize::MAX)
             .saturating_mul(CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER)
             .max(CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT);
-        let search_hits = match self.index.search(
-            &connection,
-            &request.workspace_name,
-            &request.terms,
-            retrieval_limit,
-        ) {
-            Ok(search_hits) => search_hits,
-            Err(error) => return catalog_index_error_outcome(&error),
-        };
-        if stale_index && search_hits.document_count == 0 && expected_document_count > 0 {
-            return catalog_index_note_outcome(format!(
-                "Catalog metadata search index is unavailable: refresh could not acquire the SQLite writer lock and no cached projection exists{}",
-                refresh_lock_error
-                    .as_deref()
-                    .map_or_else(String::new, |error| format!(": {error}"))
-            ));
-        }
-
-        let retrieved_hit_count = search_hits.hits.len();
-        let ranked_hits = rank_catalog_hits(search_hits.hits, &request.terms);
-        let candidates = catalog_candidates_from_hits(&catalog, ranked_hits);
-        let candidate_count = candidates.len();
-        if retrieved_hit_count != candidate_count {
-            tracing::debug!(
-                workspace = %request.workspace_name,
-                retrieved_hit_count,
-                candidate_count,
-                "mapped SQLite catalog hits into provider candidates"
-            );
-        }
-        let state = if candidates.is_empty() {
-            SearchProviderState::Empty
-        } else if search_hits.retrieval_limited {
-            SearchProviderState::Partial
-        } else {
-            SearchProviderState::ResultsFound
-        };
-        let note = catalog_provider_note(state, candidate_count, refresh.refreshed, stale_index);
-        ProviderSearchOutcome {
-            candidates,
-            status: ProviderStatus {
-                provider: SearchProviderKind::CatalogMetadata,
-                state,
-                note,
-                coverage: Some(ProviderCoverage {
-                    eligible_units: search_hits.document_count,
-                    searched_units: search_hits.document_count,
-                    returned_count: u32::try_from(candidate_count).unwrap_or(u32::MAX),
-                    has_more: search_hits.retrieval_limited,
-                    stale_index,
-                    ..ProviderCoverage::default()
-                }),
-            },
-        }
+        store.search_catalog(&request.terms, retrieval_limit)
     }
+}
+
+fn catalog_search_outcome(
+    request: &SearchRequest,
+    catalog: &CatalogInfo,
+    search_hits: CatalogSearchHits,
+    projection: &CatalogProjection,
+) -> ProviderSearchOutcome {
+    let retrieved_hit_count = search_hits.hits.len();
+    let ranked_hits = rank_catalog_hits(search_hits.hits, &request.terms);
+    let candidates = catalog_candidates_from_hits(catalog, ranked_hits);
+    let candidate_count = candidates.len();
+    if retrieved_hit_count != candidate_count {
+        tracing::debug!(
+            workspace = %request.workspace_name,
+            retrieved_hit_count,
+            candidate_count,
+            "mapped SQLite catalog hits into provider candidates"
+        );
+    }
+    let state = if candidates.is_empty() {
+        SearchProviderState::Empty
+    } else if search_hits.retrieval_limited {
+        SearchProviderState::Partial
+    } else {
+        SearchProviderState::ResultsFound
+    };
+    let note = catalog_provider_note(
+        state,
+        candidate_count,
+        projection.refresh.refreshed,
+        projection.stale_index,
+    );
+    ProviderSearchOutcome {
+        candidates,
+        status: ProviderStatus {
+            provider: SearchProviderKind::CatalogMetadata,
+            state,
+            note,
+            coverage: Some(ProviderCoverage {
+                eligible_units: search_hits.document_count,
+                searched_units: search_hits.document_count,
+                returned_count: u32::try_from(candidate_count).unwrap_or(u32::MAX),
+                has_more: search_hits.retrieval_limited,
+                stale_index: projection.stale_index,
+                ..ProviderCoverage::default()
+            }),
+        },
+    }
+}
+
+fn missing_cached_projection_outcome(
+    projection: &CatalogProjection,
+    search_hits: &CatalogSearchHits,
+) -> Option<ProviderSearchOutcome> {
+    if !(projection.stale_index
+        && search_hits.document_count == 0
+        && projection.expected_document_count > 0)
+    {
+        return None;
+    }
+    Some(catalog_index_note_outcome(format!(
+        "Catalog metadata search index is unavailable: refresh could not acquire the SQLite writer lock and no cached projection exists{}",
+        projection
+            .refresh_lock_error
+            .as_deref()
+            .map_or_else(String::new, |error| format!(": {error}"))
+    )))
 }
 
 fn catalog_candidates_from_hits(

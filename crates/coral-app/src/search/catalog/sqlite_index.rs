@@ -8,10 +8,11 @@
     )
 )]
 
+use std::collections::BTreeMap;
+
 use rusqlite::{
     Connection, OptionalExtension as _, Transaction, TransactionBehavior, params, types::Type,
 };
-use std::collections::BTreeMap;
 
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::workspaces::WorkspaceName;
