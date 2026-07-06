@@ -22,7 +22,9 @@ impl<'a> SqlRenderer<'a> {
         &self,
         expression: &ScalarExpression,
     ) -> Result<String, CoreError> {
-        if let Some(rendered) = self.render_simple_scalar_expression(expression)? {
+        if let Some(rendered) =
+            self.render_simple_scalar_expression(expression, ScalarScope::TopLevel)?
+        {
             return Ok(rendered);
         }
         if let Some(rendered) = self.render_graph_metadata_scalar_expression(expression)? {
@@ -236,59 +238,65 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
-    fn render_simple_scalar_expression(
+    pub(super) fn render_simple_scalar_expression<'b, 'c>(
         &self,
         expression: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<Option<String>, CoreError> {
-        if let Some(rendered) = self.render_scalar_cast_expression(expression)? {
+        if let Some(rendered) = self.render_scalar_cast_expression(expression, scope)? {
             return Ok(Some(rendered));
         }
         if let Some((function_name, expression, pattern)) =
             Self::string_predicate_function_expression(expression)
         {
             return self
-                .render_binary_function_expression(function_name, expression, pattern)
+                .render_binary_function_expression(function_name, expression, pattern, scope)
                 .map(Some);
         }
         if let Some((function_name, expression)) = Self::unary_sql_function_expression(expression) {
             return self
-                .render_unary_function_expression(function_name, expression)
+                .render_unary_function_expression(function_name, expression, scope)
                 .map(Some);
         }
 
         match expression {
             ScalarExpression::Left { expression, count } => self
-                .render_binary_function_expression("left", expression, count)
+                .render_binary_function_expression("left", expression, count, scope)
                 .map(Some),
             ScalarExpression::Right { expression, count } => self
-                .render_binary_function_expression("right", expression, count)
+                .render_binary_function_expression("right", expression, count, scope)
                 .map(Some),
             ScalarExpression::StringIndices {
                 expression,
                 pattern,
             } => self
-                .render_binary_function_expression("coral_string_indices", expression, pattern)
+                .render_binary_function_expression(
+                    "coral_string_indices",
+                    expression,
+                    pattern,
+                    scope,
+                )
                 .map(Some),
             ScalarExpression::LPad {
                 expression,
                 length,
                 fill,
             } => self
-                .render_ternary_function_expression("lpad", expression, length, fill)
+                .render_ternary_function_expression("lpad", expression, length, fill, scope)
                 .map(Some),
             ScalarExpression::RPad {
                 expression,
                 length,
                 fill,
             } => self
-                .render_ternary_function_expression("rpad", expression, length, fill)
+                .render_ternary_function_expression("rpad", expression, length, fill, scope)
                 .map(Some),
             ScalarExpression::Atan2 { y, x } => self
-                .render_binary_function_expression("atan2", y, x)
+                .render_binary_function_expression("atan2", y, x, scope)
                 .map(Some),
             ScalarExpression::Negate { expression } => Ok(Some(format!(
                 "-({})",
-                self.render_scalar_expression(expression)?
+                self.render_scalar_in_scope(expression, scope)?
             ))),
             _ => Ok(None),
         }
@@ -349,54 +357,54 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
-    fn render_scalar_cast_expression(
+    fn render_scalar_cast_expression<'b, 'c>(
         &self,
         expression: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<Option<String>, CoreError> {
         match expression {
             ScalarExpression::ToString { expression }
             | ScalarExpression::ToStringOrNull { expression } => {
                 if scalar_expression_is_duration(expression) {
                     return self
-                        .render_duration_to_iso_expression(expression, ScalarScope::TopLevel)
+                        .render_duration_to_iso_expression(expression, scope)
                         .map(Some);
                 }
-                if let Some(timezone) = self.zoned_datetime_render_timezone(expression)? {
+                if let Some(timezone) =
+                    self.zoned_datetime_render_timezone_in_scope(expression, scope)?
+                {
                     return self
-                        .render_zoneddatetime_to_iso_expression(
-                            expression,
-                            &timezone,
-                            ScalarScope::TopLevel,
-                        )
+                        .render_zoneddatetime_to_iso_expression(expression, &timezone, scope)
                         .map(Some);
                 }
-                self.render_try_cast_expression(expression, "VARCHAR")
+                self.render_try_cast_expression(expression, "VARCHAR", scope)
                     .map(Some)
             }
             ScalarExpression::ToInteger { expression }
             | ScalarExpression::ToIntegerOrNull { expression } => self
-                .render_try_cast_expression(expression, "BIGINT")
+                .render_try_cast_expression(expression, "BIGINT", scope)
                 .map(Some),
             ScalarExpression::ToFloat { expression }
             | ScalarExpression::ToFloatOrNull { expression } => self
-                .render_try_cast_expression(expression, "DOUBLE")
+                .render_try_cast_expression(expression, "DOUBLE", scope)
                 .map(Some),
             ScalarExpression::ToBoolean { expression }
             | ScalarExpression::ToBooleanOrNull { expression } => self
-                .render_try_cast_expression(expression, "BOOLEAN")
+                .render_try_cast_expression(expression, "BOOLEAN", scope)
                 .map(Some),
             _ => Ok(None),
         }
     }
 
-    fn render_try_cast_expression(
+    fn render_try_cast_expression<'b, 'c>(
         &self,
         expression: &ScalarExpression,
         target_type: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
         Ok(format!(
             "TRY_CAST({} AS {target_type})",
-            self.render_scalar_expression(expression)?
+            self.render_scalar_in_scope(expression, scope)?
         ))
     }
 
@@ -465,14 +473,26 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
-    fn render_unary_function_expression(
+    fn zoned_datetime_render_timezone_in_scope<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<Option<String>, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.zoned_datetime_render_timezone(expression),
+            ScalarScope::Scoped { .. } => Ok(scalar_expression_static_zoned_timezone(expression)),
+        }
+    }
+
+    fn render_unary_function_expression<'b, 'c>(
         &self,
         function_name: &str,
         expression: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
         Ok(format!(
             "{function_name}({})",
-            self.render_scalar_expression(expression)?
+            self.render_scalar_in_scope(expression, scope)?
         ))
     }
 
@@ -491,16 +511,17 @@ impl<'a> SqlRenderer<'a> {
         ))
     }
 
-    fn render_binary_function_expression(
+    fn render_binary_function_expression<'b, 'c>(
         &self,
         function_name: &str,
         left: &ScalarExpression,
         right: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
         Ok(format!(
             "{function_name}({}, {})",
-            self.render_scalar_expression(left)?,
-            self.render_scalar_expression(right)?
+            self.render_scalar_in_scope(left, scope)?,
+            self.render_scalar_in_scope(right, scope)?
         ))
     }
 
@@ -991,18 +1012,19 @@ impl<'a> SqlRenderer<'a> {
         ))
     }
 
-    fn render_ternary_function_expression(
+    fn render_ternary_function_expression<'b, 'c>(
         &self,
         function_name: &str,
         first: &ScalarExpression,
         second: &ScalarExpression,
         third: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
         Ok(format!(
             "{function_name}({}, {}, {})",
-            self.render_scalar_expression(first)?,
-            self.render_scalar_expression(second)?,
-            self.render_scalar_expression(third)?
+            self.render_scalar_in_scope(first, scope)?,
+            self.render_scalar_in_scope(second, scope)?,
+            self.render_scalar_in_scope(third, scope)?
         ))
     }
 
@@ -1434,6 +1456,35 @@ fn temporal_zoned_timezone(expression: &TemporalExpr) -> Option<String> {
     match expression {
         TemporalExpr::MakeZonedDateTime { timezone, .. }
         | TemporalExpr::ZonedDateTimeFromString { timezone, .. } => Some(timezone.clone()),
+        _ => None,
+    }
+}
+
+fn scalar_expression_static_zoned_timezone(expression: &ScalarExpression) -> Option<String> {
+    match expression {
+        ScalarExpression::Temporal(temporal) => temporal_zoned_timezone(temporal),
+        ScalarExpression::PresenceGated { expression, .. } => {
+            scalar_expression_static_zoned_timezone(expression)
+        }
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => match operator {
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract
+                if scalar_expression_is_zoneddatetime(left)
+                    && scalar_expression_is_duration(right) =>
+            {
+                scalar_expression_static_zoned_timezone(left)
+            }
+            ArithmeticOperator::Add
+                if scalar_expression_is_duration(left)
+                    && scalar_expression_is_zoneddatetime(right) =>
+            {
+                scalar_expression_static_zoned_timezone(right)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
