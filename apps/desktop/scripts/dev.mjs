@@ -13,7 +13,9 @@ const electronViteBin = resolve(
 // Shared between the Vite dev server (which proxies `/__coral__` to the sidecar)
 // and the sidecar spawn in the Electron main process. Fixed so Vite's config,
 // loaded before the sidecar exists, has a known proxy target.
-const sidecarPort = process.env.CORAL_DEV_SIDECAR_PORT ?? '8778'
+// `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back to the
+// default rather than propagating an empty port to the sidecar and Vite proxy.
+const sidecarPort = process.env.CORAL_DEV_SIDECAR_PORT || '8778'
 
 const children = new Set()
 let shuttingDown = false

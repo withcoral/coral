@@ -66,7 +66,9 @@ export async function externalCoralPath(): Promise<string> {
 // because Vite's config loads before the sidecar exists. Packaged builds keep
 // `--port 0` (dynamic) since they proxy via the app:// scheme, not Vite.
 function devSidecarPort(): string {
-  return process.env.CORAL_DEV_SIDECAR_PORT ?? '8778'
+  // `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back — an empty
+  // string would otherwise become `--port ""` and the sidecar would fail to start.
+  return process.env.CORAL_DEV_SIDECAR_PORT || '8778'
 }
 
 function devSidecarCommand(): { command: string; args: string[]; cwd: string } {
