@@ -300,6 +300,7 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
+        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -318,6 +319,7 @@ impl ServerBuilder {
             source_manager,
             workspace_manager,
             query_manager,
+            search_manager,
             feedback_manager,
             episode_store,
             trace_components,
@@ -415,6 +417,7 @@ async fn start_server(
     source_manager: SourceManager,
     workspace_manager: WorkspaceManager,
     query_manager: QueryManager,
+    search_manager: SearchManager,
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
     trace_components: TraceServerComponents,
@@ -424,7 +427,6 @@ async fn start_server(
         service: trace_service,
         local_trace_store_dir,
     } = trace_components;
-    let search_manager = SearchManager::new(query_manager.config_store());
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let workspace_service = WorkspaceService::new(workspace_manager);
     let catalog_service = CatalogService::new(query_manager.clone());
@@ -711,6 +713,7 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
+    use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
@@ -833,6 +836,7 @@ enabled = false
             layout.clone(),
             None,
         );
+        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -846,6 +850,7 @@ enabled = false
             source_manager,
             workspace_manager,
             query_manager,
+            search_manager,
             feedback_manager,
             episode_store,
             TraceServerComponents {
@@ -1223,6 +1228,7 @@ tables:
             layout.clone(),
             None,
         );
+        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1237,6 +1243,7 @@ tables:
             source_manager,
             workspace_manager,
             query_manager,
+            search_manager,
             feedback_manager,
             episode_store,
             TraceServerComponents::default(),
@@ -1334,6 +1341,7 @@ tables:
             layout.clone(),
             None,
         );
+        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1345,6 +1353,7 @@ tables:
             source_manager,
             workspace_manager,
             query_manager,
+            search_manager,
             feedback_manager,
             episode_store,
             TraceServerComponents::default(),
@@ -1442,6 +1451,7 @@ tables:
             layout.clone(),
             None,
         );
+        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1453,6 +1463,7 @@ tables:
             source_manager,
             workspace_manager,
             query_manager,
+            search_manager,
             feedback_manager,
             episode_store,
             TraceServerComponents::default(),

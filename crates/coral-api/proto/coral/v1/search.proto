@@ -178,26 +178,24 @@ enum SearchFieldRole {
 
 // A field-level hint that may hold or accept the query clue.
 message ColumnHint {
-  // Workspace that scopes this hint.
-  Workspace workspace = 1;
   // Source schema that owns the surface.
-  string schema_name = 2;
+  string schema_name = 1;
   // Table or table-function name.
-  string surface_name = 3;
+  string surface_name = 2;
   // Whether the owning surface is a table or table function.
-  SearchSurfaceKind surface_kind = 4;
+  SearchSurfaceKind surface_kind = 3;
   // Column, required filter, argument, or result-column name.
-  string name = 5;
+  string name = 4;
   // Data type when known.
-  string data_type = 6;
+  string data_type = 5;
   // Whether this field must be supplied or constrained.
-  bool required = 7;
+  bool required = 6;
   // Human-readable field description.
-  string description = 8;
+  string description = 7;
   // Metadata fields that matched the query.
-  repeated string matched_fields = 9;
+  repeated string matched_fields = 8;
   // How the field should be used when querying the owning surface.
-  SearchFieldRole field_role = 10;
+  SearchFieldRole field_role = 9;
 }
 
 // Local observed-value result.

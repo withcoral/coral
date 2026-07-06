@@ -79,10 +79,6 @@ impl QueryManager {
         }
     }
 
-    pub(crate) fn config_store(&self) -> ConfigStore {
-        self.config_store.clone()
-    }
-
     pub(crate) async fn list_tables(
         &self,
         workspace_name: &WorkspaceName,
