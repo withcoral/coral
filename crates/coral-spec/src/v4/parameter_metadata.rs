@@ -77,15 +77,15 @@ pub fn apply_parameter_metadata_overrides(
     }
 
     for (operation_id, operation_override) in &overrides.operation_overrides {
-        let operation = ir
+        let Some(operation) = ir
             .operations
             .iter_mut()
             .find(|operation| operation_matches_identifier(operation, operation_id))
-            .ok_or_else(|| {
-                ManifestError::validation(format!(
-                    "parameter metadata operation override '{operation_id}' references unknown operation '{operation_id}'"
-                ))
-            })?;
+        else {
+            unreachable!(
+                "operation override target was validated before application: {operation_id}"
+            );
+        };
         if let IrExecutionAttachment::Rest(rest) = &mut operation.execution {
             rest.pagination = operation_override.pagination.clone();
         }
