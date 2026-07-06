@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { ScrollArea } from '@/wax/components'
 import { CardList, type CardItem } from '@/wax/components/card'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
@@ -110,72 +111,76 @@ export function SourcesIndex() {
   }, [refresh])
 
   return (
-    <div className={styles.root}>
-      <div className={styles.container}>
-        <div className={styles.header}>
-          <Typography.HeadingLarge as="h1">Sources</Typography.HeadingLarge>
-          <Typography.Body variant="secondary">
-            Connect external systems to query their data from Coral. Click a source to install or
-            inspect it.
-          </Typography.Body>
-        </div>
+    <>
+      <ScrollArea.Container className={styles.root} constrainWidth>
+        <div className={styles.scrollContent}>
+          <div className={styles.container}>
+            <div className={styles.header}>
+              <Typography.HeadingLarge as="h1">Sources</Typography.HeadingLarge>
+              <Typography.Body variant="secondary">
+                Connect external systems to query their data from Coral. Click a source to install
+                or inspect it.
+              </Typography.Body>
+            </div>
 
-        <div className={styles.searchBar}>
-          <TextInput
-            ref={searchInputRef}
-            value={search}
-            onChange={setSearch}
-            placeholder="Search sources…"
-            icon="Search"
-          />
-        </div>
+            <div className={styles.searchBar}>
+              <TextInput
+                ref={searchInputRef}
+                value={search}
+                onChange={setSearch}
+                placeholder="Search sources…"
+                icon="Search"
+              />
+            </div>
 
-        {error ? (
-          <ErrorBanner
-            title="Couldn't load sources"
-            message={error}
-            onRetry={() => window.location.reload()}
-          />
-        ) : null}
+            {error ? (
+              <ErrorBanner
+                title="Couldn't load sources"
+                message={error}
+                onRetry={() => window.location.reload()}
+              />
+            ) : null}
 
-        {loading ? (
-          <div className={styles.loadingState}>
-            <Icon name="Loader" size="16" color="tertiary" className={styles.spinAnimation} />
-            <Typography.BodySmall variant="tertiary">Loading sources…</Typography.BodySmall>
+            {loading ? (
+              <div className={styles.loadingState}>
+                <Icon name="Loader" size="16" color="tertiary" className={styles.spinAnimation} />
+                <Typography.BodySmall variant="tertiary">Loading sources…</Typography.BodySmall>
+              </div>
+            ) : null}
+
+            {!loading && !error && allEntries.length === 0 ? (
+              <div className={styles.emptyState}>
+                <Icon name="Plug" size="20" color="tertiary" />
+                <Typography.Body variant="secondary">
+                  No sources available. Check the Coral build for a populated catalog.
+                </Typography.Body>
+              </div>
+            ) : null}
+
+            {connected.length > 0 ? (
+              <Section title="Configured" count={connected.length}>
+                <SourceCardList entries={connected} onPick={onPick} />
+              </Section>
+            ) : null}
+
+            {sections.map((section) => (
+              <Section key={section.key} title={section.label} count={section.entries.length}>
+                <SourceCardList entries={section.entries} onPick={onPick} />
+              </Section>
+            ))}
+
+            {connected.length === 0 &&
+            sections.length === 0 &&
+            !loading &&
+            !error &&
+            allEntries.length > 0 ? (
+              <Typography.BodySmall variant="tertiary">
+                No sources match your search.
+              </Typography.BodySmall>
+            ) : null}
           </div>
-        ) : null}
-
-        {!loading && !error && allEntries.length === 0 ? (
-          <div className={styles.emptyState}>
-            <Icon name="Plug" size="20" color="tertiary" />
-            <Typography.Body variant="secondary">
-              No sources available. Check the Coral build for a populated catalog.
-            </Typography.Body>
-          </div>
-        ) : null}
-
-        {connected.length > 0 ? (
-          <Section title="Configured" count={connected.length}>
-            <SourceCardList entries={connected} onPick={onPick} />
-          </Section>
-        ) : null}
-
-        {sections.map((section) => (
-          <Section key={section.key} title={section.label} count={section.entries.length}>
-            <SourceCardList entries={section.entries} onPick={onPick} />
-          </Section>
-        ))}
-
-        {connected.length === 0 &&
-        sections.length === 0 &&
-        !loading &&
-        !error &&
-        allEntries.length > 0 ? (
-          <Typography.BodySmall variant="tertiary">
-            No sources match your search.
-          </Typography.BodySmall>
-        ) : null}
-      </div>
+        </div>
+      </ScrollArea.Container>
 
       <SourceInstallDialog
         name={installingName}
@@ -194,7 +199,7 @@ export function SourcesIndex() {
         }}
         onRemoved={onRemoved}
       />
-    </div>
+    </>
   )
 }
 

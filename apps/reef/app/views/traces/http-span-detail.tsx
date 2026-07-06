@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import classNames from 'classnames'
 
+import { ScrollArea } from '@/wax/components'
 import * as Button from '@/wax/components/button'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
-import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
 

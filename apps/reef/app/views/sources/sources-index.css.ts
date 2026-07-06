@@ -12,10 +12,10 @@ export const spinAnimation = style({
 })
 
 export const root = style({
-  display: 'flex',
-  flexDirection: 'column',
   height: '100%',
-  overflow: 'auto',
+})
+
+export const scrollContent = style({
   paddingBlock: 32,
   paddingInline: 24,
 })
