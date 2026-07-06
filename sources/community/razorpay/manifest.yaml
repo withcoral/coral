@@ -1,0 +1,773 @@
+name: razorpay
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Razorpay payments, orders, refunds, customers, invoices, payment links, and settlements through SQL.
+base_url: "{{input.RAZORPAY_BASE_URL}}"
+
+inputs:
+  RAZORPAY_BASE_URL:
+    kind: variable
+    default: https://api.razorpay.com
+    hint: |
+      Razorpay REST API base URL.
+
+      Default:
+      https://api.razorpay.com
+  RAZORPAY_API_KEY:
+    kind: secret
+    hint: |
+      Razorpay Key ID for HTTP Basic Auth.
+
+      Generate test or live API keys in the Razorpay Dashboard under
+      Account & Settings -> API Keys. Use test mode keys for validation.
+  RAZORPAY_KEY_SECRET:
+    kind: secret
+    hint: |
+      Razorpay Key Secret paired with RAZORPAY_API_KEY.
+
+      Razorpay only shows the key secret when it is generated. Treat it as
+      sensitive; this source sends it only as the HTTP Basic Auth password.
+
+auth:
+  type: BasicAuth
+  username: "{{input.RAZORPAY_API_KEY}}"
+  password: "{{input.RAZORPAY_KEY_SECRET}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT entity, count FROM razorpay.payments_summary LIMIT 1
+
+tables:
+  - name: payments_summary
+    description: Razorpay payments collection metadata from GET /v1/payments.
+    guide: |
+      This table returns one row with Razorpay's top-level collection metadata.
+      Use it for connection checks, especially when a test account has no
+      payment rows yet.
+    filters:
+      - name: from_timestamp
+      - name: to_timestamp
+    request:
+      method: GET
+      path: /v1/payments
+      query:
+        - name: from
+          from: filter_int
+          key: from_timestamp
+        - name: to
+          from: filter_int
+          key: to_timestamp
+        - name: count
+          from: literal
+          value: 1
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: from_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp lower bound supplied in SQL.
+        expr: {kind: from_filter, key: from_timestamp}
+      - name: to_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp upper bound supplied in SQL.
+        expr: {kind: from_filter, key: to_timestamp}
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay collection entity type.
+      - name: count
+        type: Int64
+        nullable: true
+        description: Number of payments returned in this collection response.
+      - name: items
+        type: Json
+        nullable: true
+        description: Raw payments array returned in the collection response.
+
+  - name: payments
+    description: Razorpay payment rows from GET /v1/payments.
+    guide: |
+      Uses Razorpay count/skip pagination. Optional SQL filters
+      `from_timestamp` and `to_timestamp` map to Razorpay's `from` and `to` query
+      parameters, which are Unix timestamps in seconds. This table is
+      read-only; it does not capture or update payments.
+    fetch_limit_default: 100
+    filters:
+      - name: from_timestamp
+      - name: to_timestamp
+    request:
+      method: GET
+      path: /v1/payments
+      query:
+        - name: from
+          from: filter_int
+          key: from_timestamp
+        - name: to
+          from: filter_int
+          key: to_timestamp
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: from_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp lower bound supplied in SQL.
+        expr: {kind: from_filter, key: from_timestamp}
+      - name: to_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp upper bound supplied in SQL.
+        expr: {kind: from_filter, key: to_timestamp}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Razorpay payment ID.
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay entity type.
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Payment amount in currency subunits.
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Payment currency.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Payment status.
+      - name: method
+        type: Utf8
+        nullable: true
+        description: Payment method.
+      - name: order_id
+        type: Utf8
+        nullable: true
+        description: Associated Razorpay order ID.
+      - name: invoice_id
+        type: Utf8
+        nullable: true
+        description: Associated Razorpay invoice ID.
+      - name: captured
+        type: Boolean
+        nullable: true
+        description: Whether the payment was captured.
+      - name: amount_refunded
+        type: Int64
+        nullable: true
+        description: Amount refunded in currency subunits.
+      - name: refund_status
+        type: Utf8
+        nullable: true
+        description: Refund status for the payment.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Customer email on the payment.
+      - name: contact
+        type: Utf8
+        nullable: true
+        description: Customer contact on the payment.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Payment creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [created_at]}
+      - name: notes
+        type: Json
+        nullable: true
+        description: Raw Razorpay notes object.
+      - name: acquirer_data
+        type: Json
+        nullable: true
+        description: Raw acquirer data object.
+      - name: error_code
+        type: Utf8
+        nullable: true
+        description: Razorpay payment error code when present.
+      - name: error_description
+        type: Utf8
+        nullable: true
+        description: Razorpay payment error description when present.
+
+  - name: orders
+    description: Razorpay order rows from GET /v1/orders.
+    guide: |
+      Uses Razorpay count/skip pagination. Optional SQL filters
+      `from_timestamp`, `to_timestamp`, and `receipt_filter` map to Razorpay's
+      `from`, `to`, and `receipt` query parameters.
+    fetch_limit_default: 100
+    filters:
+      - name: from_timestamp
+      - name: to_timestamp
+      - name: receipt
+    request:
+      method: GET
+      path: /v1/orders
+      query:
+        - name: from
+          from: filter_int
+          key: from_timestamp
+        - name: to
+          from: filter_int
+          key: to_timestamp
+        - name: receipt
+          from: filter
+          key: receipt
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: from_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp lower bound supplied in SQL.
+        expr: {kind: from_filter, key: from_timestamp}
+      - name: to_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp upper bound supplied in SQL.
+        expr: {kind: from_filter, key: to_timestamp}
+      - name: receipt_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional receipt filter supplied in SQL.
+        expr: {kind: from_filter, key: receipt}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Razorpay order ID.
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay entity type.
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Order amount in currency subunits.
+      - name: amount_paid
+        type: Int64
+        nullable: true
+        description: Amount paid against the order.
+      - name: amount_due
+        type: Int64
+        nullable: true
+        description: Amount due against the order.
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Order currency.
+      - name: receipt
+        type: Utf8
+        nullable: true
+        description: Receipt value supplied while creating the order.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Order status.
+      - name: attempts
+        type: Int64
+        nullable: true
+        description: Number of payment attempts.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Order creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [created_at]}
+      - name: notes
+        type: Json
+        nullable: true
+        description: Raw Razorpay notes object.
+
+  - name: refunds
+    description: Razorpay refund rows from GET /v1/refunds.
+    guide: |
+      Uses Razorpay count/skip pagination. Optional SQL filters
+      `from_timestamp`, `to_timestamp`, and `payment_id_filter` map to Razorpay's
+      `from`, `to`, and `payment_id` query parameters.
+    fetch_limit_default: 100
+    filters:
+      - name: from_timestamp
+      - name: to_timestamp
+      - name: payment_id
+    request:
+      method: GET
+      path: /v1/refunds
+      query:
+        - name: from
+          from: filter_int
+          key: from_timestamp
+        - name: to
+          from: filter_int
+          key: to_timestamp
+        - name: payment_id
+          from: filter
+          key: payment_id
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: from_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp lower bound supplied in SQL.
+        expr: {kind: from_filter, key: from_timestamp}
+      - name: to_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp upper bound supplied in SQL.
+        expr: {kind: from_filter, key: to_timestamp}
+      - name: payment_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional payment_id filter supplied in SQL.
+        expr: {kind: from_filter, key: payment_id}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Razorpay refund ID.
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay entity type.
+      - name: payment_id
+        type: Utf8
+        nullable: true
+        description: Payment ID associated with the refund.
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Refund amount in currency subunits.
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Refund currency.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Refund status.
+      - name: receipt
+        type: Utf8
+        nullable: true
+        description: Refund receipt value.
+      - name: speed_requested
+        type: Utf8
+        nullable: true
+        description: Requested refund speed.
+      - name: speed_processed
+        type: Utf8
+        nullable: true
+        description: Processed refund speed.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Refund creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [created_at]}
+      - name: notes
+        type: Json
+        nullable: true
+        description: Raw Razorpay notes object.
+
+  - name: customers
+    description: Razorpay customer rows from GET /v1/customers.
+    guide: |
+      Uses Razorpay count/skip pagination. This table is read-only and does not
+      create or update customers.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /v1/customers
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Razorpay customer ID.
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay entity type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Customer name.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Customer email.
+      - name: contact
+        type: Utf8
+        nullable: true
+        description: Customer contact number.
+      - name: gstin
+        type: Utf8
+        nullable: true
+        description: Customer GSTIN when returned.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Customer creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [created_at]}
+      - name: notes
+        type: Json
+        nullable: true
+        description: Raw Razorpay notes object.
+      - name: shipping_address
+        type: Json
+        nullable: true
+        description: Raw shipping address object.
+
+  - name: invoices
+    description: Razorpay invoice rows from GET /v1/invoices.
+    guide: |
+      Uses Razorpay collection pagination when available. Optional SQL filters
+      `type_filter`, `payment_id_filter`, `receipt_filter`, and
+      `customer_id_filter` map to Razorpay's corresponding query parameters.
+    fetch_limit_default: 100
+    filters:
+      - name: type
+      - name: payment_id
+      - name: receipt
+      - name: customer_id
+    request:
+      method: GET
+      path: /v1/invoices
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: payment_id
+          from: filter
+          key: payment_id
+        - name: receipt
+          from: filter
+          key: receipt
+        - name: customer_id
+          from: filter
+          key: customer_id
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: type_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional invoice type filter supplied in SQL.
+        expr: {kind: from_filter, key: type}
+      - name: payment_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional payment_id filter supplied in SQL.
+        expr: {kind: from_filter, key: payment_id}
+      - name: receipt_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional receipt filter supplied in SQL.
+        expr: {kind: from_filter, key: receipt}
+      - name: customer_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional customer_id filter supplied in SQL.
+        expr: {kind: from_filter, key: customer_id}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Razorpay invoice ID.
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay entity type.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Invoice type.
+      - name: invoice_number
+        type: Utf8
+        nullable: true
+        description: Razorpay invoice number.
+      - name: receipt
+        type: Utf8
+        nullable: true
+        description: Invoice receipt value.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Invoice status.
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: Razorpay customer ID associated with the invoice.
+      - name: order_id
+        type: Utf8
+        nullable: true
+        description: Razorpay order ID associated with the invoice.
+      - name: payment_id
+        type: Utf8
+        nullable: true
+        description: Payment ID associated with the invoice.
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Invoice amount in currency subunits.
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Invoice currency.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Invoice creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [created_at]}
+      - name: customer_details
+        type: Json
+        nullable: true
+        description: Raw customer_details object.
+      - name: line_items
+        type: Json
+        nullable: true
+        description: Raw invoice line items array.
+      - name: notes
+        type: Json
+        nullable: true
+        description: Raw Razorpay notes object.
+
+  - name: payment_links
+    description: Razorpay standard payment link rows from GET /v1/payment_links.
+    guide: |
+      Returns standard Payment Links. This table is read-only and does not
+      create, update, notify, or cancel payment links. Optional `payment_id`
+      and `reference_id` filters are pushed down to Razorpay.
+    fetch_limit_default: 100
+    filters:
+      - name: payment_id
+      - name: reference_id
+    request:
+      method: GET
+      path: /v1/payment_links
+      query:
+        - name: payment_id
+          from: filter
+          key: payment_id
+        - name: reference_id
+          from: filter
+          key: reference_id
+    response:
+      rows_path: [payment_links]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: payment_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional payment_id filter supplied in SQL.
+        expr: {kind: from_filter, key: payment_id}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Razorpay payment link ID.
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay entity type.
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Payment link amount in currency subunits.
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Payment link currency.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Payment link status.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Payment link description.
+      - name: reference_id
+        type: Utf8
+        nullable: true
+        description: Merchant reference ID when returned.
+      - name: short_url
+        type: Utf8
+        nullable: true
+        description: Short URL for the payment link.
+      - name: customer
+        type: Json
+        nullable: true
+        description: Raw customer object.
+      - name: notify
+        type: Json
+        nullable: true
+        description: Raw notification settings object.
+      - name: notes
+        type: Json
+        nullable: true
+        description: Raw Razorpay notes object.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Payment link creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [created_at]}
+
+  - name: settlements
+    description: Razorpay settlement rows from GET /v1/settlements.
+    guide: |
+      Uses Razorpay count/skip pagination. Optional SQL filters
+      `from_timestamp` and `to_timestamp` map to Razorpay's `from` and `to` query
+      parameters, which are Unix timestamps in seconds.
+    fetch_limit_default: 100
+    filters:
+      - name: from_timestamp
+      - name: to_timestamp
+    request:
+      method: GET
+      path: /v1/settlements
+      query:
+        - name: from
+          from: filter_int
+          key: from_timestamp
+        - name: to
+          from: filter_int
+          key: to_timestamp
+    response:
+      rows_path: [items]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: from_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp lower bound supplied in SQL.
+        expr: {kind: from_filter, key: from_timestamp}
+      - name: to_timestamp
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Unix timestamp upper bound supplied in SQL.
+        expr: {kind: from_filter, key: to_timestamp}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Razorpay settlement ID.
+      - name: entity
+        type: Utf8
+        nullable: true
+        description: Razorpay entity type.
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Settlement amount in currency subunits.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Settlement status.
+      - name: fees
+        type: Int64
+        nullable: true
+        description: Fees charged on the settlement.
+      - name: tax
+        type: Int64
+        nullable: true
+        description: Tax charged on fees.
+      - name: utr
+        type: Utf8
+        nullable: true
+        description: Settlement UTR when returned.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Settlement creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [created_at]}

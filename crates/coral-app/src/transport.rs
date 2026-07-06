@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use coral_api::{
-    CORAL_ERROR_DOMAIN, grpc_response_status_code,
+    CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
@@ -26,6 +26,7 @@ use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
+use crate::episode::EpisodeId;
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -48,19 +49,13 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
-/// Extracts a W3C trace context from incoming gRPC request metadata.
-pub(crate) fn extract_trace_context(
-    metadata: &tonic::metadata::MetadataMap,
-) -> opentelemetry::Context {
-    opentelemetry::global::get_text_map_propagator(|p| p.extract(&MetadataExtractor(metadata)))
-}
-
-/// Wraps a generated tonic service and stores the inbound gRPC path on the request.
+/// Wraps a generated tonic service and stores inbound request context on the request.
 ///
 /// Tonic preserves `http::Request` extensions when it decodes the protobuf
 /// message into a `tonic::Request`, but generated server wrappers do not insert
 /// `tonic::GrpcMethod` the way generated clients do. This keeps the method
-/// data at the transport boundary and lets handlers read it from the request.
+/// data and Coral request metadata at the transport boundary and lets handlers
+/// read typed context from the request.
 #[derive(Clone)]
 pub(crate) struct GrpcMethodAnnotatedService<S> {
     inner: S,
@@ -88,9 +83,7 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
-            request.extensions_mut().insert(method);
-        }
+        annotate_request_context(&mut request);
         self.inner.call(request)
     }
 }
@@ -104,7 +97,6 @@ where
 
 /// Creates a span parented to the trace context extracted from a gRPC request.
 pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
-    let parent_cx = extract_trace_context(request.metadata());
     let metadata = grpc_method(request);
     let span_name = format!("{}/{}", metadata.service, metadata.method);
     let span = tracing::info_span!(
@@ -123,7 +115,7 @@ pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
         grpc.code = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    drop(span.set_parent(parent_cx));
+    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request.metadata()));
     span
 }
 
@@ -170,6 +162,30 @@ fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
         || GrpcMethodMetadata::new("coral.v1.UnknownService", "Unknown"),
         |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
     )
+}
+
+fn annotate_request_context<B>(request: &mut http::Request<B>) {
+    if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
+        request.extensions_mut().insert(method);
+    }
+    if let Some(episode_id) = request
+        .headers()
+        .get(CORAL_EPISODE_ID_METADATA_KEY)
+        .and_then(episode_id_from_header_value)
+    {
+        request.extensions_mut().insert(episode_id);
+    }
+}
+
+fn episode_id_from_header_value(value: &http::HeaderValue) -> Option<EpisodeId> {
+    let value = value.to_str().ok()?;
+    match EpisodeId::parse(value) {
+        Ok(episode_id) => Some(episode_id),
+        Err(error) => {
+            tracing::debug!(%error, "ignoring malformed coral-episode-id metadata");
+            None
+        }
+    }
 }
 
 pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
@@ -255,7 +271,17 @@ pub(crate) fn table_to_proto(
     workspace_name: &WorkspaceName,
     table: coral_engine::TableInfo,
 ) -> Table {
-    table_to_proto_with_columns(workspace_name, table)
+    let columns = table.columns.into_iter().map(column_to_proto).collect();
+
+    Table {
+        workspace: Some(workspace_to_proto(workspace_name)),
+        schema_name: table.schema_name,
+        name: table.table_name,
+        description: table.description,
+        columns,
+        required_filters: table.required_filters,
+        guide: table.guide,
+    }
 }
 
 pub(crate) fn table_summary_to_proto(
@@ -394,23 +420,6 @@ pub(crate) fn pagination_to_proto(
     }
 }
 
-fn table_to_proto_with_columns(
-    workspace_name: &WorkspaceName,
-    table: coral_engine::TableInfo,
-) -> Table {
-    let columns = table.columns.into_iter().map(column_to_proto).collect();
-
-    Table {
-        workspace: Some(workspace_to_proto(workspace_name)),
-        schema_name: table.schema_name,
-        name: table.table_name,
-        description: table.description,
-        columns,
-        required_filters: table.required_filters,
-        guide: table.guide,
-    }
-}
-
 fn column_to_proto(column: coral_engine::ColumnInfo) -> Column {
     Column {
         name: column.name,
@@ -472,17 +481,18 @@ mod tests {
     )]
 
     use coral_api::{
-        grpc_response_status_code,
+        CORAL_EPISODE_ID_METADATA_KEY, grpc_response_status_code,
         v1::{QueryTestFailure, Workspace, query_test_result},
     };
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
+        GrpcMethodMetadata, GrpcServerMethod, annotate_request_context, grpc_method, query_status,
         query_test_result_to_proto, table_summary_to_proto, table_to_proto,
         workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
+    use crate::episode::EpisodeId;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
@@ -566,6 +576,47 @@ mod tests {
             workspace_name_from_proto(Some(&workspace)).expect("workspace should parse");
 
         assert_eq!(workspace_name.as_str(), "default");
+    }
+
+    #[test]
+    fn annotate_request_context_extracts_valid_episode_id() {
+        let mut request = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(CORAL_EPISODE_ID_METADATA_KEY, "ep_123")
+            .body(())
+            .expect("request");
+
+        annotate_request_context(&mut request);
+
+        let episode_id = request
+            .extensions()
+            .get::<EpisodeId>()
+            .expect("episode id extension");
+        assert_eq!(episode_id.as_str(), "ep_123");
+    }
+
+    #[test]
+    fn annotate_request_context_ignores_absent_and_malformed_episode_id() {
+        let mut absent = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .body(())
+            .expect("request");
+        annotate_request_context(&mut absent);
+        assert!(
+            absent.extensions().get::<EpisodeId>().is_none(),
+            "a missing coral-episode-id yields no attribution"
+        );
+
+        let mut malformed = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(CORAL_EPISODE_ID_METADATA_KEY, "has space")
+            .body(())
+            .expect("request");
+        annotate_request_context(&mut malformed);
+        assert!(
+            malformed.extensions().get::<EpisodeId>().is_none(),
+            "a malformed id is ignored, not surfaced"
+        );
     }
 
     #[test]

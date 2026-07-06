@@ -8,10 +8,11 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::backends::file::{JsonlSourceManifest, ParquetSourceManifest};
+use crate::backends::file::FileSourceManifest;
 use crate::backends::http::HttpSourceManifest;
 use crate::backends::mcp::McpSourceManifest;
-use crate::schema::validate_manifest_schema;
+use crate::schema::validate_manifest_schema_for_dsl_version;
+use crate::v4::V4SourceManifest;
 use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
 
 /// Validated top-level source spec for one registered source.
@@ -27,46 +28,56 @@ pub struct ValidatedSourceManifest {
 #[derive(Debug, Clone)]
 enum ValidatedManifestKind {
     Http(Box<HttpSourceManifest>),
-    Parquet(ParquetSourceManifest),
-    Jsonl(JsonlSourceManifest),
+    File(FileSourceManifest),
     Mcp(McpSourceManifest),
+    V4(Box<V4SourceManifest>),
 }
 
 impl ValidatedSourceManifest {
     /// Returns the stable backend kind declared by the source spec.
     ///
     /// This accessor is currently test-only because production callers
-    /// typically branch through `as_http`, `as_parquet`, or `as_jsonl`.
+    /// typically branch through `as_http` or `as_file`.
     #[cfg(test)]
     #[must_use]
     pub fn backend(&self) -> SourceBackend {
         match &self.inner {
-            ValidatedManifestKind::Http(_) => SourceBackend::Http,
-            ValidatedManifestKind::Parquet(_) => SourceBackend::Parquet,
-            ValidatedManifestKind::Jsonl(_) => SourceBackend::Jsonl,
+            ValidatedManifestKind::Http(_) | ValidatedManifestKind::V4(_) => SourceBackend::Http,
+            ValidatedManifestKind::File(_) => SourceBackend::File,
             ValidatedManifestKind::Mcp(_) => SourceBackend::Mcp,
         }
     }
 
+    /// Returns the declared source-spec DSL version.
     #[must_use]
-    /// Returns the source-spec `name`, which is also the stable SQL schema name.
-    pub fn schema_name(&self) -> &str {
+    pub fn dsl_version(&self) -> u32 {
         match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.common.name,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.name,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.name,
-            ValidatedManifestKind::Mcp(manifest) => &manifest.common.name,
+            ValidatedManifestKind::Http(manifest) => manifest.common.dsl_version,
+            ValidatedManifestKind::File(manifest) => manifest.common.dsl_version,
+            ValidatedManifestKind::Mcp(manifest) => manifest.common.dsl_version,
+            ValidatedManifestKind::V4(manifest) => manifest.common.dsl_version,
         }
     }
 
     #[must_use]
-    /// Returns the source-spec version string for the source.
-    pub fn source_version(&self) -> &str {
+    /// Returns the source-spec `name`.
+    pub fn schema_name(&self) -> &str {
         match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.common.version,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.version,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.version,
-            ValidatedManifestKind::Mcp(manifest) => &manifest.common.version,
+            ValidatedManifestKind::Http(manifest) => &manifest.common.name,
+            ValidatedManifestKind::File(manifest) => &manifest.common.name,
+            ValidatedManifestKind::Mcp(manifest) => &manifest.common.name,
+            ValidatedManifestKind::V4(manifest) => &manifest.common.name,
+        }
+    }
+
+    #[must_use]
+    /// Returns the authored source-spec version string when the DSL declares one.
+    pub fn source_version(&self) -> Option<&str> {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => Some(&manifest.common.version),
+            ValidatedManifestKind::File(manifest) => Some(&manifest.common.version),
+            ValidatedManifestKind::Mcp(manifest) => Some(&manifest.common.version),
+            ValidatedManifestKind::V4(_) => None,
         }
     }
 
@@ -75,9 +86,9 @@ impl ValidatedSourceManifest {
     pub fn description(&self) -> &str {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => &manifest.common.description,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.description,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.description,
+            ValidatedManifestKind::File(manifest) => &manifest.common.description,
             ValidatedManifestKind::Mcp(manifest) => &manifest.common.description,
+            ValidatedManifestKind::V4(manifest) => &manifest.common.description,
         }
     }
 
@@ -86,9 +97,9 @@ impl ValidatedSourceManifest {
     pub fn test_queries(&self) -> &[String] {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => &manifest.common.test_queries,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.common.test_queries,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.common.test_queries,
+            ValidatedManifestKind::File(manifest) => &manifest.common.test_queries,
             ValidatedManifestKind::Mcp(manifest) => &manifest.common.test_queries,
+            ValidatedManifestKind::V4(manifest) => &manifest.common.test_queries,
         }
     }
 
@@ -98,9 +109,30 @@ impl ValidatedSourceManifest {
     pub fn required_secret_names(&self) -> BTreeSet<String> {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::Parquet(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::Jsonl(manifest) => manifest.required_secret_names(),
+            ValidatedManifestKind::File(manifest) => manifest.required_secret_names(),
             ValidatedManifestKind::Mcp(manifest) => manifest.required_secret_names(),
+            ValidatedManifestKind::V4(manifest) => manifest
+                .declared_inputs
+                .iter()
+                .filter(|input| input.kind == crate::ManifestInputKind::Secret && input.required)
+                .map(|input| input.key.clone())
+                .collect(),
+        }
+    }
+
+    /// Returns the set of declared source secrets that may be passed to runtime.
+    #[must_use]
+    pub fn declared_secret_names(&self) -> BTreeSet<String> {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => manifest.declared_secret_names(),
+            ValidatedManifestKind::File(manifest) => manifest.declared_secret_names(),
+            ValidatedManifestKind::Mcp(manifest) => manifest.declared_secret_names(),
+            ValidatedManifestKind::V4(manifest) => manifest
+                .declared_inputs
+                .iter()
+                .filter(|input| input.kind == crate::ManifestInputKind::Secret)
+                .map(|input| input.key.clone())
+                .collect(),
         }
     }
 
@@ -109,9 +141,9 @@ impl ValidatedSourceManifest {
     pub fn declared_inputs(&self) -> &[ManifestInputSpec] {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => &manifest.declared_inputs,
-            ValidatedManifestKind::Parquet(manifest) => &manifest.declared_inputs,
-            ValidatedManifestKind::Jsonl(manifest) => &manifest.declared_inputs,
+            ValidatedManifestKind::File(manifest) => &manifest.declared_inputs,
             ValidatedManifestKind::Mcp(manifest) => &manifest.declared_inputs,
+            ValidatedManifestKind::V4(manifest) => &manifest.declared_inputs,
         }
     }
 
@@ -120,25 +152,20 @@ impl ValidatedSourceManifest {
     pub fn as_http(&self) -> Option<&HttpSourceManifest> {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => Some(manifest),
-            _ => None,
+            ValidatedManifestKind::File(_)
+            | ValidatedManifestKind::Mcp(_)
+            | ValidatedManifestKind::V4(_) => None,
         }
     }
 
-    /// Returns the validated Parquet source spec when `backend: parquet`.
+    /// Returns the validated file source spec when `backend: file`.
     #[must_use]
-    pub fn as_parquet(&self) -> Option<&ParquetSourceManifest> {
+    pub fn as_file(&self) -> Option<&FileSourceManifest> {
         match &self.inner {
-            ValidatedManifestKind::Parquet(manifest) => Some(manifest),
-            _ => None,
-        }
-    }
-
-    /// Returns the validated JSONL source spec when `backend: jsonl`.
-    #[must_use]
-    pub fn as_jsonl(&self) -> Option<&JsonlSourceManifest> {
-        match &self.inner {
-            ValidatedManifestKind::Jsonl(manifest) => Some(manifest),
-            _ => None,
+            ValidatedManifestKind::File(manifest) => Some(manifest),
+            ValidatedManifestKind::Http(_)
+            | ValidatedManifestKind::Mcp(_)
+            | ValidatedManifestKind::V4(_) => None,
         }
     }
 
@@ -147,7 +174,20 @@ impl ValidatedSourceManifest {
     pub fn as_mcp(&self) -> Option<&McpSourceManifest> {
         match &self.inner {
             ValidatedManifestKind::Mcp(manifest) => Some(manifest),
-            _ => None,
+            ValidatedManifestKind::Http(_)
+            | ValidatedManifestKind::File(_)
+            | ValidatedManifestKind::V4(_) => None,
+        }
+    }
+
+    /// Returns the validated DSL v4 source spec when `dsl_version: 4`.
+    #[must_use]
+    pub fn as_v4(&self) -> Option<&V4SourceManifest> {
+        match &self.inner {
+            ValidatedManifestKind::V4(manifest) => Some(manifest),
+            ValidatedManifestKind::Http(_)
+            | ValidatedManifestKind::File(_)
+            | ValidatedManifestKind::Mcp(_) => None,
         }
     }
 }
@@ -174,7 +214,15 @@ pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> 
 /// Returns a [`ManifestError`] if the source spec violates any validation
 /// rules.
 pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManifest> {
-    validate_manifest_schema(&value)?;
+    let dsl_version = parse_dsl_version(&value)?;
+    validate_manifest_schema_for_dsl_version(&value, dsl_version)?;
+    if dsl_version == 4 {
+        return Ok(ValidatedSourceManifest {
+            inner: ValidatedManifestKind::V4(Box::new(V4SourceManifest::parse_manifest_value(
+                value,
+            )?)),
+        });
+    }
     let backend_kind = parse_source_backend(&value)?;
     match backend_kind {
         SourceBackend::Http => Ok(ValidatedSourceManifest {
@@ -182,18 +230,23 @@ pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManife
                 value,
             )?)),
         }),
-        SourceBackend::Parquet => Ok(ValidatedSourceManifest {
-            inner: ValidatedManifestKind::Parquet(ParquetSourceManifest::parse_manifest_value(
-                value,
-            )?),
-        }),
-        SourceBackend::Jsonl => Ok(ValidatedSourceManifest {
-            inner: ValidatedManifestKind::Jsonl(JsonlSourceManifest::parse_manifest_value(value)?),
+        SourceBackend::File => Ok(ValidatedSourceManifest {
+            inner: ValidatedManifestKind::File(FileSourceManifest::parse_manifest_value(value)?),
         }),
         SourceBackend::Mcp => Ok(ValidatedSourceManifest {
             inner: ValidatedManifestKind::Mcp(McpSourceManifest::parse_manifest_value(value)?),
         }),
     }
+}
+
+fn parse_dsl_version(value: &Value) -> Result<u32> {
+    let Some(raw) = value.get("dsl_version").and_then(Value::as_u64) else {
+        return Err(ManifestError::validation(
+            "failed to deserialize manifest: missing dsl_version",
+        ));
+    };
+    u32::try_from(raw)
+        .map_err(|_err| ManifestError::validation("manifest dsl_version exceeds supported range"))
 }
 
 fn parse_source_backend(value: &Value) -> Result<SourceBackend> {
@@ -216,13 +269,14 @@ mod tests {
 name: demo
 version: 1.0.0
 dsl_version: 3
-backend: jsonl
+backend: file
 test_queries:
   - SELECT 1
   - SELECT 2
 tables:
   - name: messages
     description: Demo messages
+    format: jsonl
     source:
       location: file:///tmp/demo/
     columns:
@@ -236,16 +290,130 @@ tables:
     }
 
     #[test]
+    fn reserved_source_name_is_rejected() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: public
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("reserved source name should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source name 'public' is reserved"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn lookup_key_on_file_jsonl_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    filters:
+      - name: id
+        lookup_key: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("spec layer should reject lookup_key filters on file sources");
+
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
+    }
+
+    #[test]
+    fn lookup_key_on_file_parquet_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: parquet
+    filters:
+      - name: id
+        lookup_key: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("spec layer should reject lookup_key filters on file sources");
+
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
+    }
+
+    #[test]
+    fn http_rate_limit_max_concurrency_is_not_manifest_metadata() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+rate_limit:
+  max_concurrency: 8
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("manifest-owned concurrency should fail schema validation");
+
+        assert!(error.to_string().contains("max_concurrency"));
+    }
+
+    #[test]
     fn parse_source_manifest_rejects_duplicate_table_names() {
         let error = parse_source_manifest_yaml(
             r"
 name: demo
 version: 1.0.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: messages
     description: Demo messages
+    format: jsonl
     source:
       location: file:///tmp/demo/
     columns:
@@ -253,6 +421,7 @@ tables:
         type: Utf8
   - name: messages
     description: Duplicate messages
+    format: jsonl
     source:
       location: file:///tmp/demo/
     columns:
@@ -264,7 +433,7 @@ tables:
 
         assert_eq!(
             error.to_string(),
-            "source 'demo' has duplicate table 'messages'"
+            "source 'demo' table 'messages' is declared more than once"
         );
     }
 
@@ -312,12 +481,13 @@ functions:
 name: demo
 version: 1.0.0
 dsl_version: 3
-backend: jsonl
+backend: file
 test_queries:
   - "   "
 tables:
   - name: messages
     description: Demo messages
+    format: jsonl
     source:
       location: file:///tmp/demo/
     columns:

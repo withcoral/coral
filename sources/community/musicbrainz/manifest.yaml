@@ -1,0 +1,495 @@
+name: musicbrainz
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query the MusicBrainz open music encyclopedia for artists, releases,
+  recordings, and labels via the public web service API. No authentication
+  required.
+base_url: https://musicbrainz.org/ws/2
+request_headers:
+  - name: User-Agent
+    from: literal
+    value: "Coral/0.1.0 ( https://github.com/withcoral/coral )"
+test_queries:
+  - SELECT name, type, country FROM musicbrainz.search_artists(query => 'The Beatles') LIMIT 1
+  - SELECT title, status, date FROM musicbrainz.search_releases(query => 'Abbey Road') LIMIT 1
+  - SELECT title, length FROM musicbrainz.search_recordings(query => 'Yesterday') LIMIT 1
+  - SELECT name, type FROM musicbrainz.search_labels(query => 'Parlophone') LIMIT 1
+functions:
+  - name: search_artists
+    kind: search
+    description: |
+      Search for artists in the MusicBrainz database. Use `query` with a
+      Lucene search expression (e.g. `The Beatles`, `artist:Radiohead AND
+      country:GB`). Results include name, type, country, area, lifespan,
+      and disambiguation.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /artist
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: fmt
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - artists
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: MusicBrainz identifier (MBID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Artist name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: sort_name
+        type: Utf8
+        nullable: false
+        description: Sort name for ordering.
+        expr:
+          kind: path
+          path:
+            - sort-name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Artist type (e.g. Person, Group, Orchestra).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: country
+        type: Utf8
+        nullable: true
+        description: ISO 3166-1 alpha-2 country code.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: area_name
+        type: Utf8
+        nullable: true
+        description: Primary associated area name.
+        expr:
+          kind: path
+          path:
+            - area
+            - name
+      - name: disambiguation
+        type: Utf8
+        nullable: true
+        description: Disambiguation comment.
+        expr:
+          kind: path
+          path:
+            - disambiguation
+      - name: score
+        type: Int64
+        nullable: true
+        description: Search relevance score (higher is better).
+        expr:
+          kind: path
+          path:
+            - score
+      - name: begin_date
+        type: Utf8
+        nullable: true
+        description: Begin date of the artist (e.g. 1960 or 1940-10-09).
+        expr:
+          kind: path
+          path:
+            - life-span
+            - begin
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: End date of the artist, if applicable.
+        expr:
+          kind: path
+          path:
+            - life-span
+            - end
+      - name: ended
+        type: Boolean
+        nullable: true
+        description: Whether the artist has ended.
+        expr:
+          kind: path
+          path:
+            - life-span
+            - ended
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the search query filter.
+        expr:
+          kind: from_arg
+          key: query
+
+  - name: search_releases
+    kind: search
+    description: |
+      Search for releases (albums, singles, EPs, etc.) in the MusicBrainz
+      database. Use `query` with a Lucene search expression (e.g.
+      `Abbey Road`, `release:OK Computer AND artist:Radiohead`).
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /release
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: fmt
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - releases
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: MusicBrainz identifier (MBID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Release title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Release status (e.g. Official, Bootleg, Promotion).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Release date (YYYY, YYYY-MM, or YYYY-MM-DD).
+        expr:
+          kind: path
+          path:
+            - date
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Release country code.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: barcode
+        type: Utf8
+        nullable: true
+        description: GTIN barcode.
+        expr:
+          kind: path
+          path:
+            - barcode
+      - name: disambiguation
+        type: Utf8
+        nullable: true
+        description: Disambiguation comment.
+        expr:
+          kind: path
+          path:
+            - disambiguation
+      - name: score
+        type: Int64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: artist_credit
+        type: Utf8
+        nullable: true
+        description: Primary artist credit name.
+        expr:
+          kind: first_array_item_path
+          path:
+            - artist-credit
+          item_path:
+            - name
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the search query filter.
+        expr:
+          kind: from_arg
+          key: query
+
+  - name: search_recordings
+    kind: search
+    description: |
+      Search for recordings (individual tracks) in the MusicBrainz database.
+      Use `query` with a Lucene search expression (e.g. `Yesterday`,
+      `recording:Bohemian Rhapsody AND artist:Queen`).
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /recording
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: fmt
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - recordings
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: MusicBrainz identifier (MBID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Recording title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: length
+        type: Int64
+        nullable: true
+        description: Duration in milliseconds.
+        expr:
+          kind: path
+          path:
+            - length
+      - name: disambiguation
+        type: Utf8
+        nullable: true
+        description: Disambiguation comment.
+        expr:
+          kind: path
+          path:
+            - disambiguation
+      - name: score
+        type: Int64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: artist_credit
+        type: Utf8
+        nullable: true
+        description: Primary artist credit name.
+        expr:
+          kind: first_array_item_path
+          path:
+            - artist-credit
+          item_path:
+            - name
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the search query filter.
+        expr:
+          kind: from_arg
+          key: query
+
+  - name: search_labels
+    kind: search
+    description: |
+      Search for labels (record companies, imprints, etc.) in the MusicBrainz
+      database. Use `query` with a Lucene search expression (e.g.
+      `Parlophone`, `label:Atlantic`).
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /label
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: fmt
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - labels
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: MusicBrainz identifier (MBID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Label name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Label type (e.g. Original Production, Bootleg Production).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: country
+        type: Utf8
+        nullable: true
+        description: ISO country code.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: area_name
+        type: Utf8
+        nullable: true
+        description: Primary associated area name.
+        expr:
+          kind: path
+          path:
+            - area
+            - name
+      - name: disambiguation
+        type: Utf8
+        nullable: true
+        description: Disambiguation comment.
+        expr:
+          kind: path
+          path:
+            - disambiguation
+      - name: score
+        type: Int64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: begin_date
+        type: Utf8
+        nullable: true
+        description: Label begin date.
+        expr:
+          kind: path
+          path:
+            - life-span
+            - begin
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Label end date, if applicable.
+        expr:
+          kind: path
+          path:
+            - life-span
+            - end
+      - name: ended
+        type: Boolean
+        nullable: true
+        description: Whether the label has ended.
+        expr:
+          kind: path
+          path:
+            - life-span
+            - ended
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the search query filter.
+        expr:
+          kind: from_arg
+          key: query

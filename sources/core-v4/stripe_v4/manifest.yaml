@@ -1,0 +1,23 @@
+name: stripe_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/latest/openapi.spec3.yaml
+    inputs:
+      STRIPE_API_KEY:
+        kind: secret
+        hint: |
+          Create a restricted API key (`rk_test_` or `rk_live_`) with Read
+          permissions for the resources you plan to query.
+          You can also use secret keys (`sk_test_` or `sk_live_`), but
+          restricted keys limit access to only the required endpoints.
+          See [Stripe API key docs](https://docs.stripe.com/keys).
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{input.STRIPE_API_KEY}}
+test_queries:
+  - SELECT * FROM stripe_v4.account LIMIT 1

@@ -1,0 +1,1005 @@
+name: deps_dev
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query package metadata, dependency trees, and security advisories from the
+  deps.dev API. Supports NPM, PYPI, MAVEN, GO, CARGO, RUBYGEMS, and NUGET.
+  Package names containing special characters (such as scoped npm packages
+  or Maven group:artifact coordinates) must be URL-encoded in filter values.
+base_url: https://api.deps.dev
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - >
+    SELECT version, licenses, advisory_keys
+    FROM deps_dev.versions
+    WHERE system = 'NPM' AND package_name = 'minimist' AND version = '0.0.8'
+    LIMIT 1
+  - >
+    SELECT versions
+    FROM deps_dev.packages
+    WHERE system = 'NPM' AND package_name = 'minimist'
+    LIMIT 1
+  - >
+    SELECT dependency_name, dependency_version
+    FROM deps_dev.dependencies
+    WHERE system = 'NPM' AND package_name = 'minimist' AND version = '0.0.8'
+    LIMIT 1
+  - >
+    SELECT nodes, edges, error
+    FROM deps_dev.dependency_graph
+    WHERE system = 'NPM' AND package_name = 'minimist' AND version = '0.0.8'
+    LIMIT 1
+  - >
+    SELECT raw
+    FROM deps_dev.requirements
+    WHERE system = 'NPM' AND package_name = 'minimist' AND version = '0.0.8'
+    LIMIT 1
+  - >
+    SELECT title
+    FROM deps_dev.advisories
+    WHERE advisory_id = 'GHSA-vh95-rmgr-6w4m'
+    LIMIT 1
+  - >
+    SELECT version, licenses
+    FROM deps_dev.versions
+    WHERE system = 'GO' AND package_name = 'golang.org%2Fx%2Ftext' AND version = 'v0.3.7'
+    LIMIT 1
+  - >
+    SELECT dependency_name, dependency_version, relation
+    FROM deps_dev.dependencies
+    WHERE system = 'MAVEN' AND package_name = 'org.apache.logging.log4j%3Alog4j-core' AND version = '2.17.1'
+    LIMIT 5
+  - >
+    SELECT open_issues_count, stars_count, license
+    FROM deps_dev.projects
+    WHERE project_id = 'github.com%2Fgolang%2Fgo'
+    LIMIT 1
+  - >
+    SELECT system, package_name, version, relation_type
+    FROM deps_dev.project_package_versions
+    WHERE project_id = 'github.com%2Ffacebook%2Freact'
+    LIMIT 5
+  - >
+    SELECT from_node, to_node, requirement
+    FROM deps_dev.dependency_edges
+    WHERE system = 'NPM' AND package_name = 'react' AND version = '18.2.0'
+    LIMIT 5
+tables:
+  - name: versions
+    description: Metadata for one package version from deps.dev.
+    guide: >
+      Requires system, package_name, and version. Use this table to inspect
+      package version metadata such as licenses, advisory keys, upstream
+      projects, and registry links. Package names containing special
+      characters must be URL-encoded (e.g. %40types%2Freact for @types/react).
+    filters:
+      - name: system
+        required: true
+      - name: package_name
+        required: true
+      - name: version
+        required: true
+    request:
+      method: GET
+      path: /v3/systems/{{filter.system}}/packages/{{filter.package_name}}/versions/{{filter.version}}
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: system
+        type: Utf8
+        nullable: true
+        description: Canonical package system returned by deps.dev.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - system
+      - name: package_name
+        type: Utf8
+        nullable: true
+        description: Canonical package name returned by deps.dev.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - name
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Canonical package version returned by deps.dev.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - version
+      - name: requested_system
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Package system submitted in the request.
+        expr:
+          kind: from_filter
+          key: system
+      - name: requested_package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Package name submitted in the request.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: requested_version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Package version submitted in the request.
+        expr:
+          kind: from_filter
+          key: version
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Time the package version was published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - publishedAt
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether deps.dev marks this as the default version.
+        expr:
+          kind: path
+          path:
+            - isDefault
+      - name: is_deprecated
+        type: Boolean
+        nullable: true
+        description: Whether the package version is deprecated.
+        expr:
+          kind: path
+          path:
+            - isDeprecated
+      - name: deprecated_reason
+        type: Utf8
+        nullable: true
+        description: Deprecation reason when available.
+        expr:
+          kind: path
+          path:
+            - deprecatedReason
+      - name: licenses
+        type: Json
+        nullable: true
+        description: License identifiers reported for this package version.
+        expr:
+          kind: path
+          path:
+            - licenses
+      - name: advisory_keys
+        type: Json
+        nullable: true
+        description: Advisory keys associated with this package version.
+        expr:
+          kind: path
+          path:
+            - advisoryKeys
+      - name: links
+        type: Json
+        nullable: true
+        description: Homepage, source repository, issue tracker, registry, and other links.
+        expr:
+          kind: path
+          path:
+            - links
+      - name: slsa_provenances
+        type: Json
+        nullable: true
+        description: SLSA provenance records for this package version.
+        expr:
+          kind: path
+          path:
+            - slsaProvenances
+      - name: attestations
+        type: Json
+        nullable: true
+        description: Attestations for this package version.
+        expr:
+          kind: path
+          path:
+            - attestations
+      - name: related_projects
+        type: Json
+        nullable: true
+        description: Upstream projects related to this package version.
+        expr:
+          kind: path
+          path:
+            - relatedProjects
+      - name: registries
+        type: Json
+        nullable: true
+        description: Package registries where this version is available.
+        expr:
+          kind: path
+          path:
+            - registries
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full raw deps.dev version object.
+        expr:
+          kind: current_row
+
+  - name: packages
+    description: Fetch package-level metadata (all versions) from deps.dev.
+    guide: >
+      Requires system and package_name. Use this table to inspect project-level
+      details, including the list of all available versions. Package names
+      containing special characters must be URL-encoded.
+    filters:
+      - name: system
+        required: true
+      - name: package_name
+        required: true
+    request:
+      method: GET
+      path: /v3/systems/{{filter.system}}/packages/{{filter.package_name}}
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: system
+        type: Utf8
+        nullable: true
+        description: Canonical package system returned by deps.dev.
+        expr:
+          kind: path
+          path:
+            - packageKey
+            - system
+      - name: package_name
+        type: Utf8
+        nullable: true
+        description: Canonical package name returned by deps.dev.
+        expr:
+          kind: path
+          path:
+            - packageKey
+            - name
+      - name: requested_system
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Package system submitted in the request.
+        expr:
+          kind: from_filter
+          key: system
+      - name: requested_package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Package name submitted in the request.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: versions
+        type: Json
+        nullable: true
+        description: >
+          JSON array of version objects, each containing versionKey.system,
+          versionKey.name, versionKey.version, publishedAt, isDefault,
+          isDeprecated, and deprecatedReason.
+        expr:
+          kind: path
+          path:
+            - versions
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full package object.
+        expr:
+          kind: current_row
+
+  - name: dependency_graph
+    description: Fetch the full resolved dependency graph for a package version.
+    guide: >
+      Requires system, package_name, and version. Returns the graph-level nodes,
+      edges, and error payload together so edge from_node and to_node indexes can
+      be interpreted against the original nodes array. Resolved dependency graphs
+      are currently available only for NPM, CARGO, MAVEN, and PYPI.
+    filters:
+      - name: system
+        required: true
+      - name: package_name
+        required: true
+      - name: version
+        required: true
+    request:
+      method: GET
+      path: /v3/systems/{{filter.system}}/packages/{{filter.package_name}}/versions/{{filter.version}}:dependencies
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: system
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package system submitted in the request.
+        expr:
+          kind: from_filter
+          key: system
+      - name: package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package name submitted in the request.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package version submitted in the request.
+        expr:
+          kind: from_filter
+          key: version
+      - name: requested_system
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package system submitted in the request.
+        expr:
+          kind: from_filter
+          key: system
+      - name: requested_package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package name submitted in the request.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: requested_version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package version submitted in the request.
+        expr:
+          kind: from_filter
+          key: version
+      - name: nodes
+        type: Json
+        nullable: true
+        description: Dependency graph nodes; edge indexes refer to positions in this array.
+        expr:
+          kind: path
+          path:
+            - nodes
+      - name: edges
+        type: Json
+        nullable: true
+        description: Dependency graph edges with fromNode and toNode indexes into nodes.
+        expr:
+          kind: path
+          path:
+            - edges
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Graph-level dependency resolution error, when deps.dev returns one.
+        expr:
+          kind: path
+          path:
+            - error
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full dependency graph payload.
+        expr:
+          kind: current_row
+
+  - name: dependencies
+    description: Fetch the resolved dependency graph for a package version.
+    guide: >
+      Requires system, package_name, and version. Returns the nodes in the
+      resolved dependency graph. Use dependency_graph when you need to interpret
+      edge indexes against the full nodes array. Resolved dependency graphs are
+      currently available only for NPM, CARGO, MAVEN, and PYPI. Package names
+      containing special characters must be URL-encoded.
+    filters:
+      - name: system
+        required: true
+      - name: package_name
+        required: true
+      - name: version
+        required: true
+    request:
+      method: GET
+      path: /v3/systems/{{filter.system}}/packages/{{filter.package_name}}/versions/{{filter.version}}:dependencies
+    response:
+      allow_404_empty: true
+      rows_path:
+        - nodes
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: system
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package system (NPM, PYPI, MAVEN, GO, CARGO, RUBYGEMS, or NUGET).
+        expr:
+          kind: from_filter
+          key: system
+      - name: package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package name.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package version.
+        expr:
+          kind: from_filter
+          key: version
+      - name: dependency_system
+        type: Utf8
+        nullable: true
+        description: Dependency system.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - system
+      - name: dependency_name
+        type: Utf8
+        nullable: true
+        description: Dependency package name.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - name
+      - name: dependency_version
+        type: Utf8
+        nullable: true
+        description: Dependency version.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - version
+      - name: is_bundled
+        type: Boolean
+        nullable: true
+        description: Whether the dependency node is bundled in the package version.
+        expr:
+          kind: path
+          path:
+            - bundled
+      - name: relation
+        type: Utf8
+        nullable: true
+        description: Relationship (SELF, DIRECT, or INDIRECT).
+        expr:
+          kind: path
+          path:
+            - relation
+      - name: errors
+        type: Json
+        nullable: true
+        description: Error messages during dependency resolution (JSON array of strings).
+        expr:
+          kind: path
+          path:
+            - errors
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full node object.
+        expr:
+          kind: current_row
+
+  - name: requirements
+    description: Fetch declared dependency requirements for a package version.
+    guide: >
+      Requires system, package_name, and version. Returns system-specific
+      requirements keyed by ecosystem (npm, maven, pypi, cargo, go, rubygems,
+      or nuget). Inspect the npm, maven, pypi, cargo, go, rubygems, or nuget
+      JSON columns for ecosystem-specific dependency details.
+    filters:
+      - name: system
+        required: true
+      - name: package_name
+        required: true
+      - name: version
+        required: true
+    request:
+      method: GET
+      path: /v3/systems/{{filter.system}}/packages/{{filter.package_name}}/versions/{{filter.version}}:requirements
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: system
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package system (NPM, PYPI, MAVEN, GO, CARGO, RUBYGEMS, or NUGET).
+        expr:
+          kind: from_filter
+          key: system
+      - name: package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package name.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package version.
+        expr:
+          kind: from_filter
+          key: version
+      - name: npm
+        type: Json
+        nullable: true
+        description: npm-specific requirements (dependencies, devDependencies, peerDependencies, etc).
+        expr:
+          kind: path
+          path:
+            - npm
+      - name: maven
+        type: Json
+        nullable: true
+        description: Maven-specific requirements (dependencies, dependencyManagement, properties, etc).
+        expr:
+          kind: path
+          path:
+            - maven
+      - name: pypi
+        type: Json
+        nullable: true
+        description: PyPI-specific requirements (dependencies, providedExtras, requiredPythonVersion, etc).
+        expr:
+          kind: path
+          path:
+            - pypi
+      - name: cargo
+        type: Json
+        nullable: true
+        description: Cargo-specific requirements (dependencies with kind, optional, features, etc).
+        expr:
+          kind: path
+          path:
+            - cargo
+      - name: go
+        type: Json
+        nullable: true
+        description: Go-specific requirements (directDependencies, indirectDependencies, replaces, excludes).
+        expr:
+          kind: path
+          path:
+            - go
+      - name: rubygems
+        type: Json
+        nullable: true
+        description: RubyGems-specific requirements (runtimeDependencies, devDependencies, platform, etc).
+        expr:
+          kind: path
+          path:
+            - rubygems
+      - name: nuget
+        type: Json
+        nullable: true
+        description: NuGet-specific requirements (dependencyGroups, targetFrameworks, etc).
+        expr:
+          kind: path
+          path:
+            - nuget
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full requirements payload.
+        expr:
+          kind: current_row
+
+  - name: advisories
+    description: Fetch advisory details by advisory key.
+    guide: >
+      Requires advisory_id (e.g. OSV ID or GHSA). Use this table to fetch full advisory metadata.
+    filters:
+      - name: advisory_id
+        required: true
+    request:
+      method: GET
+      path: /v3/advisories/{{filter.advisory_id}}
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: advisory_id
+        type: Utf8
+        nullable: true
+        description: Canonical advisory ID returned by deps.dev.
+        expr:
+          kind: path
+          path:
+            - advisoryKey
+            - id
+      - name: requested_advisory_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Advisory ID submitted in the request.
+        expr:
+          kind: from_filter
+          key: advisory_id
+      - name: advisory_url
+        type: Utf8
+        nullable: true
+        description: Advisory URL on osv.dev.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the advisory.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: cvss3_score
+        type: Float64
+        nullable: true
+        description: CVSSv3 base score.
+        expr:
+          kind: path
+          path:
+            - cvss3Score
+      - name: cvss3_vector
+        type: Utf8
+        nullable: true
+        description: CVSSv3 vector.
+        expr:
+          kind: path
+          path:
+            - cvss3Vector
+      - name: aliases
+        type: Json
+        nullable: true
+        description: Advisory aliases (e.g. CVE IDs).
+        expr:
+          kind: path
+          path:
+            - aliases
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full advisory object.
+        expr:
+          kind: current_row
+
+  - name: projects
+    description: Fetch project-level health metrics including OpenSSF Scorecards.
+    guide: >
+      Requires project_id (e.g. github.com/golang/go). Project IDs containing special
+      characters must be URL-encoded (e.g. github.com%2Fgolang%2Fgo).
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: GET
+      path: /v3/projects/{{filter.project_id}}
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Canonical project ID returned by deps.dev.
+        expr:
+          kind: path
+          path:
+            - projectKey
+            - id
+      - name: requested_project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID submitted in the request.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: open_issues_count
+        type: Int64
+        nullable: true
+        description: Number of open issues on the project repository.
+        expr:
+          kind: path
+          path:
+            - openIssuesCount
+      - name: stars_count
+        type: Int64
+        nullable: true
+        description: Number of stars on the project repository.
+        expr:
+          kind: path
+          path:
+            - starsCount
+      - name: forks_count
+        type: Int64
+        nullable: true
+        description: Number of forks on the project repository.
+        expr:
+          kind: path
+          path:
+            - forksCount
+      - name: license
+        type: Utf8
+        nullable: true
+        description: Primary license identifier.
+        expr:
+          kind: path
+          path:
+            - license
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: homepage
+        type: Utf8
+        nullable: true
+        description: Project homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage
+      - name: scorecard
+        type: Json
+        nullable: true
+        description: Full OpenSSF Scorecard report.
+        expr:
+          kind: path
+          path:
+            - scorecard
+      - name: oss_fuzz
+        type: Json
+        nullable: true
+        description: OSS-Fuzz integration status.
+        expr:
+          kind: path
+          path:
+            - ossFuzz
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full project metadata payload.
+        expr:
+          kind: current_row
+
+  - name: project_package_versions
+    description: Fetch package versions known to be built from a project.
+    guide: >
+      Requires project_id (e.g. github.com%2Ffacebook%2Freact). Returns known mappings
+      between the project and package versions, with attestation-derived mappings
+      served first by deps.dev. Project IDs containing special characters must be
+      URL-encoded (e.g. github.com%2Ffacebook%2Freact).
+    fetch_limit_default: 100
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: GET
+      path: /v3/projects/{{filter.project_id}}:packageversions
+    response:
+      allow_404_empty: true
+      rows_path:
+        - versions
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID submitted in the request.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: requested_project_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project ID submitted in the request.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: system
+        type: Utf8
+        nullable: true
+        description: Package system for the mapped version.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - system
+      - name: package_name
+        type: Utf8
+        nullable: true
+        description: Package name for the mapped version.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - name
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Package version built from the project.
+        expr:
+          kind: path
+          path:
+            - versionKey
+            - version
+      - name: relation_type
+        type: Utf8
+        nullable: true
+        description: Relationship between the project and package version.
+        expr:
+          kind: path
+          path:
+            - relationType
+      - name: relation_provenance
+        type: Utf8
+        nullable: true
+        description: How deps.dev discovered the project-to-version mapping.
+        expr:
+          kind: path
+          path:
+            - relationProvenance
+      - name: slsa_provenances
+        type: Json
+        nullable: true
+        description: SLSA provenance statements linking the version to the project.
+        expr:
+          kind: path
+          path:
+            - slsaProvenances
+      - name: attestations
+        type: Json
+        nullable: true
+        description: Attestations linking the version to the project.
+        expr:
+          kind: path
+          path:
+            - attestations
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full project package-version mapping object.
+        expr:
+          kind: current_row
+
+  - name: dependency_edges
+    description: Fetch the dependency graph edges for a package version.
+    guide: >
+      Requires system, package_name, and version. Returns the edges in the
+      resolved dependency graph. Edge indexes refer to the provider's nodes array;
+      use dependency_graph to retrieve nodes and edges together when reconstructing
+      topology. Resolved dependency graphs are currently available only for NPM,
+      CARGO, MAVEN, and PYPI. Package names containing special characters must be
+      URL-encoded.
+    filters:
+      - name: system
+        required: true
+      - name: package_name
+        required: true
+      - name: version
+        required: true
+    request:
+      method: GET
+      path: /v3/systems/{{filter.system}}/packages/{{filter.package_name}}/versions/{{filter.version}}:dependencies
+    response:
+      allow_404_empty: true
+      rows_path:
+        - edges
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: system
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package system (NPM, PYPI, MAVEN, GO, CARGO, RUBYGEMS, or NUGET).
+        expr:
+          kind: from_filter
+          key: system
+      - name: package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package name.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Root package version.
+        expr:
+          kind: from_filter
+          key: version
+      - name: from_node
+        type: Int64
+        nullable: true
+        description: Index of the origin node in the graph.
+        expr:
+          kind: path
+          path:
+            - fromNode
+      - name: to_node
+        type: Int64
+        nullable: true
+        description: Index of the destination node in the graph.
+        expr:
+          kind: path
+          path:
+            - toNode
+      - name: requirement
+        type: Utf8
+        nullable: true
+        description: Version requirement expression for this edge.
+        expr:
+          kind: path
+          path:
+            - requirement
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full edge object.
+        expr:
+          kind: current_row

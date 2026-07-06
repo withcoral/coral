@@ -1,0 +1,211 @@
+name: voyage_ai
+version: 0.1.1
+dsl_version: 3
+backend: http
+description: Query Voyage AI embedding vectors and token usage through SQL.
+base_url: https://api.voyageai.com/v1
+inputs:
+  VOYAGE_API_KEY:
+    kind: secret
+    hint: |
+      Voyage AI API key.
+
+      Create or copy an API key from your Voyage dashboard:
+      https://dashboard.voyageai.com/organization/api-keys
+
+      The key is sent as a Bearer token to Voyage's `POST /v1/embeddings`
+      endpoint. Voyage keys are account-scoped, so a single key works across
+      all of your available models and embeds usage against the same billing
+      account.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.VOYAGE_API_KEY}}"
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+test_queries:
+  - >-
+    SELECT returned_model, object, total_tokens,
+    substr(CAST(embedding AS VARCHAR), 1, 80) AS embedding_preview
+    FROM voyage_ai.embeddings
+    WHERE model = 'voyage-3.5-lite' AND input = 'Coral source validation'
+    LIMIT 1
+  - >-
+    SELECT returned_model, total_tokens,
+    json_length(embedding) AS embedding_dim
+    FROM voyage_ai.embeddings
+    WHERE model = 'voyage-3.5-lite' AND input = 'Coral source validation'
+    AND output_dimension = 512
+    LIMIT 1
+tables:
+  - name: embeddings
+    description: Generate one Voyage AI embedding vector through `POST /v1/embeddings`. One SQL row per call; preserves top-level response metadata.
+    fetch_limit_default: 1
+    filters:
+      - name: model
+        required: true
+      - name: input
+        required: true
+      - name: input_type
+        required: false
+      - name: truncation
+        required: false
+      - name: output_dimension
+        required: false
+      - name: output_dtype
+        required: false
+    request:
+      method: POST
+      path: /embeddings
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - input
+          from: filter
+          key: input
+        - path:
+            - input_type
+          from: filter
+          key: input_type
+        - path:
+            - truncation
+          from: filter_bool
+          key: truncation
+        - path:
+            - output_dimension
+          from: filter_int
+          key: output_dimension
+        - path:
+            - output_dtype
+          from: filter
+          key: output_dtype
+    response:
+      row_strategy: direct
+      error_path:
+        - detail
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model name supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: input
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Input text supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input
+      - name: input_type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Retrieval hint supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input_type
+      - name: output_dimension
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Output dimension supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: output_dimension
+      - name: truncation
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Truncation behaviour supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: truncation
+      - name: output_dtype
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Output dtype supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: output_dtype
+      - name: object
+        type: Utf8
+        nullable: true
+        description: Voyage response object type, typically `list`.
+        expr:
+          kind: path
+          path:
+            - object
+      - name: returned_model
+        type: Utf8
+        nullable: true
+        description: Model identifier returned by Voyage.
+        expr:
+          kind: path
+          path:
+            - model
+      - name: usage
+        type: Json
+        nullable: true
+        description: Token usage metadata returned by Voyage.
+        expr:
+          kind: path
+          path:
+            - usage
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total tokens consumed by the request when returned by Voyage.
+        expr:
+          kind: path
+          path:
+            - usage
+            - total_tokens
+      - name: data
+        type: Json
+        nullable: true
+        description: Raw `data` array returned by Voyage, including the per-index payload.
+        expr:
+          kind: path
+          path:
+            - data
+      - name: index
+        type: Int64
+        nullable: true
+        description: Embedding index inside the `data` array, normally `0` for a single-text request.
+        expr:
+          kind: path
+          path:
+            - data
+            - "0"
+            - index
+      - name: embedding
+        type: Json
+        nullable: true
+        description: >-
+          Embedding vector returned by Voyage. Use
+          `substr(CAST(embedding AS VARCHAR), 1, 80) AS embedding_preview` for
+          compact output, or `json_length(embedding)` to compute the dimension.
+        expr:
+          kind: path
+          path:
+            - data
+            - "0"
+            - embedding

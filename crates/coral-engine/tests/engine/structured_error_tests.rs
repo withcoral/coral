@@ -17,10 +17,11 @@ fn manifest(name: &str, table: &str, dir: &Path) -> Value {
         "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": table,
             "description": "Structured-error fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"

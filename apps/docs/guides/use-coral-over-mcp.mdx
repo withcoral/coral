@@ -1,0 +1,235 @@
+---
+title: "Use Coral over MCP"
+description: "Set up MCP for Claude Code, Cursor, and other agents."
+---
+
+Coral ships with a built-in MCP server that presents Coral to agents as a read-only SQL database with catalog discovery.
+
+<Note>
+Before setting up a client, make sure you have [connected at least one source](/getting-started/quickstart).
+
+</Note>
+
+## Client setup
+
+Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`.
+
+<Tabs>
+<Tab title="npx add-mcp">
+
+  Use [add-mcp](https://github.com/neondatabase/add-mcp) to add the Coral MCP server to all your favorite coding agents with a single command.
+
+
+  <Tabs>
+    <Tab title="macOS / Linux">
+    ```shellscript
+    npx add-mcp -n coral -g "$(which coral) mcp-stdio"
+    ```
+    </Tab>
+    <Tab title="Windows PowerShell">
+    ```powershell
+    npx add-mcp -n coral -g "$((Get-Command coral).Source) mcp-stdio"
+    ```
+    </Tab>
+  </Tabs>
+
+  (To install only in the current project, omit the `-g` flag.)
+
+</Tab>
+
+  <Tab title="Claude Code">
+  ```shellscript
+  claude mcp add --scope user coral -- coral mcp-stdio
+  ```
+</Tab>
+
+  <Tab title="Codex">
+  **CLI**
+
+  ```shellscript
+  codex mcp add coral -- coral mcp-stdio
+  ```
+
+  **Manual config**
+
+  Add to `~/.codex/config.toml`:
+
+  ```toml
+  [mcp_servers.coral]
+  command = "coral"
+  args = ["mcp-stdio"]
+  ```
+
+  Codex uses user-scoped config shared between the CLI and IDE extension, so you only need to configure it once.
+</Tab>
+
+  <Tab title="OpenCode">
+  **CLI**
+
+  ```shellscript
+  opencode mcp add
+  ```
+
+  OpenCode's `mcp add` command is interactive and can add either a local or remote MCP server.
+
+  **Manual config**
+
+  Add to `~/.config/opencode/opencode.json` for global scope, or `opencode.json` in your project root for project scope:
+
+  ```json
+  {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+      "coral": {
+        "type": "local",
+        "command": ["coral", "mcp-stdio"],
+        "enabled": true
+      }
+    }
+  }
+  ```
+
+  OpenCode merges global and project config, with project config taking precedence over global config.
+</Tab>
+
+  <Tab title="Cursor">
+  **Install**
+
+  Cursor documents one-click install, UI-based setup, and `mcp.json` configuration. Its CLI reads the same MCP config but does not document a separate add command.
+
+  **Manual config**
+
+  Add to `.cursor/mcp.json` for a project-scoped server, or `~/.cursor/mcp.json` for a user-scoped server:
+
+  ```json
+  {
+    "mcpServers": {
+      "coral": {
+        "type": "stdio",
+        "command": "coral",
+        "args": ["mcp-stdio"]
+      }
+    }
+  }
+  ```
+
+  If `coral` is not on Cursor's `PATH`, use the full path from `which coral`
+  on macOS or Linux, or `(Get-Command coral).Source` in PowerShell.
+</Tab>
+
+  <Tab title="VS Code">
+  **Install**
+
+  Use the Command Palette and run `MCP: Add Server`, then choose whether to add Coral to the workspace or your user profile.
+
+  **Manual config**
+
+  Add to `.vscode/mcp.json` in your workspace:
+
+  ```json
+  {
+    "servers": {
+      "coral": {
+        "type": "stdio",
+        "command": "coral",
+        "args": ["mcp-stdio"]
+      }
+    }
+  }
+  ```
+
+  For user scope, open the user-profile `mcp.json` with `MCP: Open User Configuration` and add the same server entry there.
+</Tab>
+
+
+    <Tab title="Claude Desktop">
+  **Install**
+
+  Claude Desktop now supports local MCP desktop extensions, but Coral currently uses the manual local-server config below.
+
+  **Manual config**
+
+  Add to `claude_desktop_config.json`:
+
+  ```json
+  {
+    "mcpServers": {
+      "coral": {
+        "command": "coral",
+        "args": ["mcp-stdio"]
+      }
+    }
+  }
+  ```
+
+  Use the full path to `coral`. Open this file from Claude Desktop → Settings → Developer → Edit Config.
+  Claude Desktop uses user-scoped config for this setup.
+</Tab>
+
+  <Tab title="Other">
+    Any MCP client that supports stdio transport can use Coral. Point it at:
+
+    ```text
+    command: coral
+    args: ["mcp-stdio"]
+    ```
+
+    Consult your client's documentation for the exact config format.
+  </Tab>
+</Tabs>
+
+### Verify the connection
+
+Once your client is connected, ask the agent to list available Coral tables or run a small query.
+
+> "Use Coral to show what sources and tables you can query."
+
+> "Run a small Coral query against `coral.tables`."
+
+If it works, the agent should return installed schemas and tables. You do not need to know the MCP tool names; the agent gets discovery helpers and a read-only SQL interface to the same sources you use from `coral sql`.
+
+## What your agent can do
+
+Coral gives your agent a read-only SQL view over the sources you have installed locally. That means your agent can:
+
+- inspect the available sources, tables, columns, filters, and table functions
+- query connected sources without configuring a separate MCP server for each provider
+- join and aggregate across sources when the question needs more than one API call
+- use the same local credentials and workspace state as the Coral CLI
+
+Set up and update sources with the CLI. The MCP server is the agent-facing query surface, not a source installer.
+
+Only connect Coral to agents you trust. A connected agent can query any source installed in that Coral workspace. See [Security](/project/security) for more detail.
+
+## How to ask for Coral
+
+When your agent has many tools available, name Coral explicitly:
+
+> "Use Coral to find the latest open GitHub issues assigned to me."
+
+> "Use Coral to compare recent deploy errors in Datadog with related Slack messages."
+
+> "Use Coral. First inspect the catalog, then query the right tables."
+
+Good agents will inspect Coral's catalog before writing SQL, then answer from query results. If an answer needs data from multiple connected sources, ask the agent to combine the data in Coral when possible.
+
+## Workspaces
+
+By default, `coral mcp-stdio` uses your default Coral workspace. If you use a named workspace, add `--workspace <name>` to the server args in your MCP config. For JSON-style clients, that looks like:
+
+```json
+{
+  "mcpServers": {
+    "coral": {
+      "command": "coral",
+      "args": ["mcp-stdio", "--workspace", "work"]
+    }
+  }
+}
+```
+
+## Troubleshooting
+
+- **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
+- **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`. See the [CLI reference](/reference/cli-reference#coral-source).
+- **The agent ignores Coral:** Ask it to use Coral by name. For stronger routing, install the Coral agent skills from [Installation](/getting-started/installation#skills).

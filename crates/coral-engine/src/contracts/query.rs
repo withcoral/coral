@@ -1,12 +1,18 @@
 //! Typed query inputs and results.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
-use coral_spec::ValidatedSourceManifest;
+use coral_spec::backends::file::FileSourceManifest;
+use coral_spec::backends::http::HttpSourceManifest;
+use coral_spec::backends::mcp::McpSourceManifest;
+use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
+use opentelemetry::Context as OtelContext;
 
 use super::ColumnInfo;
 use crate::EngineExtensions;
@@ -14,43 +20,166 @@ use crate::EngineExtensions;
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
 pub struct QuerySource {
-    source_spec: ValidatedSourceManifest,
+    source_name: String,
+    authored_version: Option<String>,
+    description: String,
+    declared_inputs: Vec<ManifestInputSpec>,
+    test_queries: Vec<String>,
+    components: Vec<RuntimeSourceComponent>,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
+}
+
+/// Backend-ready runtime package for one logical query source.
+#[derive(Debug, Clone)]
+pub struct RuntimeSourcePackage {
+    /// Canonical installed source name.
+    pub source_name: String,
+    /// Authored manifest version, when the authoring DSL has one.
+    pub authored_version: Option<String>,
+    /// Source description shown in catalog and source metadata surfaces.
+    pub description: String,
+    /// Declared source inputs in authored order.
+    pub declared_inputs: Vec<ManifestInputSpec>,
+    /// Source-level validation queries in authored order.
+    pub test_queries: Vec<String>,
+    /// Backend-ready runtime components that make up the logical source.
+    pub components: Vec<RuntimeSourceComponent>,
+}
+
+/// One backend-ready component inside an app-assembled query source package.
+#[derive(Debug, Clone)]
+pub enum RuntimeSourceComponent {
+    /// HTTP-backed runtime component.
+    Http(HttpSourceManifest),
+    /// File-backed runtime component.
+    File(FileSourceManifest),
+    /// MCP-backed runtime component.
+    Mcp(McpSourceManifest),
 }
 
 impl QuerySource {
     #[must_use]
     /// Builds one app-to-query source selection from installed metadata and a
     /// validated declarative source spec.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Preserves the existing constructor API that takes ownership of parsed manifests."
+    )]
     pub fn new(
         source_spec: ValidatedSourceManifest,
         variables: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
     ) -> Self {
+        Self::from_manifest(&source_spec, variables, secrets)
+    }
+
+    #[must_use]
+    /// Builds one source selection from a validated v3 source manifest.
+    pub fn from_manifest(
+        source_spec: &ValidatedSourceManifest,
+        variables: BTreeMap<String, String>,
+        secrets: BTreeMap<String, String>,
+    ) -> Self {
+        let components = components_from_manifest(source_spec);
         Self {
-            source_spec,
+            source_name: source_spec.schema_name().to_string(),
+            authored_version: source_spec.source_version().map(ToString::to_string),
+            description: source_spec.description().to_string(),
+            declared_inputs: source_spec.declared_inputs().to_vec(),
+            test_queries: source_spec.test_queries().to_vec(),
+            components,
             variables,
             secrets,
         }
     }
 
+    /// Builds one source selection from app-assembled runtime components.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`](crate::CoreError) when the package is invalid.
+    pub fn from_runtime_components(
+        package: RuntimeSourcePackage,
+        variables: BTreeMap<String, String>,
+        secrets: BTreeMap<String, String>,
+    ) -> Result<Self, crate::CoreError> {
+        if package.source_name.trim().is_empty() {
+            return Err(crate::CoreError::InvalidInput(
+                "runtime source package source_name must not be empty".to_string(),
+            ));
+        }
+        for component in &package.components {
+            let schema_name = component.source_name();
+            if schema_name.trim().is_empty() {
+                return Err(crate::CoreError::InvalidInput(format!(
+                    "runtime source package '{}' has a component with an empty schema name",
+                    package.source_name
+                )));
+            }
+        }
+        Ok(Self {
+            source_name: package.source_name,
+            authored_version: package.authored_version,
+            description: package.description,
+            declared_inputs: package.declared_inputs,
+            test_queries: package.test_queries,
+            components: package.components,
+            variables,
+            secrets,
+        })
+    }
+
     #[must_use]
-    /// Returns the canonical source name. This is also the visible SQL schema name.
+    /// Returns the canonical installed source name.
     pub fn source_name(&self) -> &str {
-        self.source_spec.schema_name()
+        &self.source_name
     }
 
     #[must_use]
-    /// Returns the installed manifest version for this source.
-    pub fn version(&self) -> &str {
-        self.source_spec.source_version()
+    /// Returns the authored manifest version for this source, when present.
+    pub fn version(&self) -> Option<&str> {
+        self.authored_version.as_deref()
     }
 
     #[must_use]
-    /// Returns the validated declarative source spec for this source.
-    pub fn source_spec(&self) -> &ValidatedSourceManifest {
-        &self.source_spec
+    /// Returns the source description.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    #[must_use]
+    /// Returns the declared source inputs in authored order.
+    pub fn declared_inputs(&self) -> &[ManifestInputSpec] {
+        &self.declared_inputs
+    }
+
+    #[must_use]
+    /// Returns the source-level validation queries in authored order.
+    pub fn test_queries(&self) -> &[String] {
+        &self.test_queries
+    }
+
+    #[must_use]
+    /// Returns backend-ready runtime components supplied by the app.
+    pub fn components(&self) -> &[RuntimeSourceComponent] {
+        &self.components
+    }
+
+    #[must_use]
+    /// Returns the SQL schemas published by this selected source.
+    pub fn schema_names(&self) -> Vec<&str> {
+        let mut schemas = Vec::new();
+        for component in &self.components {
+            let schema = component.source_name();
+            if !schemas.contains(&schema) {
+                schemas.push(schema);
+            }
+        }
+        if schemas.is_empty() {
+            schemas.push(self.source_name());
+        }
+        schemas
     }
 
     #[must_use]
@@ -60,10 +189,35 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns resolved source secrets required by the manifest.
+    /// Returns resolved declared source secrets that are available at runtime.
     pub fn secrets(&self) -> &BTreeMap<String, String> {
         &self.secrets
     }
+}
+
+impl RuntimeSourceComponent {
+    #[must_use]
+    /// Returns the runtime schema name declared by this component.
+    pub fn source_name(&self) -> &str {
+        match self {
+            Self::Http(manifest) => &manifest.common.name,
+            Self::File(manifest) => &manifest.common.name,
+            Self::Mcp(manifest) => &manifest.common.name,
+        }
+    }
+}
+
+fn components_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<RuntimeSourceComponent> {
+    if let Some(http) = source_spec.as_http() {
+        return vec![RuntimeSourceComponent::Http(http.clone())];
+    }
+    if let Some(file) = source_spec.as_file() {
+        return vec![RuntimeSourceComponent::File(file.clone())];
+    }
+    if let Some(mcp) = source_spec.as_mcp() {
+        return vec![RuntimeSourceComponent::Mcp(mcp.clone())];
+    }
+    Vec::new()
 }
 
 /// One source-spec validation query executed during source validation.
@@ -183,10 +337,36 @@ impl SourceValidationReport {
 }
 
 /// App-owned non-secret runtime inputs needed while compiling sources.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Active query trace context, when the app layer is executing under one.
+    pub trace_context: Option<OtelContext>,
+    /// Optional positive byte cap for pre-export trace body preview capture.
+    /// Shared across backends — HTTP request/response bodies, MCP tool
+    /// arguments, and MCP tool result payloads are all truncated to this
+    /// limit before being recorded as child trace spans.
+    pub body_capture_max_bytes: Option<usize>,
+}
+
+impl fmt::Debug for QueryRuntimeContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueryRuntimeContext")
+            .field("home_dir", &self.home_dir)
+            .field("trace_context", &self.trace_context.is_some())
+            .field("body_capture_max_bytes", &self.body_capture_max_bytes)
+            .finish()
+    }
+}
+
+impl QueryRuntimeContext {
+    /// Adds app-owned local trace body capture byte cap to this runtime context.
+    #[must_use]
+    pub fn with_body_capture_max_bytes(mut self, max_bytes: Option<usize>) -> Self {
+        self.body_capture_max_bytes = max_bytes.filter(|bytes| *bytes > 0);
+        self
+    }
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.
@@ -196,6 +376,10 @@ pub struct QueryRuntimeConfig {
     pub context: QueryRuntimeContext,
     /// Optional engine extensions for this runtime build.
     pub extensions: EngineExtensions,
+    /// Engine-wide query memory policy.
+    pub memory: QueryMemoryConfig,
+    /// Runtime policy for dependent predicate pushdown.
+    pub dependent_join: DependentJoinConfig,
 }
 
 impl QueryRuntimeConfig {
@@ -205,6 +389,244 @@ impl QueryRuntimeConfig {
         Self {
             context,
             extensions,
+            memory: QueryMemoryConfig::default(),
+            dependent_join: DependentJoinConfig::default(),
+        }
+    }
+}
+
+/// Engine-wide query memory policy.
+///
+/// This type is non-exhaustive so additional global memory policy can be added
+/// later without changing the meaning of [`Self::limit`], including source- or
+/// table-scoped retained-memory budgets and memory-pool strategy selection.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueryMemoryConfig {
+    /// Optional total query-engine memory limit.
+    pub limit: Option<MemorySize>,
+}
+
+impl QueryMemoryConfig {
+    /// Builds a memory policy with an optional whole-runtime memory limit.
+    #[must_use]
+    pub fn with_limit(limit: Option<MemorySize>) -> Self {
+        Self { limit }
+    }
+}
+
+/// Human-readable memory size stored internally as bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemorySize {
+    bytes: usize,
+}
+
+impl MemorySize {
+    /// Builds a memory size from a positive byte count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is zero.
+    pub fn from_bytes(bytes: usize) -> Result<Self, MemorySizeParseError> {
+        if bytes == 0 {
+            return Err(MemorySizeParseError::new(
+                "memory limit must be greater than 0",
+            ));
+        }
+        Ok(Self { bytes })
+    }
+
+    /// Returns this size in bytes.
+    #[must_use]
+    pub fn as_bytes(self) -> usize {
+        self.bytes
+    }
+}
+
+/// Error returned when parsing a human-readable memory size fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySizeParseError {
+    detail: String,
+}
+
+impl MemorySizeParseError {
+    fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl fmt::Display for MemorySizeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for MemorySizeParseError {}
+
+impl FromStr for MemorySize {
+    type Err = MemorySizeParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let value = raw.trim();
+        if value.is_empty() {
+            return Err(MemorySizeParseError::new("memory limit must not be empty"));
+        }
+
+        let (number, multiplier) = parse_memory_unit(value)?;
+        if number.is_empty() || !number.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err(MemorySizeParseError::new(
+                "memory limit must be an integer followed by Ki, Mi, Gi, or Ti",
+            ));
+        }
+
+        let amount = number
+            .parse::<u128>()
+            .map_err(|_error| MemorySizeParseError::new("memory limit is too large"))?;
+        if amount == 0 {
+            return Err(MemorySizeParseError::new(
+                "memory limit must be greater than 0",
+            ));
+        }
+        let bytes = amount
+            .checked_mul(multiplier)
+            .ok_or_else(|| MemorySizeParseError::new("memory limit is too large"))?;
+        let bytes = usize::try_from(bytes)
+            .map_err(|_error| MemorySizeParseError::new("memory limit is too large"))?;
+        Self::from_bytes(bytes)
+    }
+}
+
+fn parse_memory_unit(value: &str) -> Result<(&str, u128), MemorySizeParseError> {
+    for (suffix, multiplier) in [
+        ("Ki", 1024_u128),
+        ("Mi", 1024_u128.pow(2)),
+        ("Gi", 1024_u128.pow(3)),
+        ("Ti", 1024_u128.pow(4)),
+    ] {
+        if let Some(number) = value.strip_suffix(suffix) {
+            return Ok((number, multiplier));
+        }
+    }
+    Err(MemorySizeParseError::new(
+        "memory limit must use binary unit Ki, Mi, Gi, or Ti",
+    ))
+}
+
+/// Runtime policy for dependent predicate pushdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependentJoinConfig {
+    /// Default enablement for dependent join rewrites.
+    pub enabled: bool,
+    /// Maximum distinct join-key combinations to push into upstream APIs.
+    pub max_bindings: usize,
+    /// Maximum rows read from the key-supplying side before falling back.
+    pub max_resolver_rows: usize,
+    /// Maximum rows accepted for one join-key combination across the full upstream fetch.
+    pub max_rows_per_binding: usize,
+    /// Maximum key-supplying rows allowed for one join-key combination.
+    pub max_resolver_rows_per_binding: usize,
+    /// Maximum concurrent upstream requests issued by one dependent join.
+    pub max_concurrency: usize,
+    /// Source-specific overrides keyed by source name.
+    pub per_source: BTreeMap<String, DependentJoinSourceConfig>,
+}
+
+/// Source-specific dependent predicate pushdown policy overrides.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DependentJoinSourceConfig {
+    /// Overrides dependent join rewrite enablement for this source.
+    pub enabled: Option<bool>,
+    /// Overrides maximum distinct join-key combinations for this source.
+    pub max_bindings: Option<usize>,
+    /// Overrides maximum resolver-side rows for this source.
+    pub max_resolver_rows: Option<usize>,
+    /// Overrides maximum rows accepted from one upstream request.
+    pub max_rows_per_binding: Option<usize>,
+    /// Overrides maximum resolver rows allowed for one join-key combination.
+    pub max_resolver_rows_per_binding: Option<usize>,
+    /// Overrides concurrent upstream requests issued by one dependent join.
+    pub max_concurrency: Option<usize>,
+}
+
+/// Fully resolved dependent predicate pushdown policy for one source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveDependentJoinConfig {
+    /// Enables dependent join rewrites for this source.
+    pub enabled: bool,
+    /// Maximum distinct join-key combinations to push into upstream APIs.
+    pub max_bindings: usize,
+    /// Maximum rows read from the key-supplying side before falling back.
+    pub max_resolver_rows: usize,
+    /// Maximum rows accepted from one upstream request.
+    pub max_rows_per_binding: usize,
+    /// Maximum key-supplying rows allowed for one join-key combination.
+    pub max_resolver_rows_per_binding: usize,
+    /// Maximum concurrent upstream requests issued by one dependent join.
+    pub max_concurrency: usize,
+}
+
+impl Default for DependentJoinConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_bindings: 500,
+            max_resolver_rows: 10_000,
+            max_rows_per_binding: 1_000,
+            max_resolver_rows_per_binding: 1_000,
+            max_concurrency: 8,
+            per_source: BTreeMap::new(),
+        }
+    }
+}
+
+impl DependentJoinConfig {
+    /// Returns a copy with all dependent join rewrites disabled.
+    #[must_use]
+    pub fn without_rewrites(&self) -> Self {
+        Self {
+            enabled: false,
+            per_source: BTreeMap::new(),
+            ..self.clone()
+        }
+    }
+
+    /// Returns whether the optimizer rule should be registered.
+    #[must_use]
+    pub fn optimizer_enabled(&self) -> bool {
+        self.enabled
+            || self
+                .per_source
+                .values()
+                .any(|source| source.enabled == Some(true))
+    }
+
+    /// Resolves the effective dependent join policy for one source.
+    #[must_use]
+    pub fn for_source(&self, source_name: &str) -> EffectiveDependentJoinConfig {
+        let source = self.per_source.get(source_name);
+        let max_concurrency = source
+            .and_then(|override_config| override_config.max_concurrency)
+            .unwrap_or(self.max_concurrency)
+            .max(1);
+        EffectiveDependentJoinConfig {
+            enabled: source
+                .and_then(|override_config| override_config.enabled)
+                .unwrap_or(self.enabled),
+            max_bindings: source
+                .and_then(|override_config| override_config.max_bindings)
+                .unwrap_or(self.max_bindings),
+            max_resolver_rows: source
+                .and_then(|override_config| override_config.max_resolver_rows)
+                .unwrap_or(self.max_resolver_rows),
+            max_rows_per_binding: source
+                .and_then(|override_config| override_config.max_rows_per_binding)
+                .unwrap_or(self.max_rows_per_binding),
+            max_resolver_rows_per_binding: source
+                .and_then(|override_config| override_config.max_resolver_rows_per_binding)
+                .unwrap_or(self.max_resolver_rows_per_binding),
+            max_concurrency,
         }
     }
 }
@@ -258,12 +680,17 @@ pub struct QueryExecution {
     arrow_schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
     row_count: usize,
+    provenance: QueryExecutionProvenance,
 }
 
 impl QueryExecution {
     #[must_use]
-    /// Builds a validated fully materialized query result.
-    pub fn new(arrow_schema: Arc<Schema>, batches: Vec<RecordBatch>) -> Self {
+    /// Builds a validated fully materialized query result with successful-execution provenance.
+    pub fn new(
+        arrow_schema: Arc<Schema>,
+        batches: Vec<RecordBatch>,
+        mut provenance: QueryExecutionProvenance,
+    ) -> Self {
         let schema = arrow_schema
             .fields()
             .iter()
@@ -279,11 +706,13 @@ impl QueryExecution {
             })
             .collect();
         let row_count = batches.iter().map(RecordBatch::num_rows).sum();
+        provenance.set_row_count(row_count);
         Self {
             schema,
             arrow_schema,
             batches,
             row_count,
+            provenance,
         }
     }
 
@@ -309,5 +738,195 @@ impl QueryExecution {
     /// Returns the total number of rows across all batches.
     pub fn row_count(&self) -> usize {
         self.row_count
+    }
+
+    #[must_use]
+    /// Returns successful-execution provenance for this query result.
+    pub fn provenance(&self) -> &QueryExecutionProvenance {
+        &self.provenance
+    }
+}
+
+/// Successful-execution provenance for one query result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryExecutionProvenance {
+    sql: String,
+    sources: Vec<String>,
+    tables: Vec<QueryTableUsage>,
+    table_functions: Vec<QueryTableFunctionUsage>,
+    row_count: usize,
+}
+
+impl QueryExecutionProvenance {
+    #[must_use]
+    /// Builds one provenance entry for a planned query.
+    ///
+    /// [`QueryExecution::new`] stamps the final row count from the materialized
+    /// result batches.
+    pub fn new(
+        sql: impl Into<String>,
+        sources: Vec<String>,
+        tables: Vec<QueryTableUsage>,
+        table_functions: Vec<QueryTableFunctionUsage>,
+    ) -> Self {
+        Self {
+            sql: sql.into(),
+            sources,
+            tables,
+            table_functions,
+            row_count: 0,
+        }
+    }
+
+    #[must_use]
+    /// Returns the SQL text that was executed.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[must_use]
+    /// Returns the installed source names used by the query.
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    #[must_use]
+    /// Returns source tables used by the query.
+    pub fn tables(&self) -> &[QueryTableUsage] {
+        &self.tables
+    }
+
+    #[must_use]
+    /// Returns source-scoped table functions used by the query.
+    pub fn table_functions(&self) -> &[QueryTableFunctionUsage] {
+        &self.table_functions
+    }
+
+    #[must_use]
+    /// Returns the total number of rows across all result batches.
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    pub(crate) fn set_row_count(&mut self, row_count: usize) {
+        self.row_count = row_count;
+    }
+}
+
+/// One source table referenced by a successful query.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QueryTableUsage {
+    source: String,
+    schema: String,
+    table: String,
+}
+
+impl QueryTableUsage {
+    #[must_use]
+    /// Builds one source table usage entry.
+    pub fn new(
+        source_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source_name.into(),
+            schema: schema_name.into(),
+            table: table_name.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source name that owns this table.
+    pub fn source_name(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL schema name for this table.
+    pub fn schema_name(&self) -> &str {
+        &self.schema
+    }
+
+    #[must_use]
+    /// Returns the table name within the SQL schema.
+    pub fn table_name(&self) -> &str {
+        &self.table
+    }
+}
+
+/// One source-scoped table function referenced by a successful query.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QueryTableFunctionUsage {
+    source: String,
+    schema: String,
+    function: String,
+}
+
+impl QueryTableFunctionUsage {
+    #[must_use]
+    /// Builds one source-scoped table function usage entry.
+    pub fn new(
+        source_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        function_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source_name.into(),
+            schema: schema_name.into(),
+            function: function_name.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source name that owns this table function.
+    pub fn source_name(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL schema name for this table function.
+    pub fn schema_name(&self) -> &str {
+        &self.schema
+    }
+
+    #[must_use]
+    /// Returns the function name within the SQL schema.
+    pub fn function_name(&self) -> &str {
+        &self.function
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr as _;
+
+    use super::MemorySize;
+
+    #[test]
+    fn memory_size_parses_binary_units() {
+        assert_eq!(MemorySize::from_str("1Ki").unwrap().as_bytes(), 1024);
+        assert_eq!(
+            MemorySize::from_str("2Mi").unwrap().as_bytes(),
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            MemorySize::from_str("3Gi").unwrap().as_bytes(),
+            3 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            MemorySize::from_str("1Ti").unwrap().as_bytes(),
+            1024_usize.pow(4)
+        );
+    }
+
+    #[test]
+    fn memory_size_rejects_invalid_values() {
+        for raw in ["", "0Mi", "2GiB", "2.5Gi", "2gi", "2G", "Gi"] {
+            assert!(
+                MemorySize::from_str(raw).is_err(),
+                "{raw:?} should be rejected"
+            );
+        }
     }
 }

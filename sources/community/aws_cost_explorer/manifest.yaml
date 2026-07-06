@@ -1,0 +1,1068 @@
+dsl_version: 3
+name: aws_cost_explorer
+version: 0.1.0
+backend: http
+description: >-
+  Query AWS Cost Explorer for historical cost and usage, cost anomalies,
+  cost forecasts, EC2 rightsizing recommendations, and Savings Plans
+  coverage. Uses AWS Signature Version 4 authentication. Cost Explorer is
+  a global service with one regional endpoint per partition — use
+  us-east-1 for the standard AWS partition or cn-northwest-1 for the
+  China partition. AWS GovCloud (US) does not expose a Cost Explorer
+  endpoint.
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+    hint: |
+      AWS region for Cost Explorer API requests. Cost Explorer is a
+      global service with one regional endpoint per partition — keep
+      `us-east-1` for the standard AWS partition or use `cn-northwest-1`
+      for the China partition. AWS GovCloud (US) does not expose a Cost
+      Explorer endpoint.
+  AWS_ENDPOINT_SUFFIX:
+    kind: variable
+    default: amazonaws.com
+    hint: |
+      AWS endpoint DNS suffix. Keep `amazonaws.com` for the standard AWS
+      partition. Use `amazonaws.com.cn` for the China partition.
+  AWS_ACCESS_KEY_ID:
+    kind: secret
+    hint: |
+      AWS access key ID. Attach a policy with at least:
+      ce:GetCostAndUsage, ce:GetAnomalies, ce:GetCostForecast,
+      ce:GetRightsizingRecommendation, ce:GetSavingsPlansCoverage.
+  AWS_SECRET_ACCESS_KEY:
+    kind: secret
+    hint: |
+      AWS secret access key paired with AWS_ACCESS_KEY_ID.
+      Coral does not read your AWS CLI profile, AWS SSO cache, or
+      `AWS_PROFILE` at query time for this source.
+base_url: https://ce.{{input.AWS_REGION}}.{{input.AWS_ENDPOINT_SUFFIX}}
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  service: ce
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/x-amz-json-1.1
+test_queries:
+  - >-
+    SELECT instance_id, instance_type, recommendation_type, monthly_cost
+    FROM aws_cost_explorer.rightsizing_recommendations
+    LIMIT 5
+tables:
+  # AWS Cost Explorer is a JSON-RPC service. Per the public service
+  # model (botocore: data/ce/2017-10-25/service-2.json) the documented
+  # `targetPrefix` is `AWSInsightsIndexService`, which is the value the
+  # AWS SDKs send in `X-Amz-Target`. The prefix is internal-looking and
+  # doesn't appear in the user-facing API reference; do not "fix" it to
+  # something like `AWSCostExplorer` — the wire contract requires this
+  # exact value.
+  - name: cost_by_service
+    description: >-
+      AWS cost per billing period grouped by service, returned by GetCostAndUsage.
+      Each row represents one time period. The groups column contains the full
+      per-service breakdown as a JSON array — use json_get_json to extract it.
+      Because the request always sets a SERVICE GroupBy, AWS returns the
+      response Total block as an empty object, so all per-period totals must
+      come from the per-service entries inside `groups`.
+    guide: |
+      Requires time_period_start and time_period_end (YYYY-MM-DD, end is exclusive —
+      use the first day of the following month to include the full month).
+      granularity defaults to MONTHLY. Cost Explorer data lags ~24 hours;
+      the current open month is marked estimated = true.
+      Each row is one time period. groups is a JSON array of
+      {"Keys":["<service>"],"Metrics":{"UnblendedCost":{"Amount":"...","Unit":"USD"}}}
+      objects — one entry per AWS service. Use json_get_json(groups, 0)
+      to inspect the first service element, then json_get_str on the result
+      to extract 'Keys' and 'Metrics' fields. To analyze ALL services
+      (e.g. "top services by spend"), expand the array into one row per
+      service with unnest(json_get_array(groups)) in a subquery, then
+      project json_get_str(g, 'Keys', 0) for the service and
+      json_get_str(g, 'Metrics', '<metric>', 'Amount') for the cost
+      (match '<metric>' to the bound metric filter; default UnblendedCost).
+      See the README cost_by_service examples for the full query.
+    filters:
+      - name: time_period_start
+        required: true
+        description: >-
+          Start of the billing period, inclusive. Format YYYY-MM-DD.
+          Example: '2026-05-01'.
+      - name: time_period_end
+        required: true
+        description: >-
+          End of the billing period, exclusive. Use the first day of the next
+          month to include all days. Example: '2026-06-01' for all of May.
+      - name: granularity
+        description: >-
+          Aggregation period. MONTHLY (default) or DAILY. HOURLY is
+          opt-in at the AWS payer-account level and limited to the last
+          14 days; HOURLY also requires time_period_start and
+          time_period_end to be passed as ISO-8601 timestamps
+          (e.g. '2026-05-29T00:00:00Z') instead of YYYY-MM-DD dates,
+          otherwise AWS rejects the request with ValidationException
+          ("Time period is invalid. Valid format is yyyy-MM-ddThh:mm:ssZ.").
+      - name: metric
+        description: >-
+          Cost metric to retrieve. UnblendedCost (default), AmortizedCost,
+          BlendedCost, NetUnblendedCost, NetAmortizedCost,
+          UsageQuantity, NormalizedUsageAmount.
+          Use AmortizedCost when the account uses Reserved Instances or
+          Savings Plans — UnblendedCost understates amortized commitment costs.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: AWSInsightsIndexService.GetCostAndUsage
+      body:
+        - path: [TimePeriod, Start]
+          from: filter
+          key: time_period_start
+        - path: [TimePeriod, End]
+          from: filter
+          key: time_period_end
+        - path: [Granularity]
+          from: filter
+          key: granularity
+          default: MONTHLY
+        - path: [GroupBy, "0", Type]
+          from: literal
+          value: DIMENSION
+        - path: [GroupBy, "0", Key]
+          from: literal
+          value: SERVICE
+        - path: [Metrics, "0"]
+          from: filter
+          key: metric
+          default: UnblendedCost
+    response:
+      rows_path: [ResultsByTime]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextPageToken]
+      response_cursor_path: [NextPageToken]
+      max_pages: 100
+    columns:
+      - name: time_period_start
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Billing period start date filter.
+        expr: {kind: from_filter, key: time_period_start}
+      - name: time_period_end
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Billing period end date filter.
+        expr: {kind: from_filter, key: time_period_end}
+      - name: period_start
+        type: Utf8
+        nullable: true
+        description: Actual start date of this billing period returned by the API.
+        expr: {kind: path, path: [TimePeriod, Start]}
+      - name: period_end
+        type: Utf8
+        nullable: true
+        description: Actual end date of this billing period returned by the API.
+        expr: {kind: path, path: [TimePeriod, End]}
+      - name: estimated
+        type: Boolean
+        nullable: true
+        description: >-
+          True when the period includes the current open month whose billing is
+          not yet finalised.
+        expr: {kind: path, path: [Estimated]}
+      - name: groups
+        type: Json
+        nullable: true
+        description: >-
+          Full per-service cost breakdown as a JSON array. Each element has
+          Keys (service name) and Metrics keyed by the metric the caller
+          requested (e.g. Metrics.AmortizedCost.Amount when
+          metric = 'AmortizedCost'). Use json_get_json(groups, 0) to read
+          the first element, then json_get_str(first_element, 'Keys', 0) for
+          the service name. To analyze all services in one query, expand
+          with unnest(json_get_array(groups)) in a subquery (see README).
+          Per-period totals are not exposed as scalar
+          columns because AWS returns the response Total block empty
+          whenever a GroupBy is set; sum across the per-service entries
+          here to compute a period-level aggregate.
+        expr: {kind: path, path: [Groups]}
+      - name: metric
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Cost metric filter used for this query. Defaults to UnblendedCost
+          in the request, but this column is NULL unless you bind it
+          explicitly via WHERE metric = '<value>' — it echoes the bound
+          filter, not the applied default. Other values: AmortizedCost,
+          BlendedCost, NetUnblendedCost, NetAmortizedCost, UsageQuantity,
+          NormalizedUsageAmount.
+        expr: {kind: from_filter, key: metric}
+      - name: granularity
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Aggregation period filter. Defaults to MONTHLY in the request, but
+          this column is NULL unless you bind it explicitly via WHERE
+          granularity = '<value>' — it echoes the bound filter, not the
+          applied default. Other values: DAILY, or HOURLY (opt-in, last 14
+          days, requires ISO-8601 timestamps for time_period_start/end).
+        expr: {kind: from_filter, key: granularity}
+
+  - name: cost_by_tag
+    description: >-
+      AWS cost per billing period grouped by a resource tag key, returned by GetCostAndUsage.
+      Each row represents one time period. The groups column contains the full per-tag-value
+      breakdown as a JSON array. Use tag_key = 'aws:cloudformation:stack-name' to attribute
+      cost to CloudFormation stacks and correlate with deployment events. Because the
+      request always sets a TAG GroupBy, AWS returns the response Total block as an
+      empty object, so all per-period totals must come from the per-tag-value entries
+      inside `groups`.
+    guide: |
+      Requires time_period_start, time_period_end (YYYY-MM-DD, end exclusive),
+      and tag_key. The tag key must be activated as a cost allocation tag in
+      the AWS Billing and Cost Management console under Cost Allocation Tags
+      before it appears here. This applies to both user-defined tags
+      (under "User-Defined Cost Allocation Tags") and AWS-generated tags like
+      'aws:cloudformation:stack-name' (under "AWS-Generated Cost Allocation
+      Tags") — neither type is active by default.
+      Activation is non-retroactive: costs incurred before the tag was
+      activated do not get tagged after the fact, so a freshly activated
+      tag will show empty values for older billing periods.
+      In AWS Organizations, only the management account can activate cost
+      allocation tags; member-account credentials querying this table will
+      return empty tag values until the org owner activates the key.
+      Each row is one time period. groups is a JSON array where each element has
+      Keys (the tag value) and Metrics.UnblendedCost.Amount. Resources with no
+      value for that tag appear with an empty string as the tag value.
+      Use json_get_json(groups, 0) to inspect the first element. To rank ALL
+      tag values by spend, expand the array into one row per tag value with
+      unnest(json_get_array(groups)) in a subquery, then project
+      json_get_str(g, 'Keys', 0) for the tag value and
+      json_get_str(g, 'Metrics', '<metric>', 'Amount') for the cost
+      (match '<metric>' to the bound metric filter; default UnblendedCost).
+      See the README cost_by_tag examples for the full query.
+    filters:
+      - name: time_period_start
+        required: true
+        description: Start of the billing period, inclusive. Format YYYY-MM-DD.
+      - name: time_period_end
+        required: true
+        description: End of the billing period, exclusive. Format YYYY-MM-DD.
+      - name: tag_key
+        required: true
+        description: >-
+          The AWS tag key to group costs by. Use
+          'aws:cloudformation:stack-name' to attribute costs to
+          CloudFormation stacks. Both user-defined and AWS-generated
+          (`aws:` prefix) tag keys must be activated under
+          Billing → Cost Allocation Tags before they return any data
+          here, and only the management account can activate them in
+          AWS Organizations.
+      - name: granularity
+        description: >-
+          Aggregation period. MONTHLY (default) or DAILY. HOURLY is
+          opt-in at the AWS payer-account level and limited to the last
+          14 days; HOURLY also requires time_period_start and
+          time_period_end to be passed as ISO-8601 timestamps
+          (e.g. '2026-05-29T00:00:00Z') instead of YYYY-MM-DD dates,
+          otherwise AWS rejects the request with ValidationException
+          ("Time period is invalid. Valid format is yyyy-MM-ddThh:mm:ssZ.").
+      - name: metric
+        description: >-
+          Cost metric to retrieve. UnblendedCost (default), AmortizedCost,
+          BlendedCost, NetUnblendedCost, NetAmortizedCost,
+          UsageQuantity, NormalizedUsageAmount.
+          Use AmortizedCost when the account uses Reserved Instances or
+          Savings Plans — UnblendedCost understates amortized commitment costs.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: AWSInsightsIndexService.GetCostAndUsage
+      body:
+        - path: [TimePeriod, Start]
+          from: filter
+          key: time_period_start
+        - path: [TimePeriod, End]
+          from: filter
+          key: time_period_end
+        - path: [Granularity]
+          from: filter
+          key: granularity
+          default: MONTHLY
+        - path: [GroupBy, "0", Type]
+          from: literal
+          value: TAG
+        - path: [GroupBy, "0", Key]
+          from: filter
+          key: tag_key
+        - path: [Metrics, "0"]
+          from: filter
+          key: metric
+          default: UnblendedCost
+    response:
+      rows_path: [ResultsByTime]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextPageToken]
+      response_cursor_path: [NextPageToken]
+      max_pages: 100
+    columns:
+      - name: time_period_start
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Billing period start date filter.
+        expr: {kind: from_filter, key: time_period_start}
+      - name: time_period_end
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Billing period end date filter.
+        expr: {kind: from_filter, key: time_period_end}
+      - name: tag_key
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Tag key filter used to group costs.
+        expr: {kind: from_filter, key: tag_key}
+      - name: period_start
+        type: Utf8
+        nullable: true
+        description: Actual start date of this billing period returned by the API.
+        expr: {kind: path, path: [TimePeriod, Start]}
+      - name: period_end
+        type: Utf8
+        nullable: true
+        description: Actual end date of this billing period returned by the API.
+        expr: {kind: path, path: [TimePeriod, End]}
+      - name: estimated
+        type: Boolean
+        nullable: true
+        description: True when billing for the period is not yet finalised.
+        expr: {kind: path, path: [Estimated]}
+      - name: groups
+        type: Json
+        nullable: true
+        description: >-
+          Full per-tag-value cost breakdown as a JSON array. Each element has
+          Keys (the tag value) and Metrics keyed by the metric the caller
+          requested (e.g. Metrics.AmortizedCost.Amount when
+          metric = 'AmortizedCost'). Use json_get_json(groups, 0) to read
+          the first element, then json_get_str(first_element, 'Keys', 0) for
+          the tag value. To rank all tag values in one query, expand
+          with unnest(json_get_array(groups)) in a subquery (see README).
+          Per-period totals are not exposed as scalar
+          columns because AWS returns the response Total block empty
+          whenever a GroupBy is set; sum across the per-tag-value entries
+          here to compute a period-level aggregate.
+        expr: {kind: path, path: [Groups]}
+      - name: metric
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Cost metric filter used for this query. Defaults to UnblendedCost
+          in the request, but this column is NULL unless you bind it
+          explicitly via WHERE metric = '<value>' — it echoes the bound
+          filter, not the applied default. Other values: AmortizedCost,
+          BlendedCost, NetUnblendedCost, NetAmortizedCost, UsageQuantity,
+          NormalizedUsageAmount.
+        expr: {kind: from_filter, key: metric}
+      - name: granularity
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Aggregation period filter. Defaults to MONTHLY in the request, but
+          this column is NULL unless you bind it explicitly via WHERE
+          granularity = '<value>' — it echoes the bound filter, not the
+          applied default. Other values: DAILY, or HOURLY (opt-in, last 14
+          days, requires ISO-8601 timestamps for time_period_start/end).
+        expr: {kind: from_filter, key: granularity}
+
+  - name: anomalies
+    description: >-
+      Cost anomalies detected by AWS Cost Explorer's ML models, returned by
+      GetAnomalies. Each row is one detected spending spike with the impacted
+      dimension (service or linked account), the dollar impact, and the
+      detection window. Use as the entry point for cost-spike investigation —
+      AWS accounts for seasonality and growth trends in its baseline model,
+      which makes this more reliable than manual month-over-month comparisons.
+    guide: |
+      Requires date_interval_start and date_interval_end (YYYY-MM-DD).
+      Anomalies are retained for up to 90 days. Newer accounts (less than ~5
+      weeks of billing history) may return no results because AWS needs that
+      minimum baseline to detect spikes.
+      date_interval_end has an upper bound of "yesterday" — AWS rejects
+      end dates of today or later with ValidationException ("Latest
+      supported detectionDate for GetRecentAnomalies is …"). Use the
+      previous day's date as the inclusive upper edge of the search
+      window.
+      anomaly_end_date is null for anomalies that are still active (the spike
+      has not ended). Use IS NULL to find ongoing anomalies.
+      total_impact is the dollar difference between actual and expected
+      spend — use ORDER BY CAST(total_impact AS DOUBLE) DESC to rank spikes
+      by severity. Use total_impact_min to suppress low-value noise.
+      root_causes is a JSON array. Each element has Service, Region,
+      UsageType, LinkedAccount, LinkedAccountName, and Impact.Contribution.
+      Use json_get_json(root_causes, 0) for the highest-contribution root
+      cause, then json_get_str on the result.
+    filters:
+      - name: date_interval_start
+        required: true
+        description: >-
+          Start of the window to search for detected anomalies. Format
+          YYYY-MM-DD. The returned anomaly's AnomalyEndDate falls within
+          this window. Use the first day of the month to scan the full
+          billing period.
+      - name: date_interval_end
+        required: true
+        description: >-
+          End of the anomaly search window. Format YYYY-MM-DD. Must be
+          yesterday or earlier — AWS rejects today/future end dates with
+          ValidationException ("Latest supported detectionDate for
+          GetRecentAnomalies is …").
+      - name: total_impact_min
+        description: >-
+          Minimum total dollar impact to include. Filters out low-value
+          noise. Whole-dollar integer (e.g. 100 to suppress anomalies under
+          $100).
+      - name: feedback
+        description: >-
+          Filter by user-supplied feedback. YES (confirmed anomaly), NO
+          (false positive), PLANNED_ACTIVITY (expected spend increase).
+      - name: monitor_arn
+        description: >-
+          Restrict to anomalies detected by a specific Cost Anomaly Monitor
+          ARN.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: AWSInsightsIndexService.GetAnomalies
+      body:
+        - path: [DateInterval, StartDate]
+          from: filter
+          key: date_interval_start
+        - path: [DateInterval, EndDate]
+          from: filter
+          key: date_interval_end
+        - path: [TotalImpact, NumericOperator]
+          from: literal
+          value: GREATER_THAN_OR_EQUAL
+        - path: [TotalImpact, StartValue]
+          from: filter_int
+          key: total_impact_min
+          default: 0
+        - path: [Feedback]
+          from: filter
+          key: feedback
+        - path: [MonitorArn]
+          from: filter
+          key: monitor_arn
+        # GetAnomalies MaxResults is the PageSize integer (no documented
+        # max). 100 is an arbitrary page-size choice within the legal
+        # range; pagination chases NextPageToken until exhaustion.
+        - path: [MaxResults]
+          from: literal
+          value: 100
+    response:
+      rows_path: [Anomalies]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextPageToken]
+      response_cursor_path: [NextPageToken]
+      max_pages: 50
+    columns:
+      - name: date_interval_start
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Anomaly search window start date filter.
+        expr: {kind: from_filter, key: date_interval_start}
+      - name: date_interval_end
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Anomaly search window end date filter.
+        expr: {kind: from_filter, key: date_interval_end}
+      - name: anomaly_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the anomaly assigned by AWS.
+        expr: {kind: path, path: [AnomalyId]}
+      - name: anomaly_start_date
+        type: Utf8
+        nullable: true
+        description: >-
+          Date the anomaly was first detected (YYYY-MM-DD). Use as the
+          window start when querying cost_by_tag to identify the
+          responsible stack.
+        expr: {kind: path, path: [AnomalyStartDate]}
+      - name: anomaly_end_date
+        type: Utf8
+        nullable: true
+        description: >-
+          Date the anomaly ended (YYYY-MM-DD). Null when the spike is
+          still active. Use IS NULL to find ongoing anomalies.
+        expr: {kind: path, path: [AnomalyEndDate]}
+      - name: dimension_value
+        type: Utf8
+        nullable: true
+        description: >-
+          The monitor dimension that triggered the alert — typically an AWS
+          service name (e.g. 'AWS Lambda') or linked account ID, depending
+          on the anomaly monitor type.
+        expr: {kind: path, path: [DimensionValue]}
+      - name: total_actual_spend
+        type: Utf8
+        nullable: true
+        description: >-
+          Total actual spend during the anomaly window. Cast to Float64:
+          CAST(total_actual_spend AS DOUBLE).
+        expr: {kind: path, path: [Impact, TotalActualSpend]}
+      - name: total_expected_spend
+        type: Utf8
+        nullable: true
+        description: >-
+          What AWS predicted spend would be without the anomaly. Cast to
+          Float64 before arithmetic.
+        expr: {kind: path, path: [Impact, TotalExpectedSpend]}
+      - name: total_impact
+        type: Utf8
+        nullable: true
+        description: >-
+          Dollar difference between actual and expected spend — the size of
+          the spike. Cast to Float64 and ORDER BY CAST(total_impact AS
+          DOUBLE) DESC to rank spikes by severity.
+        expr: {kind: path, path: [Impact, TotalImpact]}
+      - name: total_impact_percentage
+        type: Utf8
+        nullable: true
+        description: >-
+          Anomaly size as a percentage above expected spend. Cast to
+          Float64 for comparisons.
+        expr: {kind: path, path: [Impact, TotalImpactPercentage]}
+      - name: max_impact
+        type: Utf8
+        nullable: true
+        description: >-
+          Single-day peak dollar impact during the anomaly window. Cast to
+          Float64 before arithmetic.
+        expr: {kind: path, path: [Impact, MaxImpact]}
+      - name: current_score
+        type: Float64
+        nullable: true
+        description: >-
+          AWS's current anomaly confidence score. Higher means more
+          confident that the spike is anomalous.
+        expr: {kind: path, path: [AnomalyScore, CurrentScore]}
+      - name: max_score
+        type: Float64
+        nullable: true
+        description: Maximum anomaly score reached during the spike.
+        expr: {kind: path, path: [AnomalyScore, MaxScore]}
+      - name: root_causes
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of root-cause objects identified by AWS. Each element
+          has Service, Region, UsageType, LinkedAccount, LinkedAccountName,
+          and Impact.Contribution (the share of total_impact attributable
+          to that root cause). Multiple root causes appear in order of
+          descending contribution. Use json_get_json(root_causes, 0) to
+          read the first root cause.
+        expr: {kind: path, path: [RootCauses]}
+      - name: feedback
+        type: Utf8
+        nullable: true
+        description: >-
+          User feedback on this anomaly: YES (confirmed), NO (false
+          positive), PLANNED_ACTIVITY (expected). Null when no feedback has
+          been submitted.
+        expr: {kind: path, path: [Feedback]}
+      - name: monitor_arn
+        type: Utf8
+        nullable: true
+        description: ARN of the Cost Anomaly Monitor that detected this anomaly.
+        expr: {kind: path, path: [MonitorArn]}
+      - name: total_impact_min
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Minimum total impact filter applied to this query.
+        expr: {kind: from_filter, key: total_impact_min}
+
+  - name: cost_forecast
+    description: >-
+      Projected cost for an in-progress or future billing period, returned by
+      GetCostForecast. Returns a mean prediction with a configurable
+      confidence interval per sub-period. Use to project end-of-month
+      spend, size the impact of a recent infrastructure change, or answer
+      'are we going to exceed budget?' in an agent session.
+    guide: |
+      Requires time_period_start, time_period_end, granularity, and metric.
+      time_period_start has a hard lower bound of "yesterday" — AWS
+      rejects earlier start dates with ValidationException ("Earliest
+      supported Start is …"). Future start dates are accepted in practice
+      even though AWS docs say the start "must be equal to or no later
+      than the current date"; in live tests, AWS returns
+      DataUnavailableException ("Insufficient amount of historical
+      data") rather than rejecting the start date itself when there is
+      no history to forecast from. The forecast covers
+      time_period_start through time_period_end exclusive; AWS blends
+      actuals up to today with a prediction beyond.
+      time_period_end has its own ceiling: AWS rejects ends more than ~3
+      months ahead at DAILY granularity (or ~18 months ahead at MONTHLY)
+      with ValidationException ("Latest supported End is …").
+      To forecast the full current month from yesterday onward, set
+      time_period_start to yesterday and time_period_end to the first
+      of next month.
+      The supported metric set is narrower than cost_by_service /
+      cost_by_tag: only AMORTIZED_COST, BLENDED_COST, NET_AMORTIZED_COST,
+      NET_UNBLENDED_COST, and UNBLENDED_COST. USAGE_QUANTITY and
+      NORMALIZED_USAGE_AMOUNT are not supported by the forecast API.
+      DAILY granularity allows up to 3 months ahead; MONTHLY allows up to
+      18 months ahead.
+      mean_value is the point estimate. prediction_interval_lower_bound and
+      prediction_interval_upper_bound bracket the mean at the confidence
+      level chosen by prediction_interval_level (default 80, range 51-99) —
+      higher levels widen the interval.
+    filters:
+      - name: time_period_start
+        required: true
+        description: >-
+          Start of the forecast period, inclusive. Must be yesterday or
+          later — AWS rejects earlier starts with ValidationException
+          ("Earliest supported Start is …"). Future starts are accepted
+          in practice (AWS returns DataUnavailableException when there
+          is no data to forecast). Format YYYY-MM-DD. Use yesterday's
+          date to forecast from the most recent settled day, or a
+          future date to forecast a future window.
+      - name: time_period_end
+        required: true
+        description: >-
+          End of the forecast period, exclusive. Format YYYY-MM-DD.
+          AWS caps the end date at today + ~3 months for DAILY (or
+          today + ~18 months for MONTHLY) and rejects later dates with
+          ValidationException ("Latest supported End is …").
+      - name: granularity
+        required: true
+        description: >-
+          Forecast resolution. DAILY (one row per day, up to 3 months
+          ahead) or MONTHLY (one row per month, up to 18 months ahead).
+          DAILY is more useful for near-term spend pacing; MONTHLY for
+          budget headroom checks.
+      - name: metric
+        required: true
+        description: >-
+          Cost metric to forecast. AMORTIZED_COST, BLENDED_COST,
+          NET_AMORTIZED_COST, NET_UNBLENDED_COST, or UNBLENDED_COST.
+          USAGE_QUANTITY and NORMALIZED_USAGE_AMOUNT are not supported by
+          the forecast API.
+      - name: prediction_interval_level
+        description: >-
+          Confidence level for the prediction interval bounds. Integer
+          51-99, defaults to 80. Higher confidence widens the interval.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: AWSInsightsIndexService.GetCostForecast
+      body:
+        - path: [TimePeriod, Start]
+          from: filter
+          key: time_period_start
+        - path: [TimePeriod, End]
+          from: filter
+          key: time_period_end
+        - path: [Granularity]
+          from: filter
+          key: granularity
+        - path: [Metric]
+          from: filter
+          key: metric
+        - path: [PredictionIntervalLevel]
+          from: filter_int
+          key: prediction_interval_level
+          default: 80
+    response:
+      rows_path: [ForecastResultsByTime]
+    pagination:
+      mode: none
+    columns:
+      - name: time_period_start
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Forecast period start date filter.
+        expr: {kind: from_filter, key: time_period_start}
+      - name: time_period_end
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Forecast period end date filter.
+        expr: {kind: from_filter, key: time_period_end}
+      - name: granularity
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Forecast granularity filter (DAILY or MONTHLY).
+        expr: {kind: from_filter, key: granularity}
+      - name: metric
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Cost metric filter used for this forecast.
+        expr: {kind: from_filter, key: metric}
+      - name: period_start
+        type: Utf8
+        nullable: true
+        description: Start of this forecast sub-period (YYYY-MM-DD).
+        expr: {kind: path, path: [TimePeriod, Start]}
+      - name: period_end
+        type: Utf8
+        nullable: true
+        description: End of this forecast sub-period, exclusive (YYYY-MM-DD).
+        expr: {kind: path, path: [TimePeriod, End]}
+      - name: mean_value
+        type: Utf8
+        nullable: true
+        description: >-
+          Point estimate of predicted cost for this sub-period. Cast to
+          Float64: CAST(mean_value AS DOUBLE). Sum across rows for the
+          total forecast when using DAILY granularity.
+        expr: {kind: path, path: [MeanValue]}
+      - name: prediction_interval_lower_bound
+        type: Utf8
+        nullable: true
+        description: >-
+          Lower bound of the prediction interval at the requested
+          confidence level. Cast to Float64 before arithmetic.
+        expr: {kind: path, path: [PredictionIntervalLowerBound]}
+      - name: prediction_interval_upper_bound
+        type: Utf8
+        nullable: true
+        description: >-
+          Upper bound of the prediction interval at the requested
+          confidence level. Cast to Float64 — use this as the conservative
+          estimate when checking budget headroom.
+        expr: {kind: path, path: [PredictionIntervalUpperBound]}
+      - name: prediction_interval_level
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Confidence level filter (51-99, default 80) used for this
+          forecast's interval bounds.
+        expr: {kind: from_filter, key: prediction_interval_level}
+
+  - name: rightsizing_recommendations
+    description: >-
+      EC2 rightsizing recommendations from AWS Cost Explorer, based on a
+      14-day CloudWatch utilisation lookback. Returns instances that are
+      over-provisioned (MODIFY) or idle (TERMINATE).
+    guide: |
+      No required filters. Recommendations are computed by AWS daily using
+      CloudWatch metrics from the last 14 days. Memory utilisation requires
+      the CloudWatch agent on the instance; without it `memory_utilization_pct`
+      is NULL and the recommendation is driven by CPU only.
+      Recommendations are cached for 24 hours.
+      Set recommendation_target = 'CROSS_INSTANCE_FAMILY' to surface
+      cross-family downsizes (e.g. m5.large → t3.medium) which often yield
+      larger savings but may change network and CPU performance and require
+      application testing.
+      `estimated_monthly_savings` reflects the MODIFY target's first option
+      in the response array OR the TERMINATE detail, depending on
+      `recommendation_type`. AWS may return multiple modify candidates and
+      flags the recommended one with `DefaultTargetInstance`, but this
+      manifest currently surfaces only the array's first element. When
+      `recommendation_type = 'TERMINATE'`, `target_instance_type` is NULL
+      because there is no replacement instance.
+    filters:
+      - name: recommendation_target
+        description: >-
+          Recommendation scope. SAME_INSTANCE_FAMILY (default) restricts
+          target instances to the same family as the source. CROSS_INSTANCE_FAMILY
+          allows cross-family suggestions which often yield larger savings
+          but may change network or CPU characteristics.
+      - name: benefits_considered
+        description: >-
+          Whether AWS factors existing Savings Plans / RI benefits into the
+          savings calculation. true (default) gives net-of-commitments
+          savings; false ignores commitments.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: AWSInsightsIndexService.GetRightsizingRecommendation
+      body:
+        - path: [Service]
+          from: literal
+          value: AmazonEC2
+        - path: [Configuration, RecommendationTarget]
+          from: filter
+          key: recommendation_target
+          default: SAME_INSTANCE_FAMILY
+        - path: [Configuration, BenefitsConsidered]
+          from: filter_bool
+          key: benefits_considered
+          default: true
+        # GetRightsizingRecommendation PageSize is RecommendationsPageSize
+        # (max 6000). 100 keeps per-call payloads small; pagination
+        # chases NextPageToken until exhaustion.
+        - path: [PageSize]
+          from: literal
+          value: 100
+    response:
+      rows_path: [RightsizingRecommendations]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextPageToken]
+      response_cursor_path: [NextPageToken]
+      max_pages: 20
+    columns:
+      - name: instance_id
+        type: Utf8
+        nullable: true
+        description: EC2 instance ID, e.g. 'i-0abc123'.
+        expr: {kind: path, path: [CurrentInstance, ResourceId]}
+      - name: instance_name
+        type: Utf8
+        nullable: true
+        description: EC2 instance name tag value.
+        expr: {kind: path, path: [CurrentInstance, InstanceName]}
+      - name: instance_type
+        type: Utf8
+        nullable: true
+        description: Current EC2 instance type, e.g. 'm5.large'.
+        expr:
+          {kind: path, path: [CurrentInstance, ResourceDetails, EC2ResourceDetails, InstanceType]}
+      - name: region
+        type: Utf8
+        nullable: true
+        description: AWS region where the instance runs.
+        expr:
+          {kind: path, path: [CurrentInstance, ResourceDetails, EC2ResourceDetails, Region]}
+      - name: monthly_cost
+        type: Utf8
+        nullable: true
+        description: >-
+          Current estimated monthly cost as a string. Cast to Float64 before
+          arithmetic: CAST(monthly_cost AS DOUBLE).
+        expr: {kind: path, path: [CurrentInstance, MonthlyCost]}
+      - name: recommendation_type
+        type: Utf8
+        nullable: true
+        description: 'MODIFY (downsize) or TERMINATE (shut down — zero recent usage).'
+        expr: {kind: path, path: [RightsizingType]}
+      - name: estimated_monthly_savings
+        type: Utf8
+        nullable: true
+        description: >-
+          Estimated monthly savings if the recommendation is applied, as a
+          string. For MODIFY recommendations, reflects the first target
+          instance returned by AWS — AWS marks the recommended option with
+          `DefaultTargetInstance: true`, but this column projects the
+          array's first element regardless of that flag. For TERMINATE
+          recommendations, reflects the full terminate savings (the entire
+          instance cost). Cast to Float64
+          before arithmetic.
+        expr:
+          kind: coalesce
+          exprs:
+            - {kind: path, path: [ModifyRecommendationDetail, TargetInstances, "0", EstimatedMonthlySavings]}
+            - {kind: path, path: [TerminateRecommendationDetail, EstimatedMonthlySavings]}
+      - name: cpu_utilization_pct
+        type: Utf8
+        nullable: true
+        description: >-
+          Maximum CPU utilisation percentage observed over the 14-day
+          lookback window. Available on every recommendation regardless of
+          whether the CloudWatch agent is installed.
+        expr:
+          kind: path
+          path: [CurrentInstance, ResourceUtilization, EC2ResourceUtilization, MaxCpuUtilizationPercentage]
+      - name: memory_utilization_pct
+        type: Utf8
+        nullable: true
+        description: >-
+          Maximum memory utilisation percentage observed over the 14-day
+          lookback window. NULL unless the CloudWatch agent is installed
+          on the instance — basic CloudWatch monitoring does not surface
+          memory metrics.
+        expr:
+          kind: path
+          path: [CurrentInstance, ResourceUtilization, EC2ResourceUtilization, MaxMemoryUtilizationPercentage]
+      - name: target_instance_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Recommended target instance type for MODIFY recommendations.
+          NULL for TERMINATE recommendations (no replacement instance).
+          Reflects the first target instance returned by AWS — AWS marks
+          the recommended option with `DefaultTargetInstance: true`, but
+          this column projects the array's first element regardless of
+          that flag.
+        expr:
+          {kind: path, path: [ModifyRecommendationDetail, TargetInstances, "0", ResourceDetails, EC2ResourceDetails, InstanceType]}
+      - name: recommendation_target
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Recommendation scope filter. SAME_INSTANCE_FAMILY (default) or
+          CROSS_INSTANCE_FAMILY. Bind via WHERE recommendation_target = '<value>'.
+        expr: {kind: from_filter, key: recommendation_target}
+      - name: benefits_considered
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: >-
+          Filter controlling whether AWS factors existing Savings Plans / RI
+          benefits into savings (default true). Bind via WHERE benefits_considered = false.
+        expr: {kind: from_filter, key: benefits_considered}
+
+  - name: savings_plans_coverage
+    description: >-
+      Savings Plans coverage by AWS service, returned by GetSavingsPlansCoverage.
+      Shows what fraction of eligible on-demand spend is covered by a Savings Plan.
+      Coverage below 100% represents on-demand spend that could be reduced by
+      purchasing or expanding a Savings Plan.
+    guide: |
+      Requires time_period_start and time_period_end (YYYY-MM-DD, end exclusive).
+      The Start date must be within the last 13 months. time_period_end
+      is exclusive and AWS rejects end dates after today with
+      ValidationException ("end date should NOT be after [today]"); use
+      today's date for an in-progress month. coverage_pct below 80 with
+      significant on_demand_cost is a strong signal to review commitment
+      purchases. New Savings Plans take up to 72 hours to fully appear in
+      coverage data.
+      total_cost is the sum of on_demand_cost and spend_covered_by_savings_plans
+      for the row's service grouping; use it to compute absolute coverage in
+      dollars instead of just coverage_pct.
+    filters:
+      - name: time_period_start
+        required: true
+        description: Start of the coverage period, inclusive. Format YYYY-MM-DD.
+      - name: time_period_end
+        required: true
+        description: >-
+          End of the coverage period, exclusive. Format YYYY-MM-DD. Must
+          be today or earlier — AWS rejects end dates after today with
+          ValidationException ("end date should NOT be after [today]").
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: X-Amz-Target
+          from: literal
+          value: AWSInsightsIndexService.GetSavingsPlansCoverage
+      body:
+        - path: [TimePeriod, Start]
+          from: filter
+          key: time_period_start
+        - path: [TimePeriod, End]
+          from: filter
+          key: time_period_end
+        - path: [GroupBy, "0", Type]
+          from: literal
+          value: DIMENSION
+        - path: [GroupBy, "0", Key]
+          from: literal
+          value: SERVICE
+        # GetSavingsPlansCoverage MaxResults is MaxResults (min 1, no
+        # documented max; AWS default is 20). 100 keeps round-trips
+        # bounded; pagination chases NextToken until exhaustion.
+        - path: [MaxResults]
+          from: literal
+          value: 100
+    response:
+      rows_path: [SavingsPlansCoverages]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 50
+    columns:
+      - name: time_period_start
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Coverage period start date filter.
+        expr: {kind: from_filter, key: time_period_start}
+      - name: time_period_end
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Coverage period end date filter.
+        expr: {kind: from_filter, key: time_period_end}
+      - name: period_start
+        type: Utf8
+        nullable: true
+        description: Actual start date of this coverage period returned by the API.
+        expr: {kind: path, path: [TimePeriod, Start]}
+      - name: period_end
+        type: Utf8
+        nullable: true
+        description: Actual end date of this coverage period returned by the API (exclusive).
+        expr: {kind: path, path: [TimePeriod, End]}
+      - name: service
+        type: Utf8
+        nullable: true
+        description: AWS service name.
+        expr: {kind: path, path: [Attributes, SERVICE]}
+      - name: coverage_pct
+        type: Utf8
+        nullable: true
+        description: >-
+          Percentage of eligible Savings Plans usage covered by an active
+          Savings Plan, as a string. Cast to Float64:
+          CAST(coverage_pct AS DOUBLE). Values below 80 indicate significant
+          uncovered spend.
+        expr: {kind: path, path: [Coverage, CoveragePercentage]}
+      - name: on_demand_cost
+        type: Utf8
+        nullable: true
+        description: >-
+          On-demand spend not covered by any Savings Plan, as a string.
+          Cast to Float64 for calculations.
+        expr: {kind: path, path: [Coverage, OnDemandCost]}
+      - name: spend_covered_by_savings_plans
+        type: Utf8
+        nullable: true
+        description: >-
+          Spend covered by an active Savings Plan, as a string.
+          Cast to Float64: CAST(spend_covered_by_savings_plans AS DOUBLE).
+          Sum with on_demand_cost to get total compute spend.
+        expr: {kind: path, path: [Coverage, SpendCoveredBySavingsPlans]}
+      - name: total_cost
+        type: Utf8
+        nullable: true
+        description: >-
+          Total compute spend (on_demand_cost + spend_covered_by_savings_plans)
+          for this service grouping, as a string. Cast to Float64 for calculations.
+        expr: {kind: path, path: [Coverage, TotalCost]}

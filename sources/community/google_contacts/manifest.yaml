@@ -1,0 +1,373 @@
+name: google_contacts
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query contacts and contact groups from Google Contacts (Google People API).
+inputs:
+  GOOGLE_CONTACTS_API_BASE:
+    kind: variable
+    default: https://people.googleapis.com
+    hint: |
+      Base URL for the Google People API. Keep the default unless you are
+      testing against a mock Google Contacts API.
+  GOOGLE_CONTACTS_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Use a read-only OAuth 2.0 access token for the Google People API.
+      The guided OAuth flow requests the contacts.readonly scope.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Contacts
+          description: Use Google OAuth to retrieve a Contacts access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_CONTACTS_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_CONTACTS_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/contacts.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Contacts OAuth access token.
+base_url: "{{input.GOOGLE_CONTACTS_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_CONTACTS_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM google_contacts.contacts LIMIT 1
+  - SELECT * FROM google_contacts.contact_groups LIMIT 1
+tables:
+  - name: contacts
+    description: Contacts (connections) of the authenticated user
+    guide: |
+      Exposes the user's contacts list (connections) from the Google People API.
+      Includes primary name, email, phone, and organization details, plus
+      comma-separated lists of all emails and phone numbers.
+    filters:
+      - name: sort_order
+        required: false
+        description: |
+          The order to sort connections. Supported values:
+          LAST_MODIFIED_ASCENDING, LAST_MODIFIED_DESCENDING, FIRST_NAME_ASCENDING, LAST_NAME_ASCENDING.
+    request:
+      method: GET
+      path: /v1/people/me/connections
+      query:
+        - name: personFields
+          from: literal
+          value: names,emailAddresses,phoneNumbers,organizations,biographies,metadata,memberships
+        - name: sortOrder
+          from: filter
+          key: sort_order
+    response:
+      rows_path:
+        - connections
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Contact identifier (extracted from resourceName)
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path:
+              - resourceName
+          from: people/
+          to: ""
+      - name: resource_name
+        type: Utf8
+        nullable: false
+        description: Unique resource name for the contact (e.g. people/c12345)
+        expr:
+          kind: path
+          path:
+            - resourceName
+      - name: etag
+        type: Utf8
+        nullable: true
+        description: ETag of the contact resource
+        expr:
+          kind: path
+          path:
+            - etag
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: First returned display name for the contact. Use the raw names array for primary/type resolution.
+        expr:
+          kind: first_array_item_path
+          path:
+            - names
+          item_path:
+            - displayName
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: First returned family name (last name) for the contact. Use the raw names array for primary/type resolution.
+        expr:
+          kind: first_array_item_path
+          path:
+            - names
+          item_path:
+            - familyName
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: First returned given name (first name) for the contact. Use the raw names array for primary/type resolution.
+        expr:
+          kind: first_array_item_path
+          path:
+            - names
+          item_path:
+            - givenName
+      - name: email
+        type: Utf8
+        nullable: true
+        description: First returned email address for the contact. Use raw_email_addresses or raw array for primary/type resolution.
+        expr:
+          kind: first_array_item_path
+          path:
+            - emailAddresses
+          item_path:
+            - value
+      - name: phone_number
+        type: Utf8
+        nullable: true
+        description: First returned phone number for the contact. Use raw_phone_numbers or raw array for primary/type resolution.
+        expr:
+          kind: first_array_item_path
+          path:
+            - phoneNumbers
+          item_path:
+            - value
+      - name: organization
+        type: Utf8
+        nullable: true
+        description: First returned organization/company name for the contact. Use the raw organizations array for primary/type resolution.
+        expr:
+          kind: first_array_item_path
+          path:
+            - organizations
+          item_path:
+            - name
+      - name: job_title
+        type: Utf8
+        nullable: true
+        description: First returned job title for the contact. Use the raw organizations array for primary/type resolution.
+        expr:
+          kind: first_array_item_path
+          path:
+            - organizations
+          item_path:
+            - title
+      - name: biography
+        type: Utf8
+        nullable: true
+        description: Biography/notes for the contact
+        expr:
+          kind: first_array_item_path
+          path:
+            - biographies
+          item_path:
+            - value
+      - name: emails
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of all email addresses for the contact
+        expr:
+          kind: join_array_path
+          path:
+            - emailAddresses
+          item_path:
+            - value
+          separator: ","
+      - name: phone_numbers
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of all phone numbers for the contact
+        expr:
+          kind: join_array_path
+          path:
+            - phoneNumbers
+          item_path:
+            - value
+          separator: ","
+      - name: raw_email_addresses
+        type: Json
+        nullable: true
+        description: Raw JSON array of email address objects
+        expr:
+          kind: path
+          path:
+            - emailAddresses
+      - name: raw_phone_numbers
+        type: Json
+        nullable: true
+        description: Raw JSON array of phone number objects
+        expr:
+          kind: path
+          path:
+            - phoneNumbers
+      - name: contact_groups
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of contact group resource names the contact belongs to
+        expr:
+          kind: join_array_path
+          path:
+            - memberships
+          item_path:
+            - contactGroupMembership
+            - contactGroupResourceName
+          separator: ","
+      - name: raw_memberships
+        type: Json
+        nullable: true
+        description: Raw JSON array of memberships (e.g. contact groups, domain memberships)
+        expr:
+          kind: path
+          path:
+            - memberships
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw connection object from Google API
+        expr:
+          kind: current_row
+
+  - name: contact_groups
+    description: Contact groups owned by the authenticated user
+    guide: |
+      Contact groups owned by the authenticated user. Note that group list
+      does not include group member resource names.
+    request:
+      method: GET
+      path: /v1/contactGroups
+      query:
+        - name: groupFields
+          from: literal
+          value: metadata,groupType,memberCount,name
+    response:
+      rows_path:
+        - contactGroups
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Contact group ID (extracted from resourceName)
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path:
+              - resourceName
+          from: contactGroups/
+          to: ""
+      - name: resource_name
+        type: Utf8
+        nullable: false
+        description: Unique resource name for the group (e.g. contactGroups/12345)
+        expr:
+          kind: path
+          path:
+            - resourceName
+      - name: etag
+        type: Utf8
+        nullable: true
+        description: ETag of the contact group resource
+        expr:
+          kind: path
+          path:
+            - etag
+      - name: name
+        type: Utf8
+        nullable: true
+        description: The user-defined name for this group
+        expr:
+          kind: path
+          path:
+            - name
+      - name: group_type
+        type: Utf8
+        nullable: true
+        description: Type of the contact group (e.g. USER_CONTACT_GROUP, SYSTEM_CONTACT_GROUP)
+        expr:
+          kind: path
+          path:
+            - groupType
+      - name: member_count
+        type: Int64
+        nullable: true
+        description: The total number of members in this contact group
+        expr:
+          kind: path
+          path:
+            - memberCount
+      - name: update_time
+        type: Timestamp
+        nullable: true
+        description: Time the contact group was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - metadata
+              - updateTime
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this contact group is deleted
+        expr:
+          kind: path
+          path:
+            - metadata
+            - deleted
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw contact group object from Google API
+        expr:
+          kind: current_row

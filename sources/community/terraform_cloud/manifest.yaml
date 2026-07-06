@@ -1,0 +1,539 @@
+name: terraform_cloud
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query HCP Terraform or Terraform Enterprise projects, workspaces, runs,
+  variables, and state versions for infrastructure governance.
+base_url: "{{input.TERRAFORM_CLOUD_API_BASE}}"
+
+inputs:
+  TERRAFORM_CLOUD_API_BASE:
+    kind: variable
+    default: https://app.terraform.io/api/v2
+    hint: |
+      Base URL for the HCP Terraform or Terraform Enterprise API, without a
+      trailing slash. HCP Terraform uses https://app.terraform.io/api/v2.
+  TERRAFORM_CLOUD_ORGANIZATION:
+    kind: variable
+    hint: |
+      Terraform organization name to query.
+  TERRAFORM_CLOUD_TOKEN:
+    kind: secret
+    hint: |
+      HCP Terraform or Terraform Enterprise user/team token with read access
+      to the organization, projects, workspaces, runs, variables, and state
+      version metadata you want Coral to inspect.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TERRAFORM_CLOUD_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.api+json
+  - name: Content-Type
+    from: literal
+    value: application/vnd.api+json
+
+test_queries:
+  - SELECT id, name FROM terraform_cloud.workspaces LIMIT 1
+  - SELECT id, name FROM terraform_cloud.projects LIMIT 1
+
+tables:
+  - name: projects
+    description: HCP Terraform projects in the configured organization.
+    guide: |
+      Projects group workspaces. Join `id` to `terraform_cloud.workspaces.project_id`
+      to analyze workspace ownership by project.
+    filters:
+      - name: q
+      - name: names
+    request:
+      method: GET
+      path: /organizations/{{input.TERRAFORM_CLOUD_ORGANIZATION}}/projects
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: filter[names]
+          from: filter
+          key: names
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+        expr: {kind: path, path: [attributes, name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created-at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated-at]}
+      - name: organization_name
+        type: Utf8
+        nullable: true
+        description: Organization relationship ID.
+        expr: {kind: path, path: [relationships, organization, data, id]}
+
+  - name: workspaces
+    description: HCP Terraform workspaces in the configured organization.
+    guide: |
+      Workspaces are the main unit for Terraform runs and state. Join `id` to
+      `terraform_cloud.runs.workspace_id`, `terraform_cloud.variables.workspace_id`,
+      or `terraform_cloud.state_versions.workspace_id`.
+    filters:
+      - name: search_name
+      - name: tags
+      - name: exclude_tags
+    request:
+      method: GET
+      path: /organizations/{{input.TERRAFORM_CLOUD_ORGANIZATION}}/workspaces
+      query:
+        - name: search[name]
+          from: filter
+          key: search_name
+        - name: search[tags]
+          from: filter
+          key: tags
+        - name: search[exclude-tags]
+          from: filter
+          key: exclude_tags
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Workspace ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Workspace name.
+        expr: {kind: path, path: [attributes, name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Workspace description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: execution_mode
+        type: Utf8
+        nullable: true
+        description: Execution mode, such as remote, local, or agent.
+        expr: {kind: path, path: [attributes, execution-mode]}
+      - name: terraform_version
+        type: Utf8
+        nullable: true
+        description: Terraform version configured for the workspace.
+        expr: {kind: path, path: [attributes, terraform-version]}
+      - name: working_directory
+        type: Utf8
+        nullable: true
+        description: VCS working directory configured for runs.
+        expr: {kind: path, path: [attributes, working-directory]}
+      - name: locked
+        type: Boolean
+        nullable: true
+        description: Whether the workspace is locked.
+        expr: {kind: path, path: [attributes, locked]}
+      - name: resource_count
+        type: Int64
+        nullable: true
+        description: Current resource count reported by HCP Terraform.
+        expr: {kind: path, path: [attributes, resource-count]}
+      - name: auto_apply
+        type: Boolean
+        nullable: true
+        description: Whether successful plans are auto-applied.
+        expr: {kind: path, path: [attributes, auto-apply]}
+      - name: queue_all_runs
+        type: Boolean
+        nullable: true
+        description: Whether all runs are queued.
+        expr: {kind: path, path: [attributes, queue-all-runs]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created-at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated-at]}
+      - name: current_run_id
+        type: Utf8
+        nullable: true
+        description: Current run relationship ID.
+        expr: {kind: path, path: [relationships, current-run, data, id]}
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project relationship ID.
+        expr: {kind: path, path: [relationships, project, data, id]}
+
+  - name: runs
+    description: Runs for a specific HCP Terraform workspace.
+    guide: |
+      Filter by `workspace_id` using an ID from `terraform_cloud.workspaces`.
+      Optional filters map to HCP Terraform run status, operation, and source.
+      HCP Terraform applies an adjusted rate limit of 30 requests per minute to
+      `GET /workspaces/:workspace_id/runs`, so keep run queries bounded.
+      Valid `operation` values include `plan_only`, `plan_and_apply`,
+      `save_plan`, `refresh_only`, `destroy`, `empty_apply`, and `action_only`.
+      The HCP Terraform runs API excludes `plan_only` runs by default unless
+      `filter[operation]` is supplied; pass `operation=plan_only` to query
+      plan-only runs.
+    filters:
+      - name: workspace_id
+        required: true
+      - name: status
+      - name: operation
+      - name: source
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /workspaces/{{filter.workspace_id}}/runs
+      query:
+        - name: filter[status]
+          from: filter
+          key: status
+        - name: filter[operation]
+          from: filter
+          key: operation
+        - name: filter[source]
+          from: filter
+          key: source
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: workspace_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Workspace ID supplied as a filter.
+        expr:
+          kind: from_filter
+          key: workspace_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Run ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Run status.
+        expr: {kind: path, path: [attributes, status]}
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Run message.
+        expr: {kind: path, path: [attributes, message]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Run source.
+        expr: {kind: path, path: [attributes, source]}
+      - name: operation
+        type: Utf8
+        nullable: true
+        description: Run operation, such as plan_only, plan_and_apply, save_plan, refresh_only, destroy, empty_apply, or action_only.
+        expr: {kind: path, path: [attributes, operation]}
+      - name: is_destroy
+        type: Boolean
+        nullable: true
+        description: Whether this is a destroy run.
+        expr: {kind: path, path: [attributes, is-destroy]}
+      - name: has_changes
+        type: Boolean
+        nullable: true
+        description: Whether the run has planned changes.
+        expr: {kind: path, path: [attributes, has-changes]}
+      - name: plan_only
+        type: Boolean
+        nullable: true
+        description: Whether this run is plan-only.
+        expr: {kind: path, path: [attributes, plan-only]}
+      - name: terraform_version
+        type: Utf8
+        nullable: true
+        description: Terraform version used by the run.
+        expr: {kind: path, path: [attributes, terraform-version]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created-at]}
+      - name: status_timestamps
+        type: Json
+        nullable: true
+        description: Status transition timestamps.
+        expr: {kind: path, path: [attributes, status-timestamps]}
+      - name: created_by_user_id
+        type: Utf8
+        nullable: true
+        description: User that created the run.
+        expr: {kind: path, path: [relationships, created-by, data, id]}
+
+  - name: variables
+    description: Workspace variable metadata for a specific HCP Terraform workspace.
+    guide: |
+      This table intentionally omits variable values. It exposes metadata such
+      as key, category, HCL mode, sensitivity, and description for audit use.
+    filters:
+      - name: workspace_id
+        required: true
+    request:
+      method: GET
+      path: /workspaces/{{filter.workspace_id}}/vars
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: workspace_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Workspace ID supplied as a filter.
+        expr:
+          kind: from_filter
+          key: workspace_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Variable ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Variable key.
+        expr: {kind: path, path: [attributes, key]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Variable description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Variable category, usually terraform or env.
+        expr: {kind: path, path: [attributes, category]}
+      - name: hcl
+        type: Boolean
+        nullable: true
+        description: Whether Terraform parses this value as HCL.
+        expr: {kind: path, path: [attributes, hcl]}
+      - name: sensitive
+        type: Boolean
+        nullable: true
+        description: Whether this variable is sensitive.
+        expr: {kind: path, path: [attributes, sensitive]}
+      - name: version_id
+        type: Utf8
+        nullable: true
+        description: Variable version ID.
+        expr: {kind: path, path: [attributes, version-id]}
+
+  - name: state_versions
+    description: State version metadata for one workspace.
+    guide: |
+      Filter by `workspace_name` because HCP Terraform lists state versions by
+      organization and workspace name. This table exposes state metadata and
+      resource summaries, not raw state file contents. Use `workspace_id` from
+      the workspace relationship for joins back to `terraform_cloud.workspaces`.
+    filters:
+      - name: workspace_name
+        required: true
+      - name: status
+    request:
+      method: GET
+      path: /state-versions
+      query:
+        - name: filter[organization][name]
+          from: input
+          key: TERRAFORM_CLOUD_ORGANIZATION
+        - name: filter[workspace][name]
+          from: filter
+          key: workspace_name
+        - name: filter[status]
+          from: filter
+          key: status
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: workspace_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Workspace name supplied as a filter.
+        expr:
+          kind: from_filter
+          key: workspace_name
+      - name: id
+        type: Utf8
+        nullable: false
+        description: State version ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: State version status.
+        expr: {kind: path, path: [attributes, status]}
+      - name: serial
+        type: Int64
+        nullable: true
+        description: Terraform state serial number.
+        expr: {kind: path, path: [attributes, serial]}
+      - name: size
+        type: Int64
+        nullable: true
+        description: State file size in bytes.
+        expr: {kind: path, path: [attributes, size]}
+      - name: terraform_version
+        type: Utf8
+        nullable: true
+        description: Terraform version that wrote this state.
+        expr: {kind: path, path: [attributes, terraform-version]}
+      - name: resources_processed
+        type: Boolean
+        nullable: true
+        description: Whether resources and outputs have been processed.
+        expr: {kind: path, path: [attributes, resources-processed]}
+      - name: resources
+        type: Json
+        nullable: true
+        description: Resource summary extracted by HCP Terraform.
+        expr: {kind: path, path: [attributes, resources]}
+      - name: modules
+        type: Json
+        nullable: true
+        description: Module summary extracted by HCP Terraform.
+        expr: {kind: path, path: [attributes, modules]}
+      - name: providers
+        type: Json
+        nullable: true
+        description: Provider summary extracted by HCP Terraform.
+        expr: {kind: path, path: [attributes, providers]}
+      - name: vcs_commit_sha
+        type: Utf8
+        nullable: true
+        description: VCS commit SHA associated with the state version.
+        expr: {kind: path, path: [attributes, vcs-commit-sha]}
+      - name: vcs_commit_url
+        type: Utf8
+        nullable: true
+        description: VCS commit URL associated with the state version.
+        expr: {kind: path, path: [attributes, vcs-commit-url]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created-at]}
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: Workspace relationship ID.
+        expr: {kind: path, path: [relationships, workspace, data, id]}
+      - name: run_id
+        type: Utf8
+        nullable: true
+        description: Run relationship ID.
+        expr: {kind: path, path: [relationships, run, data, id]}

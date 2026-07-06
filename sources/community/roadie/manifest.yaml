@@ -1,0 +1,297 @@
+name: roadie
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Software Catalog entities including components, APIs, systems,
+  and teams from Roadie (SaaS Backstage platform) via the Backstage REST API.
+base_url: "https://api.roadie.so/api/catalog"
+
+inputs:
+  ROADIE_API_TOKEN:
+    kind: secret
+    hint: |
+      A Roadie API bearer token authorized to read the Software Catalog API.
+      Roadie supports two token types, both usable here:
+
+        - User Token: tied to your personal Roadie account; good for local
+          development, personal scripts, and IDE/MCP use. Create it under
+          Administration -> Account -> "Roadie API Access" -> Generate Token.
+          Generating a user token requires the "Roadie API Key Access" policy
+          to be assigned to your user.
+        - Service Token: not tied to any individual; preferred for CI/CD,
+          shared integrations, and team tooling. Create it under
+          Administration -> Service Tokens -> Create Service Token.
+
+      Copy the token when it is shown — Roadie does not display it again.
+      Returned entities are scoped by the permissions associated with this token.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.ROADIE_API_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name, kind FROM roadie.entities LIMIT 1
+
+tables:
+  - name: entities
+    description: >-
+      Software catalog entities (Components, APIs, Resources, Systems, Users,
+      Groups).
+    guide: |
+      Each row is one Backstage catalog entity returned by
+      `GET /entities/by-query`. Narrow scans with pushdown filters instead of
+      scanning the full catalog:
+
+      - `name`, `kind`, `type`, `lifecycle`, `owner`, and `namespace` map to
+        Roadie's `filter` query parameter using Backstage filter syntax
+        (`name` maps to `metadata.name`).
+      - Combine filters in SQL with `AND` when you need multiple predicates.
+        Coral selects the most specific matching pushdown route; for example
+        `WHERE kind = 'Component' AND lifecycle = 'production'` is sent as
+        `filter=kind=Component,spec.lifecycle=production`.
+      - Exact entity lookups push down fully. For example
+        `WHERE kind = 'Component' AND namespace = 'default' AND name = 'payment-service'`
+        is sent as
+        `filter=kind=Component,metadata.namespace=default,metadata.name=payment-service`.
+      - For advanced Backstage filter syntax, use `catalog_filter` directly,
+        for example `WHERE catalog_filter = 'kind=component,spec.type=service'`.
+
+      Roadie paginates with `cursor` and `limit`. Coral uses a conservative
+      default page size and fetch limit so broad inventory queries stay bounded.
+    filters:
+      - name: catalog_filter
+      - name: name
+      - name: kind
+      - name: type
+      - name: lifecycle
+      - name: owner
+      - name: namespace
+    fetch_limit_default: 500
+    request:
+      method: GET
+      path: /entities/by-query
+      query:
+        - name: fields
+          from: literal
+          value: >-
+            kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+    requests:
+      - when_filters:
+          - catalog_filter
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: filter
+            key: catalog_filter
+      - when_filters:
+          - kind
+          - namespace
+          - name
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "kind={{filter.kind}},metadata.namespace={{filter.namespace}},metadata.name={{filter.name}}"
+      - when_filters:
+          - kind
+          - name
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "kind={{filter.kind}},metadata.name={{filter.name}}"
+      - when_filters:
+          - kind
+          - lifecycle
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "kind={{filter.kind}},spec.lifecycle={{filter.lifecycle}}"
+      - when_filters:
+          - kind
+          - type
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "kind={{filter.kind}},spec.type={{filter.type}}"
+      - when_filters:
+          - kind
+          - owner
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "kind={{filter.kind}},spec.owner={{filter.owner}}"
+      - when_filters:
+          - kind
+          - namespace
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "kind={{filter.kind}},metadata.namespace={{filter.namespace}}"
+      - when_filters:
+          - kind
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "kind={{filter.kind}}"
+      - when_filters:
+          - name
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "metadata.name={{filter.name}}"
+      - when_filters:
+          - type
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "spec.type={{filter.type}}"
+      - when_filters:
+          - lifecycle
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "spec.lifecycle={{filter.lifecycle}}"
+      - when_filters:
+          - owner
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "spec.owner={{filter.owner}}"
+      - when_filters:
+          - namespace
+        method: GET
+        path: /entities/by-query
+        query:
+          - name: fields
+            from: literal
+            value: >-
+              kind,metadata.name,metadata.namespace,metadata.description,spec.type,spec.lifecycle,spec.owner
+          - name: filter
+            from: template
+            template: "metadata.namespace={{filter.namespace}}"
+    response:
+      row_strategy: direct
+      rows_path: [items]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [pageInfo, nextCursor]
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Metadata name identifier of the software catalog entity.
+        expr: {kind: path, path: [metadata, name]}
+      - name: kind
+        type: Utf8
+        nullable: false
+        description: The structural type class of the entity (Component, API, User, Group).
+        expr: {kind: path, path: [kind]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Sub-category definition qualification type string (service, website, library).
+        expr: {kind: path, path: [spec, type]}
+      - name: lifecycle
+        type: Utf8
+        nullable: true
+        description: Operational context life tier categorization status string (production, experimental).
+        expr: {kind: path, path: [spec, lifecycle]}
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: The team or group that owns the catalog entity.
+        expr: {kind: path, path: [spec, owner]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: A short description of the catalog entity.
+        expr: {kind: path, path: [metadata, description]}
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: The namespace the catalog entity belongs to.
+        expr: {kind: path, path: [metadata, namespace]}
