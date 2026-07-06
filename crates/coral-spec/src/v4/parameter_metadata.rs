@@ -1,8 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::Deserialize;
 
 use crate::v4::ir::{HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, SemanticIr};
+use crate::v4::projections::pagination_query_param_names;
 use crate::v4::projections::{
     ProjectionCatalog, ProjectionInput, ProjectionKind, SqlInputExposure,
 };
@@ -315,7 +316,7 @@ impl PaginationStrategyMatch {
 fn projection_input_sql_exposure(
     input: &ProjectionInput,
     default_exposure: SqlInputExposure,
-    pagination_query_params: &BTreeSet<String>,
+    pagination_query_params: &HashSet<&str>,
 ) -> SqlInputExposure {
     let pagination_owned_query_input = input.source_location == IrInputLocation::Query
         && pagination_query_params.contains(input.wire_name.as_str());
@@ -328,25 +329,6 @@ fn projection_input_sql_exposure(
             SqlInputExposure::Internal
         }
     }
-}
-
-fn pagination_query_param_names(pagination: &PaginationSpec) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    if let Some(name) = pagination.page_param.as_deref() {
-        names.insert(name.to_string());
-    }
-    if let Some(name) = pagination.offset_param.as_deref() {
-        names.insert(name.to_string());
-    }
-    if let Some(name) = pagination.cursor_param.as_deref() {
-        names.insert(name.to_string());
-    }
-    if let Some(page_size) = &pagination.page_size
-        && let Some(name) = page_size.query_param.as_deref()
-    {
-        names.insert(name.to_string());
-    }
-    names
 }
 
 fn validate_rest_operation_target(
