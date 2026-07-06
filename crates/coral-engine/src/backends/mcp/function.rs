@@ -1,12 +1,11 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_spec::ResponseSpec;
-use coral_spec::backends::mcp::{McpPaginationSpec, McpTableFunctionSpec};
+use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpTableFunctionSpec};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
@@ -17,6 +16,7 @@ use serde_json::Value;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
+use crate::backends::SourceFunctionProviderFactory;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
@@ -35,6 +35,7 @@ struct McpFunctionState {
     schema: SchemaRef,
     response: ResponseSpec,
     pagination: Option<McpPaginationSpec>,
+    offset_pagination: Option<McpOffsetPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
 }
@@ -72,6 +73,7 @@ impl McpSourceTableFunction {
         let columns = function.common.columns.clone();
         let fetch_limit_default = function.fetch_limit_default();
         let pagination = function.pagination.clone();
+        let offset_pagination = function.offset_pagination.clone();
         Ok(Self {
             spec: Arc::new(function),
             state: Arc::new(McpFunctionState {
@@ -82,6 +84,7 @@ impl McpSourceTableFunction {
                 schema,
                 response,
                 pagination,
+                offset_pagination,
                 columns: Arc::from(columns),
                 fetch_limit_default,
             }),
@@ -89,8 +92,12 @@ impl McpSourceTableFunction {
     }
 }
 
-impl TableFunctionImpl for McpSourceTableFunction {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+impl SourceFunctionProviderFactory for McpSourceTableFunction {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.state.schema)
+    }
+
+    fn provider_for_args(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let arg_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
         Ok(Arc::new(McpFunctionCallTableProvider {
             state: Arc::clone(&self.state),
@@ -156,8 +163,11 @@ impl TableProvider for McpFunctionCallTableProvider {
             relation: self.state.function_name.clone(),
             tool_name: self.state.tool_name.clone(),
             arguments,
+            source_inputs: None,
+            source_tool_args: Arc::new(BTreeMap::default()),
             response: self.state.response.clone(),
             pagination: self.state.pagination.clone(),
+            offset_pagination: self.state.offset_pagination.clone(),
             limit: limit.or(self.state.fetch_limit_default),
         });
         let arg_strings: Arc<HashMap<String, String>> =

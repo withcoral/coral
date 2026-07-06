@@ -15,6 +15,17 @@ enum SourceOrigin {
   SOURCE_ORIGIN_IMPORTED = 2;
 }
 
+// Where an installed source's credential material is stored.
+enum SourceCredentialStorage {
+  // Credential storage was not specified, either because the source is not installed
+  // or because the installed source has no stored credential material.
+  SOURCE_CREDENTIAL_STORAGE_UNSPECIFIED = 0;
+  // Credential material is stored in Coral's local plaintext secrets file.
+  SOURCE_CREDENTIAL_STORAGE_FILE = 1;
+  // Credential material is stored in the operating-system credential store.
+  SOURCE_CREDENTIAL_STORAGE_KEYCHAIN = 2;
+}
+
 // One configured non-secret source variable.
 message SourceVariable {
   // Logical variable key expected by the source manifest.
@@ -50,6 +61,8 @@ message Source {
   repeated SourceVariable variables = 5;
   // Where this installed source came from.
   SourceOrigin origin = 6;
+  // Where this installed source's credential material is stored.
+  SourceCredentialStorage credential_storage = 7;
 }
 
 // One manifest-declared source input prompt.
@@ -94,12 +107,14 @@ message SourceCredentialMethod {
   string label = 1;
   // Optional display description.
   string description = 2;
+  // Optional hint describing how to obtain the values this method needs.
+  string hint = 5;
   // Method-specific metadata.
   oneof method {
     // Secret value is supplied through the source configuration path.
     SourceConfigCredentialMethod source_config = 3;
-    // Coral retrieves the secret through an OAuth authorization-code flow.
-    OAuthAuthorizationCodeCredentialMethod oauth_authorization_code = 4;
+    // Coral retrieves the secret through an OAuth flow.
+    OAuthCredentialMethod oauth = 4;
   }
 }
 
@@ -107,8 +122,13 @@ message SourceCredentialMethod {
 message SourceConfigCredentialMethod {
 }
 
-// OAuth authorization-code credential retrieval configuration.
-message OAuthAuthorizationCodeCredentialMethod {
+// OAuth credential retrieval configuration.
+message OAuthCredentialMethod {
+  // Optional RFC 8707 resource indicator identifying the target API, such as an
+  // OAuth-protected MCP server. Coral sends it on the authorization, token, and
+  // refresh requests so the provider can audience-bind the issued token; the
+  // MCP authorization spec requires it for MCP sources.
+  string resource = 9;
   // Loopback callback URI Coral binds during the OAuth session.
   string redirect_uri = 1;
   // Provider OAuth endpoints.
@@ -121,6 +141,19 @@ message OAuthAuthorizationCodeCredentialMethod {
   OauthCredentialPkceMode pkce = 5;
   // Loopback callback port binding mode.
   OauthCredentialRedirectUriPortMode redirect_uri_port_mode = 6;
+  // OAuth flow kind.
+  OauthCredentialFlowType flow = 8;
+}
+
+// Supported OAuth credential flow kinds.
+enum OauthCredentialFlowType {
+  // Flow kind is unspecified. Producers should set an explicit flow. Clients
+  // may interpret omitted legacy values as authorization-code credentials.
+  OAUTH_CREDENTIAL_FLOW_TYPE_UNSPECIFIED = 0;
+  // OAuth authorization-code flow.
+  OAUTH_CREDENTIAL_FLOW_TYPE_AUTHORIZATION_CODE = 1;
+  // OAuth device authorization flow.
+  OAUTH_CREDENTIAL_FLOW_TYPE_DEVICE_CODE = 2;
 }
 
 // Supported OAuth PKCE modes.
@@ -150,6 +183,8 @@ message OAuthCredentialEndpoints {
   string authorization_url = 1;
   // Provider token endpoint URL.
   string token_url = 2;
+  // Provider device authorization endpoint URL.
+  string device_authorization_url = 3;
 }
 
 // OAuth client configuration.
@@ -158,6 +193,8 @@ message OAuthCredentialClient {
   OAuthCredentialClientId id = 1;
   // Optional confidential-client secret configuration.
   OAuthCredentialClientSecret secret = 2;
+  // Optional Dynamic Client Registration configuration.
+  OAuthDynamicClientRegistration dynamic_registration = 3;
 }
 
 // OAuth client ID resolution configuration.
@@ -184,6 +221,33 @@ message OAuthCredentialClientSecret {
   string input = 1;
   // How Coral sends the secret to the token endpoint.
   OauthCredentialClientSecretTransport transport = 2;
+}
+
+// Supported Dynamic Client Registration token endpoint auth method requests.
+enum OauthDynamicClientRegistrationAuthMethod {
+  // Auth method is unspecified. Producers should set an explicit value.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_UNSPECIFIED = 0;
+  // Public client with no token endpoint client authentication.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_NONE = 1;
+  // Confidential client using HTTP Basic authentication.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_CLIENT_SECRET_BASIC = 2;
+  // Confidential client sending the client secret in the token request body.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_CLIENT_SECRET_POST = 3;
+}
+
+// OAuth 2.0 Dynamic Client Registration configuration.
+message OAuthDynamicClientRegistration {
+  // OAuth client registration endpoint URL.
+  string registration_url = 1;
+  // Optional client display name sent during registration.
+  string client_name = 2;
+  // Requested token endpoint authentication method.
+  OauthDynamicClientRegistrationAuthMethod token_endpoint_auth_method = 4;
+  // Field 5 was application_type; Coral always registers as a native client.
+  reserved 5;
+  reserved "application_type";
+  // Whether Coral requests the refresh_token grant type during registration.
+  bool request_refresh_token_grant = 6;
 }
 
 // Supported OAuth scope delimiters.
@@ -224,6 +288,8 @@ message SourceInfo {
   bool installed = 5;
   // Where this source came from.
   SourceOrigin origin = 6;
+  // Where credential material is stored when this source is installed.
+  SourceCredentialStorage credential_storage = 7;
 }
 
 // Lists all bundled sources available for one workspace.
@@ -318,7 +384,9 @@ message CredentialMetadata {
   string value = 2;
 }
 
-// Transient OAuth method input.
+// OAuth method input used during credential retrieval. These values are not
+// stored as source-visible configuration; Coral may store sensitive values as
+// internal credential metadata when needed to preserve the OAuth lifecycle.
 message OAuthCredentialInput {
   // Logical input key expected by the selected OAuth credential method.
   string key = 1;
@@ -345,6 +413,12 @@ message OAuthCredentialAuthorization {
   string authorization_url = 2;
   // Seconds until the OAuth retrieval expires.
   uint64 expires_in_seconds = 3;
+  // Device-flow user code the user must enter at the provider URL.
+  string user_code = 4;
+  // Device-flow provider verification URL.
+  string verification_uri = 5;
+  // Device-flow provider verification URL with the user code embedded, when provided.
+  string verification_uri_complete = 6;
 }
 
 // Safe completion metadata emitted after OAuth credential retrieval.

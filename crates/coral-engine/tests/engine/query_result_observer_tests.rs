@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QueryRuntimeContext, StatusCode,
+    CoralQuery, CoreError, EngineExtensions, QueryExecutionProvenance, QueryResultObserver,
+    QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, StatusCode,
 };
 use serde_json::{Value, json};
 
@@ -19,9 +19,23 @@ struct ObservedQuery {
     rows: Vec<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedProvenance {
+    sql: String,
+    sources: Vec<String>,
+    tables: Vec<(String, String, String)>,
+    table_functions: Vec<(String, String, String)>,
+    row_count: usize,
+}
+
 #[derive(Debug, Default)]
 struct RecordingObserver {
     calls: Mutex<Vec<ObservedQuery>>,
+}
+
+#[derive(Debug, Default)]
+struct ProvenanceObserver {
+    calls: Mutex<Vec<ObservedProvenance>>,
 }
 
 impl RecordingObserver {
@@ -30,6 +44,47 @@ impl RecordingObserver {
             .lock()
             .expect("observer calls lock should not be poisoned")
             .clone()
+    }
+}
+
+impl ProvenanceObserver {
+    fn calls(&self) -> Vec<ObservedProvenance> {
+        self.calls
+            .lock()
+            .expect("observer calls lock should not be poisoned")
+            .clone()
+    }
+}
+
+impl From<&QueryExecutionProvenance> for ObservedProvenance {
+    fn from(provenance: &QueryExecutionProvenance) -> Self {
+        Self {
+            sql: provenance.sql().to_string(),
+            sources: provenance.sources().to_vec(),
+            tables: provenance
+                .tables()
+                .iter()
+                .map(|table| {
+                    (
+                        table.source_name().to_string(),
+                        table.schema_name().to_string(),
+                        table.table_name().to_string(),
+                    )
+                })
+                .collect(),
+            table_functions: provenance
+                .table_functions()
+                .iter()
+                .map(|function| {
+                    (
+                        function.source_name().to_string(),
+                        function.schema_name().to_string(),
+                        function.function_name().to_string(),
+                    )
+                })
+                .collect(),
+            row_count: provenance.row_count(),
+        }
     }
 }
 
@@ -43,6 +98,7 @@ impl QueryResultObserver for RecordingObserver {
         sql: &str,
         schema: &Schema,
         batches: &[RecordBatch],
+        _provenance: &QueryExecutionProvenance,
     ) -> Result<(), QueryResultObserverError> {
         self.calls
             .lock()
@@ -65,6 +121,30 @@ impl QueryResultObserver for RecordingObserver {
     }
 }
 
+impl QueryResultObserver for ProvenanceObserver {
+    fn name(&self) -> &'static str {
+        "provenance"
+    }
+
+    fn observe_result(
+        &self,
+        _sql: &str,
+        _schema: &Schema,
+        _batches: &[RecordBatch],
+        provenance: &QueryExecutionProvenance,
+    ) -> Result<(), QueryResultObserverError> {
+        self.calls
+            .lock()
+            .map_err(|_err| {
+                QueryResultObserverError::failed_precondition(
+                    "observer calls lock should not be poisoned",
+                )
+            })?
+            .push(ObservedProvenance::from(provenance));
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct FailingObserver;
 
@@ -78,11 +158,40 @@ impl QueryResultObserver for FailingObserver {
         _sql: &str,
         _schema: &Schema,
         _batches: &[RecordBatch],
+        _provenance: &QueryExecutionProvenance,
     ) -> Result<(), QueryResultObserverError> {
         Err(QueryResultObserverError::failed_precondition(
             "expected benchmark state is missing",
         ))
     }
+}
+
+#[tokio::test]
+async fn execution_and_observer_include_table_provenance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
+    let source = build_source(jsonl_manifest("observer_provenance", temp.path()));
+    let observer = Arc::new(ProvenanceObserver::default());
+    let runtime = runtime_with_observer(observer.clone());
+    let sql = "SELECT id FROM observer_provenance.users WHERE id >= 2 ORDER BY id";
+
+    let execution = CoralQuery::execute_sql(&[source], runtime, sql)
+        .await
+        .expect("query should succeed");
+
+    let expected = ObservedProvenance {
+        sql: sql.to_string(),
+        sources: vec!["observer_provenance".to_string()],
+        tables: vec![(
+            "observer_provenance".to_string(),
+            "observer_provenance".to_string(),
+            "users".to_string(),
+        )],
+        table_functions: Vec::new(),
+        row_count: 2,
+    };
+    assert_eq!(ObservedProvenance::from(execution.provenance()), expected);
+    assert_eq!(observer.calls(), vec![expected]);
 }
 
 #[tokio::test]
@@ -209,10 +318,11 @@ fn jsonl_manifest(name: &str, dir: &Path) -> Value {
         "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "users",
             "description": "Users fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl",

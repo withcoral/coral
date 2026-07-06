@@ -5,6 +5,8 @@ fn main() {
     let mut config = tonic_prost_build::Config::new();
     config.protoc_executable(protoc);
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
+    // Keep the generated oneof enum small enough for workspace clippy.
+    config.boxed(".coral.v1.SourceCredentialMethod.method.oauth");
 
     tonic_prost_build::configure()
         .build_server(true)
@@ -14,10 +16,12 @@ fn main() {
             &[
                 "proto/coral/v1/catalog.proto",
                 "proto/coral/v1/resources.proto",
+                "proto/coral/v1/workspaces.proto",
                 "proto/coral/v1/feedback.proto",
                 "proto/coral/v1/sources.proto",
                 "proto/coral/v1/query.proto",
                 "proto/coral/v1/traces.proto",
+                "proto/coral/v1/episode.proto",
             ],
             &["proto"],
         )

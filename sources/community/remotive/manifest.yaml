@@ -1,0 +1,159 @@
+name: remotive
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Remote job listings from Remotive.com. No authentication required.
+  Data is delayed 24 hours. The API recommends at most 4 requests per day.
+base_url: "https://remotive.com/api"
+test_queries:
+  - SELECT * FROM remotive.jobs LIMIT 1
+  - SELECT title, company_name, category FROM remotive.jobs WHERE category = 'Software Development' LIMIT 5
+tables:
+
+  - name: jobs
+    description: |
+      Remote job listings from Remotive. Filter locally by category (e.g. Software Development,
+      Marketing) or keyword search. Data updates approximately every 24 hours.
+    guide: |
+      Each row is one remote job listing. Use `category` to filter by job
+      category (e.g. 'Software Development', 'Marketing', 'Design') and `search` for
+      full-text keyword matching using ILIKE (e.g. `WHERE search ILIKE '%python%'`).
+
+      The API returns all matching jobs in a single response (no pagination).
+      Results are bounded locally by `fetch_limit_default`.
+
+      `publication_date` is a Timestamp delayed 24 hours from the actual
+      posting time. The HTML job `description` field is intentionally
+      excluded to keep response payloads compact for downstream agent
+      workflows; use the `url` column to link to the full listing.
+    fetch_limit_default: 20
+    request:
+      method: GET
+      path: /remote-jobs
+    response:
+      rows_path:
+        - jobs
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique job identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Job title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: company_name
+        type: Utf8
+        nullable: false
+        description: Name of the hiring company.
+        expr:
+          kind: path
+          path:
+            - company_name
+      - name: company_logo_url
+        type: Utf8
+        nullable: true
+        description: URL to the company logo image.
+        expr:
+          kind: path
+          path:
+            - company_logo
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Job category (e.g. Software Development, Marketing, Design).
+        expr:
+          kind: path
+          path:
+            - category
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined skill and technology tags for the job.
+        expr:
+          kind: join_array
+          path:
+            - tags
+      - name: job_type
+        type: Utf8
+        nullable: true
+        description: Employment type (full_time, contract, freelance, part_time).
+        expr:
+          kind: path
+          path:
+            - job_type
+      - name: publication_date
+        type: Timestamp
+        nullable: true
+        description: When the job was published (delayed 24h from actual posting).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.val}}Z"
+            values:
+              val:
+                kind: path
+                path:
+                  - publication_date
+      - name: candidate_required_location
+        type: Utf8
+        nullable: true
+        description: Required candidate location (e.g. Worldwide, USA, Europe).
+        expr:
+          kind: path
+          path:
+            - candidate_required_location
+      - name: salary
+        type: Utf8
+        nullable: true
+        description: Salary range as free text if provided by employer.
+        expr:
+          kind: path
+          path:
+            - salary
+      - name: url
+        type: Utf8
+        nullable: false
+        description: Direct link to the job listing on Remotive.
+        expr:
+          kind: path
+          path:
+            - url
+
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Search column combining job title, company name, tags, and category.
+        expr:
+          kind: template
+          template: "{{expr.title}} {{expr.company_name}} {{expr.tags}} {{expr.category}}"
+          values:
+            title:
+              kind: path
+              path:
+                - title
+            company_name:
+              kind: path
+              path:
+                - company_name
+            tags:
+              kind: join_array
+              path:
+                - tags
+            category:
+              kind: path
+              path:
+                - category

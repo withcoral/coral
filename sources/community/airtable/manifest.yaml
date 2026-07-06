@@ -1,0 +1,355 @@
+name: airtable
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Airtable base schema and records through SQL. Discover table IDs from
+  the Metadata API, then query any Airtable table by table ID or URL-safe table
+  name.
+inputs:
+  AIRTABLE_ACCESS_TOKEN:
+    kind: secret
+    required: true
+    hint: >-
+      Airtable personal access token or OAuth access token with schema.bases:read
+      and data.records:read access to the base. Create a personal access token
+      at https://airtable.com/create/tokens and grant it access to the base you
+      want Coral to query.
+  AIRTABLE_BASE_ID:
+    kind: variable
+    required: true
+    hint: >-
+      Airtable base ID, starting with app. You can find it in the base URL or
+      the Airtable API documentation for the base.
+base_url: https://api.airtable.com/v0
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.AIRTABLE_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, name FROM airtable.tables LIMIT 1
+tables:
+  - name: tables
+    description: Airtable table schema metadata for the configured base.
+    guide: |
+      Start here to discover stable Airtable table IDs and field metadata for
+      the configured base. Airtable recommends table IDs because table names can
+      change. Use `fields` and `views` JSON to inspect base-specific schema.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /meta/bases/{{input.AIRTABLE_BASE_ID}}/tables
+    response:
+      rows_path:
+        - tables
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable Airtable table ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Airtable table name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Airtable table description, when configured.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: primary_field_id
+        type: Utf8
+        nullable: true
+        description: Stable Airtable field ID for the primary field.
+        expr:
+          kind: path
+          path:
+            - primaryFieldId
+      - name: fields
+        type: Json
+        nullable: true
+        description: Airtable field definitions for this table.
+        expr:
+          kind: path
+          path:
+            - fields
+      - name: views
+        type: Json
+        nullable: true
+        description: Airtable views configured for this table.
+        expr:
+          kind: path
+          path:
+            - views
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw Airtable table metadata object.
+        expr:
+          kind: current_row
+
+  - name: records
+    description: Records from any Airtable table in the configured base.
+    guide: |
+      Query any table by setting the required `table_id_or_name` filter. Prefer
+      table IDs discovered from `airtable.tables`; if you use a table name in
+      the URL path, provide a URL-safe value. Use `view`, `filter_by_formula`,
+      `sort_field`, and `sort_direction` for provider-side filtering and
+      ordering before Coral applies SQL predicates.
+    fetch_limit_default: 100
+    filters: &record_filters
+      - name: table_id_or_name
+        required: true
+        description: Stable Airtable table ID, or URL-safe table name.
+      - name: view
+        required: false
+        description: Airtable saved view name or view ID.
+      - name: filter_by_formula
+        required: false
+        description: Airtable formula used as the filterByFormula query parameter.
+      - name: sort_field
+        required: false
+        description: Airtable field name or field ID for provider-side sorting.
+      - name: sort_direction
+        required: false
+        description: Airtable sort direction, either asc or desc.
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{filter.table_id_or_name}}
+      query: &record_query
+        - name: view
+          from: filter
+          key: view
+        - name: filterByFormula
+          from: filter
+          key: filter_by_formula
+        - name: sort[0][field]
+          from: filter
+          key: sort_field
+        - name: sort[0][direction]
+          from: filter
+          key: sort_direction
+    response: &record_response
+      rows_path:
+        - records
+      row_strategy: direct
+      allow_404_empty: false
+    pagination: &airtable_pagination
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path:
+        - offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns: &record_columns
+      - name: table_id_or_name
+        type: Utf8
+        nullable: true
+        description: Table ID or URL-safe table name used for this request.
+        expr:
+          kind: from_filter
+          key: table_id_or_name
+      - name: view
+        type: Utf8
+        nullable: true
+        description: Airtable view filter used for this request, when provided.
+        expr:
+          kind: from_filter
+          key: view
+      - name: filter_by_formula
+        type: Utf8
+        nullable: true
+        description: Airtable filterByFormula value used for this request.
+        expr:
+          kind: from_filter
+          key: filter_by_formula
+      - name: sort_field
+        type: Utf8
+        nullable: true
+        description: Airtable provider-side sort field used for this request.
+        expr:
+          kind: from_filter
+          key: sort_field
+      - name: sort_direction
+        type: Utf8
+        nullable: true
+        description: Airtable provider-side sort direction used for this request.
+        expr:
+          kind: from_filter
+          key: sort_direction
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Airtable record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time Airtable created the record.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdTime
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Common primary text field named Name, when present.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Common status field named Status, when present.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Status
+      - name: fields
+        type: Json
+        nullable: true
+        description: Complete Airtable fields object for base-specific columns.
+        expr:
+          kind: path
+          path:
+            - fields
+
+functions:
+  - name: search_records
+    kind: search
+    description: Search records in any Airtable table with filterByFormula.
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: table_id_or_name
+        required: true
+        bind:
+          arg: table_id_or_name
+      - name: formula
+        required: true
+        bind:
+          arg: formula
+      - name: view
+        required: false
+        bind:
+          arg: view
+      - name: sort_field
+        required: false
+        bind:
+          arg: sort_field
+      - name: sort_direction
+        required: false
+        bind:
+          arg: sort_direction
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{arg.table_id_or_name}}
+      query:
+        - name: filterByFormula
+          from: arg
+          key: formula
+        - name: view
+          from: arg
+          key: view
+        - name: sort[0][field]
+          from: arg
+          key: sort_field
+        - name: sort[0][direction]
+          from: arg
+          key: sort_direction
+    response: *record_response
+    pagination: *airtable_pagination
+    columns:
+      - name: table_id_or_name
+        type: Utf8
+        nullable: true
+        description: Table ID or URL-safe table name used for this request.
+        expr:
+          kind: from_arg
+          key: table_id_or_name
+      - name: formula
+        type: Utf8
+        nullable: true
+        description: Airtable formula used for this search request.
+        expr:
+          kind: from_arg
+          key: formula
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Airtable record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time Airtable created the record.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdTime
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Common primary text field named Name, when present.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Common status field named Status, when present.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Status
+      - name: fields
+        type: Json
+        nullable: true
+        description: Complete Airtable fields object for base-specific columns.
+        expr:
+          kind: path
+          path:
+            - fields

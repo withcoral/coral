@@ -1,0 +1,641 @@
+name: google_classroom
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query courses, coursework, and students/teachers rosters from Google Classroom.
+inputs:
+  GOOGLE_CLASSROOM_API_BASE:
+    kind: variable
+    default: https://classroom.googleapis.com
+    hint: |
+      Base URL for the Google Classroom API. Keep the default unless you are
+      testing against a mock Google Classroom API.
+  GOOGLE_CLASSROOM_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Use a read-only OAuth 2.0 access token for the Google Classroom API.
+      The guided OAuth flow requests scopes for courses, coursework, rosters, and profiles.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Classroom
+          description: Use Google OAuth to retrieve a Classroom access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_CLASSROOM_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_CLASSROOM_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/classroom.courses.readonly
+                  - https://www.googleapis.com/auth/classroom.coursework.students.readonly
+                  - https://www.googleapis.com/auth/classroom.coursework.me.readonly
+                  - https://www.googleapis.com/auth/classroom.rosters.readonly
+                  - https://www.googleapis.com/auth/classroom.profile.emails
+                  - https://www.googleapis.com/auth/classroom.profile.photos
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Classroom OAuth access token.
+base_url: "{{input.GOOGLE_CLASSROOM_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_CLASSROOM_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM google_classroom.courses LIMIT 1
+tables:
+  - name: courses
+    description: Google Classroom courses
+    guide: |
+      Lists courses the user is enrolled in or teaching.
+      Note: `student_id` and `teacher_id` filters are mutually exclusive.
+    filters:
+      - name: student_id
+        required: false
+      - name: teacher_id
+        required: false
+      - name: course_state
+        required: false
+        description: Restrict results to a course in this state (e.g. ACTIVE, ARCHIVED).
+    request:
+      method: GET
+      path: /v1/courses
+      query:
+        - name: studentId
+          from: filter
+          key: student_id
+        - name: teacherId
+          from: filter
+          key: teacher_id
+        - name: courseStates
+          from: filter
+          key: course_state
+    response:
+      rows_path:
+        - courses
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Course identifier assigned by Classroom
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the course
+      - name: section
+        type: Utf8
+        nullable: true
+        description: Section of the course
+      - name: description_heading
+        type: Utf8
+        nullable: true
+        description: Heading for the description of the course
+        expr:
+          kind: path
+          path:
+            - descriptionHeading
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the course
+      - name: room
+        type: Utf8
+        nullable: true
+        description: Room of the course
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Owner ID of the course
+        expr:
+          kind: path
+          path:
+            - ownerId
+      - name: course_state
+        type: Utf8
+        nullable: true
+        description: Current state of the course (e.g. ACTIVE, ARCHIVED)
+        expr:
+          kind: path
+          path:
+            - courseState
+      - name: alternate_link
+        type: Utf8
+        nullable: true
+        description: Absolute link to the course in Classroom UI
+        expr:
+          kind: path
+          path:
+            - alternateLink
+      - name: enrollment_code
+        type: Utf8
+        nullable: true
+        description: Enrollment code used by students to join the course
+        expr:
+          kind: path
+          path:
+            - enrollmentCode
+      - name: calendar_id
+        type: Utf8
+        nullable: true
+        description: ID of the Google Calendar associated with the course
+        expr:
+          kind: path
+          path:
+            - calendarId
+      - name: teacher_group_email
+        type: Utf8
+        nullable: true
+        description: Email address of a Google Group containing all teachers
+        expr:
+          kind: path
+          path:
+            - teacherGroupEmail
+      - name: course_group_email
+        type: Utf8
+        nullable: true
+        description: Email address of a Google Group containing all members
+        expr:
+          kind: path
+          path:
+            - courseGroupEmail
+      - name: guardians_enabled
+        type: Boolean
+        nullable: true
+        description: Whether guardian notifications are enabled
+        expr:
+          kind: path
+          path:
+            - guardiansEnabled
+      - name: creation_time
+        type: Timestamp
+        nullable: true
+        description: Time when the course was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - creationTime
+      - name: update_time
+        type: Timestamp
+        nullable: true
+        description: Time when the course was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updateTime
+      - name: student_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        expr:
+          kind: from_filter
+          key: student_id
+      - name: teacher_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        expr:
+          kind: from_filter
+          key: teacher_id
+      - name: course_state_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by course state.
+        expr:
+          kind: from_filter
+          key: course_state
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw course object from Google Classroom API
+        expr:
+          kind: current_row
+
+  - name: coursework
+    description: Coursework (assignments/questions) in a specific Google Classroom course
+    guide: |
+      Lists coursework items. Requires `course_id` filter.
+      By default, only `PUBLISHED` coursework is returned. Use `course_work_state` to query `DRAFT` or `DELETED` coursework.
+    filters:
+      - name: course_id
+        required: true
+      - name: course_work_state
+        required: false
+        description: |
+          Restrict results to coursework in this state.
+          Supported values: PUBLISHED, DRAFT, DELETED. Defaults to PUBLISHED.
+      - name: order_by
+        required: false
+        description: |
+          Optional sort order for results (e.g. `updateTime asc` or `updateTime desc`).
+    request:
+      method: GET
+      path: /v1/courses/{{filter.course_id}}/courseWork
+      query:
+        - name: courseWorkStates
+          from: filter
+          key: course_work_state
+        - name: orderBy
+          from: filter
+          key: order_by
+    response:
+      rows_path:
+        - courseWork
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Classroom-assigned identifier for the coursework
+      - name: course_id
+        type: Utf8
+        nullable: false
+        description: Course identifier containing the coursework
+        expr:
+          kind: path
+          path:
+            - courseId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the coursework
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the coursework
+      - name: state
+        type: Utf8
+        nullable: true
+        description: State of the coursework (e.g. PUBLISHED, DRAFT)
+      - name: work_type
+        type: Utf8
+        nullable: true
+        description: Type of coursework (e.g. ASSIGNMENT, SHORT_ANSWER_QUESTION)
+        expr:
+          kind: path
+          path:
+            - workType
+      - name: max_points
+        type: Float64
+        nullable: true
+        description: Maximum points for the coursework
+        expr:
+          kind: path
+          path:
+            - maxPoints
+      - name: alternate_link
+        type: Utf8
+        nullable: true
+        description: Link to coursework in Classroom UI
+        expr:
+          kind: path
+          path:
+            - alternateLink
+      - name: due_date
+        type: Json
+        nullable: true
+        description: Raw JSON date object (year/month/day)
+        expr:
+          kind: path
+          path:
+            - dueDate
+      - name: due_time
+        type: Json
+        nullable: true
+        description: Raw JSON time object (hours/minutes/seconds)
+        expr:
+          kind: path
+          path:
+            - dueTime
+      - name: creation_time
+        type: Timestamp
+        nullable: true
+        description: Time when the coursework was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - creationTime
+      - name: update_time
+        type: Timestamp
+        nullable: true
+        description: Time when the coursework was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updateTime
+      - name: materials
+        type: Json
+        nullable: true
+        description: Raw JSON array of attachments
+        expr:
+          kind: path
+          path:
+            - materials
+      - name: course_id_filter
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_filter
+          key: course_id
+      - name: course_work_state
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by coursework state (e.g. PUBLISHED, DRAFT, DELETED).
+        expr:
+          kind: from_filter
+          key: course_work_state
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional sort order for results (e.g. `updateTime desc`).
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw coursework object from Google Classroom API
+        expr:
+          kind: current_row
+
+  - name: students
+    description: Students enrolled in a specific Google Classroom course
+    guide: |
+      Lists students roster. Requires `course_id` filter.
+    filters:
+      - name: course_id
+        required: true
+    request:
+      method: GET
+      path: /v1/courses/{{filter.course_id}}/students
+    response:
+      rows_path:
+        - students
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: User identifier of the student
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: profile_id
+        type: Utf8
+        nullable: true
+        description: Profile identifier of the student
+        expr:
+          kind: path
+          path:
+            - profile
+            - id
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: Student's first name
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+            - givenName
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: Student's last name
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+            - familyName
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Student's full name
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+            - fullName
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Student's email address
+        expr:
+          kind: path
+          path:
+            - profile
+            - emailAddress
+      - name: photo_url
+        type: Utf8
+        nullable: true
+        description: Student's photo URL
+        expr:
+          kind: path
+          path:
+            - profile
+            - photoUrl
+      - name: verified_teacher
+        type: Boolean
+        nullable: true
+        description: Whether student is verified as a teacher
+        expr:
+          kind: path
+          path:
+            - profile
+            - verifiedTeacher
+      - name: student_work_folder_id
+        type: Utf8
+        nullable: true
+        description: Google Drive folder ID for student's work
+        expr:
+          kind: path
+          path:
+            - studentWorkFolder
+            - id
+      - name: course_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_filter
+          key: course_id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw student object from Google Classroom API
+        expr:
+          kind: current_row
+
+  - name: teachers
+    description: Teachers of a specific Google Classroom course
+    guide: |
+      Lists teachers roster. Requires `course_id` filter.
+    filters:
+      - name: course_id
+        required: true
+    request:
+      method: GET
+      path: /v1/courses/{{filter.course_id}}/teachers
+    response:
+      rows_path:
+        - teachers
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: User identifier of the teacher
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: profile_id
+        type: Utf8
+        nullable: true
+        description: Profile identifier of the teacher
+        expr:
+          kind: path
+          path:
+            - profile
+            - id
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: Teacher's first name
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+            - givenName
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: Teacher's last name
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+            - familyName
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Teacher's full name
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+            - fullName
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Teacher's email address
+        expr:
+          kind: path
+          path:
+            - profile
+            - emailAddress
+      - name: photo_url
+        type: Utf8
+        nullable: true
+        description: Teacher's photo URL
+        expr:
+          kind: path
+          path:
+            - profile
+            - photoUrl
+      - name: verified_teacher
+        type: Boolean
+        nullable: true
+        description: Whether teacher is verified as a teacher
+        expr:
+          kind: path
+          path:
+            - profile
+            - verifiedTeacher
+      - name: course_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_filter
+          key: course_id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw teacher object from Google Classroom API
+        expr:
+          kind: current_row
