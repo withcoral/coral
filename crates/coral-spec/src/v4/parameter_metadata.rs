@@ -6,7 +6,7 @@ use crate::v4::ir::{HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperat
 use crate::v4::projections::{
     ProjectionCatalog, ProjectionInput, ProjectionKind, SqlInputExposure,
 };
-use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
+use crate::{ManifestError, PaginationSpec, Result};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -24,7 +24,7 @@ pub struct NamedPaginationOverride {
     #[serde(rename = "match")]
     pub match_rules: PaginationStrategyMatch,
     #[serde(flatten)]
-    pagination: PaginationOverride,
+    pagination: PaginationSpec,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -43,69 +43,7 @@ pub struct PaginationStrategyMatch {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationParameterMetadataOverride {
-    pub pagination: PaginationOverride,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PaginationOverride {
-    #[serde(default)]
-    pub mode: PaginationMode,
-    #[serde(default)]
-    pub page_size: Option<PageSizeOverride>,
-    #[serde(default)]
-    pub cursor_param: Option<String>,
-    #[serde(default)]
-    pub cursor_body_path: Vec<String>,
-    #[serde(default)]
-    pub response_cursor_path: Vec<String>,
-    #[serde(default)]
-    pub page_param: Option<String>,
-    #[serde(default)]
-    pub page_start: i64,
-    #[serde(default = "default_page_step")]
-    pub page_step: i64,
-    #[serde(default)]
-    pub offset_param: Option<String>,
-    #[serde(default)]
-    pub offset_start: i64,
-    #[serde(default)]
-    pub offset_step: Option<i64>,
-    #[serde(default)]
-    pub link_header_require_results: bool,
-    #[serde(default)]
-    pub max_pages: Option<usize>,
-}
-
-impl Default for PaginationOverride {
-    fn default() -> Self {
-        Self {
-            mode: PaginationMode::default(),
-            page_size: None,
-            cursor_param: None,
-            cursor_body_path: Vec::new(),
-            response_cursor_path: Vec::new(),
-            page_param: None,
-            page_start: 0,
-            page_step: default_page_step(),
-            offset_param: None,
-            offset_start: 0,
-            offset_step: None,
-            link_header_require_results: false,
-            max_pages: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PageSizeOverride {
-    pub default: usize,
-    pub max: usize,
-    #[serde(default)]
-    pub query_param: Option<String>,
-    #[serde(default)]
-    pub body_path: Vec<String>,
+    pub pagination: PaginationSpec,
 }
 
 pub fn parse_parameter_metadata_overrides_yaml(raw: &str) -> Result<ParameterMetadataOverrides> {
@@ -125,7 +63,7 @@ pub fn apply_parameter_metadata_overrides(
         let mut matched = None;
         for strategy in &overrides.pagination {
             if strategy.matches_operation(operation) {
-                matched = Some(strategy.pagination_spec());
+                matched = Some(strategy.pagination.clone());
                 break;
             }
         }
@@ -148,7 +86,7 @@ pub fn apply_parameter_metadata_overrides(
                 ))
             })?;
         if let IrExecutionAttachment::Rest(rest) = &mut operation.execution {
-            rest.pagination = operation_override.pagination.pagination_spec();
+            rest.pagination = operation_override.pagination.clone();
         }
     }
 
@@ -235,7 +173,7 @@ impl ParameterMetadataOverrides {
 
     fn validate_for_surface(&self, ir: &SemanticIr) -> Result<()> {
         for strategy in &self.pagination {
-            strategy.pagination_spec().validated(
+            strategy.pagination.validated(
                 &ir.source_name,
                 &format!(
                     "{} parameter_metadata pagination '{}'",
@@ -259,7 +197,7 @@ impl ParameterMetadataOverrides {
                 "operation override",
                 operation_id,
             )?;
-            operation_override.pagination.pagination_spec().validated(
+            operation_override.pagination.validated(
                 &ir.source_name,
                 &format!(
                     "{} parameter_metadata operation override '{}'",
@@ -273,10 +211,6 @@ impl ParameterMetadataOverrides {
 }
 
 impl NamedPaginationOverride {
-    fn pagination_spec(&self) -> PaginationSpec {
-        self.pagination.pagination_spec()
-    }
-
     fn matches_operation(&self, operation: &IrOperation) -> bool {
         let IrExecutionAttachment::Rest(rest) = &operation.execution else {
             return false;
@@ -375,40 +309,6 @@ impl PaginationStrategyMatch {
         }
 
         Ok(())
-    }
-}
-
-impl PaginationOverride {
-    fn pagination_spec(&self) -> PaginationSpec {
-        PaginationSpec {
-            mode: self.mode,
-            page_size: self
-                .page_size
-                .as_ref()
-                .map(PageSizeOverride::page_size_spec),
-            cursor_param: self.cursor_param.clone(),
-            cursor_body_path: self.cursor_body_path.clone(),
-            response_cursor_path: self.response_cursor_path.clone(),
-            page_param: self.page_param.clone(),
-            page_start: self.page_start,
-            page_step: self.page_step,
-            offset_param: self.offset_param.clone(),
-            offset_start: self.offset_start,
-            offset_step: self.offset_step,
-            link_header_require_results: self.link_header_require_results,
-            max_pages: self.max_pages,
-        }
-    }
-}
-
-impl PageSizeOverride {
-    fn page_size_spec(&self) -> PageSizeSpec {
-        PageSizeSpec {
-            default: self.default,
-            max: self.max,
-            query_param: self.query_param.clone(),
-            body_path: self.body_path.clone(),
-        }
     }
 }
 
@@ -557,10 +457,6 @@ fn path_pattern_matches(pattern: &str, path: &str) -> bool {
     } else {
         parts.last().is_some_and(|last| remainder.ends_with(last))
     }
-}
-
-fn default_page_step() -> i64 {
-    1
 }
 
 #[cfg(test)]
@@ -970,6 +866,7 @@ operation_overrides:
                 row_path: Vec::new(),
             },
             entity: None,
+            naming: None,
             execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                 method: HttpMethod::Get,
                 path_template: path_template.to_string(),

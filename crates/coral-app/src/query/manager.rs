@@ -1293,7 +1293,7 @@ surfaces:
                 let page = request
                     .url
                     .query_pairs()
-                    .find_map(|(key, value)| (key == "page_number").then_some(value.into_owned()));
+                    .find_map(|(key, value)| (key == "page").then_some(value.into_owned()));
                 match page.as_deref() {
                     Some("1") => ResponseTemplate::new(200).set_body_json(json!([
                         {"id": 1},
@@ -1304,7 +1304,7 @@ surfaces:
                         {"id": 4}
                     ])),
                     other => ResponseTemplate::new(400)
-                        .set_body_string(format!("unexpected page_number {other:?}")),
+                        .set_body_string(format!("unexpected page {other:?}")),
                 }
             })
             .mount(&server)
@@ -1367,7 +1367,7 @@ surfaces:
             .received_requests()
             .await
             .expect("request recording should be enabled");
-        let pages = request_query_values(&requests, "page_number");
+        let pages = request_query_values(&requests, "page");
         let page_sizes = request_query_values(&requests, "per_page");
         assert_eq!(pages, ["1", "2"]);
         assert_eq!(page_sizes, ["2", "2"]);
@@ -1386,7 +1386,7 @@ paths:
     get:
       operationId: widgets/list
       parameters:
-        - name: page_number
+        - name: page
           in: query
           required: true
           schema: {{type: integer}}
@@ -1421,11 +1421,11 @@ paths:
             &override_path,
             r"
 pagination:
-  - name: widgets_page_number
+  - name: widgets_page
     match:
       operation_ids: [widgets/list]
     mode: page
-    page_param: page_number
+    page_param: page
     page_start: 1
     page_size:
       default: 2
