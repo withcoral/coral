@@ -22,8 +22,7 @@ CREATE TABLE IF NOT EXISTS source_variables (
 CREATE TABLE IF NOT EXISTS source_secret_keys (
     workspace_id TEXT NOT NULL,
     source_name TEXT NOT NULL,
-    position BIGINT NOT NULL,
     key TEXT NOT NULL,
-    PRIMARY KEY (workspace_id, source_name, position),
+    PRIMARY KEY (workspace_id, source_name, key),
     FOREIGN KEY (workspace_id, source_name) REFERENCES sources(workspace_id, name) ON DELETE CASCADE
 );
