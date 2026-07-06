@@ -138,38 +138,6 @@ fn post_process_schema(schema: &mut Value) {
         return;
     };
     post_process_flattened_value_source_defs(defs);
-    if let Some(surface_schema) = defs.get_mut("V4SurfaceSchema") {
-        post_process_surface_variants(surface_schema);
-    }
-
-    for name in ["V4OpenApiSurfaceSchema", "V4McpSurfaceSchema"] {
-        if let Some(properties) = defs
-            .get_mut(name)
-            .and_then(Value::as_object_mut)
-            .and_then(|surface| surface.get_mut("properties"))
-            .and_then(Value::as_object_mut)
-        {
-            post_process_surface_namespace_suffix_order(properties);
-        }
-    }
-}
-
-fn post_process_surface_variants(surface_schema: &mut Value) {
-    let Some(variants) = surface_schema
-        .get_mut("oneOf")
-        .and_then(Value::as_array_mut)
-    else {
-        return;
-    };
-    for variant in variants {
-        let Some(variant) = variant.as_object_mut() else {
-            continue;
-        };
-        let Some(properties) = variant.get_mut("properties").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        post_process_surface_namespace_suffix_order(properties);
-    }
 }
 
 fn post_process_flattened_value_source_defs(defs: &mut serde_json::Map<String, Value>) {
@@ -221,20 +189,6 @@ fn compose_flattened_value_source_def(
         object.insert("description".to_string(), description);
     }
     *definition = replacement;
-}
-
-fn post_process_surface_namespace_suffix_order(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(namespace_suffix) = properties
-        .get_mut("namespace_suffix")
-        .and_then(Value::as_object_mut)
-        && let (Some(schema_type), Some(description)) = (
-            namespace_suffix.remove("type"),
-            namespace_suffix.remove("description"),
-        )
-    {
-        namespace_suffix.shift_insert(0, "description".to_string(), description);
-        namespace_suffix.shift_insert(0, "type".to_string(), schema_type);
-    }
 }
 
 #[cfg(test)]
