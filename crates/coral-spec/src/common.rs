@@ -106,19 +106,34 @@ pub enum ManifestDataType {
 }
 
 impl ManifestDataType {
-    /// Every manifest data type, for variants-driven tests and tooling.
+    /// Every manifest data type, in canonical declaration order.
     ///
-    /// Keep in sync with the enum; the exhaustive match in
-    /// [`Self::as_manifest_str`] is the compiler prompt when a variant is
-    /// added.
-    pub const ALL: [Self; 6] = [
-        Self::Utf8,
-        Self::Int64,
-        Self::Boolean,
-        Self::Float64,
-        Self::Timestamp,
-        Self::Json,
-    ];
+    /// [`FromStr`](std::str::FromStr) and the lattice enforcement tests
+    /// treat this array as the source of truth for the variant set.
+    pub const ALL: [Self; 6] = {
+        // Exhaustiveness witness: adding a variant breaks this match, and
+        // the new variant must be added to the array below in the same
+        // edit.
+        const fn witness(data_type: ManifestDataType) {
+            match data_type {
+                ManifestDataType::Utf8
+                | ManifestDataType::Int64
+                | ManifestDataType::Boolean
+                | ManifestDataType::Float64
+                | ManifestDataType::Timestamp
+                | ManifestDataType::Json => {}
+            }
+        }
+        let _ = witness;
+        [
+            Self::Utf8,
+            Self::Int64,
+            Self::Boolean,
+            Self::Float64,
+            Self::Timestamp,
+            Self::Json,
+        ]
+    };
 
     /// Returns the source-manifest spelling for this data type.
     ///
@@ -152,7 +167,10 @@ impl std::str::FromStr for ManifestDataType {
             .into_iter()
             .find(|data_type| data_type.as_manifest_str() == s)
             .ok_or_else(|| {
-                ManifestError::validation(format!("unsupported data type '{s}' in source manifest"))
+                let expected = Self::ALL.map(Self::as_manifest_str).join(", ");
+                ManifestError::validation(format!(
+                    "unsupported data type '{s}' in source manifest; expected one of: {expected}"
+                ))
             })
     }
 }

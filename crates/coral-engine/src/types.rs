@@ -1,12 +1,16 @@
 //! Canonical conversions between the coral-spec scalar vocabulary and
 //! Arrow/DataFusion types.
 //!
-//! Every `ManifestDataType`-to-Arrow lowering lives here so that the
-//! policies stay adjacent and reviewable. There is deliberately more than
-//! one lowering: column schemas want real Arrow types, while SQL parameter
-//! binding lowers string-shaped types to plain strings. When adding a
-//! `ManifestDataType` variant, the exhaustive matches in this module are
-//! the engine-side checklist.
+//! This module is the home for `ManifestDataType`-to-Arrow *type-level*
+//! policies, so that when more than one lowering exists (column schemas
+//! want real Arrow types; string-shaped parameter binding wants plain
+//! strings) the policies sit adjacent and reviewable. Today it holds the
+//! column-schema lowering; value-level `ManifestDataType` switches still
+//! live with their backends (`convert_items` in `backends/shared/mapping.rs`
+//! builds Arrow arrays per variant, and `coerce_filter_value` /
+//! `coerce_call_arg_value` in the MCP backend coerce JSON values). All of
+//! those matches are wildcard-free, so adding a `ManifestDataType` variant
+//! breaks each of them loudly.
 
 use coral_spec::ManifestDataType;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};

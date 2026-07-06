@@ -417,9 +417,10 @@ impl FilePartitionDataType {
     }
 }
 
-/// The partition-legal subset of the manifest scalar vocabulary.
+/// Narrows a manifest scalar to the partition-legal subset.
 ///
-/// Fails exactly when the scalar cannot be a file path partition value.
+/// Fails exactly when the scalar cannot be a file path partition value —
+/// today only `Timestamp`.
 impl TryFrom<ManifestDataType> for FilePartitionDataType {
     type Error = ManifestError;
 
@@ -455,8 +456,7 @@ impl<'de> Deserialize<'de> for FilePartitionDataType {
     where
         D: Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        let data_type: ManifestDataType = value.parse().map_err(serde::de::Error::custom)?;
+        let data_type = ManifestDataType::deserialize(deserializer)?;
         Self::try_from(data_type).map_err(serde::de::Error::custom)
     }
 }
@@ -1346,7 +1346,12 @@ mod tests {
                     "partition subset must round trip through the upcast"
                 ),
                 Err(error) => {
-                    assert_eq!(data_type, ManifestDataType::Timestamp);
+                    assert_eq!(
+                        data_type,
+                        ManifestDataType::Timestamp,
+                        "Timestamp is the only partition-illegal scalar; if a new \
+                         variant is deliberately rejected, extend this assertion"
+                    );
                     assert!(
                         error.to_string().contains(
                             "type=Timestamp is not supported for backend=file path partitions"
