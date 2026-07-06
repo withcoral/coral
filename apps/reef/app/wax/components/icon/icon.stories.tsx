@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { customIcons } from '@/wax/components/icon/custom-icons/custom-icons'
-import type { CustomIconName } from '@/wax/components/icon/custom-icons/custom-icons'
+import { isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
 import { darkTheme } from '@/wax/theme/theme-dark.css'
 
 import { Icon } from './icon'
@@ -27,7 +26,37 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-const allIconNames = Object.keys(customIcons) as CustomIconName[]
+const productIconNames = [
+  'Activity',
+  'ArrowDown',
+  'ArrowUp',
+  'Bot',
+  'Calendar',
+  'Check',
+  'ChevronDown',
+  'ChevronLeft',
+  'ChevronRight',
+  'CircleAlert',
+  'CircleAlertFull',
+  'CircleCheck',
+  'CircleCheckFull',
+  'Copy',
+  'Coral',
+  'ExternalLink',
+  'Eye',
+  'EyeOff',
+  'Info',
+  'Link',
+  'Loader',
+  'PanelLeft',
+  'Plug',
+  'RefreshCw',
+  'Search',
+  'Settings',
+  'Terminal',
+  'TriangleAlertFull',
+  'X',
+] as const satisfies readonly IconName[]
 
 const sampleIconNames: IconName[] = [
   'Search',
@@ -50,14 +79,26 @@ const IconRow = ({ color, icons }: { color?: IconColor; icons: IconName[] }) => 
   </div>
 )
 
-const IconWithLabel = ({ name }: { name: IconName }) => (
+const ProductIconWithLabel = ({ name }: { name: IconName }) => (
   <div
-    style={{ alignItems: 'center', display: 'flex', flexDirection: 'column', gap: 4, width: 80 }}
+    style={{
+      alignItems: 'center',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 6,
+      width: 104,
+    }}
   >
-    <Icon name={name} />
+    <div style={{ alignItems: 'center', display: 'flex', gap: 8 }}>
+      <Icon color="primary" name={name} />
+      <Icon color="secondary" name={name} />
+      <Icon color="tertiary" name={name} />
+      <Icon color="disabled" name={name} />
+    </div>
     <div style={{ color: '#94969C', fontSize: 10, textAlign: 'center', wordBreak: 'break-word' }}>
       {name}
     </div>
+    <div style={{ color: '#6F737C', fontSize: 9 }}>{isCustomIcon(name) ? 'custom' : 'lucide'}</div>
   </div>
 )
 
@@ -68,9 +109,9 @@ const Label = ({ children }: { children: React.ReactNode }) => (
 export const Default: Story = {
   args: { name: 'Search' },
   render: () => (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, maxWidth: 800 }}>
-      {allIconNames.map((name) => (
-        <IconWithLabel key={name} name={name} />
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, maxWidth: 920 }}>
+      {productIconNames.map((name) => (
+        <ProductIconWithLabel key={name} name={name} />
       ))}
     </div>
   ),

@@ -5,6 +5,7 @@ import { AtSignIcon } from '@/wax/components/icon/custom-icons/at-sign'
 import { BellIcon } from '@/wax/components/icon/custom-icons/bell'
 import { BellRingIcon } from '@/wax/components/icon/custom-icons/bell-ring'
 import { BookOpenIcon } from '@/wax/components/icon/custom-icons/book-open'
+import { BotIcon } from '@/wax/components/icon/custom-icons/bot'
 import { BrainIcon } from '@/wax/components/icon/custom-icons/brain'
 import { Building2Icon } from '@/wax/components/icon/custom-icons/building-2'
 import { CalendarIcon } from '@/wax/components/icon/custom-icons/calendar'
@@ -54,8 +55,10 @@ import { NotepadTextIcon } from '@/wax/components/icon/custom-icons/notepad-text
 import { PanelLeftIcon } from '@/wax/components/icon/custom-icons/panel-left'
 import { PencilIcon } from '@/wax/components/icon/custom-icons/pencil'
 import { PlayIcon } from '@/wax/components/icon/custom-icons/play'
+import { PlugIcon } from '@/wax/components/icon/custom-icons/plug'
 import { PlusIcon } from '@/wax/components/icon/custom-icons/plus'
 import { RefreshCcwIcon } from '@/wax/components/icon/custom-icons/refresh-ccw'
+import { RefreshCwIcon } from '@/wax/components/icon/custom-icons/refresh-cw'
 import { SearchIcon } from '@/wax/components/icon/custom-icons/search'
 import { SettingsIcon } from '@/wax/components/icon/custom-icons/settings'
 import { Settings2Icon } from '@/wax/components/icon/custom-icons/settings-2'
@@ -97,6 +100,7 @@ export const customIcons = {
   Bell: BellIcon,
   BellRing: BellRingIcon,
   BookOpen: BookOpenIcon,
+  Bot: BotIcon,
   Brain: BrainIcon,
   Building2: Building2Icon,
   Calendar: CalendarIcon,
@@ -146,8 +150,10 @@ export const customIcons = {
   PanelLeft: PanelLeftIcon,
   Pencil: PencilIcon,
   Play: PlayIcon,
+  Plug: PlugIcon,
   Plus: PlusIcon,
   RefreshCcw: RefreshCcwIcon,
+  RefreshCw: RefreshCwIcon,
   Search: SearchIcon,
   Settings: SettingsIcon,
   Settings2: Settings2Icon,
