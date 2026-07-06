@@ -15,6 +15,7 @@ use rusqlite::{Connection, ErrorCode};
 
 use crate::state::AppStateLayout;
 use crate::storage::fs::ensure_dir;
+use crate::workspaces::WorkspaceName;
 
 pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 1;
 
@@ -38,8 +39,11 @@ pub(crate) struct SqliteSearchStore {
 }
 
 impl SqliteSearchStore {
-    pub(crate) fn open_app(layout: &AppStateLayout) -> Result<Self, SqliteSearchError> {
-        Self::open(layout.search_sqlite_file())
+    pub(crate) fn open_app(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Self, SqliteSearchError> {
+        Self::open(layout.search_sqlite_file(workspace_name))
     }
 
     pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, SqliteSearchError> {
@@ -254,6 +258,7 @@ mod tests {
         SqliteSearchStore,
     };
     use crate::state::AppStateLayout;
+    use crate::workspaces::WorkspaceName;
 
     #[test]
     fn schema_version_tracks_latest_migration() {
@@ -271,9 +276,10 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let store = SqliteSearchStore::open_app(&layout).expect("store");
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let store = SqliteSearchStore::open_app(&layout, &workspace_name).expect("store");
 
-        assert_eq!(store.path(), layout.search_sqlite_file());
+        assert_eq!(store.path(), layout.search_sqlite_file(&workspace_name));
         assert!(store.capabilities().fts5);
         assert!(store.capabilities().trigram);
 
