@@ -14,9 +14,16 @@ inputs:
       non-standard. Examples: `https://argocd.example.com`,
       `http://localhost:8080`. Do not include a trailing slash.
 
-      HTTPS requires a valid TLS certificate — self-signed certs will cause
-      connection failures. If your server uses a self-signed cert, run
-      argocd-server with `--insecure` and use an `http://` URL instead.
+      Production: use valid TLS. ArgoCD's API server uses HTTPS by default and
+      this source sends a bearer token on every request, so point ARGOCD_SERVER
+      at an `https://` endpoint with a certificate Coral can verify — either a
+      properly-signed ArgoCD server certificate or a TLS-terminating
+      ingress/proxy in front of it. A token sent over plaintext HTTP can be
+      intercepted.
+
+      Local/dev/test only: if you are evaluating a throwaway instance with a
+      self-signed cert, you can run argocd-server with `--insecure` and use an
+      `http://` URL. Do not do this for any instance holding real credentials.
   ARGOCD_TOKEN:
     kind: secret
     hint: |
