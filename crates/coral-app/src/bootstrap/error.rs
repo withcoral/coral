@@ -3,6 +3,7 @@
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
     CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -16,12 +17,34 @@ pub enum AppError {
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested workspace was not found in config.
+    #[error("workspace '{0}' not found")]
+    WorkspaceNotFound(String),
+    /// A requested workspace already exists in config.
+    #[error("workspace '{0}' already exists")]
+    WorkspaceAlreadyExists(String),
     /// Caller-supplied input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// A DSL v4 source has missing or stale generated runtime artifacts.
+    #[error(
+        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
+    )]
+    MissingOrIncompatibleV4Materialization {
+        /// Source name whose installed artifacts failed validation.
+        source_name: String,
+        /// Specific materialization mismatch or missing-artifact detail.
+        detail: String,
+    },
+    /// Provider-managed credential refresh failed during active source use.
+    #[error("credential refresh failed: {0}")]
+    CredentialRefresh(String),
+    /// A required remote dependency was unavailable.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -91,16 +114,16 @@ fn truncate_status_detail(detail: String) -> String {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn app_status(error: AppError) -> Status {
-    if matches!(error, AppError::SourceNotFound(_)) {
-        // The `reason` alone discriminates `SOURCE_NOT_FOUND` from other
-        // `Code::NotFound` causes (e.g. `io::ErrorKind::NotFound` raised
-        // when a manifest file is missing). The qualified name already
-        // appears in the truncated status message; we deliberately do
-        // not duplicate it into structured metadata so unbounded
-        // identifiers cannot push the `grpc-status-details-bin` trailer
-        // past the h2 `MAX_HEADER_LIST_SIZE` budget.
+    let not_found_reason = match &error {
+        AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
+        _ => None,
+    };
+    if let Some(reason) = not_found_reason {
+        // The `reason` alone discriminates typed Coral misses from other
+        // `Code::NotFound` causes without echoing unbounded identifiers.
         let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
-            CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+            reason,
             CORAL_ERROR_DOMAIN,
             std::collections::HashMap::new(),
         ))];
@@ -178,13 +201,17 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
-        AppError::SourceNotFound(_) => Code::NotFound,
+        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
             Code::FailedPrecondition
         }
+        AppError::Unavailable(_) => Code::Unavailable,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
         | AppError::Yaml(_)
@@ -241,6 +268,28 @@ mod tests {
     }
 
     #[test]
+    fn app_status_attaches_structured_reason_for_workspace_not_found() {
+        let status = app_status(AppError::WorkspaceNotFound("work".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("workspace-not-found status must carry an ErrorInfo detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert!(
+            info.metadata.is_empty(),
+            "WORKSPACE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+        );
+    }
+
+    #[test]
     fn app_status_does_not_attach_structured_reason_for_io_not_found() {
         let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "manifest missing");
         let status = app_status(AppError::Io(io_error));
@@ -252,6 +301,14 @@ mod tests {
             status.get_error_details_vec().is_empty(),
             "io::NotFound must not carry SOURCE_NOT_FOUND details"
         );
+    }
+
+    #[test]
+    fn app_status_maps_unavailable() {
+        let status = app_status(AppError::Unavailable(
+            "remote descriptor timed out".to_string(),
+        ));
+        assert_eq!(status.code(), Code::Unavailable);
     }
 
     #[test]

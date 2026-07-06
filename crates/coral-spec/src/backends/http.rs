@@ -12,21 +12,26 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
-    ColumnSpec, DetailHintDeclaringSurface, DetailHintSpec, DetailHintTargetTable, FilterSpec,
-    HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec, PaginationSpec,
-    ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result, SearchLimitsSpec,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
-    inputs::collect_source_inputs_value, validate::validate_template,
-    validate_detail_hint_references, validate_http_function, validate_http_function_names,
-    validate_http_table, validate_table_names, validate_test_queries,
+    ColumnSpec, DeclaredRelation, DetailHintDeclaringSurface, DetailHintSpec,
+    DetailHintTargetTable, FilterSpec, HeaderSpec, HttpTableValidation, ManifestError,
+    ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec,
+    Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec,
+    TableCommon,
+    inputs::{
+        collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
+    },
+    validate::validate_template,
+    validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
+    validate_http_table, validate_source_name, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum AuthSpec {
     /// HTTP Basic authentication; runtime base64-encodes `username:password`.
@@ -47,7 +52,7 @@ impl Default for AuthSpec {
 }
 
 /// HTTP Basic authenticator with separate username and password templates.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BasicAuthSpec {
     pub username: ParsedTemplate,
@@ -55,7 +60,7 @@ pub struct BasicAuthSpec {
 }
 
 /// Declarative authenticator that injects one or more headers.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderAuthSpec {
     #[serde(default)]
@@ -63,7 +68,7 @@ pub struct HeaderAuthSpec {
 }
 
 /// Dispatches to a runtime-registered request authenticator by name.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CustomAuthSpec {
     pub authenticator: String,
     #[serde(flatten)]
@@ -71,7 +76,7 @@ pub struct CustomAuthSpec {
 }
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitSpec {
     #[serde(default)]
@@ -212,32 +217,33 @@ impl HttpTableSpec {
 }
 
 impl HttpSourceManifest {
+    /// Returns all source secrets declared by this manifest.
+    pub fn declared_secret_names(&self) -> BTreeSet<String> {
+        declared_secret_input_names(&self.declared_inputs)
+    }
+
     /// Returns the source secrets required by this manifest.
     ///
-    /// In the new input model, every declared input with `kind: secret` is
-    /// required because secrets cannot carry defaults.
+    /// In the new input model, required declared inputs with `kind: secret`
+    /// must be available before a source can compile or authenticate.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        self.declared_inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
-            .map(|input| input.key.clone())
-            .collect()
+        required_secret_input_names(&self.declared_inputs)
     }
 }
 
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
-        validate_http_table(
+        validate_http_table(HttpTableValidation {
             schema,
-            &self.name,
-            &self.filters,
-            &self.columns,
-            &self.request,
-            &self.requests,
-            &self.pagination,
-            self.search_limits.as_ref(),
-            &self.detail_hints,
-        )?;
+            table_name: &self.name,
+            filters: &self.filters,
+            columns: &self.columns,
+            request: &self.request,
+            requests: &self.requests,
+            pagination: &self.pagination,
+            search_limits: self.search_limits.as_ref(),
+            detail_hints: &self.detail_hints,
+        })?;
 
         Ok(HttpTableSpec {
             common: TableCommon::new(
@@ -283,19 +289,25 @@ impl HttpSourceManifest {
                 "source '{name}' must define at least one table or function"
             )));
         }
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
-        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
+        validate_declared_relation_namespace(
+            &name,
+            tables
+                .iter()
+                .map(|table| DeclaredRelation::table(table.name.as_str()))
+                .chain(
+                    functions
+                        .iter()
+                        .map(|function| DeclaredRelation::function(function.name.as_str())),
+                ),
+        )?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        validate_http_function_names(
-            &common.name,
-            tables.iter().map(HttpTableSpec::name),
-            &functions,
-        )?;
         let functions = functions
             .into_iter()
             .map(|function| {

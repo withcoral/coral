@@ -17,9 +17,10 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceCredentialStorage,
-    SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
+    Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
 };
+use tempfile::tempdir;
 use tonic::Code;
 
 use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
@@ -57,10 +58,14 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
 }
 
 fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
+    assert_workspace_name(workspace, "default");
+}
+
+fn assert_workspace_name(workspace: Option<&coral_api::v1::Workspace>, expected: &str) {
     assert_eq!(
         workspace.map(|w| w.name.as_str()),
-        Some("default"),
-        "expected default workspace, got {workspace:?}"
+        Some(expected),
+        "expected workspace {expected:?}, got {workspace:?}"
     );
 }
 
@@ -87,6 +92,164 @@ async fn sql_command_renders_table_output() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn sql_command_uses_workspace_flag() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["--workspace", "work", "sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_command_uses_workspace_env() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "work")
+        .args(["sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_flag_overrides_workspace_env() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "env-work")
+        .args(["--workspace", "flag-work", "sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "flag-work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_list_uses_workspace_flag() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["--workspace", "work", "source", "list"])
+        .assert()
+        .success();
+
+    let requests = server.list_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one list_sources call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_list_accepts_workspace_flag_after_subcommand() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["source", "list", "--workspace", "work"])
+        .assert()
+        .success();
+
+    let requests = server.list_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one list_sources call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_list_renders_configured_workspaces() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
+        ListWorkspacesResponse {
+            workspaces: vec![
+                Workspace {
+                    name: "default".to_string(),
+                },
+                Workspace {
+                    name: "work".to_string(),
+                },
+            ],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["workspace", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        nonempty_lines(&stdout),
+        vec!["Workspace", "---------", "default", "work"],
+        "expected workspace list"
+    );
+    assert_eq!(
+        server.list_workspaces_requests().len(),
+        1,
+        "expected one list_workspaces call"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_create_sends_request() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["workspace", "create", "work"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "Created workspace work");
+    let requests = server.create_workspace_requests();
+    assert_eq!(requests.len(), 1, "expected one create_workspace call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_remove_sends_request() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["workspace", "remove", "work"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "Removed workspace work");
+    let requests = server.delete_workspace_requests();
+    assert_eq!(requests.len(), 1, "expected one delete_workspace call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_list_renders_configured_sources() {
     let server = MockServer::start().await;
 
@@ -107,6 +270,39 @@ async fn source_list_renders_configured_sources() {
     let requests = server.list_sources_requests();
     assert_eq!(requests.len(), 1, "expected one list_sources call");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_list_renders_dash_for_missing_authored_version() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
+        ListSourcesResponse {
+            sources: vec![Source {
+                workspace: None,
+                name: "versionless".to_string(),
+                version: String::new(),
+                secrets: Vec::new(),
+                variables: Vec::new(),
+                origin: SourceOrigin::Imported as i32,
+                credential_storage: SourceCredentialStorage::File as i32,
+            }],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["source", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        nonempty_lines(&stdout),
+        vec![
+            "Source       Version  Origin    Secrets",
+            "-----------  -------  --------  ----------------",
+            "versionless  -        imported  file (plaintext)",
+        ],
+        "expected versionless source list"
+    );
 
     server.shutdown().await;
 }
@@ -294,6 +490,29 @@ async fn source_info_renders_installed_imported_source() {
     assert_eq!(requests.len(), 1, "expected one get_source_info call");
     assert_eq!(requests[0].name, "jira");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_info_omits_missing_authored_version() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "versionless"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("versionless"),
+        "expected source name: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Version:"),
+        "expected version line to be omitted: {stdout}"
+    );
 
     server.shutdown().await;
 }
@@ -677,6 +896,61 @@ async fn source_add_rejects_name_and_file_together() {
     assert!(
         stderr.contains("cannot be used with"),
         "expected clap conflict error: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let openapi_file = source_dir.path().join("openapi.yaml");
+    std::fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+paths: {}
+",
+    )
+    .expect("write descriptor");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: openapi.yaml
+",
+    )
+    .expect("write manifest");
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    let manifest_yaml = &requests[0].manifest_yaml;
+    let canonical = openapi_file.canonicalize().expect("canonical descriptor");
+    let canonical = canonical.to_string_lossy();
+    assert!(
+        manifest_yaml.contains(canonical.as_ref()),
+        "expected import manifest to contain canonical descriptor path '{canonical}', got: {manifest_yaml}"
+    );
+    assert!(
+        !manifest_yaml.contains("file: openapi.yaml"),
+        "expected relative descriptor to be replaced before import: {manifest_yaml}"
     );
 
     server.shutdown().await;

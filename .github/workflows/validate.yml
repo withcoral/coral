@@ -29,15 +29,19 @@ jobs:
       install-script: ${{ steps.filter.outputs.install-script }}
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
+      reef-checks: ${{ steps.filter.outputs.reef-checks }}
+      desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
+      schema-freshness: ${{ steps.filter.outputs.schema-freshness }}
       license-check: ${{ steps.filter.outputs.license-check }}
+      performance-regression: ${{ steps.filter.outputs.performance-regression }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Detect changes
         id: filter
@@ -63,11 +67,20 @@ jobs:
             ui-build:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
-              - 'ui/**'
+              - 'apps/ui/**'
             ui-tests:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
-              - 'ui/**'
+              - 'apps/ui/**'
+            reef-checks:
+              - '.github/workflows/validate.yml'
+              - 'apps/reef/**'
+              # Reef re-exports the desktop IPC bridge types, so a change there
+              # can break the reef type-check.
+              - 'apps/desktop/src/shared/types.ts'
+            desktop-checks:
+              - '.github/workflows/validate.yml'
+              - 'apps/desktop/**'
             proto-lint:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -84,11 +97,23 @@ jobs:
               - 'Makefile'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - 'xtask/**'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/docs/**'
+              - 'xtask/src/sources.rs'
               - 'crates/coral-spec/**'
               - 'sources/core/**'
-              - 'docs/**'
+              - 'apps/docs/**'
               - 'CHANGELOG.md'
+            schema-freshness:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/schemas.rs'
+              - 'crates/coral-spec/**'
             license-check:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -96,6 +121,18 @@ jobs:
               - 'Cargo.lock'
               - 'crates/**/Cargo.toml'
               - 'deny.toml'
+            performance-regression:
+              - '.github/workflows/validate.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Makefile'
+              - 'rust-toolchain.toml'
+              - 'rust-toolchain'
+              - 'crates/**'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/perf.rs'
+              - 'sources/core/github/**'
 
   rust-checks:
     name: Rust checks
@@ -103,7 +140,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -131,7 +168,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' || needs.changes.outputs.release_workflow == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -174,7 +211,7 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -198,12 +235,36 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve latest Coral release
+        id: coral-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="$(
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "User-Agent: withcoral-install-ci" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/latest" |
+              sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
+              head -n 1
+          )"
+
+          if [ -z "$version" ]; then
+            echo "Could not determine latest Coral release version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Run install script
         env:
-          # Note: the install script generally runs fine without a GITHUB_TOKEN set, and we don't advise users to set
-          # one during installation, but in CI it often fails. See https://github.com/orgs/community/discussions/42748
-          # for the discussion.
-          GITHUB_TOKEN: ${{ github.token }}
+          # Keep tokens out of PR-controlled installer code; pass only the resolved release version.
+          CORAL_VERSION: ${{ steps.coral-release.outputs.version }}
+          GITHUB_TOKEN: ""
         run: |
           install_dir="$RUNNER_TEMP/coral-bin"
           CORAL_INSTALL_DIR="$install_dir" sh < scripts/install.sh
@@ -215,32 +276,40 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.ui-build == 'true' || needs.changes.outputs.rust_checks == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
       - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/ui/.node-version
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/ui/package-lock.json
 
       - name: Install UI dependencies
-        run: npm ci --prefix ui
+        run: npm ci --prefix apps/ui
 
       - name: Lint and format check
-        run: npm run check --prefix ui
+        run: npm run check --prefix apps/ui
 
       - name: Build UI
-        run: npm run build --prefix ui
+        run: npm run build --prefix apps/ui
 
       - name: Verify UI entrypoint
-        run: test -s ui/dist/index.html
+        run: test -s apps/ui/dist/index.html
 
       - name: Verify production build excludes test mocks
         run: |
-          if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' ui/dist; then
+          if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' apps/ui/dist; then
             echo 'Production UI build contains test/mock-only code' >&2
             exit 1
           fi
@@ -251,28 +320,36 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.ui-tests == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
       - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/ui/.node-version
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/ui/package-lock.json
 
       - name: Install UI dependencies
-        run: npm ci --prefix ui
+        run: npm ci --prefix apps/ui
 
       - name: Type-check UI tests
-        run: npm run test:ui:type-check --prefix ui
+        run: npm run test:ui:type-check --prefix apps/ui
 
       - name: Install Chromium for Playwright
-        run: npm exec --prefix ui -- playwright install --with-deps chromium
+        run: npm exec --prefix apps/ui -- playwright install --with-deps chromium
 
       - name: Run UI tests
-        run: npm run test:ui --prefix ui
+        run: npm run test:ui --prefix apps/ui
 
       - name: Upload UI test artifacts
         if: ${{ failure() }}
@@ -280,9 +357,85 @@ jobs:
         with:
           name: ui-test-results
           path: |
-            ui/test-results/**
-            ui/playwright-report/**
+            apps/ui/test-results/**
+            apps/ui/playwright-report/**
           if-no-files-found: ignore
+
+  reef-checks:
+    name: Reef checks
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.reef-checks == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/reef/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/reef/.node-version
+          cache: npm
+          cache-dependency-path: apps/reef/package-lock.json
+
+      - name: Install Reef dependencies
+        run: npm ci --prefix apps/reef
+
+      - name: Lint and format check
+        run: npm run check --prefix apps/reef
+
+      - name: Type-check Reef
+        run: npm run typecheck --prefix apps/reef
+
+      - name: Install Chromium for Reef browser tests
+        run: npm exec --prefix apps/reef -- playwright install --with-deps chromium
+
+      - name: Test Reef
+        run: npm test --prefix apps/reef
+
+      - name: Build Reef
+        run: npm run build --prefix apps/reef
+
+  desktop-checks:
+    name: Desktop checks
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.desktop-checks == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/desktop/.node-version
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      # Type-check only; the full build stages the Rust binary + reef, which the
+      # rust/reef jobs already cover.
+      - name: Type-check desktop
+        run: npm run check --prefix apps/desktop
 
   proto-lint:
     name: Lint protobuf API
@@ -290,7 +443,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.proto-lint == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -302,12 +455,34 @@ jobs:
       - name: Run make lint-proto
         run: make lint-proto
 
-  gha-security-audit:
-    name: Github Actions security audit with zizmor
+  gha-security-audit-pr:
+    name: Github Actions security audit with zizmor (PR)
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ needs.changes.outputs.github_actions == 'true' }}
+    if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name == 'pull_request' }}
     permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
+        with:
+          version: v1.25.2
+          annotations: true
+          advanced-security: false
+          min-severity: low
+
+  gha-security-audit-sarif:
+    name: Github Actions security audit with zizmor (SARIF)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
       security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
     steps:
       - name: Checkout repository
@@ -319,8 +494,8 @@ jobs:
         uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
         with:
           version: v1.25.2
-          annotations: ${{ github.event_name == 'pull_request' }}
-          advanced-security: ${{ github.event_name != 'pull_request' }}
+          annotations: false
+          advanced-security: true
           min-severity: low
 
   source-lint:
@@ -329,7 +504,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.source-lint == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -355,7 +530,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.docs-freshness == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -372,13 +547,50 @@ jobs:
       - name: Run make docs-check
         run: make docs-check
 
+      - name: Set up Node for Mintlify validation
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/ui/.node-version
+          package-manager-cache: false
+
+      - name: Validate Mintlify docs
+        working-directory: apps/docs
+        run: npx --yes mint validate
+
+      - name: Check Mintlify links
+        working-directory: apps/docs
+        run: npx --yes mint broken-links
+
+  schema-freshness:
+    name: Schema freshness check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.schema-freshness == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-schema-freshness-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run make schema-check
+        run: make schema-check
+
   license-check:
     name: Dependency license scan
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.license-check == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -400,6 +612,44 @@ jobs:
       - name: Run make license-check
         run: make license-check
 
+  performance-regression:
+    name: Performance regression
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.performance-regression == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Keep this separate from Rust checks. GitHub caches are immutable on
+          # exact-key hits, so sharing the debug/test cache prevents this job's
+          # release artifacts from warming future performance runs.
+          shared-key: coral-perf-release-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: hyperfine@1.20.0
+          fallback: cargo-install
+
+      - name: Build CLI
+        run: cargo build --locked -p coral-cli --release
+
+      - name: Benchmark coral.tables query
+        run: |
+          cargo run --locked -p xtask --release -- perf-check \
+            --coral-bin target/release/coral \
+            --max-mean-seconds 0.75
+
   validate:
     runs-on: ubuntu-latest
     needs:
@@ -410,11 +660,16 @@ jobs:
         install-script,
         ui-build,
         ui-tests,
+        reef-checks,
+        desktop-checks,
         proto-lint,
-        gha-security-audit,
+        gha-security-audit-pr,
+        gha-security-audit-sarif,
         source-lint,
         docs-freshness,
+        schema-freshness,
         license-check,
+        performance-regression,
       ]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
@@ -428,11 +683,16 @@ jobs:
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
           UI_BUILD_RESULT: ${{ needs.ui-build.result }}
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
+          REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
+          DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
-          GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
+          GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
+          GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
           DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
+          SCHEMA_FRESHNESS_RESULT: ${{ needs.schema-freshness.result }}
           LICENSE_CHECK_RESULT: ${{ needs.license-check.result }}
+          PERFORMANCE_REGRESSION_RESULT: ${{ needs.performance-regression.result }}
         run: |
           jobs=(
             "changes:$CHANGES_RESULT"
@@ -441,11 +701,16 @@ jobs:
             "install-script:$INSTALL_SCRIPT_RESULT"
             "ui-build:$UI_BUILD_RESULT"
             "ui-tests:$UI_TESTS_RESULT"
+            "reef-checks:$REEF_CHECKS_RESULT"
+            "desktop-checks:$DESKTOP_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
-            "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
+            "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
+            "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
             "docs-freshness:$DOCS_FRESHNESS_RESULT"
+            "schema-freshness:$SCHEMA_FRESHNESS_RESULT"
             "license-check:$LICENSE_CHECK_RESULT"
+            "performance-regression:$PERFORMANCE_REGRESSION_RESULT"
           )
 
           failed=0

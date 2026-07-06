@@ -6,7 +6,7 @@ use coral_app::{StaticAsset, StaticAssetsProvider};
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "../../ui/dist/"]
+#[folder = "../../apps/ui/dist/"]
 #[allow_missing = true]
 struct EmbeddedUiFiles;
 

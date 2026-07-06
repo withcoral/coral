@@ -11,12 +11,15 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::de::Error as _;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
+
+const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
@@ -46,6 +49,19 @@ impl SourceManifestCommon {
     }
 }
 
+pub(crate) fn validate_source_name(name: &str) -> Result<()> {
+    validate_reserved_source_schema_name(name, "source name")
+}
+
+pub(crate) fn validate_reserved_source_schema_name(name: &str, label: &str) -> Result<()> {
+    if RESERVED_SOURCE_SCHEMA_NAMES.contains(&name) {
+        return Err(ManifestError::validation(format!(
+            "{label} '{name}' is reserved and cannot be used by manifests"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {
     for (index, query) in test_queries.iter().enumerate() {
         if query.trim().is_empty() {
@@ -69,7 +85,8 @@ pub enum SourceBackend {
 /// Normalized scalar data types supported by the source-spec DSL.
 ///
 /// The engine is responsible for mapping these into runtime-specific types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
 pub enum ManifestDataType {
     Utf8,
     Int64,
@@ -84,7 +101,7 @@ pub enum ManifestDataType {
 }
 
 /// One request or auth header declared in the source spec.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct HeaderSpec {
     pub name: String,
     #[serde(flatten)]
@@ -133,7 +150,7 @@ impl TableCommon {
 }
 
 /// How a filter value is matched against `SQL` predicates.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FilterMode {
     /// Pushes down `=` only (current behaviour for all existing providers).
@@ -147,8 +164,8 @@ pub enum FilterMode {
     Contains,
 }
 
-/// One declared filter that can be bound from SQL into a backend request.
-#[derive(Debug, Clone, Deserialize)]
+/// One declared filter that can be used as a complete exact lookup from SQL.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterSpec {
     pub name: String,
     #[serde(rename = "type", default = "default_filter_data_type")]
@@ -159,6 +176,8 @@ pub struct FilterSpec {
     pub mode: FilterMode,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub lookup_key: bool,
 }
 
 impl FilterSpec {
@@ -420,11 +439,14 @@ impl Serialize for BodySpec {
 }
 
 /// How a source-spec request value is populated at runtime.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum ValueSourceSpec {
     Template {
         template: ParsedTemplate,
+    },
+    OneOf {
+        values: Vec<ValueSourceSpec>,
     },
     Literal {
         value: Value,
@@ -443,6 +465,11 @@ pub enum ValueSourceSpec {
         key: String,
         #[serde(default)]
         default: Option<bool>,
+    },
+    FilterStringArray {
+        key: String,
+        #[serde(default)]
+        default: Option<Vec<String>>,
     },
     FilterSplit {
         key: String,
@@ -482,6 +509,9 @@ pub enum ValueSourceSpec {
     Input {
         key: String,
     },
+    Bearer {
+        key: String,
+    },
     State {
         key: String,
     },
@@ -491,7 +521,7 @@ pub enum ValueSourceSpec {
 }
 
 /// Rules for interpreting the response payload returned by one HTTP table.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ResponseSpec {
     #[serde(default)]
     pub format: ResponseBodyFormat,
@@ -508,7 +538,7 @@ pub struct ResponseSpec {
 }
 
 /// How the raw response body is decoded before row extraction runs.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseBodyFormat {
     /// Standard JSON document (the response is parsed once).
@@ -521,7 +551,7 @@ pub enum ResponseBodyFormat {
 }
 
 /// How the engine converts a selected response value into logical rows.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RowStrategy {
     #[default]
@@ -531,7 +561,7 @@ pub enum RowStrategy {
 }
 
 /// Pagination configuration for one HTTP table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaginationSpec {
     #[serde(default)]
     pub mode: PaginationMode,
@@ -757,7 +787,7 @@ fn default_page_step() -> i64 {
 }
 
 /// Supported pagination modes in the source-spec DSL.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PaginationMode {
     #[default]
@@ -771,7 +801,7 @@ pub enum PaginationMode {
 }
 
 /// Page-size settings shared by several pagination modes.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PageSizeSpec {
     pub default: usize,
     pub max: usize,
@@ -782,7 +812,7 @@ pub struct PageSizeSpec {
 }
 
 /// One declared output column for a manifest table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ColumnSpec {
     pub name: String,
     #[serde(rename = "type")]
@@ -822,7 +852,7 @@ fn default_nullable() -> bool {
 }
 
 /// Column expressions supported by the source-spec DSL.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExprSpec {
     Path {
@@ -904,7 +934,7 @@ pub enum ExprSpec {
 }
 
 /// Declares how to interpret the raw value before formatting as ISO-8601.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampInput {
     /// Seconds since Unix epoch (integer or float).
@@ -983,6 +1013,7 @@ mod tests {
                 required: false,
                 mode: FilterMode::default(),
                 description: String::new(),
+                lookup_key: false,
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -1020,6 +1051,7 @@ mod tests {
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
+                    lookup_key: false,
                 },
                 FilterSpec {
                     name: "org".into(),
@@ -1027,6 +1059,7 @@ mod tests {
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
+                    lookup_key: false,
                 },
             ],
             RequestSpec {
@@ -1130,6 +1163,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(spec.mode, FilterMode::Equality);
+        assert!(!spec.lookup_key);
     }
 
     #[test]
@@ -1197,6 +1231,17 @@ mod tests {
         .unwrap();
         assert_eq!(spec.kind, SourceTableFunctionKind::Search);
         assert_eq!(spec.search_limits.unwrap().default_top_k, 10);
+    }
+
+    #[test]
+    fn filter_lookup_key_field_deserializes() {
+        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
+            "name": "repo",
+            "lookup_key": true
+        }))
+        .unwrap();
+
+        assert!(spec.lookup_key);
     }
 
     #[test]

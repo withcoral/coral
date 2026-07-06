@@ -15,10 +15,12 @@ use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
+use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     TRACE_RESPONSE_MAX_MESSAGE_SIZE,
@@ -40,6 +42,8 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
+use crate::episode::service::EpisodeService;
+use crate::episode::store::EpisodeStore;
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -53,6 +57,7 @@ use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -257,24 +262,40 @@ impl ServerBuilder {
             self.config.enable_stderr_logs,
             internal_trace_store_dir.clone(),
         )?;
+        let active_trace_store = telemetry_config
+            .trace_history
+            .enabled
+            .then_some(installed_trace_store)
+            .flatten();
+        let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         let config_store = ConfigStore::new(layout.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
+        let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            workspace_lifecycle_lock.clone(),
+        );
+        let workspace_manager = WorkspaceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            active_trace_store_dir.clone(),
+            workspace_lifecycle_lock,
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let http_body_capture_max_bytes = telemetry_config
+        let episode_store = EpisodeStore::new(layout.clone());
+        let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
         let query_runtime_context = env
             .query_runtime_context()
-            .with_http_body_capture_max_bytes(http_body_capture_max_bytes);
+            .with_body_capture_max_bytes(body_capture_max_bytes);
 
         let query_manager = QueryManager::new(
             config_store,
@@ -283,16 +304,20 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        let trace_service = if telemetry_config.trace_history.enabled {
-            installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
-        } else {
-            None
-        };
+        let trace_components =
+            active_trace_store.map_or_else(TraceServerComponents::default, |store| {
+                TraceServerComponents {
+                    local_trace_store_dir: Some(store.dir.clone()),
+                    service: Some(TraceService::new(store.dir, store.retention)),
+                }
+            });
         start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
-            trace_service,
+            episode_store,
+            trace_components,
             self.config.mode,
         )
         .await
@@ -306,6 +331,7 @@ impl ServerBuilder {
 /// does not wait for the task to finish.
 pub struct RunningServer {
     endpoint_uri: String,
+    local_trace_store_dir: Option<PathBuf>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
@@ -319,6 +345,13 @@ impl RunningServer {
     /// over server configuration.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
+    }
+
+    #[must_use]
+    /// Returns the process-installed local trace store directory, when local
+    /// trace history is enabled for this process.
+    pub fn local_trace_store_dir(&self) -> Option<&std::path::Path> {
+        self.local_trace_store_dir.as_deref()
     }
 
     /// Shuts the server down and waits for the background task to finish.
@@ -369,27 +402,54 @@ impl Drop for RunningServer {
     }
 }
 
+#[derive(Default)]
+struct TraceServerComponents {
+    service: Option<TraceService>,
+    local_trace_store_dir: Option<PathBuf>,
+}
+
 async fn start_server(
     source_manager: SourceManager,
+    workspace_manager: WorkspaceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
-    trace_service: Option<TraceService>,
+    episode_store: EpisodeStore,
+    trace_components: TraceServerComponents,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
+    let TraceServerComponents {
+        service: trace_service,
+        local_trace_store_dir,
+    } = trace_components;
     let source_service = SourceService::new(source_manager, query_manager.clone());
+    let workspace_service = WorkspaceService::new(workspace_manager);
     let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
+    let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
         )))
+        .add_service(GrpcMethodAnnotatedService::new(
+            WorkspaceServiceServer::new(workspace_service),
+        ))
         .add_service(GrpcMethodAnnotatedService::new(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
         ))
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
+        )))
+        // Registered unconditionally, like `FeedbackService` above: the local
+        // transport is feature-agnostic by design (effective features are resolved
+        // in `coral-cli`, which gates the *consumers*, not the routes). The
+        // `episodes` feature gates the only caller — the `coral-mcp` episode surface —
+        // so on a default/disabled install this endpoint is reachable but inert:
+        // nothing opens an episode, so no intent is ever written. See the
+        // `EpisodeService` module docs and `open_episode_*` server tests below.
+        .add_service(GrpcMethodAnnotatedService::new(EpisodeServiceServer::new(
+            episode_service,
         )))
         .add_service(GrpcMethodAnnotatedService::new(
             QueryServiceServer::new(query_service)
@@ -415,6 +475,7 @@ async fn start_server(
 
     Ok(RunningServer {
         endpoint_uri,
+        local_trace_store_dir,
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })
@@ -619,12 +680,13 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use coral_api::v1::episode_service_client::EpisodeServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-        ListTracesRequest, Workspace, import_source_response,
+        ListTracesRequest, OpenEpisodeRequest, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -633,17 +695,18 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, TraceServerComponents,
+        is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
-    use crate::workspaces::WorkspaceName;
+    use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
@@ -693,6 +756,52 @@ enabled = false
         server.shutdown().await.expect("shutdown");
     }
 
+    /// The `OpenEpisode` route is registered unconditionally — the transport is
+    /// feature-agnostic, and the `episodes` feature gates the `coral-mcp` consumer
+    /// rather than the route. Drive the full path end-to-end through a real
+    /// `EpisodeServiceClient` on a default install (episodes disabled) and confirm
+    /// the call is served and the intent is persisted. Guards against a dropped or
+    /// miswired `EpisodeServiceServer` route, which the direct-`EpisodeService`
+    /// unit tests cannot catch.
+    #[tokio::test]
+    async fn open_episode_through_server_persists() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir.clone())
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut episode_client = EpisodeServiceClient::new(channel);
+
+        episode_client
+            .open_episode(Request::new(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: "ep_smoke".to_string(),
+                intent: "find the HR onboarding form".to_string(),
+                parent_episode_id: String::new(),
+            }))
+            .await
+            .expect("OpenEpisode is served regardless of the episodes feature");
+
+        // The handler ran the full path through to the per-workspace episode log.
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let raw = std::fs::read_to_string(layout.episodes_file(&WorkspaceName::default()))
+            .expect("episode file should exist");
+        assert!(raw.contains("ep_smoke"), "episode id should be persisted");
+        assert!(
+            raw.contains("find the HR onboarding form"),
+            "intent should be persisted"
+        );
+        server.shutdown().await.expect("shutdown");
+    }
+
     #[tokio::test]
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
@@ -702,12 +811,19 @@ enabled = false
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -719,9 +835,14 @@ enabled = false
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
-            Some(trace_service),
+            episode_store,
+            TraceServerComponents {
+                service: Some(trace_service),
+                local_trace_store_dir: None,
+            },
             ServerMode::NativeGrpc,
         )
         .await
@@ -1080,12 +1201,19 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1098,9 +1226,11 @@ tables:
         );
         let running = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
-            None,
+            episode_store,
+            TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1182,12 +1312,19 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1197,9 +1334,11 @@ tables:
         );
         let running = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
-            None,
+            episode_store,
+            TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1281,12 +1420,19 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1296,9 +1442,11 @@ tables:
         );
         let running = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
-            None,
+            episode_store,
+            TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
         .await

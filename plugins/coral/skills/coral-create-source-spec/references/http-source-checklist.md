@@ -28,14 +28,18 @@ Use:
 ## Authentication Setup
 
 - Keep credential collection separate from runtime auth. `inputs` stores values; `auth`, request headers, query params, or body fields decide where values are sent.
+- Use `from: bearer` for raw access tokens that must be sent as `Authorization: Bearer <token>`. Use `from: one_of` when runtime auth should choose the first present credential, such as a pasted API-key header before an OAuth bearer token.
+- When `from: one_of` models alternate stored credentials, mark each branch's secret input `required: false` so either credential can satisfy auth.
 - Use `type: source_config` when the user should provide a stored secret directly through an environment variable or prompt.
-- Use `type: oauth` when the provider should issue the source secret through an OAuth authorization-code flow during `coral source add --interactive`.
-- OAuth methods require `flow.type: authorization_code` and an explicit `flow.pkce` of `required` or `disabled`.
-- OAuth redirect URIs must use `http://127.0.0.1` or `http://localhost`. Use `redirect_uri_port_mode: random` with no port or port `0` when the provider accepts variable loopback ports. Use `fixed` with a non-zero port when the OAuth app must pre-register the exact URI.
+- Use `type: oauth` when the provider should issue the source secret through OAuth device-code or authorization-code flow during `coral source add --interactive`.
+- OAuth methods require `flow.type: device_code` or `flow.type: authorization_code`. Authorization-code methods require an explicit `flow.pkce` of `required` or `disabled`; device-code methods require `endpoints.device_authorization_url`, `endpoints.token_url`, and either a public client ID or `client.dynamic_registration`, and omit redirect URI fields and static client secrets.
+- OAuth redirect URIs must use `http://127.0.0.1` or `http://localhost`. Use `redirect_uri_port_mode: random` with no port or port `0` when the provider accepts variable loopback ports. Use `fixed` with a non-zero port when the OAuth app must pre-register the exact URI. Authorization-code setup can still work when the browser cannot reach Coral's loopback listener directly, because the CLI lets users paste the final localhost redirect URL into the terminal.
 - For public clients, declare `client.id.default`, `client.id.input`, or both. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
+- For Dynamic Client Registration, Coral always registers a native client; source specs cannot configure a `web` Dynamic Client Registration application type. Set `request_refresh_token_grant: true` only when the provider supports registering clients for refresh-token grants.
+- OAuth URL fields may use `{{input.KEY}}` only for declared `kind: variable` inputs. Use this for non-secret tenant, site, region, or domain URL components in `endpoints.*`, `resource`, or `client.dynamic_registration.registration_url`; never use secrets or runtime tokens in OAuth URLs.
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
 - If the provider supports pasted tokens too, put the OAuth method first and add a `source_config` fallback.
-- Do not rely on automatic token refresh; call out short-lived access tokens as a limitation.
+- For short-lived OAuth access tokens, document the scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire.
 
 ## Description and Input Hints
 
@@ -55,7 +59,8 @@ Additional hint guidance:
 
 - Base URL inputs should clarify default behavior and self-hosted alternatives.
 - Secret inputs should name token type and any format constraints (for example token prefixes).
-- OAuth-backed secret hints should name the required scopes, client ID/secret expectations, and redirect URI registration requirement.
+- OAuth setup guidance — required scopes, client ID/secret expectations, and redirect URI registration — belongs in the OAuth method's `hint` (`credential.methods[].hint`), not the input-level hint, since that text renders next to the fields the method collects.
+- When a secret declares multiple `credential.methods`, write a focused `hint` on each method (`credential.methods[].hint`) instead of one long input-level hint; the fields shown change with the selected method, so each method's hint should cover only the inputs it collects.
 - For encoded credentials, include a short shell example (for example `printf ... | base64`).
 - Prefer official docs links and stable settings pages over brittle click-path instructions.
 
@@ -63,7 +68,10 @@ Additional hint guidance:
 
 - Prefer one table per collection endpoint.
 - Add detail routes only when item fetches are actually needed.
-- Keep table names stable and SQL-friendly.
+- Keep table and table-function names stable, SQL-friendly, and unique within
+  the source's case-insensitive relation namespace. Prefer plain `snake_case`
+  table names. Table-function names must start with an ASCII letter or
+  underscore and then use only ASCII letters, numbers, or underscores.
 - Preserve provider semantics when filter behavior matters.
 - Add `test_queries` once you know which simple query or queries should confirm the source basically works.
 

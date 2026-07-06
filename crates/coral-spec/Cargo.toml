@@ -15,6 +15,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
 jsonschema.workspace = true
+schemars.workspace = true
 url.workspace = true
 
 [dev-dependencies]

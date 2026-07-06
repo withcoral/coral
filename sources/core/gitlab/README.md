@@ -30,9 +30,10 @@ Then enter its Application ID when prompted for `GITLAB_OAUTH_CLIENT_ID`.
 The bundled OAuth flow targets GitLab.com. For self-hosted GitLab instances,
 use a token with `GITLAB_API_BASE` set to your instance URL.
 
-GitLab OAuth access tokens expire after two hours. Until Coral supports
-automatic refresh, rerun `coral source add --interactive gitlab` to refresh the
-stored token. See the
+GitLab OAuth access tokens expire after two hours. GitLab returns refresh
+metadata for this OAuth flow, so Coral refreshes the stored access token when it
+expires. If the refresh token is revoked or unavailable, rerun
+`coral source add --interactive gitlab` to reconnect the source. See the
 [GitLab OAuth provider docs](https://docs.gitlab.com/integration/oauth_provider/).
 
 ### Token

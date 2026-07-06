@@ -107,6 +107,8 @@ message SourceCredentialMethod {
   string label = 1;
   // Optional display description.
   string description = 2;
+  // Optional hint describing how to obtain the values this method needs.
+  string hint = 5;
   // Method-specific metadata.
   oneof method {
     // Secret value is supplied through the source configuration path.
@@ -122,6 +124,11 @@ message SourceConfigCredentialMethod {
 
 // OAuth credential retrieval configuration.
 message OAuthCredentialMethod {
+  // Optional RFC 8707 resource indicator identifying the target API, such as an
+  // OAuth-protected MCP server. Coral sends it on the authorization, token, and
+  // refresh requests so the provider can audience-bind the issued token; the
+  // MCP authorization spec requires it for MCP sources.
+  string resource = 9;
   // Loopback callback URI Coral binds during the OAuth session.
   string redirect_uri = 1;
   // Provider OAuth endpoints.
@@ -186,6 +193,8 @@ message OAuthCredentialClient {
   OAuthCredentialClientId id = 1;
   // Optional confidential-client secret configuration.
   OAuthCredentialClientSecret secret = 2;
+  // Optional Dynamic Client Registration configuration.
+  OAuthDynamicClientRegistration dynamic_registration = 3;
 }
 
 // OAuth client ID resolution configuration.
@@ -212,6 +221,33 @@ message OAuthCredentialClientSecret {
   string input = 1;
   // How Coral sends the secret to the token endpoint.
   OauthCredentialClientSecretTransport transport = 2;
+}
+
+// Supported Dynamic Client Registration token endpoint auth method requests.
+enum OauthDynamicClientRegistrationAuthMethod {
+  // Auth method is unspecified. Producers should set an explicit value.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_UNSPECIFIED = 0;
+  // Public client with no token endpoint client authentication.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_NONE = 1;
+  // Confidential client using HTTP Basic authentication.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_CLIENT_SECRET_BASIC = 2;
+  // Confidential client sending the client secret in the token request body.
+  OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_CLIENT_SECRET_POST = 3;
+}
+
+// OAuth 2.0 Dynamic Client Registration configuration.
+message OAuthDynamicClientRegistration {
+  // OAuth client registration endpoint URL.
+  string registration_url = 1;
+  // Optional client display name sent during registration.
+  string client_name = 2;
+  // Requested token endpoint authentication method.
+  OauthDynamicClientRegistrationAuthMethod token_endpoint_auth_method = 4;
+  // Field 5 was application_type; Coral always registers as a native client.
+  reserved 5;
+  reserved "application_type";
+  // Whether Coral requests the refresh_token grant type during registration.
+  bool request_refresh_token_grant = 6;
 }
 
 // Supported OAuth scope delimiters.
@@ -348,7 +384,9 @@ message CredentialMetadata {
   string value = 2;
 }
 
-// Transient OAuth method input.
+// OAuth method input used during credential retrieval. These values are not
+// stored as source-visible configuration; Coral may store sensitive values as
+// internal credential metadata when needed to preserve the OAuth lifecycle.
 message OAuthCredentialInput {
   // Logical input key expected by the selected OAuth credential method.
   string key = 1;
