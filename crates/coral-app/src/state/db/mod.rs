@@ -32,7 +32,7 @@ pub(crate) use repositories::identity_specs::{
 pub(crate) use repositories::state_migrations::LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID;
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
 pub(crate) use repositories::workspaces::InaccessibleWorkspaces;
-pub(crate) use session::{DbRepos, DbSession, DbWriteSession};
+pub(crate) use session::{DbRepos, DbSession};
 #[cfg(test)]
 pub(crate) use task_query_state::TaskQueryRelationRecord;
 pub(crate) use task_query_state::{TaskQueryRelationWrite, TaskQueryWrite, TaskQueryWriteResult};

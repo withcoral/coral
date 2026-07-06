@@ -16,7 +16,7 @@ use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources};
-use crate::state::db::{DbError, DbSession, DbWriteSession};
+use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -69,19 +69,10 @@ where
             .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
             .order_by(Sources::Name, Order::Asc)
             .to_owned();
-<<<<<<< HEAD
-        let names: Vec<(String,)> = self.session.fetch_all(statement).await?;
+        let names: Vec<String> = self.session.fetch_all_scalars(statement).await?;
         names
             .into_iter()
-            .map(|(name,)| parse_source_name(&name).map(|name| name.as_str().to_string()))
-||||||| parent of fb89c98d1 (fix(app): validate persisted source catalog names)
-        let rows: Vec<SourceNameRow> = self.session.fetch_all(statement).await?;
-        Ok(rows.into_iter().map(|row| row.name).collect())
-=======
-        let rows: Vec<SourceNameRow> = self.session.fetch_all(statement).await?;
-        rows.into_iter()
-            .map(|row| parse_source_name(&row.name).map(|name| name.as_str().to_string()))
->>>>>>> fb89c98d1 (fix(app): validate persisted source catalog names)
+            .map(|name| parse_source_name(&name).map(|name| name.as_str().to_string()))
             .collect()
     }
 
@@ -319,10 +310,7 @@ impl SourceAggregate {
     }
 }
 
-impl<S> SourcesRepo<'_, S>
-where
-    S: DbWriteSession,
-{
+impl SourcesRepo<'_, CoralTx<'_>> {
     pub(crate) async fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -490,14 +478,14 @@ async fn delete_source_secret_keys<S>(
     source_name: &SourceName,
 ) -> Result<(), DbError>
 where
-    S: DbWriteSession,
+    S: DbSession,
 {
     let statement = Query::delete()
         .from_table(SourceSecretKeys::Table)
         .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_name.as_str()))
         .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name.as_str()))
         .to_owned();
-    session.execute_delete(statement).await
+    session.execute(statement).await
 }
 
 async fn delete_source_variables<S>(
@@ -506,14 +494,14 @@ async fn delete_source_variables<S>(
     source_name: &SourceName,
 ) -> Result<(), DbError>
 where
-    S: DbWriteSession,
+    S: DbSession,
 {
     let statement = Query::delete()
         .from_table(SourceVariables::Table)
         .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_name.as_str()))
         .and_where(Expr::col(SourceVariables::SourceName).eq(source_name.as_str()))
         .to_owned();
-    session.execute_delete(statement).await
+    session.execute(statement).await
 }
 
 async fn delete_source<S>(
@@ -522,14 +510,14 @@ async fn delete_source<S>(
     source_name: &SourceName,
 ) -> Result<(), DbError>
 where
-    S: DbWriteSession,
+    S: DbSession,
 {
     let statement = Query::delete()
         .from_table(Sources::Table)
         .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
         .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
         .to_owned();
-    session.execute_delete(statement).await
+    session.execute(statement).await
 }
 
 fn parse_source_name(name: &str) -> Result<SourceName, DbError> {
@@ -680,6 +668,23 @@ mod tests {
             let result = {
                 let mut session = self.db;
                 session.fetch_all(statement).await
+            };
+            self.after_read().await;
+            result
+        }
+
+        async fn fetch_all_scalars<T>(
+            &mut self,
+            statement: SelectStatement,
+        ) -> Result<Vec<T>, DbError>
+        where
+            T: Send + Unpin,
+            for<'r> (T,): FromRow<'r, SqliteRow>,
+            for<'r> (T,): FromRow<'r, PgRow>,
+        {
+            let result = {
+                let mut session = self.db;
+                session.fetch_all_scalars(statement).await
             };
             self.after_read().await;
             result
