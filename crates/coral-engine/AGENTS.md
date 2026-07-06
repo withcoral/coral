@@ -35,6 +35,12 @@ registration, and query execution.
   types when `coral-app` can assemble existing backend-ready component specs.
 - Keep this crate transport-neutral. Arrow IPC, CLI formatting, and MCP-facing
   shaping belong outside `coral-engine`.
+- Type-level `ManifestDataType`-to-Arrow lowerings live in `src/types.rs` as
+  named policy functions (column schemas and parameter binding are distinct
+  policies, not one conversion); do not add per-module conversion matches.
+  Value-level coercions stay with their backends, but every match over
+  `ManifestDataType` must be wildcard-free so a new scalar variant breaks
+  loudly instead of falling through.
 
 ## Adding or restructuring a backend
 

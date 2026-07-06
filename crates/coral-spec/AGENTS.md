@@ -31,3 +31,29 @@ discovery, and normalized source-definition models.
   table/function collision checks.
 - Prefer normalized source-spec values over raw YAML plumbing in public
   helpers.
+- `ManifestDataType` is the single scalar-type vocabulary. Spec structs carry
+  it typed — do not add `data_type: String` fields that consumers re-parse,
+  and do not hand-list its variants or spellings anywhere except
+  `ManifestDataType::ALL` and `as_manifest_str`. Restricted subsets (such as
+  `FilePartitionDataType`) are separate enums related to it through
+  `TryFrom`/`From`, not parallel-maintained copies.
+
+## Adding a manifest data type
+
+The exhaustive matches and the lattice tests in this crate walk you through
+most of the change; the parts they cannot reach are listed last.
+
+- Add the variant, its `as_manifest_str` arm, and its entry in
+  `ManifestDataType::ALL` (the witness match inside `ALL`'s initializer
+  breaks first).
+- Decide whether the variant is partition-legal in
+  `TryFrom<ManifestDataType> for FilePartitionDataType`.
+- Lower it from v4 in `IrScalarType::lower` if importers can produce it.
+- Update the `manifest_data_type` (and, if partition-legal,
+  `file_partition_data_type`) enums in
+  `src/schema/source_manifest.schema.json`; the golden tests in
+  `src/schema.rs` fail until they match.
+- Give it an Arrow lowering and value-level handling in `coral-engine`
+  (compiler-enforced there; see that crate's AGENTS.md).
+- Update the data-type table in `docs/reference/source-spec-reference.mdx` —
+  this one is not enforced by any test.
