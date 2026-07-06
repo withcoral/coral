@@ -6,10 +6,10 @@ use std::sync::{Arc, OnceLock};
 use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
 use async_trait::async_trait;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
+    ColumnSpec, FilterSpec, ManifestInputKind, ManifestInputSpec, SearchLimitsSpec, SourceBackend,
+    SourceTableFunctionSpec, TableCommon,
 };
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Expr;
@@ -368,22 +368,10 @@ fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
     serde_json::to_string(limits).expect("search limits json")
 }
 
-pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {
-    match data_type {
-        ManifestDataType::Utf8 | ManifestDataType::Json => DataType::Utf8,
-        ManifestDataType::Int64 => DataType::Int64,
-        ManifestDataType::Boolean => DataType::Boolean,
-        ManifestDataType::Float64 => DataType::Float64,
-        ManifestDataType::Timestamp => {
-            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
-        }
-    }
-}
-
 pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> datafusion::error::Result<DataType> {
     column
         .manifest_data_type()
-        .map(manifest_data_type_to_arrow)
+        .map(crate::types::arrow_column_type)
         .map_err(|error| DataFusionError::Execution(error.to_string()))
 }
 

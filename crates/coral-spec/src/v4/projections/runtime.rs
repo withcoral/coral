@@ -17,7 +17,7 @@ pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
         .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
         .map(|input| FilterSpec {
             name: input.name.clone(),
-            data_type: manifest_data_type_name(input.data_type).to_string(),
+            data_type: input.data_type.as_manifest_str().to_string(),
             required: input.required,
             mode: FilterMode::Equality,
             description: input.description.clone(),
@@ -64,7 +64,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
         .iter()
         .map(|column| ColumnSpec {
             name: column.name.clone(),
-            data_type: manifest_data_type_name(column.data_type).to_string(),
+            data_type: column.data_type.as_manifest_str().to_string(),
             nullable: column.nullable,
             r#virtual: false,
             description: column.description.clone(),
@@ -85,7 +85,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             .filter(|input| !existing.contains(&input.name))
             .map(|input| ColumnSpec {
                 name: input.name.clone(),
-                data_type: manifest_data_type_name(input.data_type).to_string(),
+                data_type: input.data_type.as_manifest_str().to_string(),
                 nullable: !input.required,
                 r#virtual: true,
                 description: input.description.clone(),
@@ -95,17 +95,6 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             }),
     );
     columns
-}
-
-pub fn manifest_data_type_name(data_type: ManifestDataType) -> &'static str {
-    match data_type {
-        ManifestDataType::Utf8 => "Utf8",
-        ManifestDataType::Int64 => "Int64",
-        ManifestDataType::Boolean => "Boolean",
-        ManifestDataType::Float64 => "Float64",
-        ManifestDataType::Timestamp => "Timestamp",
-        ManifestDataType::Json => "Json",
-    }
 }
 
 pub fn request_spec_for_projection(

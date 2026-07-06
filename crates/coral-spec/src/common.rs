@@ -82,9 +82,14 @@ pub enum SourceBackend {
     Mcp,
 }
 
-/// Normalized scalar data types supported by the source-spec DSL.
+/// The normalized scalar type vocabulary shared by source specs, the query
+/// runtime, and catalog surfaces.
 ///
-/// The engine is responsible for mapping these into runtime-specific types.
+/// This is the hub every other scalar vocabulary converts through: v4 IR
+/// scalars lower into it, and the engine maps it into runtime-specific
+/// (Arrow) types. The variant spellings ("Utf8", "Int64", ...) are a wire
+/// contract pinned by the `PascalCase` serde representation and the manifest
+/// JSON schema.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum ManifestDataType {
@@ -98,6 +103,58 @@ pub enum ManifestDataType {
     /// `json_get_str`, `json_as_text`, etc.); the JSON functions also
     /// work on plain `Utf8` columns whose values happen to be JSON.
     Json,
+}
+
+impl ManifestDataType {
+    /// Every manifest data type, for variants-driven tests and tooling.
+    ///
+    /// Keep in sync with the enum; the exhaustive match in
+    /// [`Self::as_manifest_str`] is the compiler prompt when a variant is
+    /// added.
+    pub const ALL: [Self; 6] = [
+        Self::Utf8,
+        Self::Int64,
+        Self::Boolean,
+        Self::Float64,
+        Self::Timestamp,
+        Self::Json,
+    ];
+
+    /// Returns the source-manifest spelling for this data type.
+    ///
+    /// This must stay aligned with the enum's `PascalCase` serde
+    /// representation and the `manifest_data_type` definition in the manifest
+    /// JSON schema.
+    #[must_use]
+    pub fn as_manifest_str(self) -> &'static str {
+        match self {
+            Self::Utf8 => "Utf8",
+            Self::Int64 => "Int64",
+            Self::Boolean => "Boolean",
+            Self::Float64 => "Float64",
+            Self::Timestamp => "Timestamp",
+            Self::Json => "Json",
+        }
+    }
+}
+
+impl std::fmt::Display for ManifestDataType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_manifest_str())
+    }
+}
+
+impl std::str::FromStr for ManifestDataType {
+    type Err = ManifestError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|data_type| data_type.as_manifest_str() == s)
+            .ok_or_else(|| {
+                ManifestError::validation(format!("unsupported data type '{s}' in source manifest"))
+            })
+    }
 }
 
 /// One request or auth header declared in the source spec.
@@ -965,17 +1022,7 @@ fn default_value_field() -> String {
 /// Returns a [`ManifestError`] if `s` is not one of the supported manifest
 /// data type names.
 pub(crate) fn parse_manifest_data_type(s: &str) -> Result<ManifestDataType> {
-    match s {
-        "Utf8" => Ok(ManifestDataType::Utf8),
-        "Int64" => Ok(ManifestDataType::Int64),
-        "Boolean" => Ok(ManifestDataType::Boolean),
-        "Float64" => Ok(ManifestDataType::Float64),
-        "Timestamp" => Ok(ManifestDataType::Timestamp),
-        "Json" => Ok(ManifestDataType::Json),
-        other => Err(ManifestError::validation(format!(
-            "unsupported data type '{other}' in source manifest"
-        ))),
-    }
+    s.parse()
 }
 
 #[cfg(test)]

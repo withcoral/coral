@@ -51,9 +51,9 @@ pub use parameter_metadata::{
 };
 pub use projections::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
-    ProjectionVisibility, SqlInputExposure, generate_projection_catalog, manifest_data_type_name,
-    mcp_projection_arg_specs, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection,
+    ProjectionVisibility, SqlInputExposure, generate_projection_catalog, mcp_projection_arg_specs,
+    projection_arg_specs, projection_column_specs, projection_filter_specs,
+    request_spec_for_projection,
 };
 pub use schema::generated_v4_source_manifest_schema;
 pub use surfaces::{

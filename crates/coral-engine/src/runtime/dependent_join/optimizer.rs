@@ -608,13 +608,6 @@ fn is_lookup_key_data_type(data_type: &DataType) -> bool {
     )
 }
 
-fn is_string_data_type(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
-    )
-}
-
 fn is_join_cast_supported(
     side: JoinOperandSide,
     source_type: &DataType,
@@ -624,7 +617,7 @@ fn is_join_cast_supported(
         return true;
     }
 
-    if is_string_data_type(source_type) && is_string_data_type(target_type) {
+    if crate::types::is_string_family(source_type) && crate::types::is_string_family(target_type) {
         return true;
     }
 

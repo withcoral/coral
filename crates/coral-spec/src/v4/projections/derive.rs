@@ -114,7 +114,7 @@ fn generate_projection(
                 source_location: input.location,
                 wire_name: input.name.clone(),
                 required: projection_input_required(input),
-                data_type: manifest_type(input.data_type),
+                data_type: input.data_type.lower(),
                 default_value: input.default_value.clone(),
                 description: input.description.clone(),
             }
@@ -361,22 +361,11 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
 
 fn projection_data_type(ty: &IrType) -> ManifestDataType {
     match &ty.shape {
-        IrTypeShape::Scalar(scalar) => manifest_type(*scalar),
+        IrTypeShape::Scalar(scalar) => scalar.lower(),
         IrTypeShape::Enum { .. } => ManifestDataType::Utf8,
         IrTypeShape::Json
         | IrTypeShape::Object { .. }
         | IrTypeShape::List { .. }
         | IrTypeShape::Map { .. } => ManifestDataType::Json,
-    }
-}
-
-fn manifest_type(scalar: IrScalarType) -> ManifestDataType {
-    match scalar {
-        IrScalarType::String | IrScalarType::Id => ManifestDataType::Utf8,
-        IrScalarType::Integer => ManifestDataType::Int64,
-        IrScalarType::Number => ManifestDataType::Float64,
-        IrScalarType::Boolean => ManifestDataType::Boolean,
-        IrScalarType::Timestamp => ManifestDataType::Timestamp,
-        IrScalarType::Json => ManifestDataType::Json,
     }
 }

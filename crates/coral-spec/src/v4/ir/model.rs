@@ -115,6 +115,25 @@ pub enum IrScalarType {
     Json,
 }
 
+impl IrScalarType {
+    /// Lowers this import-side scalar into the normalized manifest vocabulary.
+    ///
+    /// This is the single v4-to-runtime type bridge. It is deliberately
+    /// lossy: `Id` collapses into `Utf8` because the runtime does not
+    /// distinguish identifiers from other strings.
+    #[must_use]
+    pub fn lower(self) -> crate::ManifestDataType {
+        match self {
+            Self::String | Self::Id => crate::ManifestDataType::Utf8,
+            Self::Integer => crate::ManifestDataType::Int64,
+            Self::Number => crate::ManifestDataType::Float64,
+            Self::Boolean => crate::ManifestDataType::Boolean,
+            Self::Timestamp => crate::ManifestDataType::Timestamp,
+            Self::Json => crate::ManifestDataType::Json,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum IrInputLocation {
