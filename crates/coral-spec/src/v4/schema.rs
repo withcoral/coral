@@ -12,13 +12,19 @@ use crate::{AuthSpec, HeaderSpec};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "Coral DSL v4 Source Manifest")]
 struct V4SourceManifestSchema {
+    #[schemars(extend("const" = 4))]
     dsl_version: u32,
+    #[schemars(length(min = 1))]
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(inner(length(min = 1)))]
     test_queries: Vec<String>,
+    #[schemars(length(min = 1))]
     surfaces: Vec<V4SurfaceSchema>,
 }
 
@@ -31,17 +37,29 @@ enum V4SurfaceSchema {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [{ "required": ["url"] }, { "required": ["file"] }]))]
 struct V4OpenApiSurfaceSchema {
+    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        required,
+        length(min = 1),
+        pattern(r"^[a-z][a-z0-9_]*$"),
+        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+    )]
     namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^https://"))]
     url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
     file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
     base_url: Option<String>,
     #[serde(default)]
     auth: AuthSpec,
@@ -54,10 +72,18 @@ struct V4OpenApiSurfaceSchema {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4McpSurfaceSchema {
+    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        required,
+        length(min = 1),
+        pattern(r"^[a-z][a-z0-9_]*$"),
+        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+    )]
     namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
 }
@@ -104,17 +130,9 @@ fn post_process_schema(schema: &mut Value) {
         "$id".to_string(),
         Value::String("https://coral.local/source_manifest_v4.schema.json".to_string()),
     );
-    root.insert(
-        "title".to_string(),
-        Value::String("Coral DSL v4 Source Manifest".to_string()),
-    );
     root.entry("$schema".to_string()).or_insert_with(|| {
         Value::String("https://json-schema.org/draft/2020-12/schema".to_string())
     });
-
-    if let Some(properties) = root.get_mut("properties").and_then(Value::as_object_mut) {
-        post_process_root_properties(properties);
-    }
 
     let Some(defs) = root.get_mut("$defs").and_then(Value::as_object_mut) else {
         return;
@@ -122,86 +140,17 @@ fn post_process_schema(schema: &mut Value) {
     post_process_flattened_value_source_defs(defs);
     if let Some(surface_schema) = defs.get_mut("V4SurfaceSchema") {
         post_process_surface_variants(surface_schema);
-        return;
     }
-    let Some(openapi_surface) = defs
-        .get_mut("V4OpenApiSurfaceSchema")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    openapi_surface.insert(
-        "oneOf".to_string(),
-        json!([{ "required": ["url"] }, { "required": ["file"] }]),
-    );
-    if let Some(properties) = openapi_surface
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    {
-        post_process_surface_id(properties);
-        post_process_surface_namespace_suffix(properties);
-        if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
-            url.insert("type".to_string(), json!("string"));
-            url.insert("pattern".to_string(), json!("^https://"));
-        }
-        if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
-            file.insert("type".to_string(), json!("string"));
-            file.insert("minLength".to_string(), json!(1));
-        }
-        post_process_surface_inputs(properties);
-        if let Some(base_url) = properties
-            .get_mut("base_url")
+
+    for name in ["V4OpenApiSurfaceSchema", "V4McpSurfaceSchema"] {
+        if let Some(properties) = defs
+            .get_mut(name)
+            .and_then(Value::as_object_mut)
+            .and_then(|surface| surface.get_mut("properties"))
             .and_then(Value::as_object_mut)
         {
-            base_url.insert("type".to_string(), json!("string"));
-            base_url.insert("minLength".to_string(), json!(1));
+            post_process_surface_namespace_suffix_order(properties);
         }
-    }
-
-    let Some(mcp_surface) = defs
-        .get_mut("V4McpSurfaceSchema")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    if let Some(properties) = mcp_surface
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    {
-        post_process_surface_id(properties);
-        post_process_surface_namespace_suffix(properties);
-        post_process_surface_inputs(properties);
-    }
-}
-
-fn post_process_root_properties(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(dsl_version) = properties
-        .get_mut("dsl_version")
-        .and_then(Value::as_object_mut)
-    {
-        dsl_version.insert("const".to_string(), json!(4));
-    }
-    if let Some(name) = properties.get_mut("name").and_then(Value::as_object_mut) {
-        name.insert("minLength".to_string(), json!(1));
-    }
-    if let Some(description) = properties
-        .get_mut("description")
-        .and_then(Value::as_object_mut)
-    {
-        description.insert("type".to_string(), json!("string"));
-    }
-    if let Some(test_queries) = properties
-        .get_mut("test_queries")
-        .and_then(Value::as_object_mut)
-        && let Some(items) = test_queries.get_mut("items").and_then(Value::as_object_mut)
-    {
-        items.insert("minLength".to_string(), json!(1));
-    }
-    if let Some(surfaces) = properties
-        .get_mut("surfaces")
-        .and_then(Value::as_object_mut)
-    {
-        surfaces.insert("minItems".to_string(), json!(1));
     }
 }
 
@@ -216,41 +165,10 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
         let Some(variant) = variant.as_object_mut() else {
             continue;
         };
-        let surface_type = variant
-            .get("properties")
-            .and_then(|value| value.get("type"))
-            .and_then(|value| value.get("const"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string);
-        if matches!(surface_type.as_deref(), Some("openapi")) {
-            variant.insert(
-                "oneOf".to_string(),
-                json!([{ "required": ["url"] }, { "required": ["file"] }]),
-            );
-        }
         let Some(properties) = variant.get_mut("properties").and_then(Value::as_object_mut) else {
             continue;
         };
-        post_process_surface_id(properties);
-        post_process_surface_namespace_suffix(properties);
-        post_process_surface_inputs(properties);
-        if let Some("openapi") = surface_type.as_deref() {
-            if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
-                url.insert("type".to_string(), json!("string"));
-                url.insert("pattern".to_string(), json!("^https://"));
-            }
-            if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
-                file.insert("type".to_string(), json!("string"));
-                file.insert("minLength".to_string(), json!(1));
-            }
-            if let Some(base_url) = properties
-                .get_mut("base_url")
-                .and_then(Value::as_object_mut)
-            {
-                base_url.insert("type".to_string(), json!("string"));
-                base_url.insert("minLength".to_string(), json!(1));
-            }
-        }
+        post_process_surface_namespace_suffix_order(properties);
     }
 }
 
@@ -305,33 +223,17 @@ fn compose_flattened_value_source_def(
     *definition = replacement;
 }
 
-fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
-        id.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
-    }
-}
-
-fn post_process_surface_namespace_suffix(properties: &mut serde_json::Map<String, Value>) {
+fn post_process_surface_namespace_suffix_order(properties: &mut serde_json::Map<String, Value>) {
     if let Some(namespace_suffix) = properties
         .get_mut("namespace_suffix")
         .and_then(Value::as_object_mut)
+        && let (Some(schema_type), Some(description)) = (
+            namespace_suffix.remove("type"),
+            namespace_suffix.remove("description"),
+        )
     {
-        namespace_suffix.insert("type".to_string(), json!("string"));
-        namespace_suffix.insert(
-            "description".to_string(),
-            json!(
-                "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
-            ),
-        );
-        namespace_suffix.insert("minLength".to_string(), json!(1));
-        namespace_suffix.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
-    }
-}
-
-fn post_process_surface_inputs(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(inputs) = properties.get_mut("inputs").and_then(Value::as_object_mut) {
-        inputs.insert("type".to_string(), json!("object"));
-        inputs.insert("propertyNames".to_string(), json!({ "minLength": 1 }));
+        namespace_suffix.shift_insert(0, "description".to_string(), description);
+        namespace_suffix.shift_insert(0, "type".to_string(), schema_type);
     }
 }
 
