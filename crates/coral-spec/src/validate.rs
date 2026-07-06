@@ -251,7 +251,6 @@ pub(crate) fn validate_filters_and_column_exprs(
                 filter.name
             )));
         }
-        filter.manifest_data_type()?;
     }
 
     validate_column_exprs(columns, &known_filters, &HashSet::new(), schema, table)?;
@@ -328,9 +327,7 @@ pub(crate) fn validate_detail_hint_references(
                     hint.table, hint.detail_filter
                 )));
             };
-            let search_result_type = search_result_column.manifest_data_type()?;
-            let detail_filter_type = detail_filter.manifest_data_type()?;
-            if search_result_type != detail_filter_type {
+            if search_result_column.data_type != detail_filter.data_type {
                 return Err(ManifestError::validation(format!(
                     "{context} search_result_column '{}' type '{}' does not match target table '{}' detail_filter '{}' type '{}'",
                     hint.search_result_column,
@@ -518,12 +515,6 @@ pub(crate) fn validate_unique_values(values: &[String], context: &str) -> Result
 pub(crate) fn validate_columns(columns: &[ColumnSpec], schema: &str, table: &str) -> Result<()> {
     let mut seen_columns = HashSet::new();
     for col in columns {
-        col.manifest_data_type().map_err(|error| {
-            ManifestError::validation(format!(
-                "{schema}.{table} column '{}' has invalid type '{}': {error}",
-                col.name, col.data_type
-            ))
-        })?;
         if !seen_columns.insert(col.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate column '{}'",
@@ -972,14 +963,13 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        DeclaredRelation, HttpTableValidation, validate_columns,
-        validate_declared_relation_namespace, validate_filters_and_column_exprs,
-        validate_http_function, validate_http_table,
+        DeclaredRelation, HttpTableValidation, validate_declared_relation_namespace,
+        validate_filters_and_column_exprs, validate_http_function, validate_http_table,
     };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
-        MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec, QueryParamSpec,
-        RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+        MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, ManifestDataType, PaginationSpec,
+        QueryParamSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
         SourceTableFunctionSpec, TableFunctionArgSpec, ValueSourceSpec,
     };
     use crate::parse_source_manifest_value;
@@ -989,7 +979,7 @@ mod tests {
     fn test_column() -> ColumnSpec {
         ColumnSpec {
             name: "id".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             nullable: true,
             r#virtual: false,
             description: String::new(),
@@ -1000,7 +990,7 @@ mod tests {
     fn test_filters() -> Vec<FilterSpec> {
         vec![FilterSpec {
             name: "id".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
@@ -1011,7 +1001,7 @@ mod tests {
     fn lookup_key_filter(name: &str) -> FilterSpec {
         FilterSpec {
             name: name.to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
@@ -1026,17 +1016,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_columns_rejects_invalid_column_type() {
-        let mut column = test_column();
-        column.data_type = "Banana".to_string();
-
-        let error = validate_columns(&[column], "demo", "messages")
-            .expect_err("column types should be validated");
+    fn column_spec_rejects_invalid_column_type_at_parse_time() {
+        let error = serde_json::from_value::<ColumnSpec>(json!({
+            "name": "id",
+            "type": "Banana",
+        }))
+        .expect_err("column types should be validated during deserialization");
 
         assert!(
-            error
-                .to_string()
-                .contains("demo.messages column 'id' has invalid type 'Banana'"),
+            error.to_string().contains("unknown variant `Banana`"),
             "unexpected error: {error}"
         );
     }
@@ -1720,7 +1708,7 @@ mod tests {
     fn validate_http_table_allows_contains_filters_without_search_limits() {
         let filters = vec![FilterSpec {
             name: "query".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
@@ -1776,7 +1764,7 @@ mod tests {
         }];
         let filters = vec![FilterSpec {
             name: "query".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),

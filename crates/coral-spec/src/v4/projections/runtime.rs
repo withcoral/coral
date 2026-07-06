@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrOperation};
 use crate::{
-    ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestDataType,
-    ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
+    ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ParsedTemplate, RequestSpec,
+    Result, TableFunctionArgSpec,
 };
 
 use super::model::{Projection, SqlInputExposure};
@@ -17,7 +17,7 @@ pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
         .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
         .map(|input| FilterSpec {
             name: input.name.clone(),
-            data_type: input.data_type.as_manifest_str().to_string(),
+            data_type: input.data_type,
             required: input.required,
             mode: FilterMode::Equality,
             description: input.description.clone(),
@@ -64,7 +64,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
         .iter()
         .map(|column| ColumnSpec {
             name: column.name.clone(),
-            data_type: column.data_type.as_manifest_str().to_string(),
+            data_type: column.data_type,
             nullable: column.nullable,
             r#virtual: false,
             description: column.description.clone(),
@@ -85,7 +85,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             .filter(|input| !existing.contains(&input.name))
             .map(|input| ColumnSpec {
                 name: input.name.clone(),
-                data_type: input.data_type.as_manifest_str().to_string(),
+                data_type: input.data_type,
                 nullable: !input.required,
                 r#virtual: true,
                 description: input.description.clone(),

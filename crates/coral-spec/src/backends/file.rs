@@ -16,7 +16,6 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use url::Url;
 
-use crate::common::parse_manifest_data_type;
 use crate::inputs::{
     collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
 };
@@ -414,16 +413,17 @@ pub enum FilePartitionDataType {
 impl FilePartitionDataType {
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Utf8 => "Utf8",
-            Self::Int64 => "Int64",
-            Self::Boolean => "Boolean",
-            Self::Float64 => "Float64",
-            Self::Json => "Json",
-        }
+        ManifestDataType::from(self).as_manifest_str()
     }
+}
 
-    fn from_manifest(data_type: ManifestDataType) -> Result<Self> {
+/// The partition-legal subset of the manifest scalar vocabulary.
+///
+/// Fails exactly when the scalar cannot be a file path partition value.
+impl TryFrom<ManifestDataType> for FilePartitionDataType {
+    type Error = ManifestError;
+
+    fn try_from(data_type: ManifestDataType) -> Result<Self> {
         match data_type {
             ManifestDataType::Utf8 => Ok(Self::Utf8),
             ManifestDataType::Int64 => Ok(Self::Int64),
@@ -437,14 +437,27 @@ impl FilePartitionDataType {
     }
 }
 
+/// Every partition type is a manifest scalar type.
+impl From<FilePartitionDataType> for ManifestDataType {
+    fn from(data_type: FilePartitionDataType) -> Self {
+        match data_type {
+            FilePartitionDataType::Utf8 => Self::Utf8,
+            FilePartitionDataType::Int64 => Self::Int64,
+            FilePartitionDataType::Boolean => Self::Boolean,
+            FilePartitionDataType::Float64 => Self::Float64,
+            FilePartitionDataType::Json => Self::Json,
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for FilePartitionDataType {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        let data_type = parse_manifest_data_type(&value).map_err(serde::de::Error::custom)?;
-        Self::from_manifest(data_type).map_err(serde::de::Error::custom)
+        let data_type: ManifestDataType = value.parse().map_err(serde::de::Error::custom)?;
+        Self::try_from(data_type).map_err(serde::de::Error::custom)
     }
 }
 

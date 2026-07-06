@@ -226,7 +226,7 @@ pub enum FilterMode {
 pub struct FilterSpec {
     pub name: String,
     #[serde(rename = "type", default = "default_filter_data_type")]
-    pub data_type: String,
+    pub data_type: ManifestDataType,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
@@ -237,20 +237,8 @@ pub struct FilterSpec {
     pub lookup_key: bool,
 }
 
-impl FilterSpec {
-    /// Convert this filter's declared type into a normalized manifest data type.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ManifestError`] if the manifest references an unsupported
-    /// data type.
-    pub fn manifest_data_type(&self) -> Result<ManifestDataType> {
-        parse_manifest_data_type(&self.data_type)
-    }
-}
-
-fn default_filter_data_type() -> String {
-    "Utf8".to_string()
+fn default_filter_data_type() -> ManifestDataType {
+    ManifestDataType::Utf8
 }
 
 /// Source-scoped table-function semantic class.
@@ -873,7 +861,7 @@ pub struct PageSizeSpec {
 pub struct ColumnSpec {
     pub name: String,
     #[serde(rename = "type")]
-    pub data_type: String,
+    pub data_type: ManifestDataType,
     #[serde(default = "default_nullable")]
     pub nullable: bool,
     #[serde(default)]
@@ -886,16 +874,6 @@ pub struct ColumnSpec {
 }
 
 impl ColumnSpec {
-    /// Convert this manifest type into a normalized manifest data type.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ManifestError`] if the manifest references an unsupported
-    /// data type.
-    pub fn manifest_data_type(&self) -> Result<ManifestDataType> {
-        parse_manifest_data_type(&self.data_type)
-    }
-
     #[must_use]
     pub fn resolved_expr(&self) -> ExprSpec {
         self.expr.clone().unwrap_or_else(|| ExprSpec::Path {
@@ -1015,16 +993,6 @@ fn default_value_field() -> String {
     "value".to_string()
 }
 
-/// Parse a manifest data type name into a normalized manifest data type.
-///
-/// # Errors
-///
-/// Returns a [`ManifestError`] if `s` is not one of the supported manifest
-/// data type names.
-pub(crate) fn parse_manifest_data_type(s: &str) -> Result<ManifestDataType> {
-    s.parse()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,7 +1024,7 @@ mod tests {
             vec![],
             vec![FilterSpec {
                 name: "id".into(),
-                data_type: "Utf8".into(),
+                data_type: ManifestDataType::Utf8,
                 required: false,
                 mode: FilterMode::default(),
                 description: String::new(),
@@ -1094,7 +1062,7 @@ mod tests {
             vec![
                 FilterSpec {
                     name: "id".into(),
-                    data_type: "Utf8".into(),
+                    data_type: ManifestDataType::Utf8,
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
@@ -1102,7 +1070,7 @@ mod tests {
                 },
                 FilterSpec {
                     name: "org".into(),
-                    data_type: "Utf8".into(),
+                    data_type: ManifestDataType::Utf8,
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
@@ -1249,7 +1217,7 @@ mod tests {
             "name": "q"
         }))
         .unwrap();
-        assert_eq!(spec.data_type, "Utf8");
+        assert_eq!(spec.data_type, ManifestDataType::Utf8);
         assert_eq!(spec.description, "");
     }
 

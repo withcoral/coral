@@ -419,7 +419,7 @@ mod tests {
         FilterExtraction, extract_exact_filter_values_checked, extract_filter_values,
         extract_filter_values_checked,
     };
-    use coral_spec::{FilterMode, FilterSpec};
+    use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
     use datafusion::logical_expr::{Expr, col, lit};
     use std::collections::HashMap;
     use std::ops::Not;
@@ -441,7 +441,7 @@ mod tests {
     fn filter(name: &str, required: bool, mode: FilterMode) -> FilterSpec {
         FilterSpec {
             name: name.into(),
-            data_type: "Utf8".into(),
+            data_type: ManifestDataType::Utf8,
             required,
             mode,
             description: String::new(),
@@ -631,7 +631,7 @@ mod tests {
 #[cfg(test)]
 mod pushdown_classification_tests {
     use super::{classify_filter, classify_filter_pushdown_for_consumed};
-    use coral_spec::{FilterMode, FilterSpec};
+    use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
     use datafusion::common::Column;
     use datafusion::logical_expr::{
         Expr, Operator, TableProviderFilterPushDown, binary_expr, expr::Like, lit,
@@ -650,7 +650,7 @@ mod pushdown_classification_tests {
     fn filter(name: &str) -> FilterSpec {
         FilterSpec {
             name: name.to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),

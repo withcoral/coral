@@ -108,9 +108,7 @@ impl TableProvider for McpTableProvider {
                         &self.source_schema,
                         self.table.name(),
                         &filter.name,
-                        filter
-                            .manifest_data_type()
-                            .map_err(|error| DataFusionError::Plan(error.to_string()))?,
+                        filter.data_type,
                         value,
                     )?;
                     arguments.insert(tool_arg.to_string(), typed);

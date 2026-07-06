@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
-    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrScalarType, IrType, IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
+    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput, IrType,
+    IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};

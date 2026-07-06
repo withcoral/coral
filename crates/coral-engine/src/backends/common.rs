@@ -210,7 +210,7 @@ pub(crate) fn registered_filters_from_specs(filters: &[FilterSpec]) -> Vec<Regis
             name: filter.name.clone(),
             mode: filter.mode.as_str().to_string(),
             required: filter.required,
-            data_type: filter.data_type.clone(),
+            data_type: filter.data_type.as_manifest_str().to_string(),
             description: filter.description.clone(),
         })
         .collect()
@@ -228,7 +228,7 @@ pub(crate) fn registered_columns_from_specs(
                 .find(|filter| filter.name == column.name.as_str());
             RegisteredColumn {
                 name: column.name.clone(),
-                data_type: column.data_type.clone(),
+                data_type: column.data_type.as_manifest_str().to_string(),
                 nullable: column.nullable,
                 is_virtual: column.r#virtual,
                 is_required_filter: filter.is_some_and(|filter| filter.required),
@@ -368,11 +368,8 @@ fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
     serde_json::to_string(limits).expect("search limits json")
 }
 
-pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> datafusion::error::Result<DataType> {
-    column
-        .manifest_data_type()
-        .map(crate::types::arrow_column_type)
-        .map_err(|error| DataFusionError::Execution(error.to_string()))
+pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> DataType {
+    crate::types::arrow_column_type(column.data_type)
 }
 
 pub(crate) fn schema_from_columns(
@@ -390,7 +387,7 @@ pub(crate) fn schema_from_columns(
     for column in columns {
         fields.push(Field::new(
             &column.name,
-            arrow_type_for_column(column)?,
+            arrow_type_for_column(column),
             column.nullable,
         ));
     }
