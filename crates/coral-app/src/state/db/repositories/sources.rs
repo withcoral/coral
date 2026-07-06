@@ -23,10 +23,6 @@ struct SourceRow {
     version: Option<String>,
     origin_kind: String,
     credential_storage: Option<String>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct SourceCreatedAtRow {
     created_at_unix_nanos: i64,
 }
 
@@ -63,6 +59,7 @@ where
                 Sources::Version,
                 Sources::OriginKind,
                 Sources::CredentialStorage,
+                Sources::CreatedAtUnixNanos,
             ])
             .from(Sources::Table)
             .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
@@ -112,6 +109,7 @@ where
                 Sources::Version,
                 Sources::OriginKind,
                 Sources::CredentialStorage,
+                Sources::CreatedAtUnixNanos,
             ])
             .from(Sources::Table)
             .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
@@ -222,14 +220,10 @@ impl SourcesRepo<'_, CoralTx<'_>> {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<Option<i64>, DbError> {
-        let statement = Query::select()
-            .column(Sources::CreatedAtUnixNanos)
-            .from(Sources::Table)
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
-            .to_owned();
-        let row: Option<SourceCreatedAtRow> = self.session.fetch_optional(statement).await?;
-        Ok(row.map(|row| row.created_at_unix_nanos))
+        Ok(self
+            .source_row(workspace_name, source_name)
+            .await?
+            .map(|row| row.created_at_unix_nanos))
     }
 
     async fn insert_source(
@@ -375,15 +369,16 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use sea_query::{Expr, Query};
     use tempfile::tempdir;
 
-    use crate::bootstrap;
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
+    use crate::state::db::schema::Sources;
     use crate::state::db::session::DbRepos;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
+    use crate::state::db::{CoralDb, DatabaseConfig, DbError, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
@@ -396,10 +391,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_repository_reports_corrupt_persisted_source_names() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        let workspace = unique_workspace();
+
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 10)
+            .await
+            .expect("ensure workspace");
+        tx.execute(
+            Query::insert()
+                .into_table(Sources::Table)
+                .columns([
+                    Sources::WorkspaceId,
+                    Sources::Name,
+                    Sources::Version,
+                    Sources::OriginKind,
+                    Sources::CredentialStorage,
+                    Sources::CreatedAtUnixNanos,
+                    Sources::UpdatedAtUnixNanos,
+                ])
+                .values_panic([
+                    Expr::val(workspace.as_str().to_string()),
+                    Expr::val("bad/source"),
+                    Expr::val("1.0.0"),
+                    Expr::val("imported"),
+                    Expr::val("file"),
+                    Expr::val(20),
+                    Expr::val(30),
+                ])
+                .to_owned(),
+        )
+        .await
+        .expect("insert corrupt source row");
+        tx.commit().await.expect("commit corrupt row");
+
+        let mut session = &db;
+        let error = session
+            .sources()
+            .list_workspace_sources(&workspace)
+            .await
+            .expect_err("corrupt stored source name should fail decode");
+        let DbError::CorruptData(detail) = error else {
+            panic!("expected corrupt data error, got {error:?}");
+        };
+        assert!(detail.contains("invalid source name 'bad/source'"));
+    }
+
+    #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn source_repository_round_trips_against_postgres() {
-        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL").expect("postgres env var")
-        else {
+        let Some(url) = postgres_test_url() else {
             return;
         };
         let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
@@ -564,5 +609,15 @@ mod tests {
             .expect("clock after epoch")
             .as_nanos();
         WorkspaceName::parse(&format!("source-repository-{nanos}")).expect("workspace name")
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "The ignored Postgres repository harness is explicitly gated by this CI/test-only variable."
+    )]
+    fn postgres_test_url() -> Option<String> {
+        std::env::var("CORAL_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
     }
 }
