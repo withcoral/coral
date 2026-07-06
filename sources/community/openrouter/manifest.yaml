@@ -1,0 +1,565 @@
+name: openrouter
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query OpenRouter model catalogs, key credits, bounded chat completions, and embeddings through SQL.
+base_url: https://openrouter.ai/api/v1
+inputs:
+  OPENROUTER_API_KEY:
+    kind: secret
+    hint: |
+      OpenRouter API key.
+
+      Create or copy an API key from:
+      https://openrouter.ai/settings/keys
+
+      The key is sent as a Bearer token to OpenRouter's API.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.OPENROUTER_API_KEY}}"
+test_queries:
+  - SELECT id, name, context_length FROM openrouter.models LIMIT 5
+  - SELECT label, usage, limit_remaining, is_free_tier FROM openrouter.key LIMIT 1
+tables:
+  - name: models
+    description: OpenRouter chat and text models from GET /models.
+    request:
+      method: GET
+      path: /models
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Model ID used in OpenRouter requests.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable model name.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Model creation timestamp when returned by the API.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Model description.
+      - name: context_length
+        type: Int64
+        nullable: true
+        description: Maximum context length.
+      - name: architecture_modality
+        type: Utf8
+        nullable: true
+        description: Primary model modality.
+        expr:
+          kind: path
+          path:
+            - architecture
+            - modality
+      - name: input_modalities
+        type: Utf8
+        nullable: true
+        description: Comma-separated input modalities.
+        expr:
+          kind: join_array
+          path:
+            - architecture
+            - input_modalities
+          separator: ", "
+      - name: output_modalities
+        type: Utf8
+        nullable: true
+        description: Comma-separated output modalities.
+        expr:
+          kind: join_array
+          path:
+            - architecture
+            - output_modalities
+          separator: ", "
+      - name: tokenizer
+        type: Utf8
+        nullable: true
+        description: Tokenizer family.
+        expr:
+          kind: path
+          path:
+            - architecture
+            - tokenizer
+      - name: supported_parameters
+        type: Utf8
+        nullable: true
+        description: Comma-separated supported request parameters.
+        expr:
+          kind: join_array
+          path:
+            - supported_parameters
+          separator: ", "
+      - name: prompt_price
+        type: Utf8
+        nullable: true
+        description: Prompt token price string from OpenRouter pricing metadata.
+        expr:
+          kind: path
+          path:
+            - pricing
+            - prompt
+      - name: completion_price
+        type: Utf8
+        nullable: true
+        description: Completion token price string from OpenRouter pricing metadata.
+        expr:
+          kind: path
+          path:
+            - pricing
+            - completion
+      - name: pricing
+        type: Json
+        nullable: true
+        description: Full pricing metadata.
+      - name: top_provider
+        type: Json
+        nullable: true
+        description: Top provider routing metadata.
+
+  - name: embedding_models
+    description: OpenRouter embedding-capable models from GET /embeddings/models.
+    request:
+      method: GET
+      path: /embeddings/models
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Embedding model ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable embedding model name.
+      - name: context_length
+        type: Int64
+        nullable: true
+        description: Maximum context length when returned by the API.
+      - name: architecture_modality
+        type: Utf8
+        nullable: true
+        description: Primary model modality.
+        expr:
+          kind: path
+          path:
+            - architecture
+            - modality
+      - name: input_modalities
+        type: Utf8
+        nullable: true
+        description: Comma-separated input modalities.
+        expr:
+          kind: join_array
+          path:
+            - architecture
+            - input_modalities
+          separator: ", "
+      - name: output_modalities
+        type: Utf8
+        nullable: true
+        description: Comma-separated output modalities.
+        expr:
+          kind: join_array
+          path:
+            - architecture
+            - output_modalities
+          separator: ", "
+      - name: prompt_price
+        type: Utf8
+        nullable: true
+        description: Prompt/input token price string from pricing metadata.
+        expr:
+          kind: path
+          path:
+            - pricing
+            - prompt
+      - name: pricing
+        type: Json
+        nullable: true
+        description: Full pricing metadata.
+
+  - name: key
+    description: Current OpenRouter API key metadata, usage, and remaining credit limit from GET /key.
+    request:
+      method: GET
+      path: /key
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: label
+        type: Utf8
+        nullable: true
+        description: API key label.
+        expr:
+          kind: path
+          path:
+            - data
+            - label
+      - name: usage
+        type: Float64
+        nullable: true
+        description: Usage for this key.
+        expr:
+          kind: path
+          path:
+            - data
+            - usage
+      - name: limit
+        type: Float64
+        nullable: true
+        description: Configured credit limit for this key.
+        expr:
+          kind: path
+          path:
+            - data
+            - limit
+      - name: limit_remaining
+        type: Float64
+        nullable: true
+        description: Remaining credit limit for this key.
+        expr:
+          kind: path
+          path:
+            - data
+            - limit_remaining
+      - name: is_free_tier
+        type: Boolean
+        nullable: true
+        description: Whether the key belongs to a free-tier account.
+        expr:
+          kind: path
+          path:
+            - data
+            - is_free_tier
+      - name: rate_limit
+        type: Json
+        nullable: true
+        description: Rate limit metadata when returned by the API.
+        expr:
+          kind: path
+          path:
+            - data
+            - rate_limit
+
+  - name: chat_completions
+    description: Run one non-streaming OpenRouter chat completion using required bounded SQL filters.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: max_tokens
+        required: true
+    request:
+      method: POST
+      path: /chat/completions
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - max_tokens
+          from: filter_int
+          key: max_tokens
+        - path:
+            - stream
+          from: literal
+          value: false
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: max_tokens
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Positive max_tokens value supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: max_tokens
+      - name: id
+        type: Utf8
+        nullable: true
+        description: OpenRouter response ID.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Response creation timestamp.
+      - name: returned_model
+        type: Utf8
+        nullable: true
+        description: Actual model returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - model
+      - name: usage
+        type: Json
+        nullable: true
+        description: Token usage and cost metadata returned by OpenRouter.
+      - name: prompt_tokens
+        type: Int64
+        nullable: true
+        description: Prompt token count when returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - usage
+            - prompt_tokens
+      - name: completion_tokens
+        type: Int64
+        nullable: true
+        description: Completion token count when returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - usage
+            - completion_tokens
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total token count when returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - usage
+            - total_tokens
+      - name: cost
+        type: Float64
+        nullable: true
+        description: Request cost when returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - usage
+            - cost
+      - name: choices
+        type: Json
+        nullable: true
+        description: Raw choices array returned by OpenRouter.
+      - name: index
+        type: Int64
+        nullable: true
+        description: Choice index.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - index
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Why the model stopped.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - finish_reason
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Assistant response text.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - content
+      - name: reasoning
+        type: Utf8
+        nullable: true
+        description: Reasoning text when returned by the model.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - reasoning
+      - name: message_role
+        type: Utf8
+        nullable: true
+        description: Assistant message role.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - role
+
+  - name: embeddings
+    description: Generate one embedding vector through OpenRouter POST /embeddings.
+    filters:
+      - name: model
+        required: true
+      - name: input
+        required: true
+    request:
+      method: POST
+      path: /embeddings
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - input
+          from: filter
+          key: input
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Embedding model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: input
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Input text supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input
+      - name: id
+        type: Utf8
+        nullable: true
+        description: OpenRouter embedding response ID.
+      - name: returned_model
+        type: Utf8
+        nullable: true
+        description: Actual embedding model returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - model
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: usage
+        type: Json
+        nullable: true
+        description: Token usage and cost metadata returned by OpenRouter.
+      - name: prompt_tokens
+        type: Int64
+        nullable: true
+        description: Prompt token count when returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - usage
+            - prompt_tokens
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total token count when returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - usage
+            - total_tokens
+      - name: cost
+        type: Float64
+        nullable: true
+        description: Request cost when returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - usage
+            - cost
+      - name: data
+        type: Json
+        nullable: true
+        description: Raw embedding data array returned by OpenRouter.
+      - name: index
+        type: Int64
+        nullable: true
+        description: Embedding row index.
+        expr:
+          kind: path
+          path:
+            - data
+            - "0"
+            - index
+      - name: embedding
+        type: Json
+        nullable: true
+        description: Embedding vector returned by OpenRouter.
+        expr:
+          kind: path
+          path:
+            - data
+            - "0"
+            - embedding

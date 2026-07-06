@@ -1,0 +1,671 @@
+name: ghost
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query public posts, pages, tags, and authors from a Ghost CMS site via the
+  Ghost Content API.
+base_url: "{{input.GHOST_SITE_URL}}/ghost/api/content"
+inputs:
+  GHOST_SITE_URL:
+    kind: variable
+    default: https://demo.ghost.io
+    hint: |
+      The admin/API origin of your Ghost instance, without `/ghost/api/content`
+      and without a trailing slash.
+
+      For Ghost(Pro) sites this is usually the same as your public URL
+      (e.g. `https://demo.ghost.io`). For self-hosted installs the API origin
+      may differ from the public domain — use the origin you see in the Ghost
+      Admin URL bar (e.g. `https://admin.your-site.com`).
+  GHOST_CONTENT_API_KEY:
+    kind: secret
+    hint: |
+      Generate a Content API key from your Ghost dashboard:
+      Settings → Integrations → Custom Integration
+
+      For testing, you can use the public demo key:
+      `22444f78447824223cefc48062`
+
+      See https://ghost.org/docs/content-api/
+request_headers:
+  - name: Accept-Version
+    from: literal
+    value: v5.0
+test_queries:
+  - SELECT id, title, slug FROM ghost.posts LIMIT 5
+  - SELECT id, title, slug FROM ghost.pages LIMIT 5
+  - SELECT name, slug, post_count FROM ghost.tags LIMIT 5
+  - SELECT name, slug, post_count FROM ghost.authors LIMIT 5
+tables:
+  - name: posts
+    description: >-
+      All public posts from the Ghost site, ordered by publication date
+      (newest first, `published_at DESC`) by default. Includes tags and
+      authors information. Use the optional `nql_filter` parameter with Ghost
+      NQL syntax to narrow results server-side (e.g. `tag:news`,
+      `featured:true`, `author:jane`) and `nql_order` to change sort order
+      (e.g. `published_at ASC`).
+    filters:
+      - name: nql_filter
+      - name: nql_order
+    request:
+      method: GET
+      path: /posts/
+      query:
+        - name: key
+          from: input
+          key: GHOST_CONTENT_API_KEY
+        - name: include
+          from: literal
+          value: tags,authors
+        - name: filter
+          from: filter
+          key: nql_filter
+        - name: order
+          from: filter
+          key: nql_order
+    response:
+      rows_path:
+        - posts
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 15
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique post ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Universally unique identifier of the post.
+        expr:
+          kind: path
+          path:
+            - uuid
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL slug for the post.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Title of the post.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: html
+        type: Utf8
+        nullable: true
+        description: HTML content of the post body.
+        expr:
+          kind: path
+          path:
+            - html
+      - name: excerpt
+        type: Utf8
+        nullable: true
+        description: A short excerpt or summary of the post.
+        expr:
+          kind: path
+          path:
+            - excerpt
+      - name: feature_image
+        type: Utf8
+        nullable: true
+        description: URL of the post's cover/feature image.
+        expr:
+          kind: path
+          path:
+            - feature_image
+      - name: featured
+        type: Boolean
+        nullable: true
+        description: Whether this is marked as a featured post.
+        expr:
+          kind: path
+          path:
+            - featured
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Post visibility (e.g. public, members).
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Date and time when the post was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Date and time when the post was last modified.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time when the post was published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published_at
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Absolute URL of the post on the Ghost site.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: reading_time
+        type: Int64
+        nullable: true
+        description: Estimated reading time in minutes.
+        expr:
+          kind: path
+          path:
+            - reading_time
+      - name: tags
+        type: Json
+        nullable: true
+        description: JSON array of tags associated with this post.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: authors
+        type: Json
+        nullable: true
+        description: JSON array of authors associated with this post.
+        expr:
+          kind: path
+          path:
+            - authors
+      - name: nql_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL filter expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_filter
+      - name: nql_order
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL order expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_order
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw JSON payload of the post.
+        expr:
+          kind: current_row
+
+  - name: pages
+    description: >-
+      All public static pages from the Ghost site, ordered by title
+      (ascending, `title ASC`) by default. Includes tags and authors
+      information. Use the optional `nql_filter` parameter with Ghost NQL
+      syntax to narrow results server-side and `nql_order` to change sort
+      order.
+    filters:
+      - name: nql_filter
+      - name: nql_order
+    request:
+      method: GET
+      path: /pages/
+      query:
+        - name: key
+          from: input
+          key: GHOST_CONTENT_API_KEY
+        - name: include
+          from: literal
+          value: tags,authors
+        - name: filter
+          from: filter
+          key: nql_filter
+        - name: order
+          from: filter
+          key: nql_order
+    response:
+      rows_path:
+        - pages
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 15
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique page ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Universally unique identifier of the page.
+        expr:
+          kind: path
+          path:
+            - uuid
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL slug for the page.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Title of the page.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: html
+        type: Utf8
+        nullable: true
+        description: HTML content of the page body.
+        expr:
+          kind: path
+          path:
+            - html
+      - name: excerpt
+        type: Utf8
+        nullable: true
+        description: A short excerpt or summary of the page.
+        expr:
+          kind: path
+          path:
+            - excerpt
+      - name: feature_image
+        type: Utf8
+        nullable: true
+        description: URL of the page's cover/feature image.
+        expr:
+          kind: path
+          path:
+            - feature_image
+      - name: featured
+        type: Boolean
+        nullable: true
+        description: Whether this is marked as a featured page.
+        expr:
+          kind: path
+          path:
+            - featured
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Page visibility (e.g. public, members).
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Date and time when the page was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Date and time when the page was last modified.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time when the page was published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published_at
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Absolute URL of the page on the Ghost site.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: reading_time
+        type: Int64
+        nullable: true
+        description: Estimated reading time in minutes.
+        expr:
+          kind: path
+          path:
+            - reading_time
+      - name: tags
+        type: Json
+        nullable: true
+        description: JSON array of tags associated with this page.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: authors
+        type: Json
+        nullable: true
+        description: JSON array of authors associated with this page.
+        expr:
+          kind: path
+          path:
+            - authors
+      - name: nql_filter
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL filter expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_filter
+      - name: nql_order
+        type: Utf8
+        nullable: true
+        description: Echoes the Ghost NQL order expression applied to this request.
+        expr:
+          kind: from_filter
+          key: nql_order
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw JSON payload of the page.
+        expr:
+          kind: current_row
+
+  - name: tags
+    description: >-
+      Public tags associated with at least one published post on the Ghost
+      site, with post counts. Internal tags (names starting with `#`) are
+      excluded via a provider-side `visibility:public` filter. Ghost does
+      not return tags that have no associated posts.
+    request:
+      method: GET
+      path: /tags/
+      query:
+        - name: key
+          from: input
+          key: GHOST_CONTENT_API_KEY
+        - name: include
+          from: literal
+          value: count.posts
+        - name: filter
+          from: literal
+          value: "visibility:public"
+    response:
+      rows_path:
+        - tags
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 15
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique tag ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the tag.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL slug for the tag.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: description
+        type: Utf8
+        nullable: true
+        description: A short description of the tag.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: feature_image
+        type: Utf8
+        nullable: true
+        description: URL of the cover image associated with the tag.
+        expr:
+          kind: path
+          path:
+            - feature_image
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Tag visibility (public or internal).
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: accent_color
+        type: Utf8
+        nullable: true
+        description: Hex color code assigned to the tag.
+        expr:
+          kind: path
+          path:
+            - accent_color
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Absolute URL of the tag page on the Ghost site.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: post_count
+        type: Int64
+        nullable: true
+        description: Number of public posts tagged with this tag.
+        expr:
+          kind: path
+          path:
+            - count
+            - posts
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw JSON payload of the tag.
+        expr:
+          kind: current_row
+
+  - name: authors
+    description: All authors who have published content on the Ghost site, with associated post counts.
+    request:
+      method: GET
+      path: /authors/
+      query:
+        - name: key
+          from: input
+          key: GHOST_CONTENT_API_KEY
+        - name: include
+          from: literal
+          value: count.posts
+    response:
+      rows_path:
+        - authors
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 15
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique author ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Full display name of the author.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL slug for the author.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: profile_image
+        type: Utf8
+        nullable: true
+        description: URL of the author's profile image.
+        expr:
+          kind: path
+          path:
+            - profile_image
+      - name: cover_image
+        type: Utf8
+        nullable: true
+        description: URL of the author's cover image.
+        expr:
+          kind: path
+          path:
+            - cover_image
+      - name: bio
+        type: Utf8
+        nullable: true
+        description: Biography of the author.
+        expr:
+          kind: path
+          path:
+            - bio
+      - name: website
+        type: Utf8
+        nullable: true
+        description: Personal website URL of the author.
+        expr:
+          kind: path
+          path:
+            - website
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Geographical location of the author.
+        expr:
+          kind: path
+          path:
+            - location
+      - name: facebook
+        type: Utf8
+        nullable: true
+        description: Facebook username or URL of the author.
+        expr:
+          kind: path
+          path:
+            - facebook
+      - name: twitter
+        type: Utf8
+        nullable: true
+        description: Twitter handle or URL of the author.
+        expr:
+          kind: path
+          path:
+            - twitter
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Absolute URL of the author's page on the Ghost site.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: post_count
+        type: Int64
+        nullable: true
+        description: Number of public posts written by this author.
+        expr:
+          kind: path
+          path:
+            - count
+            - posts
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw JSON payload of the author.
+        expr:
+          kind: current_row

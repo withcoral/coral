@@ -3,7 +3,7 @@
 //! These modules define the normalized manifest shapes consumed by the engine:
 //!
 //! - [`http`] for HTTP-backed sources
-//! - [`mod@file`] for file-backed sources such as `parquet` and `jsonl`
+//! - [`mod@file`] for file-backed sources such as `parquet`, `jsonl`, `json`, and `csv`
 //! - [`mcp`] for Model Context Protocol-backed sources
 //!
 //! Parsing entry points remain crate-private. Callers should normally use

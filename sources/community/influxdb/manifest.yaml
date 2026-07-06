@@ -1,0 +1,465 @@
+name: influxdb
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query InfluxDB v2 server health, organizations, buckets with retention,
+  and tasks from a self-hosted InfluxDB 2.x instance or InfluxDB Cloud.
+base_url: "{{input.INFLUXDB_URL}}"
+inputs:
+  INFLUXDB_URL:
+    kind: variable
+    default: http://localhost:8086
+    hint: |
+      Base URL of the InfluxDB v2 HTTP endpoint, including scheme and port.
+      The default `http://localhost:8086` matches a local InfluxDB 2.x.
+      For InfluxDB Cloud use your region URL, e.g.
+      `https://us-east-1-1.aws.cloud2.influxdata.com`. Do not include a
+      trailing slash.
+  INFLUXDB_TOKEN:
+    kind: secret
+    hint: |
+      InfluxDB API token, sent as `Authorization: Token <token>`. The
+      token needs read permissions covering every table in this source:
+      orgs, buckets, and tasks. Concretely:
+
+        influx auth create --read-orgs --read-buckets --read-tasks \
+          --org <your-org> --description "coral"
+
+      In the UI: Load Data > API Tokens > Custom API Token, then tick
+      "Read" for Organizations, Buckets, and Tasks. An all-access token
+      also works. The operator token created during install has all
+      permissions and is fine for quick tests.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Token {{input.INFLUXDB_TOKEN}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM influxdb.health LIMIT 1
+  - SELECT * FROM influxdb.buckets LIMIT 1
+tables:
+  - name: health
+    description: Server health and version from the /health endpoint
+    guide: |
+      Returns a single row. `status` is `pass` on a healthy server (or
+      `fail`). `message` is a human-readable readiness string. This is the
+      only table that does not require token scopes beyond reachability —
+      use it for connectivity and version checks.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /health
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Service name reported by the server
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Health status: pass or fail"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Human-readable readiness message
+        expr:
+          kind: path
+          path:
+            - message
+      - name: version
+        type: Utf8
+        nullable: true
+        description: InfluxDB server version
+        expr:
+          kind: path
+          path:
+            - version
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Build commit hash of the running server
+        expr:
+          kind: path
+          path:
+            - commit
+
+  - name: orgs
+    description: Organizations from the /api/v2/orgs endpoint
+    guide: |
+      Returns one row per organization the token can see. Use `id` as the
+      organization identifier; the `buckets` and `tasks` tables expose an
+      `org` filter that matches the organization `name`. The endpoint
+      defaults to 20 rows per page (max 100); Coral follows pages via
+      `limit`/`offset` until the API returns empty.
+    request:
+      method: GET
+      path: /api/v2/orgs
+    response:
+      rows_path:
+        - orgs
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Organization name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Organization description, when set
+        expr:
+          kind: path
+          path:
+            - description
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Organization creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Organization last-updated time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+
+  - name: buckets
+    description: Buckets with retention from the /api/v2/buckets endpoint
+    guide: |
+      Returns one row per bucket. `type` is `user` for normal buckets or
+      `system` for internal buckets such as `_monitoring` and `_tasks`.
+      `retention_seconds` is the expiry of the first retention rule in
+      seconds (`0` means infinite); `retention_rules` is the full rule list
+      as JSON. Use the optional `org` filter (organization name) to scope
+      results to one org; it is pushed down to the API on **self-hosted
+      InfluxDB 2.x** (OSS). The `org` column only populates when the
+      predicate is used (`WHERE org = '...'`); without the filter it is
+      null — join `buckets.org_id = orgs.id` to attach the organization
+      name in that case.
+
+      **InfluxDB Cloud caveat:** the Cloud bucket listing ignores the
+      `org` / `orgID` parameters and always returns buckets for the
+      token's organization. Sending `WHERE org = 'X'` against Cloud will
+      *not* filter, and the echoed `org` column value will be `'X'` even
+      though the rows are actually the token's org. On Cloud, omit the
+      filter and use the token's own org as the source of truth.
+    filters:
+      - name: org
+    request:
+      method: GET
+      path: /api/v2/buckets
+      query:
+        - name: org
+          from: filter
+          key: org
+    response:
+      rows_path:
+        - buckets
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Bucket ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Bucket name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: org_id
+        type: Utf8
+        nullable: true
+        description: ID of the organization that owns the bucket
+        expr:
+          kind: path
+          path:
+            - orgID
+      - name: org
+        type: Utf8
+        nullable: true
+        description: Organization name filter; echoes the org filter value when used
+        expr:
+          kind: from_filter
+          key: org
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Bucket type: user or system"
+        expr:
+          kind: path
+          path:
+            - type
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Bucket description, when set
+        expr:
+          kind: path
+          path:
+            - description
+      - name: retention_seconds
+        type: Int64
+        nullable: true
+        description: Expiry of the first retention rule in seconds; 0 means infinite
+        expr:
+          kind: path
+          path:
+            - retentionRules
+            - "0"
+            - everySeconds
+      - name: retention_rules
+        type: Json
+        nullable: true
+        description: Full retention rule list as a JSON array
+        expr:
+          kind: path
+          path:
+            - retentionRules
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Bucket creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Bucket last-updated time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+
+  - name: tasks
+    description: Tasks from the /api/v2/tasks endpoint
+    guide: |
+      Returns one row per task. `status` is `active` or `inactive`. A task
+      is scheduled by either `every` (e.g. `1h`) or `cron`; the unused one
+      is null. `latest_completed` is the last successful run time and
+      `last_run_status` reflects the most recent run. `flux` is the task's
+      Flux source. Optional `org` (organization name) and `status` filters
+      are pushed down to the API. Returns up to 500 tasks per request.
+    filters:
+      - name: org
+      - name: status
+    request:
+      method: GET
+      path: /api/v2/tasks
+      query:
+        - name: limit
+          from: literal
+          value: "500"
+        - name: org
+          from: filter
+          key: org
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - tasks
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Task ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Task name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable task description, when set
+        expr:
+          kind: path
+          path:
+            - description
+      - name: labels
+        type: Json
+        nullable: true
+        description: Labels attached to the task, as a JSON array
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: org_id
+        type: Utf8
+        nullable: true
+        description: ID of the organization that owns the task
+        expr:
+          kind: path
+          path:
+            - orgID
+      - name: org
+        type: Utf8
+        nullable: true
+        description: Organization name
+        expr:
+          kind: path
+          path:
+            - org
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: User ID that owns the task
+        expr:
+          kind: path
+          path:
+            - ownerID
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Task status: active or inactive"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: every
+        type: Utf8
+        nullable: true
+        description: Fixed schedule interval (e.g. 1h); null when cron-scheduled
+        expr:
+          kind: path
+          path:
+            - every
+      - name: cron
+        type: Utf8
+        nullable: true
+        description: Cron schedule expression; null when every-scheduled
+        expr:
+          kind: path
+          path:
+            - cron
+      - name: last_run_status
+        type: Utf8
+        nullable: true
+        description: Status of the most recent run, when available
+        expr:
+          kind: path
+          path:
+            - lastRunStatus
+      - name: latest_completed
+        type: Timestamp
+        nullable: true
+        description: Time of the last successful run
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - latestCompleted
+      - name: flux
+        type: Utf8
+        nullable: true
+        description: Flux source defining the task
+        expr:
+          kind: path
+          path:
+            - flux
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Task creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Task last-updated time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt

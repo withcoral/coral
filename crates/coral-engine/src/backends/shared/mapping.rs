@@ -52,7 +52,10 @@ pub(crate) fn convert_items(
             ManifestDataType::Json => {
                 let array: StringArray = items
                     .iter()
-                    .map(|row| to_json_utf8(eval_expr(&expr, row, filters, args)))
+                    .map(|row| {
+                        eval_expr(&expr, row, filters, args)
+                            .and_then(|value| json_value_to_text(&value))
+                    })
                     .collect();
                 arrays.push(Arc::new(array));
             }
@@ -89,6 +92,43 @@ pub(crate) fn convert_items(
     }
 
     RecordBatch::try_new(schema, arrays).map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+}
+
+pub(crate) fn filter_items_by_column_values(
+    columns: &[ColumnSpec],
+    filter_values: &HashMap<String, String>,
+    active_filter_values: &HashMap<String, String>,
+    args: &HashMap<String, String>,
+    items: &[Value],
+) -> Vec<Value> {
+    if filter_values.is_empty() {
+        return items.to_vec();
+    }
+
+    let filter_columns = filter_values
+        .iter()
+        .filter_map(|(filter_name, expected)| {
+            columns
+                .iter()
+                .find(|column| column.name == *filter_name)
+                .map(|column| (column.resolved_expr(), expected.as_str()))
+        })
+        .collect::<Vec<_>>();
+
+    if filter_columns.len() != filter_values.len() {
+        return Vec::new();
+    }
+
+    items
+        .iter()
+        .filter(|row| {
+            filter_columns.iter().all(|(expr, expected)| {
+                to_utf8(eval_expr(expr, row, active_filter_values, args)).as_deref()
+                    == Some(*expected)
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 fn eval_expr(
@@ -374,24 +414,27 @@ fn to_utf8(value: Option<Value>) -> Option<String> {
     }
 }
 
-fn to_json_utf8(value: Option<Value>) -> Option<String> {
-    match value? {
+pub(crate) fn json_value_to_text(value: &Value) -> Option<String> {
+    match value {
         Value::Null => None,
-        other => serde_json::to_string(&other).ok(),
+        Value::String(value) if is_json_text(value) => Some(value.clone()),
+        other => serde_json::to_string(other).ok(),
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "JSON numeric coercion intentionally accepts lossy conversions into i64 for downstream consumers"
-)]
+fn is_json_text(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[' | b'"')) {
+        return false;
+    }
+    serde_json::from_str::<Value>(value).is_ok()
+}
+
 fn to_i64(value: Option<Value>) -> Option<i64> {
     match value? {
         Value::Number(v) => v
             .as_i64()
-            .or_else(|| v.as_f64().map(|f| f as i64))
-            .or_else(|| v.as_u64().map(|u| u as i64)),
+            .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok())),
         Value::String(v) => v.parse::<i64>().ok(),
         Value::Bool(v) => Some(i64::from(v)),
         Value::Null | Value::Array(_) | Value::Object(_) => None,
@@ -429,17 +472,30 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_items, eval_template, parse_iso8601_micros};
+    use super::{
+        convert_items, eval_template, filter_items_by_column_values, parse_iso8601_micros,
+    };
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
     use coral_spec::{
         ExprSpec, ParsedTemplate, RequestSpec, TimestampInput, parse_source_manifest_value,
     };
-    use datafusion::arrow::array::{Array, BooleanArray, StringArray, TimestampMicrosecondArray};
+    use datafusion::arrow::array::{
+        Array, BooleanArray, Int64Array, StringArray, TimestampMicrosecondArray,
+    };
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
     fn table_with_expr(name: &str, data_type: &str, expr: &ExprSpec) -> HttpTableSpec {
+        table_with_expr_and_filters(name, data_type, expr, &[])
+    }
+
+    fn table_with_expr_and_filters(
+        name: &str,
+        data_type: &str,
+        expr: &ExprSpec,
+        filters: &[&str],
+    ) -> HttpTableSpec {
         let source_manifest = parse_source_manifest_value(serde_json::json!({
             "dsl_version": 3,
             "name": "test",
@@ -450,6 +506,10 @@ mod tests {
                 "name": "t",
                 "description": "test",
                 "request": request_json(&RequestSpec::default()),
+                "filters": filters
+                    .iter()
+                    .map(|name| json!({ "name": name }))
+                    .collect::<Vec<_>>(),
                 "columns": [{
                     "name": name,
                     "type": data_type,
@@ -528,6 +588,18 @@ mod tests {
                 "path": path,
                 "item_path": item_path,
                 "separator": separator,
+            }),
+            ExprSpec::FromFilter { key } => json!({
+                "kind": "from_filter",
+                "key": key,
+            }),
+            ExprSpec::Template { template, values } => json!({
+                "kind": "template",
+                "template": template.raw(),
+                "values": values
+                    .iter()
+                    .map(|(key, expr)| (key.clone(), expr_json(expr)))
+                    .collect::<serde_json::Map<String, Value>>(),
             }),
             other => panic!("unsupported test expr: {other:?}"),
         }
@@ -801,6 +873,64 @@ mod tests {
     }
 
     #[test]
+    fn int64_columns_reject_lossy_json_numbers() {
+        let table = table_with_expr(
+            "id",
+            "Int64",
+            &ExprSpec::Path {
+                path: vec!["id".into()],
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            serde_json::from_str(r#"{"id": 1.9}"#).unwrap(),
+            serde_json::from_str(r#"{"id": -1.9}"#).unwrap(),
+            serde_json::from_str(r#"{"id": 1.0}"#).unwrap(),
+            serde_json::from_str(r#"{"id": 1e3}"#).unwrap(),
+            serde_json::from_str(r#"{"id": 1.0000000000000001}"#).unwrap(),
+            json!({"id": i64::MAX}),
+            json!({"id": 9_223_372_036_854_775_808_u64}),
+            json!({"id": u64::MAX}),
+            json!({"id": i64::MAX.to_string()}),
+            json!({"id": "9223372036854775808"}),
+        ];
+
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+
+        let expected = [
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(i64::MAX),
+            None,
+            None,
+            Some(i64::MAX),
+            None,
+        ];
+        assert_eq!(col.len(), expected.len());
+        for (idx, expected) in expected.into_iter().enumerate() {
+            match expected {
+                Some(value) => assert_eq!(col.value(idx), value, "row {idx}"),
+                None => assert!(col.is_null(idx), "row {idx} should be null"),
+            }
+        }
+    }
+
+    #[test]
     fn replace_expr_rewrites_string_values() {
         let table = table_with_expr(
             "slug",
@@ -909,6 +1039,66 @@ mod tests {
     }
 
     #[test]
+    fn local_filtering_uses_active_filter_values_for_from_filter_columns() {
+        let table = table_with_expr_and_filters(
+            "channel",
+            "Utf8",
+            &ExprSpec::FromFilter {
+                key: "channel".into(),
+            },
+            &["channel"],
+        );
+        let filter_values = HashMap::from([("channel".to_string(), "C123".to_string())]);
+        let items = vec![json!({"text": "hello"}), json!({"text": "world"})];
+
+        let filtered = filter_items_by_column_values(
+            table.columns(),
+            &filter_values,
+            &filter_values,
+            &HashMap::new(),
+            &items,
+        );
+
+        assert_eq!(filtered, items);
+    }
+
+    #[test]
+    fn local_filtering_uses_active_filter_values_for_template_columns() {
+        let table = table_with_expr_and_filters(
+            "repo_full_name",
+            "Utf8",
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{filter.owner}}/{{expr.name}}")
+                    .expect("template"),
+                values: HashMap::from([(
+                    "name".to_string(),
+                    ExprSpec::Path {
+                        path: vec!["name".into()],
+                    },
+                )]),
+            },
+            &["owner", "repo_full_name"],
+        );
+        let filter_values =
+            HashMap::from([("repo_full_name".to_string(), "withcoral/coral".to_string())]);
+        let active_filter_values = HashMap::from([
+            ("owner".to_string(), "withcoral".to_string()),
+            ("repo_full_name".to_string(), "withcoral/coral".to_string()),
+        ]);
+        let items = vec![json!({"name": "coral"}), json!({"name": "other"})];
+
+        let filtered = filter_items_by_column_values(
+            table.columns(),
+            &filter_values,
+            &active_filter_values,
+            &HashMap::new(),
+            &items,
+        );
+
+        assert_eq!(filtered, vec![json!({"name": "coral"})]);
+    }
+
+    #[test]
     fn json_type_serializes_values_as_valid_json_strings() {
         let table = table_with_expr(
             "props",
@@ -921,6 +1111,7 @@ mod tests {
         let items = vec![
             json!({"properties": {"country": "US", "count": 3}}),
             json!({"properties": "hello"}),
+            json!({"properties": "{\"country\":\"DE\",\"count\":7}"}),
             json!({"properties": true}),
             json!({"properties": 3}),
             json!({"properties": null}),
@@ -950,13 +1141,46 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(2)).unwrap(),
-            json!(true)
+            json!({"country": "DE", "count": 7}),
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(3)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(4)).unwrap(),
             json!(3)
         );
-        assert!(col.is_null(4));
         assert!(col.is_null(5));
+        assert!(col.is_null(6));
+    }
+
+    #[test]
+    fn json_type_serializes_current_row_strings_as_json_strings() {
+        let table = table_with_expr("result_json", "Json", &ExprSpec::Path { path: Vec::new() });
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![json!("plain text"), json!({"login": "simonwhitaker"})];
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
+
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(0)).unwrap(),
+            json!("plain text")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(1)).unwrap(),
+            json!({"login": "simonwhitaker"})
+        );
     }
 }

@@ -1,26 +1,13 @@
 //! OpenTelemetry helpers for MCP protocol spans.
 
-use std::collections::HashMap;
 use std::future::Future;
 
 use coral_api::grpc_response_status_code;
 use coral_client::{DecodedStatusError, decode_status_error};
-use opentelemetry::{propagation::Extractor, trace::Status as OtelStatus};
+use opentelemetry::trace::Status as OtelStatus;
 use rmcp::{ErrorData, model::ErrorCode};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-
-struct StringMapExtractor<'a>(&'a HashMap<String, String>);
-
-impl Extractor for StringMapExtractor<'_> {
-    fn get(&self, key: &str) -> Option<&str> {
-        self.0.get(key).map(String::as_str)
-    }
-
-    fn keys(&self) -> Vec<&str> {
-        self.0.keys().map(String::as_str).collect()
-    }
-}
 
 pub(crate) async fn instrument<T, F>(span: tracing::Span, future: F) -> T
 where
@@ -66,6 +53,7 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
         mcp.tool.name = tool_name,
         otel.kind = "server",
         otel.name = "coral.mcp.call_tool",
+        episode.id = field::Empty,
         status = field::Empty,
     );
     apply_trace_parent(&span, trace_parent);
@@ -104,14 +92,7 @@ pub(crate) fn read_resource_span(uri: &str, trace_parent: Option<&str>) -> traci
 }
 
 fn apply_trace_parent(span: &tracing::Span, trace_parent: Option<&str>) {
-    let Some(trace_parent) = trace_parent else {
-        return;
-    };
-    let carrier = HashMap::from([("traceparent".to_string(), trace_parent.to_string())]);
-    let parent_cx = opentelemetry::global::get_text_map_propagator(|propagator| {
-        propagator.extract(&StringMapExtractor(&carrier))
-    });
-    drop(span.set_parent(parent_cx));
+    coral_telemetry::set_parent_from_trace_headers(span, trace_parent, None);
 }
 
 pub(crate) fn record_protocol_result<T>(span: &tracing::Span, result: &Result<T, ErrorData>) {
@@ -136,9 +117,21 @@ pub(crate) fn record_tonic_status(span: &tracing::Span, status: &tonic::Status) 
     }
 }
 
+pub(crate) fn record_sql_batch_partial_failure(span: &tracing::Span) {
+    record_error(
+        span,
+        "sql_batch_partial_failure",
+        "One or more SQL queries failed",
+    );
+}
+
 pub(crate) fn record_success(span: &tracing::Span) {
     span.record("status", "ok");
     span.set_status(OtelStatus::Ok);
+}
+
+pub(crate) fn record_episode_id(span: &tracing::Span, episode_id: &str) {
+    span.record("episode.id", episode_id);
 }
 
 fn record_error(span: &tracing::Span, error_type: &str, message: impl std::fmt::Display) {

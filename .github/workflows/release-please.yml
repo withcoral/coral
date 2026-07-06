@@ -40,7 +40,7 @@ jobs:
       # PR branch to keep it in sync.
       - name: Check out release PR branch
         if: steps.rp.outputs.pr
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
           token: ${{ steps.github-app-token.outputs.token }}
@@ -80,12 +80,12 @@ jobs:
         run: |
           set -euo pipefail
           make docs-generate
-          if git diff --quiet -- docs/project/changelog.mdx docs/docs.json; then
+          if git diff --quiet -- apps/docs/project/changelog.mdx apps/docs/docs.json; then
             echo "Changelog docs already up to date."
             exit 0
           fi
           git config user.name "release-please[bot]"
           git config user.email "release-please[bot]@users.noreply.github.com"
-          git add docs/project/changelog.mdx docs/docs.json
+          git add apps/docs/project/changelog.mdx apps/docs/docs.json
           git commit -m "chore: regenerate changelog docs"
           git push "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${PR_BRANCH}"
