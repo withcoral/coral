@@ -20,6 +20,8 @@ use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
 use super::diagnostic_codes;
 use super::graphql_aggregate::GRAPHQL_PROPERTY_AGGREGATE_FIELDS;
+#[cfg(test)]
+use super::ir::{AggregateFunction, AggregateTarget, PredicateRhs, PropertyPredicate};
 use super::ir::{
     ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, NullOrder, OrderDirection,
     OrderExpression, OrderKey, PredicateExpression, Projection, PropertyRef, RelationshipPattern,

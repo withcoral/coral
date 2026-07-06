@@ -59,7 +59,7 @@ use super::unsupported;
 use super::validate_variable;
 use super::variable_name;
 
-const MAX_FIXED_LABEL_SEQUENCE_RESULTS: usize = 2;
+pub(crate) const MAX_FIXED_LABEL_SEQUENCE_RESULTS: usize = 2;
 
 #[derive(Debug)]
 struct CompiledNode {
@@ -1057,7 +1057,7 @@ fn infer_fixed_length_intermediate_labels(
     }
 }
 
-fn fixed_length_label_sequences(
+pub(crate) fn fixed_length_label_sequences(
     graph: &Declaration,
     relationship_type: &str,
     direction: Direction,
