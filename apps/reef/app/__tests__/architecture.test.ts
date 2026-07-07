@@ -341,6 +341,7 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain("index('routes/index.tsx')")
       expect(routeConfig).toContain("route('sources', 'routes/sources.tsx', [")
       expect(routeConfig).toContain("route(':sourceName', 'routes/source-detail.tsx')")
+      expect(routeConfig).toContain("route('schema', 'routes/schema.tsx')")
       expect(routeConfig).toContain("route('traces', 'routes/traces.tsx')")
       // Settings is gated to the desktop build, but the route entry is still present.
       expect(routeConfig).toContain("route('settings', 'routes/settings.tsx')")
@@ -348,7 +349,7 @@ describe('Architectural Tests', () => {
       // Structural check: every route is nested inside the layout, and settings
       // keeps its desktop-only conditional spread.
       expect(routeConfig).toMatch(
-        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*route\('sources', 'routes\/sources\.tsx',\s*\[\s*route\(':sourceName', 'routes\/source-detail\.tsx'\),?\s*\]\),\s*route\('traces', 'routes\/traces\.tsx'\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
+        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*route\('sources', 'routes\/sources\.tsx',\s*\[\s*route\(':sourceName', 'routes\/source-detail\.tsx'\),?\s*\]\),\s*route\('schema', 'routes\/schema\.tsx'\),\s*route\('traces', 'routes\/traces\.tsx'\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
       )
     })
 

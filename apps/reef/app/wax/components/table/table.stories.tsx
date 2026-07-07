@@ -21,7 +21,7 @@ type Story = StoryObj<typeof Table.Root>
 
 function ExampleTable({ tableStyle }: { tableStyle: 'compact' | 'default' }) {
   return (
-    <Table.Wrapper style={tableStyle}>
+    <Table.Wrapper variant={tableStyle}>
       <Table.Root>
         <Table.Head>
           <Table.Row>
