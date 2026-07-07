@@ -1027,7 +1027,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             secrets: secrets.into_iter().map(str::to_string).collect(),
             credential_storage,
-            credential_revision: uuid::Uuid::nil(),
+            credential_revision: uuid::Uuid::from_u128(1),
             origin,
         }
     }

@@ -616,12 +616,14 @@ mod tests {
             QueryRuntimeContext::default(),
             layout.clone(),
             Vec::new(),
+            Arc::clone(&db),
         );
         let lifecycle_lock = workspaces.lifecycle_lock();
         let search = SearchManager::new(
             layout,
             &config_store,
             workspaces,
+            Arc::clone(&db),
             true,
             CatalogDiscovery::new(queries),
             lifecycle_lock,

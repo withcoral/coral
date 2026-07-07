@@ -281,6 +281,7 @@ mod tests {
             QueryRuntimeContext::default(),
             deployment.layout,
             Vec::new(),
+            Arc::clone(&deployment.db),
         );
         Fixture {
             _temp: deployment.temp,

@@ -1,6 +1,7 @@
 //! Live observed-value source-scope loading.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::bootstrap::AppError;
 use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
@@ -9,12 +10,14 @@ use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::query_source_from_installed_manifest;
+use crate::state::db::{CoralDb, DbRepos};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesLiveScopeLoader {
     config_store: ConfigStore,
+    db: Arc<CoralDb>,
     diagnostic_reporter: SourceDiagnosticReporter,
     layout: AppStateLayout,
 }
@@ -29,16 +32,18 @@ impl ObservedValuesLiveScopeLoader {
     pub(crate) fn new(
         layout: AppStateLayout,
         config_store: ConfigStore,
+        db: Arc<CoralDb>,
         diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
         Self {
             config_store,
+            db,
             diagnostic_reporter,
             layout,
         }
     }
 
-    pub(crate) fn load(
+    pub(crate) async fn load(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<ObservedValuesLiveScopeLoad, AppError> {
@@ -47,8 +52,13 @@ impl ObservedValuesLiveScopeLoader {
         // a separate cache key would duplicate that dependency graph and risk
         // admitting observations under a stale scope.
         let _state_lock = self.config_store.state_lock_shared()?;
-        let config = self.config_store.load_config_unlocked()?;
-        let sources = config.workspace_sources(workspace_name);
+        let sources = {
+            let mut session = self.db.as_ref();
+            session
+                .sources()
+                .list_workspace_sources(workspace_name)
+                .await?
+        };
         Ok(self.load_sources(workspace_name, sources))
     }
 
@@ -112,6 +122,7 @@ impl ObservedValuesLiveScopeLoader {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -124,44 +135,18 @@ mod tests {
     use crate::sources::materialization::SourceDiagnosticReporter;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::sources::runtime_package::query_source_from_installed_manifest;
+    use crate::state::db::{CoralDb, DbRepos, open_test_database, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
 
-    #[test]
-    fn workspace_without_legacy_config_membership_has_empty_live_scope() {
+    #[tokio::test]
+    async fn database_membership_does_not_require_legacy_config_source() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("db-only").expect("workspace");
-        let loader = ObservedValuesLiveScopeLoader::new(
-            layout,
-            config_store,
-            SourceDiagnosticReporter::default(),
-        );
-
-        let load = loader.load(&workspace).expect("empty live scope load");
-
-        assert!(load.live_scopes.is_empty());
-        assert!(load.failed_sources.is_empty());
-    }
-
-    #[test]
-    fn live_scope_changes_when_http_request_shape_changes() {
-        let temp = tempdir().expect("tempdir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let workspace = WorkspaceName::parse("work").expect("workspace");
         let source = SourceName::parse("github").expect("source");
-        install_source(&layout, &config_store, &workspace, &source, "/repos/issues");
-        let loader = ObservedValuesLiveScopeLoader::new(
-            layout.clone(),
-            config_store.clone(),
-            SourceDiagnosticReporter::default(),
-        );
-
-        let first = loader.load(&workspace).expect("first live scope");
         install_source(
             &layout,
             &config_store,
@@ -169,7 +154,46 @@ mod tests {
             &source,
             "/search/issues",
         );
-        let second = loader.load(&workspace).expect("second live scope");
+        let db = test_db(&layout, &config_store).await;
+        config_store
+            .remove_source(&workspace, &source)
+            .expect("remove legacy config source");
+        let loader = ObservedValuesLiveScopeLoader::new(
+            layout,
+            config_store,
+            db,
+            SourceDiagnosticReporter::default(),
+        );
+
+        let load = loader.load(&workspace).await.expect("live scope load");
+
+        assert_eq!(load.live_scopes.len(), 1);
+        assert!(load.failed_sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_scope_changes_when_http_request_shape_changes() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("work").expect("workspace");
+        let source = SourceName::parse("github").expect("source");
+        install_source(&layout, &config_store, &workspace, &source, "/repos/issues");
+        let db = test_db(&layout, &config_store).await;
+        config_store
+            .remove_source(&workspace, &source)
+            .expect("remove legacy config source");
+        let loader = ObservedValuesLiveScopeLoader::new(
+            layout.clone(),
+            config_store,
+            db,
+            SourceDiagnosticReporter::default(),
+        );
+
+        let first = loader.load(&workspace).await.expect("first live scope");
+        write_source_manifest(&layout, &workspace, &source, "/search/issues");
+        let second = loader.load(&workspace).await.expect("second live scope");
 
         assert!(first.failed_sources.is_empty());
         assert!(second.failed_sources.is_empty());
@@ -184,30 +208,36 @@ mod tests {
         assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
     }
 
-    #[test]
-    fn credential_revision_change_changes_live_scope() {
+    #[tokio::test]
+    async fn credential_revision_change_changes_live_scope() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let source = SourceName::parse("github").expect("source");
-        install_source(
+        let mut installed = install_source(
             &layout,
             &config_store,
             &workspace,
             &source,
             "/search/issues",
         );
+        let db = test_db(&layout, &config_store).await;
+        config_store
+            .remove_source(&workspace, &source)
+            .expect("remove legacy config source");
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
-            config_store.clone(),
+            config_store,
+            Arc::clone(&db),
             SourceDiagnosticReporter::default(),
         );
 
-        let first = loader.load(&workspace).expect("first live scope");
-        set_credential_revision(&config_store, &workspace, &source, Uuid::from_u128(1));
-        let second = loader.load(&workspace).expect("second live scope");
+        let first = loader.load(&workspace).await.expect("first live scope");
+        installed.credential_revision = Uuid::from_u128(1);
+        upsert_test_source(&db, &workspace, &installed).await;
+        let second = loader.load(&workspace).await.expect("second live scope");
 
         assert!(first.failed_sources.is_empty());
         assert!(second.failed_sources.is_empty());
@@ -218,8 +248,8 @@ mod tests {
         assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
     }
 
-    #[test]
-    fn live_loader_matches_publisher_scope_with_resolved_secret_material() {
+    #[tokio::test]
+    async fn live_loader_matches_publisher_scope_with_resolved_secret_material() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -269,19 +299,24 @@ mod tests {
         .expect("publisher scope")
         .live_scope();
 
+        let db = test_db(&layout, &config_store).await;
+        config_store
+            .remove_source(&workspace, &source_name)
+            .expect("remove legacy config source");
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
             config_store,
+            db,
             SourceDiagnosticReporter::default(),
         );
-        let live_load = loader.load(&workspace).expect("live scope");
+        let live_load = loader.load(&workspace).await.expect("live scope");
 
         assert!(live_load.failed_sources.is_empty());
         assert_eq!(live_load.live_scopes, vec![publisher_scope]);
     }
 
-    #[test]
-    fn one_broken_source_does_not_block_other_live_scopes() {
+    #[tokio::test]
+    async fn one_broken_source_does_not_block_other_live_scopes() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -297,13 +332,21 @@ mod tests {
             "/search/issues",
         );
         install_broken_source(&layout, &config_store, &workspace, &broken);
+        let db = test_db(&layout, &config_store).await;
+        config_store
+            .remove_source(&workspace, &github)
+            .expect("remove healthy legacy config source");
+        config_store
+            .remove_source(&workspace, &broken)
+            .expect("remove broken legacy config source");
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
             config_store,
+            db,
             SourceDiagnosticReporter::default(),
         );
 
-        let load = loader.load(&workspace).expect("live scope load");
+        let load = loader.load(&workspace).await.expect("live scope load");
 
         assert_eq!(load.live_scopes.len(), 1);
         let live_scope = load.live_scopes.first().expect("live scope");
@@ -316,6 +359,28 @@ mod tests {
     fn install_source(
         layout: &AppStateLayout,
         config_store: &ConfigStore,
+        workspace: &WorkspaceName,
+        source: &SourceName,
+        path: &str,
+    ) -> InstalledSource {
+        write_source_manifest(layout, workspace, source, path);
+        let installed = InstalledSource {
+            name: source.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
+        config_store
+            .upsert_source(workspace, installed.clone())
+            .expect("upsert source");
+        installed
+    }
+
+    fn write_source_manifest(
+        layout: &AppStateLayout,
         workspace: &WorkspaceName,
         source: &SourceName,
         path: &str,
@@ -343,20 +408,6 @@ tables:
             ),
         )
         .expect("write manifest");
-        config_store
-            .upsert_source(
-                workspace,
-                InstalledSource {
-                    name: source.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
-            .expect("upsert source");
     }
 
     fn install_broken_source(
@@ -383,23 +434,31 @@ tables:
             .expect("upsert source");
     }
 
-    fn set_credential_revision(
-        config_store: &ConfigStore,
+    async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+        let db = open_test_database(layout)
+            .await
+            .expect("open test database");
+        run_state_migrations(&db, config_store, layout)
+            .await
+            .expect("run state migrations");
+        db
+    }
+
+    async fn upsert_test_source(
+        db: &Arc<CoralDb>,
         workspace: &WorkspaceName,
-        source_name: &SourceName,
-        credential_revision: Uuid,
+        source: &InstalledSource,
     ) {
-        let mut source = config_store
-            .load_config()
-            .expect("load config")
-            .workspace_sources(workspace)
-            .into_iter()
-            .find(|source| &source.name == source_name)
-            .expect("installed source");
-        source.credential_revision = credential_revision;
-        config_store
-            .upsert_source(workspace, source)
-            .expect("update credential revision");
+        let mut tx = db.begin().await.expect("begin test source tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 11)
+            .await
+            .expect("ensure test workspace");
+        tx.sources()
+            .upsert_source(workspace, source, 11)
+            .await
+            .expect("upsert test source");
+        tx.commit().await.expect("commit test source");
     }
 
     fn install_secured_source(
