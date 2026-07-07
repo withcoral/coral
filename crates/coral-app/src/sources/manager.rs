@@ -1,6 +1,7 @@
 //! Owns the source lifecycle workflow for the local app.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use crate::sources::materialization::{
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
+use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{
@@ -43,6 +45,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct SourceManager {
     config_store: ConfigStore,
+    db: Arc<CoralDb>,
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
@@ -199,11 +202,16 @@ impl SourceManager {
         credential_manager: CredentialManager,
         layout: AppStateLayout,
     ) -> Self {
+        let db = Arc::new(open_test_sqlite_with_legacy_config(
+            layout.clone(),
+            config_store.clone(),
+        ));
         Self::new(
             config_store,
             credential_manager,
             layout,
             crate::workspaces::WorkspaceLifecycleLock::default(),
+            db,
         )
     }
 
@@ -213,12 +221,14 @@ impl SourceManager {
         credential_manager: CredentialManager,
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
+        db: Arc<CoralDb>,
     ) -> Self {
         Self::with_diagnostic_reporter(
             config_store,
             credential_manager,
             layout,
             lifecycle_lock,
+            db,
             SourceDiagnosticReporter::default(),
         )
         .with_database_sources_enabled(true)
@@ -229,10 +239,12 @@ impl SourceManager {
         credential_manager: CredentialManager,
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
+        db: Arc<CoralDb>,
         diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
         Self {
             config_store,
+            db,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
@@ -718,6 +730,24 @@ impl SourceManager {
             }
             return Err(error);
         }
+        if let Err(error) = self.remove_db_source_with_state_lock_held(workspace_name, source_name)
+        {
+            let restore_dir_result = source_dir_backup.restore();
+            self.restore_source_rollback_state_with_state_lock_held(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
+            if let Err(restore_error) = restore_dir_result {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.backup_path().display()
+                )));
+            }
+            return Err(error);
+        }
         self.pool_registry
             .remove_catalog(workspace_name, source_name.as_str());
         source_dir_backup.commit()?;
@@ -910,9 +940,7 @@ impl SourceManager {
             },
             origin: request.origin,
         };
-        if let Err(error) = self
-            .config_store
-            .upsert_source_unlocked(workspace_name, stored.clone())
+        if let Err(error) = self.upsert_source_with_state_lock_held(workspace_name, stored.clone())
         {
             let restore_result = restore_materialization_backup(
                 &self.layout,
@@ -1194,6 +1222,47 @@ impl SourceManager {
         } else {
             self.credential_manager.default_write_storage().map(Some)
         }
+    }
+
+    fn upsert_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
+        self.config_store
+            .upsert_source_unlocked(workspace_name, source.clone())?;
+        let db = Arc::clone(&self.db);
+        let workspace_name = workspace_name.clone();
+        run_source_db_operation(async move {
+            let mut tx = db.begin().await?;
+            let now_unix_nanos = now_unix_nanos_i64()?;
+            tx.workspaces()
+                .ensure(workspace_name.as_str(), now_unix_nanos)
+                .await?;
+            tx.sources()
+                .upsert_source(&workspace_name, &source, now_unix_nanos)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
+    fn remove_db_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), AppError> {
+        let db = Arc::clone(&self.db);
+        let workspace_name = workspace_name.clone();
+        let source_name = source_name.clone();
+        run_source_db_operation(async move {
+            let mut tx = db.begin().await?;
+            tx.sources()
+                .remove_source(&workspace_name, &source_name)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        })
     }
 
     fn validate_oauth_import_preflight(
@@ -1790,6 +1859,59 @@ fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) 
     }
 }
 
+fn run_source_db_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    fn run_on_runtime<T, F>(operation: F) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AppError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "failed to create source database runtime: {error}"
+                ))
+            })?;
+        runtime.block_on(operation)
+    }
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || run_on_runtime(operation))
+            .join()
+            .map_err(|_panic| {
+                AppError::FailedPrecondition(
+                    "source database operation thread panicked".to_string(),
+                )
+            })?;
+    }
+
+    run_on_runtime(operation)
+}
+
+#[cfg(test)]
+fn open_test_sqlite_with_legacy_config(
+    layout: AppStateLayout,
+    config_store: ConfigStore,
+) -> CoralDb {
+    run_source_db_operation(async move {
+        let config = crate::state::db::DatabaseConfig::load(&layout)?;
+        let crate::state::db::DatabaseConfig::Sqlite { path } = config else {
+            return Err(AppError::FailedPrecondition(
+                "default test config should be sqlite".to_string(),
+            ));
+        };
+        let db = CoralDb::open(crate::state::db::ResolvedDatabaseConfig::Sqlite { path }).await?;
+        db.migrate().await?;
+        crate::state::db::import_legacy_config(&db, &config_store).await?;
+        Ok(db)
+    })
+    .expect("open test source catalog database")
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -1825,6 +1947,7 @@ mod tests {
         FINGERPRINT_FILENAME, MaterializationInputs, PROJECTIONS_FILENAME,
     };
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+    use crate::state::db::DbRepos;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceName};
     use coral_spec::{
@@ -2209,12 +2332,8 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(
-            config_store.clone(),
-            credential_manager,
-            layout.clone(),
-            crate::workspaces::WorkspaceLifecycleLock::default(),
-        );
+        let manager =
+            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout.clone());
 
         let workspace_name = default_workspace();
         let original_manifest = manifest_without_secrets();
@@ -2299,11 +2418,10 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(
-            config_store,
+        let manager = SourceManager::new_for_tests(
+            config_store.clone(),
             credential_manager.clone(),
-            layout,
-            crate::workspaces::WorkspaceLifecycleLock::default(),
+            layout.clone(),
         );
 
         let workspace_name = default_workspace();
@@ -2368,11 +2486,10 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
-            layout,
-            crate::workspaces::WorkspaceLifecycleLock::default(),
+            layout.clone(),
         );
 
         let workspace_name = default_workspace();
@@ -2461,11 +2578,10 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
-            layout,
-            crate::workspaces::WorkspaceLifecycleLock::default(),
+            layout.clone(),
         );
 
         let workspace_name = default_workspace();
@@ -2875,6 +2991,60 @@ surface:
                 .iter()
                 .any(|source| source.name.as_str() == "github_v4")
         );
+    }
+
+    #[test]
+    fn import_and_delete_source_mirror_database_catalog() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let workspace_name = default_workspace();
+
+        let imported = manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import source");
+
+        let db = manager.db.clone();
+        let imported_workspace = workspace_name.clone();
+        let imported_name = imported.name.clone();
+        let database_source = super::run_source_db_operation(async move {
+            let mut session = db.as_ref();
+            Ok(session
+                .sources()
+                .get_source(&imported_workspace, &imported_name)
+                .await?)
+        })
+        .expect("read imported database source");
+        assert_eq!(database_source, Some(imported.clone()));
+
+        manager
+            .delete_source(&workspace_name, &imported.name)
+            .expect("delete source");
+
+        let db = manager.db.clone();
+        let deleted_workspace = workspace_name.clone();
+        let deleted_name = imported.name.clone();
+        let database_source = super::run_source_db_operation(async move {
+            let mut session = db.as_ref();
+            Ok(session
+                .sources()
+                .get_source(&deleted_workspace, &deleted_name)
+                .await?)
+        })
+        .expect("read deleted database source");
+        assert_eq!(database_source, None);
     }
 
     #[test]
