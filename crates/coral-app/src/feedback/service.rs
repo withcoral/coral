@@ -6,6 +6,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::feedback::manager::{FeedbackManager, FeedbackReport};
+use crate::task::id::TaskId;
 use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto, workspace_to_proto};
 
 #[derive(Clone)]
@@ -26,6 +27,7 @@ impl FeedbackServiceApi for FeedbackService {
         request: Request<SubmitFeedbackRequest>,
     ) -> Result<Response<SubmitFeedbackResponse>, Status> {
         let span = grpc_span(&request);
+        let task_id = request.extensions().get::<TaskId>().copied();
         let feedback = self.feedback.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
@@ -36,6 +38,7 @@ impl FeedbackServiceApi for FeedbackService {
                     &request.trying_to_do,
                     &request.tried,
                     &request.stuck,
+                    task_id,
                 )
                 .map_err(app_status)?;
             Ok(Response::new(SubmitFeedbackResponse {
