@@ -1328,7 +1328,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "tokio",
  "tonic",
  "tonic-types",
  "tracing",

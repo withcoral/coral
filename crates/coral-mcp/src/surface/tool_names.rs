@@ -7,7 +7,6 @@ pub(crate) enum ToolName {
     ListCatalog,
     DescribeTable,
     ListColumns,
-    OpenEpisode,
     Feedback,
 }
 
@@ -19,7 +18,6 @@ impl ToolName {
             Self::ListCatalog => "list_catalog",
             Self::DescribeTable => "describe_table",
             Self::ListColumns => "list_columns",
-            Self::OpenEpisode => "open_episode",
             Self::Feedback => "feedback",
         }
     }
@@ -38,7 +36,6 @@ impl FromStr for ToolName {
             "list_catalog" => Ok(Self::ListCatalog),
             "describe_table" => Ok(Self::DescribeTable),
             "list_columns" => Ok(Self::ListColumns),
-            "open_episode" => Ok(Self::OpenEpisode),
             "feedback" => Ok(Self::Feedback),
             _ => Err(UnknownToolName),
         }

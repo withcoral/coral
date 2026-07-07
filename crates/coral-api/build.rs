@@ -26,7 +26,6 @@ fn main() {
                 "proto/coral/v1/query.proto",
                 "proto/coral/v1/search.proto",
                 "proto/coral/v1/traces.proto",
-                "proto/coral/v1/episode.proto",
             ],
             &["proto"],
         )

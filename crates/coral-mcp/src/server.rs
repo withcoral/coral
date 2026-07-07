@@ -3,13 +3,13 @@
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, SearchRequest, Source,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, catalog_item,
+    ListSourcesRequest, PaginationRequest, SearchRequest, Source, SubmitFeedbackRequest,
+    TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, SearchClient,
-    SourceClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
-    default_workspace, search_response_json_value, with_episode_metadata,
+    AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient,
+    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
+    search_response_json_value,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -22,22 +22,18 @@ use rmcp::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tonic::{
-    Request,
-    metadata::{Ascii, MetadataValue},
-};
+use tonic::Request;
 
 use crate::{
     McpOptions, McpQueryExample,
     surface::{
-        CatalogToolKind, EpisodeId, EpisodeOpenedValue, FeedbackStoredValue, SqlBatchValue,
-        SqlQueryResultValue, ToolDescriptionContext, ToolName, available_tools, build_tool_result,
+        CatalogToolKind, FeedbackStoredValue, SqlBatchValue, SqlQueryResultValue,
+        ToolDescriptionContext, ToolName, available_tools, build_tool_result,
         describe_table_arguments, describe_table_value, feedback_arguments, guide_resource,
         guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_value,
         list_columns_arguments, list_columns_table_fallback_value, list_columns_value,
-        open_episode_arguments, optional_episode_id_argument, search_arguments, sql_arguments,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        search_arguments, sql_arguments, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -75,50 +71,6 @@ impl ToolCallOutcome {
     }
 }
 
-#[derive(Debug, Default)]
-struct EpisodeTag {
-    episode_id: Option<EpisodeId>,
-    episode_id_metadata: Option<MetadataValue<Ascii>>,
-}
-
-impl EpisodeTag {
-    fn from_tool_request(
-        options: &McpOptions,
-        arguments: Option<&Map<String, Value>>,
-    ) -> Result<Self, ErrorData> {
-        if !options.episodes_enabled {
-            return Ok(Self::default());
-        }
-        let episode_id = optional_episode_id_argument(arguments, "episode_id")?;
-        let episode_id_metadata = episode_id
-            .as_ref()
-            .map(EpisodeId::as_str)
-            .map(|episode_id| {
-                episode_id.parse().map_err(|error| {
-                    ErrorData::invalid_params(
-                        format!("argument 'episode_id' is not valid metadata: {error}"),
-                        None,
-                    )
-                })
-            })
-            .transpose()?;
-        Ok(Self {
-            episode_id,
-            episode_id_metadata,
-        })
-    }
-
-    fn record_telemetry(&self, span: &tracing::Span) {
-        if let Some(episode_id) = self.episode_id.as_ref() {
-            telemetry::record_episode_id(span, episode_id.as_str());
-        }
-    }
-
-    fn into_metadata(self) -> Option<MetadataValue<Ascii>> {
-        self.episode_id_metadata
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
     source: SourceClient,
@@ -126,7 +78,6 @@ pub(crate) struct CoralMcpServer {
     query: QueryClient,
     search: SearchClient,
     feedback: FeedbackClient,
-    episode: EpisodeClient,
     startup_context: McpStartupContext,
     options: McpOptions,
 }
@@ -186,7 +137,6 @@ impl CoralMcpServer {
             query: app.query_client(),
             search: app.search_client(),
             feedback: app.feedback_client(),
-            episode: app.episode_client(),
             startup_context,
             options,
         }
@@ -347,19 +297,11 @@ impl CoralMcpServer {
     async fn execute_sql_batch(
         &self,
         queries: Vec<String>,
-        episode_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<SqlBatchValue, tonic::Status> {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, sql) in queries.into_iter().enumerate() {
             let server = self.clone();
-            let episode_id_metadata = episode_id_metadata.clone();
-            tasks.spawn(async move {
-                with_episode_metadata(
-                    episode_id_metadata,
-                    server.execute_one_sql_query(index, sql),
-                )
-                .await
-            });
+            tasks.spawn(async move { server.execute_one_sql_query(index, sql).await });
         }
 
         let mut results = Vec::new();
@@ -367,32 +309,6 @@ impl CoralMcpServer {
             results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
         }
         Ok(SqlBatchValue::from_unordered(results))
-    }
-
-    async fn open_episode(
-        &self,
-        intent: &str,
-        parent_episode_id: Option<&EpisodeId>,
-    ) -> Result<EpisodeOpenedValue, tonic::Status> {
-        let episode_id = format!("ep_{}", uuid::Uuid::new_v4().simple());
-        let mut episode_client = self.episode.clone();
-        episode_client
-            .open_episode(Request::new(OpenEpisodeRequest {
-                workspace: Some(self.workspace()),
-                episode_id: episode_id.clone(),
-                intent: intent.to_string(),
-                parent_episode_id: parent_episode_id
-                    .map(EpisodeId::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            }))
-            .await?;
-        Ok(EpisodeOpenedValue {
-            episode_id: EpisodeId::generated(episode_id),
-            parent_episode_id: parent_episode_id.cloned(),
-            message: "Episode opened.",
-            instructions: "Pass this episode_id as episode_id on subsequent Coral MCP tool calls for this work.",
-        })
     }
 
     async fn submit_feedback_value(
@@ -495,16 +411,11 @@ impl CoralMcpServer {
     async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
-        span: &tracing::Span,
-        episode_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref().parse::<ToolName>().ok() {
             Some(ToolName::Sql) => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
-                match self
-                    .execute_sql_batch(arguments.queries, episode_id_metadata)
-                    .await
-                {
+                match self.execute_sql_batch(arguments.queries).await {
                     Ok(batch) => Ok(ToolCallOutcome::SqlBatch(batch)),
                     Err(status) => Ok(ToolCallOutcome::ToolError {
                         operation: "Query",
@@ -525,25 +436,6 @@ impl CoralMcpServer {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::OpenEpisode) if self.options.episodes_enabled => {
-                let arguments = open_episode_arguments(request.arguments.as_ref())?;
-                match self
-                    .open_episode(&arguments.intent, arguments.parent_episode_id.as_ref())
-                    .await
-                    .and_then(|episode| {
-                        telemetry::record_episode_id(span, episode.episode_id.as_str());
-                        serialize_tool_value(episode)
-                    }) {
-                    Ok(value) => Ok(ToolCallOutcome::success(value)),
-                    Err(status) if status.code() == tonic::Code::InvalidArgument => {
-                        Err(status_to_error_data(&status))
-                    }
-                    Err(status) => Ok(ToolCallOutcome::ToolError {
-                        operation: "Episode opening",
-                        status,
-                    }),
-                }
-            }
             Some(ToolName::Feedback) if self.options.feedback_enabled => {
                 let arguments = feedback_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
@@ -556,9 +448,10 @@ impl CoralMcpServer {
                     .await,
                 ))
             }
-            None | Some(ToolName::OpenEpisode | ToolName::Feedback) => Err(
-                ErrorData::invalid_params(format!("tool '{}' not found", request.name), None),
-            ),
+            None | Some(ToolName::Feedback) => Err(ErrorData::invalid_params(
+                format!("tool '{}' not found", request.name),
+                None,
+            )),
         }
     }
 
@@ -659,11 +552,7 @@ impl ServerHandler for CoralMcpServer {
                 visible_function_count,
                 source_names,
             );
-            let tools = available_tools(
-                &tool_context,
-                self.options.episodes_enabled,
-                self.options.feedback_enabled,
-            );
+            let tools = available_tools(&tool_context, self.options.feedback_enabled);
             Ok(ListToolsResult::with_all_items(tools))
         })
         .await
@@ -676,27 +565,7 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
-        let inject_episode_metadata =
-            request.name.as_ref().parse::<ToolName>().ok() != Some(ToolName::OpenEpisode);
-        let episode_tag = EpisodeTag::from_tool_request(&self.options, request.arguments.as_ref());
-        let outcome = match episode_tag {
-            Ok(episode_tag) => {
-                episode_tag.record_telemetry(&span);
-                let episode_id_metadata = inject_episode_metadata
-                    .then(|| episode_tag.into_metadata())
-                    .flatten();
-                let dispatch_episode_id_metadata = episode_id_metadata.clone();
-                telemetry::instrument(
-                    span.clone(),
-                    with_episode_metadata(
-                        episode_id_metadata,
-                        self.dispatch_tool(request, &span, dispatch_episode_id_metadata),
-                    ),
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
+        let outcome = telemetry::instrument(span.clone(), self.dispatch_tool(request)).await;
         finish_tool_call(&span, outcome)
     }
 
