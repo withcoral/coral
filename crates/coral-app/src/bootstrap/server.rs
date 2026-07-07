@@ -19,6 +19,7 @@ use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
+use coral_api::v1::task_service_server::TaskServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
@@ -54,6 +55,9 @@ use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
+use crate::task::manager::TaskManager;
+use crate::task::service::TaskService;
+use crate::task::store::TaskStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -289,6 +293,7 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
+        let task_manager = TaskManager::new(TaskStore::new(layout.clone()));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -318,6 +323,7 @@ impl ServerBuilder {
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
+                task: task_manager,
             },
             trace_components,
             self.config.mode,
@@ -416,6 +422,7 @@ struct ServerManagers {
     query: QueryManager,
     search: SearchManager,
     feedback: FeedbackManager,
+    task: TaskManager,
 }
 
 async fn start_server(
@@ -433,6 +440,7 @@ async fn start_server(
         query,
         search,
         feedback,
+        task,
     } = managers;
     let source_service = SourceService::new(source, query.clone());
     let workspace_service = WorkspaceService::new(workspace);
@@ -440,6 +448,7 @@ async fn start_server(
     let query_service = QueryService::new(query);
     let search_service = SearchService::new(search);
     let feedback_service = FeedbackService::new(feedback);
+    let task_service = TaskService::new(task);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
@@ -453,6 +462,9 @@ async fn start_server(
         ))
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
+        )))
+        .add_service(GrpcMethodAnnotatedService::new(TaskServiceServer::new(
+            task_service,
         )))
         .add_service(GrpcMethodAnnotatedService::new(
             QueryServiceServer::new(query_service)
@@ -689,10 +701,12 @@ mod tests {
 
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
+    use coral_api::v1::task_service_client::TaskServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-        ListTracesRequest, Workspace, import_source_response,
+        EndTaskRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
+        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, Workspace,
+        import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -710,6 +724,8 @@ mod tests {
     use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
+    use crate::task::manager::TaskManager;
+    use crate::task::store::TaskStore;
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
@@ -763,6 +779,65 @@ enabled = false
     }
 
     #[tokio::test]
+    async fn task_lifecycle_through_server_persists() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir.clone())
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut task_client = TaskServiceClient::new(channel);
+
+        let task = task_client
+            .start_task(Request::new(StartTaskRequest {
+                workspace: Some(default_workspace()),
+                intent: "find the HR onboarding form".to_string(),
+            }))
+            .await
+            .expect("start task")
+            .into_inner()
+            .task
+            .expect("task");
+        uuid::Uuid::parse_str(&task.task_id).expect("task id is a UUID");
+
+        let task_end = task_client
+            .end_task(Request::new(EndTaskRequest {
+                workspace: Some(default_workspace()),
+                task_id: task.task_id.clone(),
+                task_status: TaskStatus::Completed as i32,
+            }))
+            .await
+            .expect("end task")
+            .into_inner()
+            .task_end
+            .expect("task end");
+        assert_eq!(task_end.task_id, task.task_id);
+        assert_eq!(task_end.task_status, TaskStatus::Completed as i32);
+
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let workspace = WorkspaceName::default();
+        let tasks =
+            std::fs::read_to_string(layout.task_events_file(&workspace)).expect("task events file");
+        assert!(tasks.contains(&task.task_id));
+        assert!(
+            tasks.contains("find the HR onboarding form"),
+            "task events should contain start intent, got: {tasks}"
+        );
+        assert!(
+            tasks.contains("completed"),
+            "task events should contain end status, got: {tasks}"
+        );
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
@@ -777,6 +852,7 @@ enabled = false
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let task_manager = TaskManager::new(TaskStore::new(layout.clone()));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -800,6 +876,7 @@ enabled = false
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
+                task: task_manager,
             },
             TraceServerComponents {
                 service: Some(trace_service),
@@ -1169,6 +1246,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let task_manager = TaskManager::new(TaskStore::new(layout.clone()));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1193,6 +1271,7 @@ tables:
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
+                task: task_manager,
             },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
@@ -1282,6 +1361,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let task_manager = TaskManager::new(TaskStore::new(layout.clone()));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1303,6 +1383,7 @@ tables:
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
+                task: task_manager,
             },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
@@ -1392,6 +1473,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let task_manager = TaskManager::new(TaskStore::new(layout.clone()));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1413,6 +1495,7 @@ tables:
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
+                task: task_manager,
             },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
