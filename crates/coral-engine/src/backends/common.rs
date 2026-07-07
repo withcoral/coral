@@ -61,7 +61,6 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) description: String,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
-    pub(crate) arg_names: Vec<String>,
     pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
@@ -361,7 +360,6 @@ pub(crate) fn build_registered_table_function(
         description: function.description.clone(),
         arguments,
         result_columns,
-        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
         search_limits: function.search_limits.clone(),
     }
 }

@@ -980,7 +980,6 @@ mod tests {
                 description: String::new(),
                 arguments: Vec::new(),
                 result_columns: Vec::new(),
-                arg_names: Vec::new(),
                 search_limits: None,
             }],
             inputs: Vec::new(),

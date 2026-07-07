@@ -522,6 +522,7 @@ mod tests {
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
         TableInfo,
     };
+    use coral_spec::SourceTableFunctionKind;
 
     #[test]
     fn query_status_maps_app_errors() {
@@ -724,6 +725,8 @@ mod tests {
                 values: Vec::new(),
             }],
             result_columns: Vec::new(),
+            kind: SourceTableFunctionKind::Search,
+            search_limits: None,
         };
 
         let proto = table_function_to_proto(&workspace_name, function);
