@@ -35,6 +35,7 @@ impl WorkspaceServiceApi for WorkspaceService {
         instrument_grpc(span, async move {
             let workspaces = workspaces
                 .list_workspaces()
+                .await
                 .map_err(app_status)?
                 .iter()
                 .map(workspace_record_to_proto)

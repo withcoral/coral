@@ -54,26 +54,20 @@ impl WorkspaceManager {
         }
     }
 
-    pub(crate) fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
-        let db = Arc::clone(&self.db);
-        run_workspace_db_operation(async move {
-            let mut session = db.as_ref();
-            session
-                .workspaces()
-                .list()
-                .await?
-                .into_iter()
-                .map(|workspace| {
-                    let name = WorkspaceName::parse(&workspace.id).map_err(|error| {
-                        AppError::Database(format!(
-                            "invalid workspace id '{}': {error}",
-                            workspace.id
-                        ))
-                    })?;
-                    Ok(WorkspaceRecord { name })
-                })
-                .collect()
-        })
+    pub(crate) async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
+        let mut session = self.db.as_ref();
+        session
+            .workspaces()
+            .list()
+            .await?
+            .into_iter()
+            .map(|workspace| {
+                let name = WorkspaceName::parse(&workspace.id).map_err(|error| {
+                    AppError::Database(format!("invalid workspace id '{}': {error}", workspace.id))
+                })?;
+                Ok(WorkspaceRecord { name })
+            })
+            .collect()
     }
 
     pub(crate) fn create_workspace(
