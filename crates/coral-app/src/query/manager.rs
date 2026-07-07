@@ -37,6 +37,17 @@ use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 use crate::workspaces::WorkspaceName;
 
+// Synthetic secret value used only when loading catalog metadata for a
+// keychain-backed source, so passive browsing never reads the keychain.
+//
+// It is NOT a credential and is never used to authenticate: catalog operations
+// (list_catalog / describe_table / list_columns) read static, pre-registered
+// schema metadata and make no source HTTP request, and the runtime credential
+// resolver only reads material on the fetch path (which catalog ops never take).
+// The value exists purely to satisfy engine source registration, which validates
+// auth-header templates and rejects an *empty* value for bearer-style auth — so a
+// non-empty placeholder lets a keychain source register for metadata while a
+// genuinely misconfigured one still fails closed (see resolve_source_secrets).
 const CATALOG_SECRET_PLACEHOLDER: &str = "__coral_catalog_secret_placeholder__";
 
 #[derive(Debug)]
