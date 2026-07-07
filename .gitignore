@@ -32,3 +32,5 @@ tasks/
 # Playwright CLI validation artifacts
 .playwright-cli/
 .verify/
+# CocoIndex Code (ccc)
+/.cocoindex_code/

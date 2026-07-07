@@ -141,16 +141,26 @@ async fn mysql_catalog(
     connection: &MySqlConnectionSpec,
     context: &RenderContext<'_>,
 ) -> DataFusionResult<Arc<dyn CatalogProvider>> {
-    let params = render_connection_params(
+    let mut params = render_connection_params(
         [
             ("host", &connection.host),
-            ("tcp_port", &connection.port),
             ("db", &connection.database),
             ("user", &connection.user),
             ("pass", &connection.password),
         ],
         context,
     )?;
+    let raw_port = render_required(&connection.port, context)?;
+    let tcp_port = match raw_port.trim().parse::<u16>() {
+        Ok(port) if port != 0 => port,
+        _ => {
+            return Err(DataFusionError::Execution(
+                "MySQL connection.port is invalid; expected an integer between 1 and 65535"
+                    .to_string(),
+            ));
+        }
+    };
+    params.insert("tcp_port".to_string(), tcp_port.to_string());
     let pool = MySQLConnectionPool::new(to_secret_map(params))
         .await
         .map_err(provider_error)?;
@@ -265,13 +275,59 @@ mod tests {
     use std::collections::BTreeMap;
 
     use coral_spec::{
-        DatabaseConnectionSpec, DatabaseProvider, DatabaseSourceManifest, ParsedTemplate,
-        SourceManifestCommon, SqliteConnectionSpec,
+        DatabaseConnectionSpec, DatabaseProvider, DatabaseSourceManifest, MySqlConnectionSpec,
+        ParsedTemplate, SourceManifestCommon, SqliteConnectionSpec,
     };
 
+    use crate::backends::shared::template::RenderContext;
     use crate::{
         CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
     };
+
+    fn template(value: &str) -> ParsedTemplate {
+        ParsedTemplate::parse(value.to_string()).expect("template")
+    }
+
+    fn mysql_connection(port: &str) -> MySqlConnectionSpec {
+        MySqlConnectionSpec {
+            host: template("localhost"),
+            port: template(port),
+            database: template("pickl"),
+            user: template("root"),
+            password: template("password"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mysql_catalog_rejects_ports_that_provider_would_default() {
+        let cases = [
+            ("not-a-port", BTreeMap::new()),
+            ("70000", BTreeMap::new()),
+            ("0", BTreeMap::new()),
+            (
+                "{{input.DB_PORT}}",
+                BTreeMap::from([("DB_PORT".to_string(), "not-a-port".to_string())]),
+            ),
+        ];
+
+        for (port, resolved_inputs) in cases {
+            let connection = mysql_connection(port);
+            let context = RenderContext::source_scoped(&resolved_inputs);
+            let error = match super::mysql_catalog(&connection, &context).await {
+                Ok(_) => panic!("invalid MySQL port should fail before provider fallback"),
+                Err(error) => error,
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains("MySQL connection.port is invalid"),
+                "unexpected error: {message}"
+            );
+            assert!(
+                message.contains("between 1 and 65535"),
+                "unexpected error: {message}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn sqlite_database_source_registers_catalog_and_queries_three_part_table() {

@@ -226,18 +226,8 @@ impl CatalogDiscovery {
         }
 
         let tables = table_lookup.missing_context_tables;
-        let available_schemas = tables
-            .iter()
-            .map(|table| table.schema_name.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let same_schema_tables = tables
-            .iter()
-            .filter(|table| table.schema_name == table_ref.schema_name)
-            .take(MISSING_TABLE_SUGGESTION_LIMIT)
-            .cloned()
-            .collect::<Vec<_>>();
+        let available_schemas = available_table_schemas(&tables);
+        let same_schema_tables = same_schema_tables(&tables, table_ref);
         let suggestions = missing_table_suggestions(&tables, table_ref, &same_schema_tables);
         Ok(DescribeTableResult::Missing(MissingTableContext {
             suggestions,
@@ -314,10 +304,7 @@ impl CatalogDiscovery {
             )
             .await?
             .into_iter()
-            .find(|table| {
-                table.schema_name == query.table_ref.schema_name
-                    && table.table_name == query.table_ref.table_name
-            });
+            .find(|table| table_matches_ref(table, query.table_ref));
         let Some(table) = table else {
             return Ok(None);
         };
@@ -419,21 +406,31 @@ fn catalog_item_matched_fields(item: &CatalogItem, regex: &Regex) -> Vec<Catalog
 }
 
 fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadataField> {
-    let name = format!("{}.{}", table.schema_name, table.table_name);
-    let candidates = [
-        (CatalogMetadataField::SchemaName, table.schema_name.as_str()),
-        (CatalogMetadataField::TableName, table.table_name.as_str()),
-        (CatalogMetadataField::Name, name.as_str()),
-        (
-            CatalogMetadataField::Description,
-            table.description.as_str(),
-        ),
-        (CatalogMetadataField::Guide, table.guide.as_str()),
-    ];
-    let mut matches = candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field))
-        .collect::<Vec<_>>();
+    let schema_name = table_addressable_schema_name(table);
+    let name = table_addressable_name(table);
+    let mut matches = Vec::new();
+    if [
+        table.schema_name.as_str(),
+        table.namespace.as_str(),
+        schema_name.as_str(),
+    ]
+    .into_iter()
+    .any(|value| !value.is_empty() && regex.is_match(value))
+    {
+        matches.push(CatalogMetadataField::SchemaName);
+    }
+    if regex.is_match(&table.table_name) {
+        matches.push(CatalogMetadataField::TableName);
+    }
+    if regex.is_match(&name) {
+        matches.push(CatalogMetadataField::Name);
+    }
+    if regex.is_match(&table.description) {
+        matches.push(CatalogMetadataField::Description);
+    }
+    if regex.is_match(&table.guide) {
+        matches.push(CatalogMetadataField::Guide);
+    }
     if table
         .required_filters
         .iter()
@@ -498,6 +495,24 @@ fn column_matched_fields(column: &ColumnInfo, regex: &Regex) -> Vec<ColumnMetada
         .collect()
 }
 
+fn available_table_schemas(tables: &[TableInfo]) -> Vec<String> {
+    tables
+        .iter()
+        .map(table_addressable_schema_name)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn same_schema_tables(tables: &[TableInfo], table_ref: CatalogTableRef<'_>) -> Vec<TableInfo> {
+    tables
+        .iter()
+        .filter(|table| table_schema_matches(table, table_ref.schema_name))
+        .take(MISSING_TABLE_SUGGESTION_LIMIT)
+        .cloned()
+        .collect()
+}
+
 fn missing_table_suggestions(
     all_tables: &[TableInfo],
     table_ref: CatalogTableRef<'_>,
@@ -506,7 +521,7 @@ fn missing_table_suggestions(
     let suggestion_schema = (!same_schema_tables.is_empty()).then_some(table_ref.schema_name);
     let mut suggestions = all_tables
         .iter()
-        .filter(|table| suggestion_schema.is_none_or(|schema| table.schema_name == schema))
+        .filter(|table| suggestion_schema.is_none_or(|schema| table_schema_matches(table, schema)))
         .filter(|table| table_metadata_contains_literal(table, table_ref.table_name))
         .take(MISSING_TABLE_SUGGESTION_LIMIT)
         .cloned()
@@ -523,9 +538,12 @@ fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
         return false;
     }
     let literal = literal.to_lowercase();
-    let name = format!("{}.{}", table.schema_name, table.table_name);
+    let schema_name = table_addressable_schema_name(table);
+    let name = table_addressable_name(table);
     let candidates = [
         table.schema_name.as_str(),
+        table.namespace.as_str(),
+        schema_name.as_str(),
         table.table_name.as_str(),
         name.as_str(),
         table.description.as_str(),
@@ -538,6 +556,37 @@ fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
             .required_filters
             .iter()
             .any(|filter| filter.to_lowercase().contains(&literal))
+}
+
+fn table_addressable_schema_name(table: &TableInfo) -> String {
+    if table.namespace.is_empty() {
+        table.schema_name.clone()
+    } else {
+        format!("{}.{}", table.schema_name, table.namespace)
+    }
+}
+
+fn table_addressable_name(table: &TableInfo) -> String {
+    format!(
+        "{}.{}",
+        table_addressable_schema_name(table),
+        table.table_name
+    )
+}
+
+fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
+    table.table_name == table_ref.table_name && table_schema_matches(table, table_ref.schema_name)
+}
+
+fn table_schema_matches(table: &TableInfo, schema_name: &str) -> bool {
+    if table.schema_name == schema_name {
+        return true;
+    }
+    !table.namespace.is_empty()
+        && schema_name
+            .strip_prefix(&table.schema_name)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|rest| rest == table.namespace)
 }
 
 pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
@@ -568,7 +617,11 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CatalogMetadataField, compile_metadata_regex, table_matched_fields};
+    use super::{
+        CatalogMetadataField, CatalogTableRef, available_table_schemas, compile_metadata_regex,
+        missing_table_suggestions, same_schema_tables, table_matched_fields, table_matches_ref,
+        table_metadata_contains_literal,
+    };
     use coral_engine::TableInfo;
 
     fn table(required_filters: Vec<String>) -> TableInfo {
@@ -581,6 +634,14 @@ mod tests {
             columns: Vec::new(),
             required_filters,
         }
+    }
+
+    fn database_table(namespace: &str, table_name: &str) -> TableInfo {
+        let mut table = table(Vec::new());
+        table.schema_name = "pickl_db".to_string();
+        table.namespace = namespace.to_string();
+        table.table_name = table_name.to_string();
+        table
     }
 
     #[test]
@@ -599,5 +660,86 @@ mod tests {
     #[test]
     fn empty_metadata_pattern_is_invalid() {
         compile_metadata_regex(" ", true).expect_err("empty pattern should fail");
+    }
+
+    #[test]
+    fn table_ref_matches_database_namespace_qualified_schema() {
+        let table = database_table("main", "users");
+
+        assert!(table_matches_ref(
+            &table,
+            CatalogTableRef::new("pickl_db.main", "users")
+        ));
+        assert!(table_matches_ref(
+            &table,
+            CatalogTableRef::new("pickl_db", "users")
+        ));
+        assert!(!table_matches_ref(
+            &table,
+            CatalogTableRef::new("pickl_db.other", "users")
+        ));
+        assert!(!table_matches_ref(
+            &table,
+            CatalogTableRef::new("pickl_db.main", "orders")
+        ));
+    }
+
+    #[test]
+    fn table_search_matches_database_namespace_and_qualified_names() {
+        let table = database_table("main", "users");
+
+        assert_eq!(
+            table_matched_fields(&table, &regex::Regex::new("^main$").expect("regex")),
+            vec![CatalogMetadataField::SchemaName]
+        );
+        assert_eq!(
+            table_matched_fields(
+                &table,
+                &regex::Regex::new("^pickl_db\\.main$").expect("regex")
+            ),
+            vec![CatalogMetadataField::SchemaName]
+        );
+        assert_eq!(
+            table_matched_fields(
+                &table,
+                &regex::Regex::new("^pickl_db\\.main\\.users$").expect("regex")
+            ),
+            vec![CatalogMetadataField::Name]
+        );
+    }
+
+    #[test]
+    fn missing_table_context_uses_database_namespace_qualified_schemas() {
+        let main = database_table("main", "users");
+        let analytics = database_table("analytics", "events");
+        let mut local = table(Vec::new());
+        local.schema_name = "local_messages".to_string();
+        local.table_name = "messages".to_string();
+        let tables = vec![main, analytics, local];
+
+        assert_eq!(
+            available_table_schemas(&tables),
+            vec!["local_messages", "pickl_db.analytics", "pickl_db.main"]
+        );
+
+        let same_schema =
+            same_schema_tables(&tables, CatalogTableRef::new("pickl_db.main", "missing"));
+        assert_eq!(same_schema.len(), 1);
+        assert_eq!(same_schema[0].namespace, "main");
+        assert_eq!(same_schema[0].table_name, "users");
+
+        let suggestions = missing_table_suggestions(
+            &tables,
+            CatalogTableRef::new("pickl_db.main", "user"),
+            &same_schema,
+        );
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].namespace, "main");
+        assert_eq!(suggestions[0].table_name, "users");
+
+        assert!(table_metadata_contains_literal(
+            &same_schema[0],
+            "pickl_db.main.users"
+        ));
     }
 }
