@@ -82,6 +82,19 @@ pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
+/// gRPC metadata key carrying the originating task id on Coral calls after
+/// `TaskService.StartTask`. The single source of truth for the wire contract;
+/// consumed by both the server (`coral-app`) and clients (`coral-client`).
+pub const CORAL_TASK_ID_METADATA_KEY: &str = "coral-task-id";
+
+/// Maximum length of a Coral task id, in bytes. Validated identically server-
+/// and client-side so the contract stays in one place.
+pub const CORAL_TASK_ID_MAX_LEN: usize = 128;
+
+/// Maximum length of a task `intent`, in characters. Generous for a task
+/// description while bounding the per-record lifecycle log size.
+pub const CORAL_TASK_INTENT_MAX_CHARS: usize = 4096;
+
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 
