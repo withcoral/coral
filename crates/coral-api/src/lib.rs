@@ -76,6 +76,11 @@ pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
+/// Maximum length of a Coral session id, in bytes. Session ids are valid ASCII
+/// metadata-style tokens even though v1 does not propagate them as request
+/// metadata.
+pub const CORAL_SESSION_ID_MAX_LEN: usize = 128;
+
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 

@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Session lifecycle for task attribution. A session is a flat correlation
+// container for a user-agent conversation; it carries no intent and has no
+// required closure in v1.
+service SessionService {
+  // Creates one session in the supplied workspace.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+}
+
+// Creates a session.
+message CreateSessionRequest {
+  // Workspace that scopes the session.
+  Workspace workspace = 1;
+}
+
+// Returns the created session.
+message CreateSessionResponse {
+  // Created session resource.
+  Session session = 1;
+}
+
+// A task-attribution session.
+message Session {
+  // Server-minted, opaque session id.
+  string session_id = 1;
+  // Creation time in Unix nanoseconds.
+  uint64 created_at_unix_nanos = 2 [jstype = JS_STRING];
+}
