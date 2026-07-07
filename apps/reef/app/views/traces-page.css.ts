@@ -217,24 +217,6 @@ export const statusSep = style({
   width: 1,
 })
 
-export const emptyState = style({
-  alignItems: 'center',
-  display: 'flex',
-  flex: 1,
-  flexDirection: 'column',
-  gap: 20,
-  justifyContent: 'center',
-  minHeight: 0,
-  padding: 32,
-  textAlign: 'center',
-})
-export const emptyStateText = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  maxWidth: 440,
-})
 export const loadingState = style({
   alignItems: 'center',
   display: 'flex',

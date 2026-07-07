@@ -7,6 +7,8 @@ interface ScrollAreaBaseProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode
   /** Constrains content width to viewport. Useful when you don't need horizontal scrolling. Defaults to false. */
   constrainWidth?: boolean
+  /** Makes the internal content wrapper at least as tall as the scroll viewport. Defaults to false. */
+  fillContent?: boolean
   /** Adds gradient fade effect at scroll edges. */
   fade?: 'both' | 'bottom' | 'none' | 'top'
   /** Whether to show the horizontal scrollbar. Defaults to false. */
@@ -51,6 +53,7 @@ export function Container({
   className,
   constrainWidth = false,
   fade = 'both',
+  fillContent = false,
   height = '100%',
   horizontal = false,
   maxHeight,
@@ -60,6 +63,14 @@ export function Container({
   width = '100%',
   ...rest
 }: ScrollAreaProps) {
+  const contentStyle: React.CSSProperties | undefined =
+    constrainWidth || fillContent
+      ? {
+          ...(constrainWidth ? { minWidth: 0 } : {}),
+          ...(fillContent ? { display: 'flex', minHeight: '100%' } : {}),
+        }
+      : undefined
+
   return (
     <BaseScrollArea.Root
       className={classNames(styles.root, className)}
@@ -71,10 +82,7 @@ export function Container({
         className={classNames(styles.viewport, styles.viewportFade[fade])}
         ref={viewportRef}
       >
-        <BaseScrollArea.Content
-          className={styles.content}
-          style={constrainWidth ? { minWidth: 0 } : undefined}
-        >
+        <BaseScrollArea.Content className={styles.content} style={contentStyle}>
           {children}
         </BaseScrollArea.Content>
       </BaseScrollArea.Viewport>

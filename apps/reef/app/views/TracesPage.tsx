@@ -5,11 +5,11 @@ import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
+import { EmptyPage } from '@/components/empty-page'
 import { listTraces } from '@/lib/coral-traces-client'
 import type { TraceSummary } from '@/generated/coral/v1/traces_pb'
 
 import * as s from './traces-page.css'
-import { EmptyState } from './traces/empty-state'
 import { PageHeader } from './traces/page-header'
 import { StatusBar } from './traces/status-bar'
 import { TraceDetail } from './traces/trace-detail'
@@ -235,12 +235,26 @@ export function TracesPage() {
         </div>
       ) : filtered.length === 0 ? (
         searchText.trim() ? (
-          <EmptyState
+          <EmptyPage
+            action={
+              <Button.TextButton onClick={() => setSearchText('')} variant="secondary">
+                Clear search
+              </Button.TextButton>
+            }
+            description="Try a different search or clear the search field to show all traces."
+            iconName="Search"
             title={`No results for “${searchText.trim()}”`}
-            details="Try a different search or clear the search field to show all traces."
           />
         ) : (
-          <EmptyState error={error && traces.length === 0 ? error : null} />
+          <EmptyPage
+            description={
+              error && traces.length === 0
+                ? error
+                : 'Make sure tracing is enabled, then run a SQL query to see it here in real-time.'
+            }
+            iconName={error && traces.length === 0 ? 'CircleAlert' : 'Activity'}
+            title={error && traces.length === 0 ? 'Tracing unavailable' : 'No queries yet'}
+          />
         )
       ) : (
         <div className={s.queryScroll}>

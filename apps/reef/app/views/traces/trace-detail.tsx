@@ -5,11 +5,11 @@ import { Button, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
+import { EmptyPage } from '@/components/empty-page'
 import { getTrace } from '@/lib/coral-traces-client'
 import { TraceStatus, type GetTraceResponse, type TraceSpan } from '@/generated/coral/v1/traces_pb'
 
 import * as s from '../traces-page.css'
-import { EmptyState } from './empty-state'
 import { HttpSpanDetail } from './http-span-detail'
 import { PageHeader } from './page-header'
 import { SqlCode } from './sql-code'
@@ -577,9 +577,10 @@ function TimelineWaterfall({
 
   if (rows.length === 0) {
     return (
-      <EmptyState
+      <EmptyPage
         title="No spans for this trace"
-        details="This trace did not record any spans that match the current view."
+        description="This trace did not record any spans that match the current view."
+        iconName="Activity"
       />
     )
   }
@@ -829,15 +830,16 @@ export function TraceDetail({
   if (error)
     return (
       <div className={s.detailEmpty}>
-        <EmptyState error={error} />
+        <EmptyPage description={error} iconName="CircleAlert" title="Tracing unavailable" />
       </div>
     )
   if (!summary) {
     return (
       <div className={s.detailEmpty}>
-        <EmptyState
+        <EmptyPage
           title="No spans for this trace"
-          details="This trace did not include a query summary or spans to display."
+          description="This trace did not include a query summary or spans to display."
+          iconName="Activity"
         />
       </div>
     )

@@ -16,12 +16,17 @@ export const root = style({
 })
 
 export const scrollContent = style({
+  boxSizing: 'border-box',
+  display: 'flex',
+  flex: 1,
+  minHeight: '100%',
   paddingBlock: 32,
   paddingInline: 24,
 })
 
 export const container = style({
   display: 'flex',
+  flex: 1,
   flexDirection: 'column',
   gap: 32,
   marginInline: 'auto',
@@ -41,17 +46,6 @@ export const loadingState = style({
   gap: 8,
   justifyContent: 'center',
   paddingBlock: 48,
-})
-
-export const emptyState = style({
-  alignItems: 'center',
-  display: 'flex',
-  flex: 1,
-  flexDirection: 'column',
-  gap: 12,
-  justifyContent: 'center',
-  paddingBlock: 48,
-  textAlign: 'center',
 })
 
 export const categorySection = style({

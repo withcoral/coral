@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { ScrollArea } from '@/wax/components'
+import { Button, ScrollArea } from '@/wax/components'
 import { CardList, type CardItem } from '@/wax/components/card'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
 
+import { EmptyPage } from '@/components/empty-page'
 import { ErrorBanner } from '@/components/error-banner'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
 import { discoverBundled, type CatalogEntry } from '@/lib/sources'
@@ -112,7 +113,7 @@ export function SourcesIndex() {
 
   return (
     <>
-      <ScrollArea.Container className={styles.root} constrainWidth>
+      <ScrollArea.Container className={styles.root} constrainWidth fillContent>
         <div className={styles.scrollContent}>
           <div className={styles.container}>
             <div className={styles.header}>
@@ -149,12 +150,11 @@ export function SourcesIndex() {
             ) : null}
 
             {!loading && !error && allEntries.length === 0 ? (
-              <div className={styles.emptyState}>
-                <Icon name="Plug" size="20" color="tertiary" />
-                <Typography.Body variant="secondary">
-                  No sources available. Check the Coral build for a populated catalog.
-                </Typography.Body>
-              </div>
+              <EmptyPage
+                description="Check the Coral build for a populated catalog."
+                iconName="Plug"
+                title="No sources available"
+              />
             ) : null}
 
             {connected.length > 0 ? (
@@ -174,9 +174,16 @@ export function SourcesIndex() {
             !loading &&
             !error &&
             allEntries.length > 0 ? (
-              <Typography.BodySmall variant="tertiary">
-                No sources match your search.
-              </Typography.BodySmall>
+              <EmptyPage
+                action={
+                  <Button.TextButton onClick={() => setSearch('')} variant="secondary">
+                    Clear search
+                  </Button.TextButton>
+                }
+                description="Try adjusting your search."
+                iconName="Search"
+                title="No matching sources"
+              />
             ) : null}
           </div>
         </div>
