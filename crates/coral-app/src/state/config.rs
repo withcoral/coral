@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
-use tracing::{info_span, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
@@ -303,16 +303,6 @@ impl SourceCatalog {
             .cloned()
     }
 
-    pub(crate) fn contains(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> bool {
-        self.0
-            .get(workspace_name)
-            .is_some_and(|sources| sources.contains_key(source_name))
-    }
-
     pub(crate) fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -588,13 +578,6 @@ impl ConfigStore {
         self.load_config_unlocked().map(|config| config.catalog)
     }
 
-    pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
-        let span = info_span!("coral.app.config.load_catalog");
-        let _guard = span.enter();
-        let _lock = self.state_lock_shared()?;
-        self.load_catalog_unlocked()
-    }
-
     fn update_config_unlocked<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
@@ -721,15 +704,6 @@ impl ConfigStore {
         let _lock = self.state_lock_exclusive()?;
         self.restore_workspace_config_entries_unlocked(removed)
     }
-
-    pub(crate) fn list_workspace_sources(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<Vec<InstalledSource>, AppError> {
-        let config = self.load_config()?;
-        Ok(config.workspace_sources(workspace_name))
-    }
-
     /// Loads one installed source without taking the app state lock.
     ///
     /// Callers must already hold the state lock while using source artifacts
@@ -1598,12 +1572,6 @@ origin = "bundled"
         let source_name = SourceName::parse("github").expect("source");
         let function_name = FunctionName::parse("review_queue").expect("function");
 
-        assert!(
-            store
-                .list_workspace_sources(&missing_workspace)
-                .expect("list source definitions")
-                .is_empty()
-        );
         assert!(matches!(
             store.get_source(&missing_workspace, &source_name),
             Err(AppError::SourceNotFound(_))
@@ -1679,12 +1647,11 @@ origin = "bundled"
         assert_eq!(deleted.workspace.name, workspace_name);
         assert_eq!(deleted.sources.len(), 1);
         assert_eq!(deleted.sources[0].name.as_str(), "github");
-        assert!(
-            store
-                .list_workspace_sources(&deleted.workspace.name)
-                .expect("list source definitions")
-                .is_empty()
-        );
+        let source_name = SourceName::parse("github").expect("source");
+        assert!(matches!(
+            store.get_source(&deleted.workspace.name, &source_name),
+            Err(AppError::SourceNotFound(_))
+        ));
         assert!(
             store
                 .list_workspace_functions(&deleted.workspace.name)
@@ -1736,12 +1703,13 @@ origin = "bundled"
         );
         assert_eq!(
             store
-                .list_workspace_sources(&workspace_name)
-                .expect("list source definitions")
-                .into_iter()
-                .map(|source| source.name)
-                .collect::<Vec<_>>(),
-            vec![SourceName::parse("github").expect("source")]
+                .get_source(
+                    &workspace_name,
+                    &SourceName::parse("github").expect("source")
+                )
+                .expect("get restored source")
+                .name,
+            SourceName::parse("github").expect("source")
         );
         assert_eq!(
             store

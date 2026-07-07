@@ -390,10 +390,7 @@ tables:
         credential_revision: Uuid,
     ) {
         let mut source = config_store
-            .list_workspace_sources(workspace)
-            .expect("list sources")
-            .into_iter()
-            .find(|source| &source.name == source_name)
+            .get_source(workspace, source_name)
             .expect("installed source");
         source.credential_revision = credential_revision;
         config_store
