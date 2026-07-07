@@ -26,17 +26,3 @@ where
         )
     })
 }
-
-pub(crate) fn json_schema_value<T>() -> Value
-where
-    T: JsonSchema,
-{
-    let mut schema = serde_json::to_value(schemars::schema_for!(T))
-        .expect("generated tool schema should serialize");
-    if let Some(object) = schema.as_object_mut() {
-        object.remove("$schema");
-        object.remove("title");
-        object.remove("description");
-    }
-    schema
-}

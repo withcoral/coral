@@ -40,11 +40,10 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, EpisodeClient, FeedbackClient, QueryClient,
-    SourceClient, WorkspaceClient, default_workspace, workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient,
+    WorkspaceClient, default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
-pub use propagation::with_episode_metadata;
 pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,

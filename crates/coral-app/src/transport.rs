@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use coral_api::{
-    CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, grpc_response_status_code,
+    CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
@@ -26,7 +26,6 @@ use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
-use crate::episode::EpisodeId;
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -167,24 +166,6 @@ fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
 fn annotate_request_context<B>(request: &mut http::Request<B>) {
     if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
         request.extensions_mut().insert(method);
-    }
-    if let Some(episode_id) = request
-        .headers()
-        .get(CORAL_EPISODE_ID_METADATA_KEY)
-        .and_then(episode_id_from_header_value)
-    {
-        request.extensions_mut().insert(episode_id);
-    }
-}
-
-fn episode_id_from_header_value(value: &http::HeaderValue) -> Option<EpisodeId> {
-    let value = value.to_str().ok()?;
-    match EpisodeId::parse(value) {
-        Ok(episode_id) => Some(episode_id),
-        Err(error) => {
-            tracing::debug!(%error, "ignoring malformed coral-episode-id metadata");
-            None
-        }
     }
 }
 
@@ -481,18 +462,17 @@ mod tests {
     )]
 
     use coral_api::{
-        CORAL_EPISODE_ID_METADATA_KEY, grpc_response_status_code,
+        grpc_response_status_code,
         v1::{QueryTestFailure, Workspace, query_test_result},
     };
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, annotate_request_context, grpc_method, query_status,
+        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
         query_test_result_to_proto, table_summary_to_proto, table_to_proto,
         workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
-    use crate::episode::EpisodeId;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
@@ -576,47 +556,6 @@ mod tests {
             workspace_name_from_proto(Some(&workspace)).expect("workspace should parse");
 
         assert_eq!(workspace_name.as_str(), "default");
-    }
-
-    #[test]
-    fn annotate_request_context_extracts_valid_episode_id() {
-        let mut request = tonic::codegen::http::Request::builder()
-            .uri("/coral.v1.QueryService/ExecuteSql")
-            .header(CORAL_EPISODE_ID_METADATA_KEY, "ep_123")
-            .body(())
-            .expect("request");
-
-        annotate_request_context(&mut request);
-
-        let episode_id = request
-            .extensions()
-            .get::<EpisodeId>()
-            .expect("episode id extension");
-        assert_eq!(episode_id.as_str(), "ep_123");
-    }
-
-    #[test]
-    fn annotate_request_context_ignores_absent_and_malformed_episode_id() {
-        let mut absent = tonic::codegen::http::Request::builder()
-            .uri("/coral.v1.QueryService/ExecuteSql")
-            .body(())
-            .expect("request");
-        annotate_request_context(&mut absent);
-        assert!(
-            absent.extensions().get::<EpisodeId>().is_none(),
-            "a missing coral-episode-id yields no attribution"
-        );
-
-        let mut malformed = tonic::codegen::http::Request::builder()
-            .uri("/coral.v1.QueryService/ExecuteSql")
-            .header(CORAL_EPISODE_ID_METADATA_KEY, "has space")
-            .body(())
-            .expect("request");
-        annotate_request_context(&mut malformed);
-        assert!(
-            malformed.extensions().get::<EpisodeId>().is_none(),
-            "a malformed id is ignored, not surfaced"
-        );
     }
 
     #[test]

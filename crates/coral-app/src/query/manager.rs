@@ -18,7 +18,6 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
-use crate::episode::EpisodeId;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, SourceCredentialSnapshot,
@@ -84,14 +83,13 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
-        attribution: &QueryAttribution,
+        _attribution: &QueryAttribution,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let trace_sql = list_tables_trace_sql(schema_filter, table_filter);
         run_query_operation(
             QueryOperation::ListTables,
             workspace_name,
             &trace_sql,
-            attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -114,14 +112,13 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
-        attribution: &QueryAttribution,
+        _attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
         let trace_sql = list_catalog_trace_sql(schema_filter);
         run_query_operation(
             QueryOperation::ListCatalog,
             workspace_name,
             &trace_sql,
-            attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -155,14 +152,13 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_name: &str,
         table_name: &str,
-        attribution: &QueryAttribution,
+        _attribution: &QueryAttribution,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
         let trace_sql = describe_table_trace_sql(schema_name, table_name);
         run_query_operation(
             QueryOperation::DescribeTable,
             workspace_name,
             &trace_sql,
-            attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -185,13 +181,12 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
-        attribution: &QueryAttribution,
+        _attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
-            attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -214,13 +209,12 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
-        attribution: &QueryAttribution,
+        _attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
             sql,
-            attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -511,7 +505,6 @@ async fn run_query_operation<T, Fut, RowCount>(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
-    episode_id: Option<&EpisodeId>,
     query: Fut,
     row_count: RowCount,
     record_success_fields: impl FnOnce(&tracing::Span, &T),
@@ -521,7 +514,7 @@ where
     RowCount: FnOnce(&T) -> Option<u64>,
 {
     let started_at = Instant::now();
-    let query_span = create_query_span(operation, workspace_name, sql, episode_id);
+    let query_span = create_query_span(operation, workspace_name, sql);
     let result = query.instrument(query_span.clone()).await;
 
     let row_count = result.as_ref().ok().and_then(row_count);
@@ -559,7 +552,6 @@ fn create_query_span(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
-    episode_id: Option<&EpisodeId>,
 ) -> tracing::Span {
     let operation = operation.as_str();
     let span = tracing::info_span!(
@@ -568,10 +560,6 @@ fn create_query_span(
         operation = operation,
         workspace = tracing::field::Empty,
         sql = %sql,
-        // Trajectory-memory attribution: present only when the caller tagged the
-        // call with a valid `coral-episode-id`. Joins to the intent registered by
-        // `OpenEpisode`; never carries the intent text itself.
-        episode.id = tracing::field::Empty,
         row_count = tracing::field::Empty,
         coral.query.sources = tracing::field::Empty,
         coral.query.tables = tracing::field::Empty,
@@ -581,9 +569,6 @@ fn create_query_span(
         error.type = tracing::field::Empty,
         exception.message = tracing::field::Empty,
     );
-    if let Some(episode_id) = episode_id {
-        span.record("episode.id", episode_id.as_str());
-    }
     span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
     span
 }
@@ -823,86 +808,6 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn execute_sql_stamps_episode_id_on_query_span() {
-        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
-        use coral_api::v1::{ExecuteSqlRequest, Workspace};
-        use opentelemetry::trace::TracerProvider as _;
-        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-        use tonic::Request;
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        use crate::query::service::QueryService;
-
-        // Capture finished spans into memory via a scoped subscriber so the
-        // assertion exercises the real metadata -> manager -> span path end to end.
-        let exporter = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter.clone())
-            .build();
-        let tracer = provider.tracer("episode-attribution-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let service = QueryService::new(fixture.manager.clone());
-
-        let mut request = Request::new(ExecuteSqlRequest {
-            workspace: Some(Workspace {
-                name: WorkspaceName::default().as_str().to_string(),
-            }),
-            sql: "SELECT 1".to_string(),
-        });
-        request
-            .extensions_mut()
-            .insert(crate::episode::EpisodeId::parse("ep_trace_1").expect("episode id"));
-
-        // The query may fail (the fixture has no installed sources); the
-        // `coral.query` span is created and stamped before execution regardless.
-        let _result = service.execute_sql(request).await;
-
-        provider.force_flush().expect("flush spans");
-        let spans = exporter.get_finished_spans().expect("finished spans");
-        let query_span = spans
-            .iter()
-            .find(|span| span.name == "coral.query")
-            .expect("coral.query span recorded");
-        let episode_attr = query_span
-            .attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == "episode.id")
-            .expect("episode.id attribute present");
-        assert_eq!(episode_attr.value.as_str(), "ep_trace_1");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn catalog_service_stamps_episode_id_on_query_spans() {
-        use opentelemetry::trace::TracerProvider as _;
-        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        use crate::catalog::service::CatalogService;
-
-        let exporter = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter.clone())
-            .build();
-        let tracer = provider.tracer("catalog-episode-attribution-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let service = CatalogService::new(fixture.manager.clone());
-
-        call_catalog_tools_with_episode(&service).await;
-
-        provider.force_flush().expect("flush spans");
-        let spans = exporter.get_finished_spans().expect("finished spans");
-        assert_catalog_episode_spans(&spans);
-    }
-
     #[test]
     fn query_provenance_records_trace_attributes() {
         use opentelemetry::trace::TracerProvider as _;
@@ -922,7 +827,6 @@ mod tests {
             QueryOperation::ExecuteSql,
             &WorkspaceName::default(),
             "SELECT title FROM github.issues",
-            None,
         );
         let provenance = QueryExecutionProvenance::new(
             "SELECT title FROM github.issues",
@@ -964,115 +868,6 @@ mod tests {
                 r#"[{"source_name":"github","schema_name":"github","function_name":"search_issues"}]"#
                     .to_string()
             )
-        );
-    }
-
-    async fn call_catalog_tools_with_episode(service: &crate::catalog::service::CatalogService) {
-        use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
-        use coral_api::v1::{
-            DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-            SearchCatalogRequest,
-        };
-
-        let _list_catalog_result = service
-            .list_catalog(tagged_catalog_request(ListCatalogRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: String::new(),
-                kind: 0,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
-            .await;
-        let _search_catalog_result = service
-            .search_catalog(tagged_catalog_request(SearchCatalogRequest {
-                workspace: Some(default_workspace_proto()),
-                pattern: "tables".to_string(),
-                ignore_case: true,
-                schema_name: String::new(),
-                kind: 0,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
-            .await;
-        let _describe_table_result = service
-            .describe_table(tagged_catalog_request(DescribeTableRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: "coral".to_string(),
-                table_name: "tables".to_string(),
-            }))
-            .await;
-        let _list_columns_result = service
-            .list_columns(tagged_catalog_request(ListColumnsRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: "coral".to_string(),
-                table_name: "tables".to_string(),
-                pattern: None,
-                ignore_case: true,
-                required_only: false,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
-            .await;
-    }
-
-    fn default_workspace_proto() -> coral_api::v1::Workspace {
-        coral_api::v1::Workspace {
-            name: WorkspaceName::default().as_str().to_string(),
-        }
-    }
-
-    fn tagged_catalog_request<T>(message: T) -> tonic::Request<T> {
-        let mut request = tonic::Request::new(message);
-        request
-            .extensions_mut()
-            .insert(crate::episode::EpisodeId::parse("ep_catalog_trace").expect("episode id"));
-        request
-    }
-
-    fn assert_catalog_episode_spans(spans: &[opentelemetry_sdk::trace::SpanData]) {
-        let attributed_query_spans = spans
-            .iter()
-            .filter(|span| {
-                span.name == "coral.query"
-                    && span.attributes.iter().any(|attribute| {
-                        attribute.key.as_str() == "episode.id"
-                            && attribute.value.as_str() == "ep_catalog_trace"
-                    })
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            attributed_query_spans.len() >= 4,
-            "each catalog service call should stamp a backend query span: {spans:?}"
-        );
-        let operations = attributed_query_spans
-            .iter()
-            .flat_map(|span| {
-                span.attributes
-                    .iter()
-                    .filter(|attribute| attribute.key.as_str() == "operation")
-                    .map(|attribute| attribute.value.as_str().to_string())
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            operations
-                .iter()
-                .any(|operation| operation == "list_catalog")
-        );
-        assert!(
-            operations
-                .iter()
-                .any(|operation| operation == "describe_table")
-        );
-        assert!(
-            operations
-                .iter()
-                .any(|operation| operation == "list_tables")
         );
     }
 

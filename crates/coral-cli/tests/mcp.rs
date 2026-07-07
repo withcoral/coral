@@ -728,51 +728,6 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
--> Result<(), Box<dyn std::error::Error>> {
-    let server = MockServer::start().await;
-    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
-
-    let tools = client.list_all_tools().await?;
-    assert_eq!(
-        tools
-            .iter()
-            .map(|tool| tool.name.as_ref())
-            .collect::<Vec<_>>(),
-        vec![
-            "sql",
-            "list_catalog",
-            "search_catalog",
-            "describe_table",
-            "list_columns",
-            "open_episode"
-        ]
-    );
-    for tool in tools
-        .iter()
-        .filter(|tool| tool.name.as_ref() != "open_episode")
-    {
-        assert!(
-            tool_input_properties(tool).contains_key("episode_id"),
-            "tool '{}' should advertise optional episode_id",
-            tool.name
-        );
-    }
-    let open_episode = tools
-        .iter()
-        .find(|tool| tool.name.as_ref() == "open_episode")
-        .expect("open_episode tool should be listed");
-    assert!(
-        tool_input_properties(open_episode).contains_key("parent_episode_id"),
-        "open_episode should accept an optional parent_episode_id"
-    );
-
-    client.cancel().await?;
-    server.shutdown().await;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_feature_config_enables_feedback_tool() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = MockServer::start().await;
@@ -789,32 +744,6 @@ feedback = true
     assert!(
         tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
         "feedback tool should be listed when [features].feedback is true"
-    );
-
-    client.cancel().await?;
-    server.shutdown().await;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_feature_config_enables_open_episode_tool()
--> Result<(), Box<dyn std::error::Error>> {
-    let server = MockServer::start().await;
-    write_config(
-        &server,
-        r"
-[features]
-episodes = true
-",
-    )?;
-    let client = start_mcp_client(&server).await?;
-
-    let tools = client.list_all_tools().await?;
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool.name.as_ref() == "open_episode"),
-        "open_episode tool should be listed when [features].episodes is true"
     );
 
     client.cancel().await?;
@@ -1335,40 +1264,6 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
         requests
             .iter()
             .any(|request| request.sql == "SELECT 'second' AS label")
-    );
-
-    client.cancel().await?;
-    server.shutdown().await;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_sql_batch_propagates_episode_id_to_each_query()
--> Result<(), Box<dyn std::error::Error>> {
-    let server = MockServer::start().await;
-    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
-
-    let sql = structured_tool_content(
-        &client,
-        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "queries": [
-                "SELECT 'first' AS label",
-                "SELECT 'second' AS label"
-            ],
-            "episode_id": "ep_batch"
-        }))),
-    )
-    .await?;
-    assert_eq!(sql["total_count"], 2);
-    assert_eq!(sql["success_count"], 2);
-
-    let episode_ids = server.execute_sql_episode_ids();
-    assert_eq!(episode_ids.len(), 2);
-    assert!(
-        episode_ids
-            .iter()
-            .all(|episode_id| episode_id.as_deref() == Some("ep_batch")),
-        "expected every batch query to carry coral-episode-id, got {episode_ids:?}"
     );
 
     client.cancel().await?;

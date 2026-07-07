@@ -1325,7 +1325,6 @@ dependencies = [
  "opentelemetry_sdk",
  "serde_json",
  "thiserror",
- "tokio",
  "tonic",
  "tonic-types",
  "tracing",

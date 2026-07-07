@@ -4,7 +4,6 @@ mod arguments;
 mod catalog;
 mod context;
 mod discovery;
-mod episode;
 mod errors;
 mod feedback;
 mod resources;
@@ -21,9 +20,6 @@ pub(crate) use catalog::{
     list_columns_value, search_catalog_arguments, search_catalog_value,
 };
 pub(crate) use context::ToolDescriptionContext;
-pub(crate) use episode::{
-    EpisodeId, EpisodeOpenedValue, open_episode_arguments, optional_episode_id_argument,
-};
 pub(crate) use errors::{status_to_error_data, tool_error_from_status, tool_error_result};
 pub(crate) use feedback::{FeedbackStoredValue, feedback_arguments};
 pub(crate) use resources::{
