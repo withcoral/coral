@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,7 +9,7 @@ use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
     DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspacePaths, WorkspaceRecord,
-    WorkspaceStore,
+    WorkspaceStore, model::WorkspaceLifecycleGuard,
 };
 
 /// App-owned workspace lifecycle behavior.
@@ -65,13 +64,13 @@ impl WorkspaceManager {
         self.store.list_workspaces()
     }
 
-    pub(crate) fn create_workspace(
+    pub(crate) async fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let _lifecycle_guard = self.lock_workspace_lifecycle().await?;
         let created = self.store.create_workspace(workspace_name)?;
-        if let Err(error) = self.ensure_workspace_record(&created.name) {
+        if let Err(error) = self.ensure_workspace_record(&created.name).await {
             if let Err(rollback_error) = self.store.delete_workspace(&created.name) {
                 warn!(
                     workspace = %created.name,
@@ -94,12 +93,13 @@ impl WorkspaceManager {
         }
 
         let (deleted, workspace_dir_backup) = {
-            let _lifecycle_guard = self.lifecycle_lock.lock();
+            let _lifecycle_guard = self.lock_workspace_lifecycle().await?;
             let deleted = self
                 .store
                 .delete_workspace(workspace_name)?
                 .ok_or_else(|| AppError::WorkspaceNotFound(workspace_name.to_string()))?;
-            self.delete_workspace_record(&deleted.workspace.name)?;
+            self.delete_workspace_record(&deleted.workspace.name)
+                .await?;
             self.remove_deleted_workspace_credentials(&deleted);
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
@@ -184,28 +184,37 @@ impl WorkspaceManager {
         self.paths.workspace_dir(workspace_name)
     }
 
-    fn ensure_workspace_record(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
-        let db = Arc::clone(&self.db);
-        let workspace_name = workspace_name.clone();
-        run_workspace_db_operation(async move {
-            let mut tx = db.begin().await?;
-            tx.workspaces()
-                .ensure(workspace_name.as_str(), now_unix_nanos_i64()?)
-                .await?;
-            tx.commit().await?;
-            Ok(())
-        })
+    async fn lock_workspace_lifecycle(&self) -> Result<WorkspaceLifecycleGuard, AppError> {
+        let lifecycle_lock = self.lifecycle_lock.clone();
+        tokio::task::spawn_blocking(move || lifecycle_lock.lock())
+            .await
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "workspace lifecycle lock task failed: {error}"
+                ))
+            })
     }
 
-    fn delete_workspace_record(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
-        let db = Arc::clone(&self.db);
-        let workspace_name = workspace_name.clone();
-        run_workspace_db_operation(async move {
-            let mut tx = db.begin().await?;
-            tx.workspaces().delete(workspace_name.as_str()).await?;
-            tx.commit().await?;
-            Ok(())
-        })
+    async fn ensure_workspace_record(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+        tx.workspaces()
+            .ensure(workspace_name.as_str(), now_unix_nanos_i64()?)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn delete_workspace_record(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+        tx.workspaces().delete(workspace_name.as_str()).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn prune_deleted_workspace_traces(&self, workspace_name: &WorkspaceName) {
@@ -221,39 +230,6 @@ impl WorkspaceManager {
             );
         }
     }
-}
-
-fn run_workspace_db_operation<T, F>(operation: F) -> Result<T, AppError>
-where
-    T: Send + 'static,
-    F: Future<Output = Result<T, AppError>> + Send + 'static,
-{
-    fn run_on_runtime<T, F>(operation: F) -> Result<T, AppError>
-    where
-        F: Future<Output = Result<T, AppError>>,
-    {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!(
-                    "failed to create workspace database runtime: {error}"
-                ))
-            })?;
-        runtime.block_on(operation)
-    }
-
-    if tokio::runtime::Handle::try_current().is_ok() {
-        return std::thread::spawn(move || run_on_runtime(operation))
-            .join()
-            .map_err(|_panic| {
-                AppError::FailedPrecondition(
-                    "workspace database operation thread panicked".to_string(),
-                )
-            })?;
-    }
-
-    run_on_runtime(operation)
 }
 
 #[cfg(test)]
@@ -319,6 +295,7 @@ mod tests {
 
         manager
             .create_workspace(&workspace_name)
+            .await
             .expect("create workspace");
         store
             .upsert_source(&workspace_name, source)
