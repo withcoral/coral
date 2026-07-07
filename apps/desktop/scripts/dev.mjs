@@ -1,8 +1,10 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const desktopRoot = resolve(import.meta.dirname, '..')
 const repoRoot = resolve(desktopRoot, '..', '..')
+const electronDir = resolve(desktopRoot, 'node_modules', 'electron')
 const electronViteBin = resolve(
   desktopRoot,
   'node_modules',
@@ -16,6 +18,29 @@ const electronViteBin = resolve(
 // `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back to the
 // default rather than propagating an empty port to the sidecar and Vite proxy.
 const sidecarPort = process.env.CORAL_DEV_SIDECAR_PORT || '8778'
+
+// A missing electron/path.txt (skipped/interrupted postinstall binary download)
+// makes electron-vite die with a cryptic "Electron uninstall". Re-run the
+// downloader once to self-heal before starting the dev servers.
+function electronBinaryReady() {
+  // Mirror electron-vite's resolver: an explicit ELECTRON_EXEC_PATH wins and
+  // needs no downloaded binary. (It ignores ELECTRON_OVERRIDE_DIST_PATH.)
+  if (process.env.ELECTRON_EXEC_PATH) return true
+  const pathFile = resolve(electronDir, 'path.txt')
+  if (!existsSync(pathFile)) return false
+  const binary = readFileSync(pathFile, 'utf8').trim()
+  return binary !== '' && existsSync(resolve(electronDir, 'dist', binary))
+}
+
+function ensureElectronBinary() {
+  if (electronBinaryReady()) return
+  console.error('[desktop-dev] Electron binary missing — downloading it…')
+  spawnSync(process.execPath, [resolve(electronDir, 'install.js')], { cwd: electronDir, stdio: 'inherit' })
+  if (!electronBinaryReady()) {
+    console.error('[desktop-dev] Electron binary still unavailable. Run `node node_modules/electron/install.js` in apps/desktop; if it keeps failing the download is likely blocked or install ran with --ignore-scripts.')
+    process.exit(1)
+  }
+}
 
 const children = new Set()
 let shuttingDown = false
@@ -89,6 +114,10 @@ function waitForAppUrl(child) {
 
 process.once('SIGINT', () => shutdown('SIGINT'))
 process.once('SIGTERM', () => shutdown('SIGTERM'))
+
+// Fix a missing Electron binary before starting the (slow) dev servers, so the
+// run doesn't get most of the way up only to die on "Electron uninstall".
+ensureElectronBinary()
 
 const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/reef'], {
   cwd: repoRoot,
