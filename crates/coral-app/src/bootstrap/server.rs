@@ -401,6 +401,7 @@ impl ServerBuilder {
             credential_manager.clone(),
             layout.clone(),
             workspace_lifecycle_lock.clone(),
+            Arc::clone(&coral_db),
             diagnostic_reporter.clone(),
         )
         .with_pool_registry(Arc::clone(&workspace_pool_registry))
