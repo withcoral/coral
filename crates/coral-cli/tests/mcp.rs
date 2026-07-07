@@ -22,7 +22,6 @@ use coral_api::v1::{
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, default_workspace};
 use harness::{MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name};
-use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},

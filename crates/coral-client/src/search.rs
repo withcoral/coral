@@ -338,7 +338,6 @@ impl<'a> From<&'a SearchTableColumnPreviewColumn> for TableColumnPreviewColumnVa
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct ColumnHintValue<'a> {
-    workspace: Option<&'a str>,
     schema_name: &'a str,
     surface_name: &'a str,
     surface_kind: &'static str,
@@ -354,10 +353,6 @@ struct ColumnHintValue<'a> {
 impl<'a> From<&'a ColumnHint> for ColumnHintValue<'a> {
     fn from(hint: &'a ColumnHint) -> Self {
         Self {
-            workspace: hint
-                .workspace
-                .as_ref()
-                .map(|workspace| workspace.name.as_str()),
             schema_name: &hint.schema_name,
             surface_name: &hint.surface_name,
             surface_kind: surface_kind_name(hint.surface_kind),

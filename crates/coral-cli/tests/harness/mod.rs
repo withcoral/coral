@@ -390,7 +390,6 @@ fn mock_search_response() -> SearchResponse {
             SearchResult {
                 provider: SearchProvider::CatalogMetadata as i32,
                 payload: Some(search_result::Payload::ColumnHint(ColumnHint {
-                    workspace: Some(workspace()),
                     schema_name: "local_messages".to_string(),
                     surface_name: "messages".to_string(),
                     surface_kind: SearchSurfaceKind::Table as i32,
