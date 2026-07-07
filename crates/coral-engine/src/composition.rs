@@ -27,6 +27,10 @@ pub struct EngineExtensions {
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    /// Cross-build cache for backend source registrations. A long-lived owner
+    /// shares one cache across runtime builds so backends that report a
+    /// registration fingerprint skip re-registering when nothing changed.
+    pub registration_cache: Option<Arc<crate::RegistrationCache>>,
 }
 
 /// Neutral policy decision for one source registration failure.

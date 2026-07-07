@@ -67,6 +67,8 @@ pub use composition::{
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
+pub use runtime::registration_cache::RegistrationCache;
+
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,

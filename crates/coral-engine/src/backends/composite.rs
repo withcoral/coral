@@ -46,6 +46,17 @@ impl CompiledBackendSource for CompositeCompiledSource {
         Ok(())
     }
 
+    fn registration_fingerprint(&self) -> Option<String> {
+        // Cacheable only when every component is: one uncacheable component
+        // makes the composed registration unreplayable.
+        let mut combined = String::new();
+        for component in &self.components {
+            combined.push_str(&component.registration_fingerprint()?);
+            combined.push('\n');
+        }
+        Some(combined)
+    }
+
     async fn register(
         &self,
         ctx: &SessionContext,
