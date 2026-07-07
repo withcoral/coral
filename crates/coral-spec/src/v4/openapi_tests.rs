@@ -1049,6 +1049,29 @@ paths:
                     type: object
                     properties:
                       nextCursor: {type: string}
+  /pagination-token:
+    get:
+      operationId: pagination-token/list
+      parameters:
+        - {name: max_results, in: query, schema: {type: integer, default: 50}}
+        - {name: pagination_token, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                  meta:
+                    type: object
+                    properties:
+                      next_token: {type: string}
   /link:
     get:
       operationId: link/list
@@ -1185,6 +1208,29 @@ paths:
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
         Some("limit")
+    );
+
+    let pagination_token = &rest_execution(
+        operations
+            .get("pagination_token_list")
+            .expect("pagination token"),
+    )
+    .pagination;
+    assert_eq!(pagination_token.mode, PaginationMode::CursorQuery);
+    assert_eq!(
+        pagination_token.cursor_param.as_deref(),
+        Some("pagination_token")
+    );
+    assert_eq!(
+        pagination_token.response_cursor_path,
+        ["meta", "next_token"]
+    );
+    assert_eq!(
+        pagination_token
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("max_results")
     );
 
     let link = &rest_execution(operations.get("link_list").expect("link")).pagination;

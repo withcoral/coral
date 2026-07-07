@@ -348,6 +348,7 @@ fn detect_cursor_query_pagination(
             "nextpagetoken",
             "nexttoken",
             "page",
+            "paginationtoken",
             "pagetoken",
             "startingafter",
         ],
