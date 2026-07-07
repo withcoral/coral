@@ -42,9 +42,10 @@ use serde_json::Value;
 
 pub use client::{
     AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SearchClient,
-    SourceClient, WorkspaceClient, default_workspace, workspace,
+    SourceClient, TaskClient, WorkspaceClient, default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
+pub use propagation::with_task_metadata;
 pub use search::{
     SearchResponseValue, format_schema_table_equivalent, format_search_response_json,
     format_search_response_text, format_sql_identifier, minimal_table_function_call_example,
