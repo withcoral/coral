@@ -51,8 +51,10 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
         exception.message = field::Empty,
         mcp.method = "tools/call",
         mcp.tool.name = tool_name,
+        mcp.tool.intent = field::Empty,
         otel.kind = "server",
         otel.name = "coral.mcp.call_tool",
+        task.id = field::Empty,
         status = field::Empty,
     );
     apply_trace_parent(&span, trace_parent);
@@ -127,6 +129,14 @@ pub(crate) fn record_sql_batch_partial_failure(span: &tracing::Span) {
 pub(crate) fn record_success(span: &tracing::Span) {
     span.record("status", "ok");
     span.set_status(OtelStatus::Ok);
+}
+
+pub(crate) fn record_task_id(span: &tracing::Span, task_id: &str) {
+    span.record("task.id", task_id);
+}
+
+pub(crate) fn record_tool_intent(span: &tracing::Span, intent: &str) {
+    span.record("mcp.tool.intent", intent);
 }
 
 fn record_error(span: &tracing::Span, error_type: &str, message: impl std::fmt::Display) {

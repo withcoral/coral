@@ -295,6 +295,105 @@ fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
         .expect("tool should be listed")
 }
 
+fn tool_input_properties(tool: &Tool) -> &Map<String, Value> {
+    tool.input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("tool '{}' should advertise input properties", tool.name))
+}
+
+fn assert_tool_advertises_task_context(tool: &Tool) {
+    let properties = tool_input_properties(tool);
+    let task_id_schema = properties
+        .get("task_id")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise task_id", tool.name));
+    assert_task_id_schema(task_id_schema, tool.name.as_ref());
+    let intent_schema = properties
+        .get("intent")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise intent", tool.name));
+    assert_intent_schema(intent_schema, tool.name.as_ref());
+    let required = tool
+        .input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("tool '{}' should advertise required fields", tool.name));
+    assert!(
+        required
+            .iter()
+            .any(|field| field.as_str() == Some("task_id")),
+        "tool '{}' should require task_id",
+        tool.name
+    );
+    assert!(
+        required
+            .iter()
+            .any(|field| field.as_str() == Some("intent")),
+        "tool '{}' should require intent",
+        tool.name
+    );
+}
+
+fn assert_task_id_schema(schema: &Value, label: &str) {
+    assert_eq!(
+        schema.get("format").and_then(Value::as_str),
+        Some("uuid"),
+        "{label} task id schema should advertise UUID format"
+    );
+    let compiled = jsonschema::validator_for(schema)
+        .unwrap_or_else(|error| panic!("{label} task id schema should compile: {error}"));
+    let valid = json!("550e8400-e29b-41d4-a716-446655440000");
+    let details = validation_error_details(&compiled, &valid);
+    assert!(
+        details.is_empty(),
+        "{label} task id schema rejected valid value {valid}: {details}"
+    );
+    for invalid in [
+        json!(null),
+        json!(""),
+        json!("task-1"),
+        json!("550e8400e29b41d4a716446655440000"),
+        json!("not-a-uuid"),
+    ] {
+        assert!(
+            !compiled.is_valid(&invalid),
+            "{label} task id schema accepted invalid value {invalid}"
+        );
+    }
+}
+
+fn assert_intent_schema(schema: &Value, label: &str) {
+    let compiled = jsonschema::validator_for(schema)
+        .unwrap_or_else(|error| panic!("{label} intent schema should compile: {error}"));
+    let valid = json!("Find relevant customer tables");
+    let details = validation_error_details(&compiled, &valid);
+    assert!(
+        details.is_empty(),
+        "{label} intent schema rejected valid value {valid}: {details}"
+    );
+    for invalid in [json!(null), json!(""), json!(" ")] {
+        assert!(
+            !compiled.is_valid(&invalid),
+            "{label} intent schema accepted invalid value {invalid}"
+        );
+    }
+}
+
+fn assert_tool_omits_task_id(tool: &Tool) {
+    assert!(
+        !tool_input_properties(tool).contains_key("task_id"),
+        "tool '{}' should not advertise task_id by default",
+        tool.name
+    );
+}
+
+fn assert_tool_omits_intent(tool: &Tool) {
+    assert!(
+        !tool_input_properties(tool).contains_key("intent"),
+        "tool '{}' should not advertise task intent by default",
+        tool.name
+    );
+}
+
 fn assert_matches_output_schema(tool: &Tool, value: &Value) {
     let schema = Value::Object(
         tool.output_schema
@@ -342,6 +441,276 @@ fn assert_tool_error_text_contains(result: &CallToolResult, expected: &str) {
         text.contains(expected),
         "tool error text should contain {expected:?}, got {text:?}"
     );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This end-to-end MCP task test verifies feature-gated tool advertisement, persistence, tagged follow-up calls, and validation together."
+)]
+async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "search",
+            "list_catalog",
+            "describe_table",
+            "list_columns",
+            "start_task",
+            "end_task"
+        ]
+    );
+    for name in [
+        "sql",
+        "search",
+        "list_catalog",
+        "describe_table",
+        "list_columns",
+    ] {
+        assert_tool_advertises_task_context(tool_by_name(&tools, name));
+    }
+    let start_task_tool = tool_by_name(&tools, "start_task");
+    assert!(!tool_input_properties(start_task_tool).contains_key("task_id"));
+    assert!(
+        !tool_input_properties(start_task_tool).contains_key("initialize_session"),
+        "start_task should not accept initialize_session"
+    );
+    let start_annotations = start_task_tool
+        .annotations
+        .as_ref()
+        .expect("start task annotations");
+    assert_eq!(start_annotations.read_only_hint, Some(false));
+    assert_eq!(start_annotations.destructive_hint, Some(false));
+    assert_eq!(start_annotations.idempotent_hint, Some(false));
+    assert_eq!(start_annotations.open_world_hint, Some(false));
+    let end_task_tool = tool_by_name(&tools, "end_task");
+    assert!(tool_input_properties(end_task_tool).contains_key("task_id"));
+    assert!(!tool_input_properties(end_task_tool).contains_key("intent"));
+
+    let root = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect("start task");
+    assert_eq!(root.is_error, Some(false));
+    assert_structured_content_only(&root);
+    let root = root.structured_content.expect("root structured content");
+    assert_matches_output_schema(start_task_tool, &root);
+    let root_task_id = root["task_id"].as_str().expect("root task id").to_string();
+    uuid::Uuid::parse_str(&root_task_id).expect("task id is a UUID");
+    assert_eq!(root["message"], "Task started.");
+    assert!(
+        root["instructions"]
+            .as_str()
+            .expect("instructions")
+            .contains("end_task")
+    );
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1 AS ok"],
+                "intent": "Verify task-scoped SQL execution",
+                "task_id": root_task_id
+            }))),
+        )
+        .await
+        .expect("tagged sql");
+    assert_eq!(sql.is_error, Some(false));
+    assert_structured_content_only(&sql);
+    assert_eq!(
+        sql.structured_content.expect("sql structured")["results"][0]["rows"][0]["ok"],
+        "1"
+    );
+
+    let end = client
+        .call_tool(
+            CallToolRequestParams::new("end_task").with_arguments(json_object(&json!({
+                "task_id": root_task_id,
+                "task_status": "success"
+            }))),
+        )
+        .await
+        .expect("end task");
+    assert_eq!(end.is_error, Some(false));
+    assert_structured_content_only(&end);
+    let end = end.structured_content.expect("end structured content");
+    assert_matches_output_schema(end_task_tool, &end);
+    assert_eq!(end["success"], "Task ended.");
+    assert_eq!(end["task_status"], "success");
+
+    let invalid_task_id = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1"],
+                "intent": "Validate bad task id handling",
+                "task_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid task_id should fail before query dispatch");
+    assert!(
+        invalid_task_id
+            .to_string()
+            .contains("argument 'task_id' must be a UUID")
+    );
+
+    let missing_task_id = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1"],
+                "intent": "Validate missing task id handling"
+            }))),
+        )
+        .await
+        .expect_err("missing task_id should fail before query dispatch");
+    assert!(
+        missing_task_id
+            .to_string()
+            .contains("missing string argument 'task_id'")
+    );
+
+    let missing_tool_intent = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1"],
+                "task_id": root_task_id
+            }))),
+        )
+        .await
+        .expect_err("missing intent should fail before query dispatch");
+    assert!(
+        missing_tool_intent
+            .to_string()
+            .contains("missing string argument 'intent'")
+    );
+
+    let invalid_initializer = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": "Open another task",
+                "initialize_session": true
+            }))),
+        )
+        .await
+        .expect_err("old initializer should fail before starting a task");
+    assert!(
+        invalid_initializer
+            .to_string()
+            .contains("unknown argument 'initialize_session'")
+    );
+
+    let tasks_path = temp
+        .path()
+        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
+    let raw = fs::read_to_string(&tasks_path).expect("task file should exist");
+    let records = raw
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 2);
+    let root_record = records
+        .iter()
+        .find(|record| record["task_id"] == root_task_id.as_str())
+        .expect("root task record");
+    assert_eq!(root_record["workspace"], "default");
+    assert_eq!(root_record["intent"], "Investigate customer renewal risk");
+    let end_record = records
+        .iter()
+        .find(|record| record["task_id"] == root_task_id.as_str() && record["event"] == "end")
+        .expect("task end record");
+    assert_eq!(end_record["task_status"], "success");
+
+    let blank_intent = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": " "
+            }))),
+        )
+        .await
+        .expect_err("blank intent should fail before persistence");
+    assert!(
+        blank_intent
+            .to_string()
+            .contains("missing string argument 'intent'")
+    );
+    let raw_after_error = fs::read_to_string(&tasks_path).expect("task file should exist");
+    assert_eq!(raw_after_error.lines().count(), 2);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_task_tools_are_disabled_by_default() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "start_task" && tool.name.as_ref() != "end_task"),
+        "task tools should not be listed by default"
+    );
+    for tool in &tools {
+        assert_tool_omits_task_id(tool);
+        assert_tool_omits_intent(tool);
+    }
+
+    let start_task = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect_err("start_task should not be exposed by default");
+    assert!(
+        start_task
+            .to_string()
+            .contains("tool 'start_task' not found")
+    );
+    let open_episode = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect_err("open_episode should not be exposed");
+    assert!(
+        open_episode
+            .to_string()
+            .contains("tool 'open_episode' not found")
+    );
+    assert!(
+        !temp
+            .path()
+            .join("coral-config/workspaces/default/tasks/tasks.jsonl")
+            .exists()
+    );
+
+    session.shutdown().await;
 }
 
 #[tokio::test]
@@ -1093,6 +1462,72 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     )
     .expect("feedback file should still exist");
     assert_eq!(raw_after_error.lines().count(), 1);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_feedback_tool_accepts_task_id_when_tasks_enabled() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            tasks_enabled: true,
+            feedback_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_tool_advertises_task_context(tool_by_name(&tools, "feedback"));
+
+    let feedback = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish a task-scoped task",
+                "tried": "Started a task and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "intent": "Record blocked final task step",
+                "task_id": "550e8400-e29b-41d4-a716-446655440000"
+            }))),
+        )
+        .await
+        .expect("task-tagged feedback");
+    assert_eq!(feedback.is_error, Some(false));
+    assert_eq!(
+        feedback.structured_content.expect("structured content")["message"],
+        "Feedback report stored."
+    );
+
+    let raw = fs::read_to_string(
+        temp.path()
+            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+    )
+    .expect("feedback file should exist");
+    let records = raw.lines().collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
+    assert_eq!(record["task_id"], "550e8400-e29b-41d4-a716-446655440000");
+
+    let invalid_task_id = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish a task-scoped task",
+                "tried": "Started a task and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "intent": "Validate bad feedback task id handling",
+                "task_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid task_id should fail before feedback dispatch");
+    assert!(
+        invalid_task_id
+            .to_string()
+            .contains("argument 'task_id' must be a UUID")
+    );
 
     session.shutdown().await;
 }

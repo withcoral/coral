@@ -7,6 +7,8 @@ pub(crate) enum ToolName {
     ListCatalog,
     DescribeTable,
     ListColumns,
+    StartTask,
+    EndTask,
     Feedback,
 }
 
@@ -18,6 +20,8 @@ impl ToolName {
             Self::ListCatalog => "list_catalog",
             Self::DescribeTable => "describe_table",
             Self::ListColumns => "list_columns",
+            Self::StartTask => "start_task",
+            Self::EndTask => "end_task",
             Self::Feedback => "feedback",
         }
     }
@@ -36,6 +40,8 @@ impl FromStr for ToolName {
             "list_catalog" => Ok(Self::ListCatalog),
             "describe_table" => Ok(Self::DescribeTable),
             "list_columns" => Ok(Self::ListColumns),
+            "start_task" => Ok(Self::StartTask),
+            "end_task" => Ok(Self::EndTask),
             "feedback" => Ok(Self::Feedback),
             _ => Err(UnknownToolName),
         }
