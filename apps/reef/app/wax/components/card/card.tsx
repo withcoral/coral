@@ -1,7 +1,6 @@
 import classNames from 'classnames'
-import { ReactNode } from 'react'
+import React, { ElementType, ReactNode } from 'react'
 
-import { Button } from '@/wax/components'
 import { Pill, type PillProps } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
@@ -11,15 +10,29 @@ export type CardHeaderPill = Omit<PillProps, 'children' | 'size'> & {
   label: string
 }
 
-export interface CardProps {
+interface CardBaseProps {
+  className?: string
   description: string
   headerPill?: CardHeaderPill
   icon?: ReactNode
-  onSelect?: () => void
+  interactive?: boolean
   title: string
 }
 
-export function Card({ description, headerPill, icon, onSelect, title }: CardProps) {
+export type CardProps<T extends ElementType = 'div'> = CardBaseProps &
+  Omit<React.ComponentPropsWithoutRef<T>, 'as' | keyof CardBaseProps> & {
+    as?: T
+  }
+
+export function Card<T extends ElementType = 'div'>(
+  props: CardProps<T> & { ref?: React.Ref<HTMLElement> },
+) {
+  const { as, className, description, headerPill, icon, interactive, ref, title, ...rest } = props
+
+  const Component = (as ?? 'div') as ElementType
+  const type = 'type' in props ? props.type! : 'button'
+  const isInteractive = interactive ?? (as !== undefined || 'onClick' in props)
+
   const content = (
     <>
       <span className={styles.header}>
@@ -35,19 +48,14 @@ export function Card({ description, headerPill, icon, onSelect, title }: CardPro
     </>
   )
 
-  if (onSelect) {
-    return (
-      <Button.Container
-        className={classNames(styles.card, styles.cardButton)}
-        onClick={onSelect}
-        variant="bare"
-      >
-        {content}
-      </Button.Container>
-    )
+  const componentProps = {
+    className: classNames(styles.card, { [styles.cardButton]: isInteractive }, className),
+    ref,
+    ...rest,
+    ...(Component === 'button' && { type }),
   }
 
-  return <div className={styles.card}>{content}</div>
+  return <Component {...componentProps}>{content}</Component>
 }
 
 function HeaderPill({ className, label, ...props }: CardHeaderPill) {

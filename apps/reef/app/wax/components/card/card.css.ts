@@ -17,6 +17,9 @@ export const card = style({
 
 export const cardButton = style({
   alignItems: 'stretch',
+  color: 'inherit',
+  cursor: 'pointer',
+  font: 'inherit',
   justifyContent: 'flex-start',
   textAlign: 'left',
   selectors: {

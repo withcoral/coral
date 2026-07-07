@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
+import { Link, MemoryRouter } from 'react-router'
 import { fn } from 'storybook/test'
 
 import { Icon } from '@/wax/components/icon'
@@ -75,5 +76,23 @@ export const Default: Story = {}
 export const Interactive: Story = {
   args: {
     onSelect: fn(),
+  },
+}
+
+export const AsReactRouterLinks: Story = {
+  render: ({ count }) => {
+    const items = makeItems(count)
+    return (
+      <MemoryRouter>
+        <CardList
+          as={Link}
+          getCardProps={(item) => ({
+            prefetch: 'intent' as const,
+            to: `/sources/${item.id}`,
+          })}
+          items={items}
+        />
+      </MemoryRouter>
+    )
   },
 }
