@@ -1103,6 +1103,50 @@ paths:
                       type: object
                       properties:
                         id: {type: string}
+  /cursor-page:
+    get:
+      operationId: cursor-page/list
+      parameters:
+        - {name: page, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 10}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                  next_page:
+                    type: string
+                    nullable: true
+  /numeric-page:
+    get:
+      operationId: numeric-page/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, default: 10}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                  next_page:
+                    type: string
+                    nullable: true
   /next-url-header:
     get:
       operationId: next-url-header/list
@@ -1165,6 +1209,24 @@ paths:
         Some("X-Next-Cursor")
     );
     assert!(cursor_header.response_cursor_path.is_empty());
+
+    let cursor_page =
+        &rest_execution(operations.get("cursor_page_list").expect("cursor page")).pagination;
+    assert_eq!(cursor_page.mode, PaginationMode::CursorQuery);
+    assert_eq!(cursor_page.cursor_param.as_deref(), Some("page"));
+    assert_eq!(cursor_page.response_cursor_path, ["next_page"]);
+    assert_eq!(
+        cursor_page
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("limit")
+    );
+
+    let numeric_page =
+        &rest_execution(operations.get("numeric_page_list").expect("numeric page")).pagination;
+    assert_eq!(numeric_page.mode, PaginationMode::Page);
+    assert_eq!(numeric_page.page_param.as_deref(), Some("page"));
 
     let next_url = &rest_execution(
         operations

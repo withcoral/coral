@@ -344,12 +344,18 @@ fn detect_cursor_query_pagination(
             "cursor",
             "marker",
             "nextcursor",
+            "nextpage",
             "nextpagetoken",
             "nexttoken",
+            "page",
             "pagetoken",
             "startingafter",
         ],
     )?;
+    if name_token(&cursor_input.name) == "page" && cursor_input.data_type != IrScalarType::String {
+        return None;
+    }
+
     let response_cursor_path = find_response_cursor_path(&context.schema).unwrap_or_default();
     let response_cursor_header = response_cursor_header(context);
     if response_cursor_path.is_empty() && response_cursor_header.is_none() {
@@ -509,6 +515,7 @@ fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
         "endcursor",
         "nextcursor",
         "nextmarker",
+        "nextpage",
         "nextpagetoken",
         "nexttoken",
     ];
