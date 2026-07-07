@@ -50,6 +50,7 @@ Experimental runtime features are configured under `[features]`.
 ```toml
 [features]
 feedback = true
+tasks = true
 ```
 
 You can inspect available features and their effective state with:
@@ -63,6 +64,8 @@ Enable or disable a feature with:
 ```shellscript
 coral features enable feedback
 coral features disable feedback
+coral features enable tasks
+coral features disable tasks
 ```
 
 Feature values must be booleans. Unknown feature keys are preserved in `config.toml` but ignored by Coral.
@@ -70,6 +73,7 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 | Feature | Default | Description |
 | ------- | ------- | ----------- |
 | `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
+| `tasks` | `false` | Experimental. Exposes MCP `start_task` and `end_task`, and requires follow-up Coral MCP tool calls to carry `task_id` plus per-call `intent` attribution. |
 
 ## OpenTelemetry
 

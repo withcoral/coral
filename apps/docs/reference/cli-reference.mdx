@@ -13,6 +13,8 @@ coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
 coral --enable-feedback mcp-stdio
 coral --disable-feedback mcp-stdio
+coral --enable-tasks mcp-stdio
+coral --disable-tasks mcp-stdio
 ```
 
 These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
@@ -202,7 +204,8 @@ coral source remove github
 
 Manage local workspaces. Workspaces isolate installed source metadata and
 workspace-scoped artifacts such as source manifests, local credential material,
-feedback reports, and workspace-attributed local trace history.
+feedback reports, task lifecycle logs, and workspace-attributed local trace
+history.
 
 Imported source specs and source credential material are attached to the source
 installation in that workspace. Reusable global source specs and reusable
@@ -271,6 +274,7 @@ feature is listed in [Configuration](/reference/configuration#runtime-features).
 
 ```shellscript
 coral features enable feedback
+coral features enable tasks
 ```
 
 ### `coral features disable <FEATURE>`
@@ -279,6 +283,7 @@ Persistently disables an experimental runtime feature.
 
 ```shellscript
 coral features disable feedback
+coral features disable tasks
 ```
 
 ## `coral ui`
@@ -334,6 +339,12 @@ By default, this server exposes:
 | Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
+
+When the `tasks` feature is enabled, the server also exposes `start_task` and
+`end_task`. `start_task` accepts an `intent` and returns a UUID `task_id`.
+`end_task` accepts that `task_id`, a per-call `intent`, and `task_status`
+(`completed` or `failed`). Follow-up Coral MCP tools require both `task_id` and
+a per-call `intent` for task attribution.
 
 Discovery helpers include the `coral` system schema, so `search`,
 `list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can

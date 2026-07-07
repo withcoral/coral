@@ -3,7 +3,7 @@ title: "Use Coral over MCP"
 description: "Set up MCP for Claude Code, Cursor, and other agents."
 ---
 
-Coral ships with a built-in MCP server that presents Coral to agents as a read-only SQL database with catalog discovery.
+Coral ships with a built-in MCP server that presents Coral to agents as a read-only SQL database with catalog discovery. Optional task lifecycle tools can tag a unit of agent work so Coral can attribute follow-up SQL and catalog calls to that task.
 
 <Note>
 Before setting up a client, make sure you have [connected at least one source](/getting-started/quickstart).
@@ -200,6 +200,30 @@ Coral gives your agent a read-only SQL view over the sources you have installed 
 Set up and update sources with the CLI. The MCP server is the agent-facing query surface, not a source installer.
 
 Only connect Coral to agents you trust. A connected agent can query any source installed in that Coral workspace. See [Security](/project/security) for more detail.
+
+## Task attribution
+
+Task lifecycle tools are off by default. Enable them for one MCP server process with:
+
+```shellscript
+coral --enable-tasks mcp-stdio
+```
+
+Or persist the setting:
+
+```shellscript
+coral features enable tasks
+```
+
+When enabled, Coral exposes `start_task` and `end_task`. `start_task` accepts
+an `intent` and returns a UUID `task_id`. `end_task` requires that `task_id`,
+a per-call `intent`, and `task_status`, either `completed` or `failed`.
+
+The returned `task_id` and a per-call `intent` are required on follow-up `sql`,
+`search`, `list_catalog`, `describe_table`, `list_columns`, and `feedback`
+calls. Coral stores task lifecycle events locally under the selected workspace.
+Only the opaque task id is propagated as request metadata; per-call intent stays
+on the MCP tool-call telemetry event.
 
 ## How to ask for Coral
 
