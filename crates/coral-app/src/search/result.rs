@@ -96,13 +96,6 @@ pub(crate) enum SearchProviderState {
     ResultsFound,
     Empty,
     NotEnabled,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reserved for request-level provider gating in concrete provider PRs"
-        )
-    )]
     Skipped,
     Partial,
     Error,

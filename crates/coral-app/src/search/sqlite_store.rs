@@ -15,8 +15,8 @@ use std::time::Duration;
 use rusqlite::{Connection, ErrorCode};
 
 use crate::search::catalog::sqlite_index::{
-    CatalogClearResult, CatalogIndexSnapshot, CatalogRefreshResult, CatalogSearchHits,
-    SqliteCatalogIndex,
+    CatalogClearResult, CatalogIndexSnapshot, CatalogRebuildResult, CatalogRefreshResult,
+    CatalogSearchHits, SqliteCatalogIndex,
 };
 use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
@@ -123,6 +123,15 @@ impl SqliteSearchStore {
         SqliteCatalogIndex::new().refresh(&mut connection, &self.workspace_name, snapshot)
     }
 
+    pub(crate) fn rebuild_catalog_projection(
+        &self,
+        snapshot: &CatalogIndexSnapshot,
+        force: bool,
+    ) -> Result<CatalogRebuildResult, SqliteSearchError> {
+        let mut connection = self.connect()?;
+        SqliteCatalogIndex::new().rebuild(&mut connection, &self.workspace_name, snapshot, force)
+    }
+
     pub(crate) fn catalog_document_count(&self) -> Result<u32, SqliteSearchError> {
         let connection = self.connect()?;
         SqliteCatalogIndex::new().document_count(&connection, &self.workspace_name)
@@ -131,6 +140,42 @@ impl SqliteSearchStore {
     pub(crate) fn clear_catalog_workspace(&self) -> Result<CatalogClearResult, SqliteSearchError> {
         let mut connection = self.connect()?;
         SqliteCatalogIndex::new().clear_workspace(&mut connection, &self.workspace_name)
+    }
+
+    pub(crate) fn compact_after_clear(&self) -> SqliteSearchCompactionResult {
+        let mut notes = Vec::new();
+        let wal_checkpoint_truncate_completed =
+            match self.execute_maintenance_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+                Ok(()) => true,
+                Err(error) => {
+                    notes.push(format!("WAL checkpoint/truncate failed: {error}"));
+                    false
+                }
+            };
+        let vacuum_completed = match self.execute_maintenance_batch("VACUUM;") {
+            Ok(()) => true,
+            Err(error) => {
+                notes.push(format!("VACUUM failed: {error}"));
+                false
+            }
+        };
+
+        let note = if notes.is_empty() {
+            "WAL checkpoint/truncate and VACUUM completed".to_string()
+        } else {
+            notes.join("; ")
+        };
+        SqliteSearchCompactionResult {
+            wal_checkpoint_truncate_completed,
+            vacuum_completed,
+            note,
+        }
+    }
+
+    fn execute_maintenance_batch(&self, sql: &str) -> Result<(), SqliteSearchError> {
+        let connection = self.connect()?;
+        connection.execute_batch(sql)?;
+        Ok(())
     }
 
     pub(crate) fn search_catalog(
@@ -148,6 +193,13 @@ pub(crate) struct SqliteSearchCapabilities {
     pub(crate) sqlite_version: String,
     pub(crate) fts5: bool,
     pub(crate) trigram: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SqliteSearchCompactionResult {
+    pub(crate) wal_checkpoint_truncate_completed: bool,
+    pub(crate) vacuum_completed: bool,
+    pub(crate) note: String,
 }
 
 #[derive(Debug, thiserror::Error)]
