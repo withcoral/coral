@@ -8,7 +8,7 @@ import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 import type { IconName } from '@/wax/components/icon'
-import { coralDesktopApi } from '@/lib/coral-desktop'
+import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
@@ -27,8 +27,10 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
   const isSettingsActive =
     location.pathname === '/settings' || location.pathname.startsWith('/settings/')
-  // Settings only works inside the Electron shell; hide it in the web build.
-  const isDesktopApp = coralDesktopApi() !== null
+  // Keep the desktop-only settings link stable across SSR and hydration. The
+  // actual bridge can only be detected on the client, but the route is included
+  // at build time for Electron and omitted from the web build.
+  const isDesktopApp = isCoralDesktopBuild()
 
   const settingsButton = (
     <SidebarButton

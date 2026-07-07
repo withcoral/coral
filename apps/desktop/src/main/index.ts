@@ -33,8 +33,14 @@ function rendererUrl(): string | null {
 }
 
 async function rendererEntryUrl(): Promise<string> {
-  // Dev uses the Vite server (HMR); packaged serves the built SPA over app://.
-  return rendererUrl() ?? APP_ENTRY_URL
+  const devRendererUrl = rendererUrl()
+  if (!devRendererUrl) return APP_ENTRY_URL
+
+  // Dev uses the Vite server (HMR), whose React Router loaders call the Electron
+  // sidecar through CORAL_ENDPOINT. Wait for the sidecar before the first
+  // document request so initial SSR does not race a still-building CLI.
+  await ensureSidecar()
+  return devRendererUrl
 }
 
 function escapeHtml(value: string): string {

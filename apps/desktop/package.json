@@ -11,6 +11,7 @@
     "dev": "node ./scripts/dev.mjs",
     "prebuild": "npm run clean:dist && npm run stage:coral",
     "build": "electron-vite build --ignoreConfigWarning",
+    "postbuild": "node ./scripts/copy-reef-server.mjs",
     "type-check": "tsc --noEmit",
     "check": "npm run type-check",
     "prepackage": "npm run build",
@@ -22,7 +23,26 @@
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
   "dependencies": {
-    "add-mcp": "^1.11.0"
+    "@base-ui/react": "1.5.0",
+    "@bufbuild/protobuf": "2.12.1",
+    "@connectrpc/connect": "2.1.2",
+    "@connectrpc/connect-web": "2.1.2",
+    "@internationalized/date": "3.12.2",
+    "@react-router/node": "7.17.0",
+    "@vanilla-extract/recipes": "0.5.7",
+    "add-mcp": "^1.11.0",
+    "classnames": "2.5.1",
+    "isbot": "5.1.43",
+    "jotai": "2.20.1",
+    "lucide-react": "1.18.0",
+    "react": "19.2.7",
+    "react-aria": "3.49.0",
+    "react-aria-components": "1.18.0",
+    "react-dom": "19.2.7",
+    "react-markdown": "10.1.0",
+    "react-router": "7.17.0",
+    "react-toastify": "11.1.0",
+    "tinykeys": "4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.2",

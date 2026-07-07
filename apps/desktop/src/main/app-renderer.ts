@@ -1,13 +1,15 @@
 import { randomBytes } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { app, net, protocol } from 'electron'
+import { RouterContextProvider, createRequestHandler, type ServerBuild } from 'react-router'
 import { repoRoot } from './sidecar'
 
 // The renderer is served over a custom, non-network scheme instead of a TCP
 // loopback server, so no local socket exposes the app assets to other
 // processes. Registered as `standard` + `secure` so it gets a real origin and
-// the fetch/streaming APIs the SPA relies on.
+// the fetch/streaming APIs the renderer relies on.
 export const APP_SCHEME = 'coral-app'
 export const APP_ORIGIN = `${APP_SCHEME}://app`
 export const APP_ENTRY_URL = `${APP_ORIGIN}/`
@@ -43,6 +45,12 @@ export function registerAppSchemePrivileges(): void {
 
 function rendererRoot(): string {
   return app.isPackaged ? join(process.resourcesPath, 'app') : resolve(repoRoot(), 'apps', 'reef', 'build', 'client')
+}
+
+function serverBuildEntry(): string {
+  return app.isPackaged
+    ? join(app.getAppPath(), 'out', 'reef-server', 'index.js')
+    : resolve(repoRoot(), 'apps', 'reef', 'build', 'server', 'index.js')
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -114,6 +122,10 @@ function notFound(): Response {
   })
 }
 
+function methodNotAllowed(): Response {
+  return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD, POST' } })
+}
+
 async function resolveFile(root: string, pathname: string): Promise<string | null> {
   const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
   const candidate = resolve(root, relativePath)
@@ -122,7 +134,7 @@ async function resolveFile(root: string, pathname: string): Promise<string | nul
   try {
     if ((await stat(candidate)).isFile()) return candidate
   } catch {
-    // Fall through to the SPA fallback.
+    // Fall through to the React Router server handler.
   }
   return null
 }
@@ -133,6 +145,83 @@ async function indexHtmlExists(root: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+async function serverBuildExists(): Promise<boolean> {
+  try {
+    return (await stat(serverBuildEntry())).isFile()
+  } catch {
+    return false
+  }
+}
+
+function isStaticAssetPath(pathname: string): boolean {
+  return (
+    pathname !== '/' &&
+    pathname !== '/index.html' &&
+    Boolean(extname(pathname)) &&
+    !pathname.endsWith('.data')
+  )
+}
+
+function acceptsHtmlFallback(request: Request, pathname: string): boolean {
+  const accept = request.headers.get('accept') ?? ''
+  return pathname === '/' || !extname(pathname) || accept.includes('text/html')
+}
+
+type ReactRouterHandler = ReturnType<typeof createRequestHandler>
+
+let reactRouterHandler: ReactRouterHandler | null = null
+
+async function loadReactRouterHandler(): Promise<ReactRouterHandler> {
+  if (reactRouterHandler) return reactRouterHandler
+
+  const serverBuild = (await import(pathToFileURL(serverBuildEntry()).href)) as ServerBuild
+  reactRouterHandler = createRequestHandler(serverBuild, app.isPackaged ? 'production' : 'development')
+  return reactRouterHandler
+}
+
+async function refreshServerSidecarEndpoint(resolveSidecarBaseUrl: () => Promise<string>): Promise<void> {
+  process.env.CORAL_ENDPOINT = await resolveSidecarBaseUrl()
+}
+
+async function reactRouterResponse(
+  request: Request,
+  resolveSidecarBaseUrl: () => Promise<string>,
+): Promise<Response> {
+  try {
+    await refreshServerSidecarEndpoint(resolveSidecarBaseUrl)
+  } catch (error) {
+    console.error('[app-renderer] sidecar unavailable for server render', error)
+  }
+
+  const handler = await loadReactRouterHandler()
+  const response = await handler(request, new RouterContextProvider() as never)
+  return secureDocumentResponse(response, request.method === 'HEAD')
+}
+
+async function secureDocumentResponse(response: Response, headOnly: boolean): Promise<Response> {
+  const headers = new Headers(response.headers)
+  const contentType = headers.get('Content-Type') ?? headers.get('content-type') ?? ''
+  if (!contentType.includes('text/html')) return response
+
+  const nonce = randomBytes(16).toString('base64')
+  headers.set('Content-Security-Policy', contentSecurityPolicy(nonce))
+  headers.set('Cache-Control', 'no-store')
+  if (headOnly) {
+    return new Response(null, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    })
+  }
+
+  const html = (await response.text()).replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`)
+  return new Response(html, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  })
 }
 
 async function proxyToSidecar(
@@ -191,20 +280,31 @@ export function registerAppProtocol(resolveSidecarBaseUrl: () => Promise<string>
     }
 
     const headOnly = request.method === 'HEAD'
-    if (request.method !== 'GET' && !headOnly) {
-      return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } })
-    }
 
     try {
-      const filePath = await resolveFile(root, pathname)
-      if (filePath) {
-        return serveFile(filePath, headOnly)
+      if (request.method === 'GET' || headOnly) {
+        const filePath = await resolveFile(root, pathname)
+        if (filePath && isStaticAssetPath(pathname)) {
+          return serveFile(filePath, headOnly)
+        }
+
+        // Asset-like misses should stay 404s. Extensionless document/data
+        // requests fall through to the React Router server build.
+        if (extname(pathname) && !pathname.endsWith('.data')) {
+          return notFound()
+        }
+      } else if (request.method !== 'POST') {
+        return methodNotAllowed()
       }
 
-      // SPA fallback: serve index.html for extensionless or html-accepting GETs,
-      // but only when it actually exists (otherwise 404 rather than a broken 200).
-      const accept = request.headers.get('accept') ?? ''
-      if ((!extname(pathname) || accept.includes('text/html')) && (await indexHtmlExists(root))) {
+      // React Router owns document, data, action, and route-discovery requests.
+      if (app.isPackaged || (await serverBuildExists())) {
+        return reactRouterResponse(request, resolveSidecarBaseUrl)
+      }
+
+      // Legacy static fallback for local builds produced before the server
+      // bundle exists.
+      if (acceptsHtmlFallback(request, pathname) && (await indexHtmlExists(root))) {
         return serveFile(join(root, 'index.html'), headOnly)
       }
 
