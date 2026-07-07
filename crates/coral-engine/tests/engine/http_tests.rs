@@ -2279,6 +2279,47 @@ async fn pagination_link_header() {
 }
 
 #[tokio::test]
+async fn pagination_next_url_header() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("X-Next-Page-Url", "/api/users?page=2")
+                .set_body_json(json!({ "data": &rows[..2] })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_next_url", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header",
+        "next_url_header": "X-Next-Page-Url"
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_next_url.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
 async fn auth_headers_sent_correctly() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -147,11 +147,7 @@ pub(super) fn extract_next_link_url(
     base_url: &str,
     require_results_true: bool,
 ) -> Result<Option<String>> {
-    let base = reqwest::Url::parse(base_url).map_err(|e| {
-        DataFusionError::Execution(format!(
-            "invalid base URL for pagination links '{base_url}': {e}"
-        ))
-    })?;
+    let base = pagination_base_url(base_url)?;
 
     for header in headers.get_all("link") {
         let Ok(header) = header.to_str() else {
@@ -174,18 +170,41 @@ pub(super) fn extract_next_link_url(
             let next_raw = item.get(start + 1..end).ok_or_else(|| {
                 DataFusionError::Execution(format!("invalid pagination Link header item '{item}'"))
             })?;
-            let next_url = base.join(next_raw).map_err(|e| {
-                DataFusionError::Execution(format!(
-                    "invalid pagination next link '{next_raw}': {e}"
-                ))
-            })?;
-            if next_url.origin() != base.origin() {
-                return Err(DataFusionError::Execution(format!(
-                    "pagination next link must stay on origin {}: {next_raw}",
-                    base.origin().ascii_serialization()
-                )));
-            }
-            return Ok(Some(next_url.to_string()));
+            return Ok(Some(resolve_pagination_next_url(
+                &base,
+                next_raw,
+                "next link",
+            )?));
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn extract_next_url_header(
+    headers: &HeaderMap,
+    base_url: &str,
+    header_name: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(header_name) = header_name else {
+        return Ok(None);
+    };
+    let name = HeaderName::try_from(header_name).map_err(|error| {
+        DataFusionError::Execution(format!(
+            "invalid pagination next URL header '{header_name}': {error}"
+        ))
+    })?;
+    let base = pagination_base_url(base_url)?;
+    for header in headers.get_all(name) {
+        let Ok(value) = header.to_str() else {
+            continue;
+        };
+        let value = value.trim();
+        if !value.is_empty() {
+            return Ok(Some(resolve_pagination_next_url(
+                &base,
+                value,
+                "next URL header value",
+            )?));
         }
     }
     Ok(None)
@@ -215,6 +234,27 @@ pub(super) fn extract_response_cursor_header(
     Ok(None)
 }
 
+fn pagination_base_url(base_url: &str) -> Result<reqwest::Url> {
+    reqwest::Url::parse(base_url).map_err(|e| {
+        DataFusionError::Execution(format!(
+            "invalid base URL for pagination links '{base_url}': {e}"
+        ))
+    })
+}
+
+fn resolve_pagination_next_url(base: &reqwest::Url, next_raw: &str, label: &str) -> Result<String> {
+    let next_url = base.join(next_raw).map_err(|e| {
+        DataFusionError::Execution(format!("invalid pagination {label} '{next_raw}': {e}"))
+    })?;
+    if next_url.origin() != base.origin() {
+        return Err(DataFusionError::Execution(format!(
+            "pagination {label} must stay on origin {}: {next_raw}",
+            base.origin().ascii_serialization()
+        )));
+    }
+    Ok(next_url.to_string())
+}
+
 fn link_param_matches(item: &str, name: &str, expected: &str) -> bool {
     item.split(';').skip(1).any(|param| {
         let Some((key, value)) = param.trim().split_once('=') else {
@@ -235,7 +275,8 @@ mod tests {
 
     use super::{
         PageState, apply_pagination_body_fields, apply_pagination_query_pairs,
-        extract_next_link_url, extract_response_cursor_header, page_is_exhausted,
+        extract_next_link_url, extract_next_url_header, extract_response_cursor_header,
+        page_is_exhausted,
     };
     use crate::backends::http::test_support::{test_http_request_target, test_http_table_spec};
     use coral_spec::{
@@ -347,6 +388,42 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("invalid pagination response cursor header")
+        );
+    }
+
+    #[test]
+    fn extract_next_url_header_resolves_relative_links_on_same_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-next-page-url",
+            HeaderValue::from_static("/v1/resources?page=2"),
+        );
+
+        let next =
+            extract_next_url_header(&headers, "https://api.example.com", Some("X-Next-Page-Url"))
+                .unwrap();
+
+        assert_eq!(
+            next,
+            Some("https://api.example.com/v1/resources?page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_next_url_header_rejects_cross_origin_absolute_links() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-next-page-url",
+            HeaderValue::from_static("https://attacker.example/steal"),
+        );
+
+        let err =
+            extract_next_url_header(&headers, "https://api.example.com", Some("X-Next-Page-Url"))
+                .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("pagination next URL header value must stay on origin")
         );
     }
 

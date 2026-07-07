@@ -176,6 +176,7 @@ pub(super) async fn fetch_rows(
                 allow_404_empty: target.response().allow_404_empty,
                 link_header_require_results: pagination.link_header_require_results,
                 response_cursor_header: target.pagination().response_cursor_header.as_deref(),
+                next_url_header: target.pagination().next_url_header.as_deref(),
             },
         )
         .await?;

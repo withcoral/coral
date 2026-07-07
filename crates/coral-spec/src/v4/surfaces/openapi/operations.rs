@@ -319,10 +319,15 @@ fn detect_link_header_pagination(
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
-    response_header(context, &["link"])?;
+    let has_link_header = response_header(context, &["link"]).is_some();
+    let next_url_header = response_next_url_header(context);
+    if !has_link_header && next_url_header.is_none() {
+        return None;
+    }
     Some(PaginationSpec {
         mode: PaginationMode::LinkHeader,
         page_size: detect_page_size(inputs),
+        next_url_header,
         ..PaginationSpec::default()
     })
 }
@@ -447,6 +452,28 @@ fn response_cursor_header(context: &OpenApiResponsePaginationContext) -> Option<
         .iter()
         .find(|(name, header)| {
             RESPONSE_CURSOR_HEADER_TOKENS.contains(&name_token(name).as_str())
+                && response_header_allows_string(header)
+        })
+        .map(|(name, _)| name.clone())
+}
+
+fn response_next_url_header(context: &OpenApiResponsePaginationContext) -> Option<String> {
+    const RESPONSE_NEXT_URL_HEADER_TOKENS: &[&str] = &[
+        "next",
+        "nextpage",
+        "nextpageurl",
+        "nexturl",
+        "xnext",
+        "xnextpage",
+        "xnextpageurl",
+        "xnexturl",
+    ];
+
+    context
+        .headers
+        .iter()
+        .find(|(name, header)| {
+            RESPONSE_NEXT_URL_HEADER_TOKENS.contains(&name_token(name).as_str())
                 && response_header_allows_string(header)
         })
         .map(|(name, _)| name.clone())

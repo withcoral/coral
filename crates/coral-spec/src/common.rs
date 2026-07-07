@@ -705,6 +705,8 @@ pub struct PaginationSpec {
     #[serde(default)]
     pub link_header_require_results: bool,
     #[serde(default)]
+    pub next_url_header: Option<String>,
+    #[serde(default)]
     pub max_pages: Option<usize>,
 }
 
@@ -724,6 +726,7 @@ impl Default for PaginationSpec {
             offset_start: 0,
             offset_step: None,
             link_header_require_results: false,
+            next_url_header: None,
             max_pages: None,
         }
     }

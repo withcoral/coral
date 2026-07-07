@@ -18,7 +18,8 @@ use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::resolve_auth_headers;
 use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::{
-    ResponsePaginationHints, extract_next_link_url, extract_response_cursor_header,
+    ResponsePaginationHints, extract_next_link_url, extract_next_url_header,
+    extract_response_cursor_header,
 };
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
@@ -54,6 +55,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) allow_404_empty: bool,
     pub(super) link_header_require_results: bool,
     pub(super) response_cursor_header: Option<&'a str>,
+    pub(super) next_url_header: Option<&'a str>,
 }
 
 #[expect(
@@ -90,6 +92,7 @@ pub(super) async fn execute_request(
         allow_404_empty,
         link_header_require_results,
         response_cursor_header,
+        next_url_header,
     } = request;
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
@@ -320,6 +323,23 @@ pub(super) async fn execute_request(
                 Ok(next_url) => next_url,
                 Err(error) => break 'response ResponseOutcome::Done(Err(error)),
             };
+            let header_next_url =
+                extract_next_url_header(response.headers(), base_url, next_url_header).map_err(
+                    |error| {
+                        record_http_processing_error(&request_span, "PAGINATION", &error);
+                        pagination_error(
+                            source_schema,
+                            table_name,
+                            Some(method_label),
+                            Some(&logged_url),
+                            &error,
+                        )
+                    },
+                );
+            let next_url = match header_next_url {
+                Ok(header_next_url) => next_url.or(header_next_url),
+                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
+            };
             let cursor = extract_response_cursor_header(response.headers(), response_cursor_header)
                 .map_err(|error| {
                     record_http_processing_error(&request_span, "PAGINATION", &error);
@@ -534,6 +554,7 @@ mod tests {
                 allow_404_empty: false,
                 link_header_require_results: false,
                 response_cursor_header: None,
+                next_url_header: None,
             },
         )
         .await

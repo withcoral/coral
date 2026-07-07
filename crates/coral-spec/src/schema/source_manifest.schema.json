@@ -1278,6 +1278,7 @@
         "offset_start": { "type": "integer" },
         "offset_step": { "type": "integer", "minimum": 1 },
         "link_header_require_results": { "type": "boolean" },
+        "next_url_header": { "type": "string", "minLength": 1 },
         "max_pages": { "type": "integer", "minimum": 1 }
       }
     },

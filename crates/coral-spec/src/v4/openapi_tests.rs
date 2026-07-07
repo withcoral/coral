@@ -1103,6 +1103,24 @@ paths:
                       type: object
                       properties:
                         id: {type: string}
+  /next-url-header:
+    get:
+      operationId: next-url-header/list
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          headers:
+            X-Next-Page-Url:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
 "
         .as_bytes(),
     )
@@ -1147,6 +1165,22 @@ paths:
         Some("X-Next-Cursor")
     );
     assert!(cursor_header.response_cursor_path.is_empty());
+
+    let next_url = &rest_execution(
+        operations
+            .get("next_url_header_list")
+            .expect("next URL header"),
+    )
+    .pagination;
+    assert_eq!(next_url.mode, PaginationMode::LinkHeader);
+    assert_eq!(next_url.next_url_header.as_deref(), Some("X-Next-Page-Url"));
+    assert_eq!(
+        next_url
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("limit")
+    );
 }
 
 #[test]
