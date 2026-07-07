@@ -39,7 +39,7 @@ async fn import_legacy_config_at(
         &mut imported_workspaces,
     )
     .await?;
-    import_legacy_source_catalog(
+    let source_count = import_legacy_source_catalog(
         &mut tx,
         &source_entries,
         now_unix_nanos,
@@ -50,7 +50,7 @@ async fn import_legacy_config_at(
 
     Ok(LegacyConfigImportReport {
         workspace_count: imported_workspaces.len(),
-        source_count: source_entries.len(),
+        source_count,
     })
 }
 
@@ -78,11 +78,20 @@ async fn import_legacy_source_catalog<S>(
     entries: &[(WorkspaceName, InstalledSource)],
     now_unix_nanos: i64,
     imported_workspaces: &mut BTreeSet<WorkspaceName>,
-) -> Result<(), AppError>
+) -> Result<usize, AppError>
 where
     S: DbRepos,
 {
+    let mut source_count = 0;
     for (workspace_name, source) in entries {
+        if session
+            .sources()
+            .get_source(workspace_name, &source.name)
+            .await?
+            .is_some()
+        {
+            continue;
+        }
         imported_workspaces.insert(workspace_name.clone());
         session
             .workspaces()
@@ -102,8 +111,9 @@ where
                 source.name
             )));
         }
+        source_count += 1;
     }
-    Ok(())
+    Ok(source_count)
 }
 
 #[cfg(test)]
@@ -172,7 +182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reimport_updates_source_rows_without_recreating_workspace() {
+    async fn reimport_preserves_existing_database_catalog() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
@@ -187,16 +197,24 @@ mod tests {
             .await
             .expect("initial import");
 
+        let original_source = source.clone();
         source
             .variables
             .insert("OWNER".to_string(), "coral".to_string());
         config_store
             .upsert_source(&workspace, source.clone())
             .expect("update config source");
-        import_legacy_config_at(&db, &config_store, 99)
+        let report = import_legacy_config_at(&db, &config_store, 99)
             .await
             .expect("reimport legacy config");
 
+        assert_eq!(
+            report,
+            LegacyConfigImportReport {
+                workspace_count: 1,
+                source_count: 0,
+            }
+        );
         let mut session = &db;
         let workspace_record = session
             .workspaces()
@@ -211,7 +229,112 @@ mod tests {
                 .get_source(&workspace, &source.name)
                 .await
                 .expect("get source"),
+            Some(original_source)
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_source_config_import_preserves_existing_database_sources() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        let db = open_sqlite(&layout).await;
+        {
+            let mut tx = db.begin().await.expect("begin tx");
+            tx.workspaces()
+                .ensure(workspace.as_str(), 11)
+                .await
+                .expect("ensure workspace");
+            tx.sources()
+                .upsert_source(&workspace, &source, 11)
+                .await
+                .expect("seed db source");
+            tx.commit().await.expect("commit tx");
+        }
+
+        let report = import_legacy_config_at(&db, &config_store, 22)
+            .await
+            .expect("import legacy config");
+
+        assert_eq!(
+            report,
+            LegacyConfigImportReport {
+                workspace_count: 1,
+                source_count: 0,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get preserved source"),
             Some(source)
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_database_catalog_imports_missing_config_sources_without_overwriting_existing()
+    {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let config_workspace = WorkspaceName::parse("other").expect("workspace");
+        let db_source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        let config_source = source("slack", None, [], [], None, SourceOrigin::Bundled);
+        config_store
+            .create_workspace(&config_workspace)
+            .expect("create config workspace");
+        config_store
+            .upsert_source(&config_workspace, config_source.clone())
+            .expect("write config source");
+        let db = open_sqlite(&layout).await;
+        {
+            let mut tx = db.begin().await.expect("begin tx");
+            tx.workspaces()
+                .ensure(workspace.as_str(), 11)
+                .await
+                .expect("ensure workspace");
+            tx.sources()
+                .upsert_source(&workspace, &db_source, 11)
+                .await
+                .expect("seed db source");
+            tx.commit().await.expect("commit tx");
+        }
+
+        let report = import_legacy_config_at(&db, &config_store, 22)
+            .await
+            .expect("import legacy config");
+
+        assert_eq!(
+            report,
+            LegacyConfigImportReport {
+                workspace_count: 2,
+                source_count: 1,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &db_source.name)
+                .await
+                .expect("get existing db source"),
+            Some(db_source)
+        );
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&config_workspace, &config_source.name)
+                .await
+                .expect("get imported config source"),
+            Some(config_source)
         );
     }
 
