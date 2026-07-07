@@ -56,7 +56,7 @@ use crate::search::manager::SearchManager;
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -307,6 +307,7 @@ impl ServerBuilder {
             layout.clone(),
             self.config.engine_extensions_providers,
         );
+        let search_manager = SearchManager::new(layout, query_manager.clone());
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {
@@ -315,11 +316,11 @@ impl ServerBuilder {
                 }
             });
         start_server(
-            layout,
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
+                search: search_manager,
                 feedback: feedback_manager,
                 episode_store,
             },
@@ -418,12 +419,12 @@ struct ServerManagers {
     source: SourceManager,
     workspace: WorkspaceManager,
     query: QueryManager,
+    search: SearchManager,
     feedback: FeedbackManager,
     episode_store: EpisodeStore,
 }
 
 async fn start_server(
-    layout: AppStateLayout,
     managers: ServerManagers,
     trace_components: TraceServerComponents,
     mode: ServerMode,
@@ -436,15 +437,15 @@ async fn start_server(
         source,
         workspace,
         query,
+        search,
         feedback,
         episode_store,
     } = managers;
-    let search_manager = SearchManager::new(layout, query.clone());
     let source_service = SourceService::new(source, query.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
-    let search_service = SearchService::new(search_manager);
+    let search_service = SearchService::new(search);
     let feedback_service = FeedbackService::new(feedback);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
@@ -726,6 +727,7 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
+    use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
@@ -855,14 +857,15 @@ enabled = false
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
-            layout,
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
+                search: search_manager,
                 feedback: feedback_manager,
                 episode_store,
             },
@@ -1251,12 +1254,13 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
         let running = start_server(
-            layout,
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
+                search: search_manager,
                 feedback: feedback_manager,
                 episode_store,
             },
@@ -1362,12 +1366,13 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
         let running = start_server(
-            layout,
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
+                search: search_manager,
                 feedback: feedback_manager,
                 episode_store,
             },
@@ -1473,12 +1478,13 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
         let running = start_server(
-            layout,
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
+                search: search_manager,
                 feedback: feedback_manager,
                 episode_store,
             },

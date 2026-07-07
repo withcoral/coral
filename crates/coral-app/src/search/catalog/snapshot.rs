@@ -12,6 +12,8 @@ use crate::search::catalog::sqlite_index::{
 };
 use crate::search::result::{SearchFieldRole, SearchSurfaceKind};
 
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v2";
+
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
     pub(crate) documents: Vec<CatalogDocument>,
@@ -351,6 +353,7 @@ fn join_search_text<const N: usize>(parts: [&str; N]) -> String {
 
 fn catalog_snapshot_fingerprint(catalog: &CatalogInfo) -> String {
     let mut hasher = Sha256::new();
+    update_hash(&mut hasher, CATALOG_SEARCH_SNAPSHOT_VERSION);
 
     let mut tables = catalog.tables.iter().collect::<Vec<_>>();
     tables.sort_by(|left, right| {

@@ -20,9 +20,9 @@ use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
 use crate::query::QueryAttribution;
-use crate::query::extensions::{
-    CredentialRefreshingInputResolver, EngineExtensionsProvider, SourceCredentialSnapshot,
-    StoredCredentialInputResolver, engine_extensions_for_providers,
+use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
+use crate::query::input_resolver::{
+    CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;

@@ -291,6 +291,7 @@ fn replace_catalog_documents(
         )?;
 
         for document in &snapshot.documents {
+            let searchable_text = fts_searchable_text(document);
             document_insert.execute(params![
                 workspace_name.as_str(),
                 &document.doc_id,
@@ -312,7 +313,7 @@ fn replace_catalog_documents(
                 &document.title,
                 &document.qualified_name,
                 &document.description,
-                &document.searchable_text,
+                &searchable_text,
             ])?;
         }
     }
@@ -673,11 +674,53 @@ fn fts_match_query(terms: &[String]) -> Option<String> {
 }
 
 fn normalized_search_terms(terms: &[String]) -> Vec<String> {
-    terms
-        .iter()
-        .map(|term| term.trim().to_lowercase())
-        .filter(|term| !term.is_empty())
+    let mut normalized = Vec::new();
+    for term in terms {
+        let term = term.trim().to_lowercase();
+        if term.is_empty() {
+            continue;
+        }
+        push_search_term(&mut normalized, term.clone());
+        if let Some(compact) = compact_identifier_variant(&term) {
+            push_search_term(&mut normalized, compact);
+        }
+    }
+    normalized
+}
+
+fn push_search_term(terms: &mut Vec<String>, term: String) {
+    if !terms.iter().any(|existing| existing == &term) {
+        terms.push(term);
+    }
+}
+
+fn fts_searchable_text(document: &CatalogIndexDocument) -> String {
+    let mut parts = vec![document.searchable_text.clone()];
+    for value in [
+        document.source_name.as_str(),
+        document.surface_name.as_str(),
+        document.field_name.as_str(),
+        document.qualified_name.as_str(),
+        document.title.as_str(),
+    ] {
+        if let Some(compact) = compact_identifier_variant(value) {
+            parts.push(compact);
+        }
+    }
+    parts
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
         .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compact_identifier_variant(value: &str) -> Option<String> {
+    let normalized = value.trim().to_lowercase();
+    let compact = normalized
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .collect::<String>();
+    (!compact.is_empty() && compact != normalized).then_some(compact)
 }
 
 fn matched_fields(terms: &[String], fields: &[(&'static str, &str)]) -> Vec<String> {
@@ -687,13 +730,20 @@ fn matched_fields(terms: &[String], fields: &[(&'static str, &str)]) -> Vec<Stri
             let normalized = value.to_lowercase();
             terms
                 .iter()
-                .any(|term| normalized.contains(term.as_str()))
+                .any(|term| field_matches_term(&normalized, term))
                 .then_some((*field).to_string())
         })
         .collect::<Vec<_>>();
     matched.sort();
     matched.dedup();
     matched
+}
+
+fn field_matches_term(normalized: &str, term: &str) -> bool {
+    normalized.contains(term)
+        || compact_identifier_variant(normalized)
+            .as_deref()
+            .is_some_and(|compact| compact.contains(term))
 }
 
 fn sort_catalog_hits_for_storage(hits: &mut [CatalogSearchHit]) {

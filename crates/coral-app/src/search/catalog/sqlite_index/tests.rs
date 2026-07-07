@@ -267,6 +267,37 @@ fn prefix_fallback_treats_underscores_as_literals() {
 }
 
 #[test]
+fn compact_identifier_variants_retrieve_punctuation_equivalent_identifiers() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let snapshot = punctuation_variant_snapshot();
+    store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh");
+
+    let hits = store
+        .search_catalog(&["ab-cd".to_string()], 10)
+        .expect("search");
+
+    assert!(
+        hits.hits
+            .iter()
+            .any(|hit| hit.surface_name == "ab_cd" && hit.field_name == "deploy_url"),
+        "hyphenated query should retrieve underscore identifier before provider ranking"
+    );
+    let hit = hits
+        .hits
+        .iter()
+        .find(|hit| hit.surface_name == "ab_cd" && hit.field_name == "deploy_url")
+        .expect("punctuation-equivalent hit");
+    assert!(
+        hit.matched_fields
+            .iter()
+            .any(|field| field == "surface_name")
+    );
+}
+
+#[test]
 fn fts_ranking_weights_qualified_name_before_title_inside_limit() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
@@ -527,6 +558,25 @@ fn underscore_column_snapshot() -> CatalogIndexSnapshot {
                 searchable_text: "github users user_id",
             }),
         ],
+    }
+}
+
+fn punctuation_variant_snapshot() -> CatalogIndexSnapshot {
+    CatalogIndexSnapshot {
+        fingerprint: "punctuation-variant-fixture-v1".to_string(),
+        documents: vec![document(DocumentInput {
+            doc_id: "column:table:fixture.ab_cd:deploy_url",
+            doc_kind: CatalogIndexDocumentKind::ColumnHint,
+            source_name: "fixture",
+            surface_kind: "table",
+            surface_name: "ab_cd",
+            field_name: "deploy_url",
+            field_role: "table_column",
+            qualified_name: "fixture.ab_cd.deploy_url",
+            title: "deploy_url",
+            description: "",
+            searchable_text: "fixture ab_cd deploy_url",
+        })],
     }
 }
 
