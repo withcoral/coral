@@ -71,6 +71,34 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
+async fn list_and_get_sources_read_database_after_config_becomes_invalid() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    fs::write(harness.config_dir().join("config.toml"), "[[sources]\n").expect("corrupt config");
+
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "local_messages");
+
+    let fetched = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect("get source")
+        .into_inner()
+        .source
+        .expect("source response");
+    assert_eq!(fetched.name, "local_messages");
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::with_workspace().await;
 
