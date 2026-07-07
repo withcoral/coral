@@ -254,6 +254,7 @@ impl CompiledBackendSource for McpCompiledSource {
                     inputs,
                 },
             }],
+            catalogs: Vec::new(),
         })
     }
 }

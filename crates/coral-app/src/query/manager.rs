@@ -30,7 +30,9 @@ use crate::sources::materialization::{
     incompatible_materialization_error, load_v4_materialization,
 };
 use crate::sources::model::InstalledSource;
-use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::sources::runtime_package::{
+    runtime_components_for_v4_database_only_source, runtime_components_for_v4_source,
+};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 use crate::workspaces::WorkspaceName;
@@ -339,21 +341,35 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
-            let materialized = load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
-                &installed.manifest_yaml,
-                v4,
-            )?;
-            Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                    incompatible_materialization_error(
-                        &source.name,
-                        format!("failed to assemble runtime package: {error}"),
-                    )
-                })?,
-            )
+            if v4
+                .surfaces
+                .iter()
+                .all(|surface| surface.surface_type == coral_spec::v4::SurfaceType::Database)
+            {
+                Some(
+                    runtime_components_for_v4_database_only_source(v4).map_err(|error| {
+                        AppError::FailedPrecondition(format!(
+                            "failed to assemble database runtime package: {error}"
+                        ))
+                    })?,
+                )
+            } else {
+                let materialized = load_v4_materialization(
+                    &self.layout,
+                    workspace_name,
+                    &source.name,
+                    &installed.manifest_yaml,
+                    v4,
+                )?;
+                Some(
+                    runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
+                        incompatible_materialization_error(
+                            &source.name,
+                            format!("failed to assemble runtime package: {error}"),
+                        )
+                    })?,
+                )
+            }
         } else {
             None
         };

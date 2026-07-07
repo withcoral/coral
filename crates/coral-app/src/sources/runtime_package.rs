@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use coral_engine::RuntimeSourceComponent;
+use coral_spec::backends::database::DatabaseSourceManifest;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
@@ -26,6 +27,12 @@ pub(crate) fn runtime_components_for_v4_source(
 ) -> Result<Vec<RuntimeSourceComponent>, AppError> {
     let mut components = Vec::new();
     for surface in &manifest.surfaces {
+        if surface.surface_type == SurfaceType::Database {
+            components.push(RuntimeSourceComponent::Database(
+                database_manifest_for_surface(manifest, &surface.id)?,
+            ));
+            continue;
+        }
         if !has_published_projection(materialized, &surface.id) {
             continue;
         }
@@ -44,9 +51,56 @@ pub(crate) fn runtime_components_for_v4_source(
                     &surface.id,
                 )?));
             }
+            SurfaceType::Database => {
+                unreachable!("database surfaces are handled before projections")
+            }
         }
     }
     Ok(components)
+}
+
+pub(crate) fn runtime_components_for_v4_database_only_source(
+    manifest: &V4SourceManifest,
+) -> Result<Vec<RuntimeSourceComponent>, AppError> {
+    let mut components = Vec::new();
+    for surface in &manifest.surfaces {
+        if surface.surface_type != SurfaceType::Database {
+            return Err(AppError::FailedPrecondition(format!(
+                "DSL v4 surface '{}' requires materialized artifacts",
+                surface.id
+            )));
+        }
+        components.push(RuntimeSourceComponent::Database(
+            database_manifest_for_surface(manifest, &surface.id)?,
+        ));
+    }
+    Ok(components)
+}
+
+fn database_manifest_for_surface(
+    manifest: &V4SourceManifest,
+    surface_id: &str,
+) -> Result<DatabaseSourceManifest, AppError> {
+    let surface = manifest.surface(surface_id).ok_or_else(|| {
+        AppError::FailedPrecondition(format!("DSL v4 manifest is missing surface '{surface_id}'"))
+    })?;
+    let database_runtime = surface.database_runtime().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "DSL v4 surface '{surface_id}' is not a database surface"
+        ))
+    })?;
+    Ok(DatabaseSourceManifest {
+        common: SourceManifestCommon {
+            dsl_version: manifest.common.dsl_version,
+            name: surface.relation_namespace.clone(),
+            version: String::new(),
+            description: manifest.common.description.clone(),
+            test_queries: manifest.common.test_queries.clone(),
+        },
+        provider: database_runtime.provider,
+        connection: database_runtime.connection.clone(),
+        declared_inputs: manifest.declared_inputs.clone(),
+    })
 }
 
 fn has_published_projection(materialized: &V4MaterializedSource, surface_id: &str) -> bool {
@@ -99,14 +153,7 @@ fn http_manifest_for_surface(
                 && projection.visibility == ProjectionVisibility::Published
         })
     {
-        let operation = operations
-            .get(projection.operation_id.as_str())
-            .ok_or_else(|| {
-                AppError::FailedPrecondition(format!(
-                    "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
-                ))
-            })?;
+        let operation = operation_for_projection(projection, &operations)?;
         let rest = rest_execution_for_operation(operation)?;
         let request = request_spec_for_projection(projection, operation)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
@@ -177,6 +224,21 @@ fn rest_execution_for_operation(
     }
 }
 
+fn operation_for_projection<'a>(
+    projection: &Projection,
+    operations: &'a HashMap<&str, &'a coral_spec::v4::IrOperation>,
+) -> Result<&'a coral_spec::v4::IrOperation, AppError> {
+    operations
+        .get(projection.operation_id.as_str())
+        .copied()
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "DSL v4 projection '{}' references missing operation '{}'",
+                projection.name, projection.operation_id
+            ))
+        })
+}
+
 fn mcp_manifest_for_surface(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
@@ -216,14 +278,7 @@ fn mcp_manifest_for_surface(
                 && projection.visibility == ProjectionVisibility::Published
         })
     {
-        let operation = operations
-            .get(projection.operation_id.as_str())
-            .ok_or_else(|| {
-                AppError::FailedPrecondition(format!(
-                    "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
-                ))
-            })?;
+        let operation = operation_for_projection(projection, &operations)?;
         let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
             return Err(AppError::FailedPrecondition(format!(
                 "DSL v4 projection '{}' is not backed by an MCP operation",
@@ -397,20 +452,27 @@ fn validate_surface_base_url_template(
 mod tests {
     use std::path::PathBuf;
 
+    use coral_spec::backends::database::{
+        DatabaseConnectionSpec, DatabaseProvider, SqliteConnectionSpec,
+    };
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
-        Fingerprint, HttpMethod, IrExecutionAttachment, IrOperation, IrOperationOutput,
-        MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig,
-        OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection,
-        ProjectionCatalog, ProjectionKind, ProjectionVisibility, RestExecutionAttachment,
-        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor,
-        SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
-        V4SourceCommon, V4SourceManifest, V4Surface,
+        DatabaseRuntimeConfig, Fingerprint, HttpMethod, IrExecutionAttachment, IrOperation,
+        IrOperationOutput, MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment,
+        McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig,
+        PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionKind,
+        ProjectionVisibility, RestExecutionAttachment, RestResponseAttachment,
+        SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
+        V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceCommon, V4SourceManifest,
+        V4Surface,
     };
     use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
 
-    use super::{runtime_components_for_v4_source, surface_base_url};
+    use super::{
+        runtime_components_for_v4_database_only_source, runtime_components_for_v4_source,
+        surface_base_url,
+    };
 
     fn surface_without_authored_base_url() -> V4Surface {
         openapi_surface_with_base_url("rest", "demo", "")
@@ -747,6 +809,50 @@ mod tests {
                 .and_then(|page_size| page_size.query_param.as_deref()),
             Some("per_page")
         );
+    }
+
+    #[test]
+    fn database_only_runtime_components_do_not_require_materialized_artifacts() {
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "pickl".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            declared_inputs: Vec::new(),
+            surfaces: vec![V4Surface {
+                id: "db".to_string(),
+                relation_namespace: "pickl_db".to_string(),
+                surface_type: SurfaceType::Database,
+                descriptor: SurfaceDescriptor::Database {
+                    provider: DatabaseProvider::Sqlite,
+                },
+                inputs: Vec::new(),
+                runtime: SurfaceRuntimeConfig::Database(DatabaseRuntimeConfig {
+                    provider: DatabaseProvider::Sqlite,
+                    connection: DatabaseConnectionSpec::Sqlite(SqliteConnectionSpec {
+                        path: coral_spec::ParsedTemplate::parse("/tmp/pickl.sqlite")
+                            .expect("sqlite path template"),
+                    }),
+                }),
+            }],
+        };
+
+        let components =
+            runtime_components_for_v4_database_only_source(&manifest).expect("database component");
+        let coral_engine::RuntimeSourceComponent::Database(database) =
+            components.first().expect("component")
+        else {
+            panic!("expected database component");
+        };
+
+        assert_eq!(database.common.name, "pickl_db");
+        assert_eq!(database.provider, DatabaseProvider::Sqlite);
+        let DatabaseConnectionSpec::Sqlite(connection) = &database.connection else {
+            panic!("sqlite connection");
+        };
+        assert_eq!(connection.path.raw(), "/tmp/pickl.sqlite");
     }
 
     #[test]

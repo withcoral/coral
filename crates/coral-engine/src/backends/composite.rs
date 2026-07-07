@@ -9,9 +9,9 @@ use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
-    CompiledBackendSource, RegisteredInput, RegisteredSource, RegisteredTable,
-    RegisteredTableFunction,
+    BackendCatalogRegistration, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredInput, RegisteredSource,
+    RegisteredTable, RegisteredTableFunction,
 };
 
 struct CompositeCompiledSource {
@@ -52,9 +52,11 @@ impl CompiledBackendSource for CompositeCompiledSource {
         registration_context: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration> {
         let mut schemas: BTreeMap<String, CompositeSchemaRegistration> = BTreeMap::new();
+        let mut catalogs: Vec<BackendCatalogRegistration> = Vec::new();
 
         for component in &self.components {
             let registration = component.register(ctx, registration_context).await?;
+            catalogs.extend(registration.catalogs);
             for schema in registration.schemas {
                 let schema_name = schema.source.schema_name.clone();
                 let target = schemas
@@ -92,6 +94,7 @@ impl CompiledBackendSource for CompositeCompiledSource {
                 .into_values()
                 .map(CompositeSchemaRegistration::into_registration)
                 .collect(),
+            catalogs,
         })
     }
 }

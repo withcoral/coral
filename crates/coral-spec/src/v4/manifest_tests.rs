@@ -1,4 +1,6 @@
+use crate::backends::database::{DatabaseConnectionSpec, DatabaseProvider};
 use crate::parse_source_manifest_yaml;
+use crate::v4::{SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType};
 
 #[test]
 fn parses_v4_manifest_and_unions_surface_inputs() {
@@ -60,6 +62,123 @@ surfaces:
             .base_url
             .raw(),
         ""
+    );
+}
+
+#[test]
+fn parses_v4_database_surface_with_provider_specific_connection() {
+    let manifest = parse_source_manifest_yaml(
+        r#"
+name: pickl_db
+dsl_version: 4
+surfaces:
+  - id: db
+    type: database
+    provider: postgres
+    inputs:
+      DB_HOST:
+        kind: variable
+        default: localhost
+      DB_PORT:
+        kind: variable
+        default: "5432"
+      DB_USER:
+        kind: variable
+        default: pickl_reader
+      DB_PASSWORD:
+        kind: secret
+    connection:
+      host: "{{input.DB_HOST}}"
+      port: "{{input.DB_PORT}}"
+      database: pickl
+      user: "{{input.DB_USER}}"
+      password: "{{input.DB_PASSWORD}}"
+      sslmode: require
+"#,
+    )
+    .expect("v4 manifest");
+
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("surface");
+    assert_eq!(surface.surface_type, SurfaceType::Database);
+    assert_eq!(surface.relation_namespace, "pickl_db");
+    assert!(matches!(
+        &surface.descriptor,
+        SurfaceDescriptor::Database {
+            provider: DatabaseProvider::Postgres,
+        }
+    ));
+
+    let SurfaceRuntimeConfig::Database(runtime) = &surface.runtime else {
+        panic!("database runtime");
+    };
+    assert_eq!(runtime.provider, DatabaseProvider::Postgres);
+    let DatabaseConnectionSpec::Postgres(connection) = &runtime.connection else {
+        panic!("postgres connection");
+    };
+    assert_eq!(connection.host.raw(), "{{input.DB_HOST}}");
+    assert_eq!(connection.port.raw(), "{{input.DB_PORT}}");
+    assert_eq!(connection.database.raw(), "pickl");
+    assert_eq!(connection.user.raw(), "{{input.DB_USER}}");
+    assert_eq!(connection.password.raw(), "{{input.DB_PASSWORD}}");
+    assert_eq!(
+        connection.sslmode.as_ref().expect("sslmode template").raw(),
+        "require"
+    );
+}
+
+#[test]
+fn rejects_v4_database_connection_templates_referencing_undeclared_inputs() {
+    let error = parse_source_manifest_yaml(
+        r#"
+name: pickl_db
+dsl_version: 4
+surfaces:
+  - id: db
+    type: database
+    provider: sqlite
+    connection:
+      path: "{{input.SQLITE_PATH}}"
+"#,
+    )
+    .expect_err("undeclared input should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("manifest input 'SQLITE_PATH' is referenced but not declared"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_v4_database_connection_templates_referencing_runtime_tokens() {
+    let error = parse_source_manifest_yaml(
+        r#"
+name: pickl_db
+dsl_version: 4
+surfaces:
+  - id: db
+    type: database
+    provider: postgres
+    connection:
+      host: localhost
+      port: "5432"
+      database: "{{filter.tenant}}"
+      user: pickl_reader
+      password: "{{input.DB_PASSWORD}}"
+    inputs:
+      DB_PASSWORD:
+        kind: secret
+"#,
+    )
+    .expect_err("runtime token should fail");
+
+    assert!(
+        error.to_string().contains(
+            "connection.database may only reference source inputs; unsupported template token '{{filter.tenant}}'"
+        ),
+        "unexpected error: {error}"
     );
 }
 

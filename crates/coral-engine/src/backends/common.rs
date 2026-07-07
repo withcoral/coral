@@ -10,6 +10,7 @@ use coral_spec::{
     SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::catalog::CatalogProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Expr;
@@ -43,6 +44,10 @@ pub(crate) struct RegisteredColumn {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTable {
+    /// Inner namespace for sources whose tables live inside a source-owned
+    /// catalog (database sources: the remote schema). `None` for sources
+    /// whose tables sit directly in the default catalog.
+    pub(crate) namespace: Option<String>,
     pub(crate) table_name: String,
     pub(crate) description: String,
     pub(crate) guide: String,
@@ -113,10 +118,17 @@ pub(crate) struct RegisteredSource {
 
 pub(crate) struct BackendRegistration {
     pub(crate) schemas: Vec<BackendSchemaRegistration>,
+    pub(crate) catalogs: Vec<BackendCatalogRegistration>,
 }
 
 pub(crate) struct BackendSchemaRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
+    pub(crate) source: RegisteredSource,
+}
+
+pub(crate) struct BackendCatalogRegistration {
+    pub(crate) catalog_name: String,
+    pub(crate) catalog: Arc<dyn CatalogProvider>,
     pub(crate) source: RegisteredSource,
 }
 
@@ -317,6 +329,7 @@ pub(crate) fn build_registered_table(
     required_filters: Vec<String>,
 ) -> RegisteredTable {
     RegisteredTable {
+        namespace: None,
         table_name: common.name.clone(),
         description: common.description.clone(),
         guide: common.guide.clone(),

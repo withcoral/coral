@@ -411,7 +411,16 @@ fn table_not_found_hint(
     let schema_lower = schema.to_lowercase();
     let tables_in_schema: Vec<&TableInfo> = known_tables
         .iter()
-        .filter(|info| info.schema_name.to_lowercase() == schema_lower)
+        .filter(|info| {
+            if info.schema_name.to_lowercase() == schema_lower {
+                return true;
+            }
+            // Namespaced tables are referenced as schema.namespace.table, so
+            // the failing reference's schema part may be the dotted compound.
+            !info.namespace.is_empty()
+                && format!("{}.{}", info.schema_name, info.namespace).to_lowercase()
+                    == schema_lower
+        })
         .collect();
 
     if tables_in_schema.is_empty() {
@@ -494,19 +503,39 @@ fn raw_schema_table_name(info: &TableInfo) -> String {
 /// names stay one quoted identifier; case-preserving names are quoted
 /// only when they would otherwise round-trip wrong).
 fn format_schema_table(info: &TableInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_dotted_identifier(&info.schema_name),
-        quote_identifier(&info.table_name)
-    )
+    if info.namespace.is_empty() {
+        format!(
+            "{}.{}",
+            quote_dotted_identifier(&info.schema_name),
+            quote_identifier(&info.table_name)
+        )
+    } else {
+        // Namespaced tables resolve only through their source catalog:
+        // schema.namespace.table.
+        format!(
+            "{}.{}.{}",
+            quote_dotted_identifier(&info.schema_name),
+            quote_identifier(&info.namespace),
+            quote_identifier(&info.table_name)
+        )
+    }
 }
 
 fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_identifier_always(&info.schema_name),
-        quote_identifier_always(&info.table_name)
-    )
+    if info.namespace.is_empty() {
+        format!(
+            "{}.{}",
+            quote_identifier_always(&info.schema_name),
+            quote_identifier_always(&info.table_name)
+        )
+    } else {
+        format!(
+            "{}.{}.{}",
+            quote_identifier_always(&info.schema_name),
+            quote_identifier_always(&info.namespace),
+            quote_identifier_always(&info.table_name)
+        )
+    }
 }
 
 fn format_schema_function(info: &TableFunctionInfo) -> String {
@@ -658,6 +687,7 @@ mod tests {
     fn table(schema: &str, name: &str) -> TableInfo {
         TableInfo {
             schema_name: schema.to_string(),
+            namespace: String::new(),
             table_name: name.to_string(),
             description: String::new(),
             guide: String::new(),

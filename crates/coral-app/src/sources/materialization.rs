@@ -576,6 +576,15 @@ fn validate_semantic_ir(
             format!("semantic IR identity mismatch for surface '{}'", surface.id),
         ));
     }
+    if surface.surface_type == SurfaceType::Database {
+        return Err(incompatible_materialization_error(
+            source_name,
+            format!(
+                "database surface '{}' must be registered directly, not loaded from semantic IR",
+                surface.id
+            ),
+        ));
+    }
     if semantic_ir.importer_version != expected_importer_version(surface.surface_type) {
         return Err(incompatible_materialization_error(
             source_name,
@@ -592,6 +601,7 @@ fn expected_importer_version(surface_type: SurfaceType) -> &'static str {
     match surface_type {
         SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
         SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+        SurfaceType::Database => unreachable!("database surfaces are not materialized"),
     }
 }
 
@@ -728,6 +738,10 @@ fn materialize_surface(
     match surface.surface_type {
         SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
         SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
+        SurfaceType::Database => Err(AppError::FailedPrecondition(format!(
+            "DSL v4 database surface '{}' cannot be materialized yet",
+            surface.id
+        ))),
     }
 }
 
@@ -879,6 +893,12 @@ fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppEr
         coral_spec::v4::SurfaceDescriptor::McpServer { .. } => {
             Err(AppError::FailedPrecondition(format!(
                 "DSL v4 MCP surface '{}' does not have an OpenAPI descriptor",
+                surface.id
+            )))
+        }
+        coral_spec::v4::SurfaceDescriptor::Database { .. } => {
+            Err(AppError::FailedPrecondition(format!(
+                "DSL v4 database surface '{}' does not have an OpenAPI descriptor",
                 surface.id
             )))
         }

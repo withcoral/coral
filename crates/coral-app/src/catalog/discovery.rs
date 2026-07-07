@@ -574,6 +574,7 @@ mod tests {
     fn table(required_filters: Vec<String>) -> TableInfo {
         TableInfo {
             schema_name: "github".to_string(),
+            namespace: String::new(),
             table_name: "Pull.Requests".to_string(),
             description: "Pull request table".to_string(),
             guide: "Query pull requests.".to_string(),

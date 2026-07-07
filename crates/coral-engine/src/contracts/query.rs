@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
+use coral_spec::backends::database::DatabaseSourceManifest;
 use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
@@ -50,6 +51,8 @@ pub struct RuntimeSourcePackage {
 /// One backend-ready component inside an app-assembled query source package.
 #[derive(Debug, Clone)]
 pub enum RuntimeSourceComponent {
+    /// Relational database-backed runtime component.
+    Database(DatabaseSourceManifest),
     /// HTTP-backed runtime component.
     Http(HttpSourceManifest),
     /// File-backed runtime component.
@@ -200,6 +203,7 @@ impl RuntimeSourceComponent {
     /// Returns the runtime schema name declared by this component.
     pub fn source_name(&self) -> &str {
         match self {
+            Self::Database(manifest) => &manifest.common.name,
             Self::Http(manifest) => &manifest.common.name,
             Self::File(manifest) => &manifest.common.name,
             Self::Mcp(manifest) => &manifest.common.name,

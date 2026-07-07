@@ -155,6 +155,51 @@
             "id",
             "server"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "namespace_suffix": {
+              "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/V4InputSpecSchema"
+              },
+              "propertyNames": {
+                "minLength": 1
+              }
+            },
+            "provider": {
+              "$ref": "#/$defs/DatabaseProvider"
+            },
+            "connection": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "minProperties": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "database"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "provider",
+            "connection"
+          ]
         }
       ]
     },
@@ -1214,6 +1259,15 @@
       "type": "string",
       "enum": [
         "bearer"
+      ]
+    },
+    "DatabaseProvider": {
+      "description": "Supported relational database providers.",
+      "type": "string",
+      "enum": [
+        "postgres",
+        "mysql",
+        "sqlite"
       ]
     }
   },

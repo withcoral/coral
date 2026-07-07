@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::backends::database::DatabaseProvider;
 use crate::backends::http::RateLimitSpec;
 use crate::backends::mcp::McpServerSpec;
 use crate::{AuthSpec, HeaderSpec};
@@ -33,6 +34,7 @@ struct V4SourceManifestSchema {
 enum V4SurfaceSchema {
     Openapi(V4OpenApiSurfaceSchema),
     Mcp(V4McpSurfaceSchema),
+    Database(V4DatabaseSurfaceSchema),
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -86,6 +88,27 @@ struct V4McpSurfaceSchema {
     #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4DatabaseSurfaceSchema {
+    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        required,
+        length(min = 1),
+        pattern(r"^[a-z][a-z0-9_]*$"),
+        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+    )]
+    namespace_suffix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
+    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
+    provider: DatabaseProvider,
+    #[schemars(extend("minProperties" = 1))]
+    connection: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -260,6 +283,34 @@ surfaces:
             "generated schema should accept MCP surface: {errors:?}"
         );
         parse_source_manifest_yaml(raw).expect("parser accepts MCP surface");
+    }
+
+    #[test]
+    fn generated_schema_accepts_database_surface() {
+        let raw = r#"
+name: pickl_db
+dsl_version: 4
+surfaces:
+  - id: db
+    type: database
+    provider: postgres
+    inputs:
+      DB_PASSWORD:
+        kind: secret
+    connection:
+      host: localhost
+      port: "5432"
+      database: pickl
+      user: pickl_reader
+      password: "{{input.DB_PASSWORD}}"
+"#;
+
+        let errors = validation_errors(&validator(), &manifest_json(raw));
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept database surface: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts database surface");
     }
 
     #[test]

@@ -27,6 +27,7 @@ use super::schema::{tool_input_schema, tool_output_schema};
 use super::tool_names::ToolName;
 use super::values::{
     MissingTableSummaryValue, format_schema_table_equivalent, format_sql_identifier,
+    format_table_name,
 };
 
 const DEFAULT_IGNORE_CASE: bool = true;
@@ -401,7 +402,7 @@ fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<CatalogItemVa
 }
 
 fn minimal_table_function_call_example(function: &ProtoTableFunction) -> String {
-    let reference = format_schema_table_equivalent(&function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent(&function.schema_name, "", &function.name);
     let required_arguments = function
         .arguments
         .iter()
@@ -701,8 +702,12 @@ impl<'a> From<&'a ProtoTableSummary> for CatalogTableItemValue<'a> {
         Self {
             kind: CatalogTableKind::Table,
             schema_name: &table.schema_name,
-            name: format!("{}.{}", table.schema_name, table.name),
-            sql_reference: format_schema_table_equivalent(&table.schema_name, &table.name),
+            name: format_table_name(&table.schema_name, &table.namespace, &table.name),
+            sql_reference: format_schema_table_equivalent(
+                &table.schema_name,
+                &table.namespace,
+                &table.name,
+            ),
             description: &table.description,
             table: CatalogTableValue {
                 table_name: &table.name,
@@ -745,7 +750,7 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
             kind: CatalogTableFunctionKind::TableFunction,
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
-            sql_reference: format_schema_table_equivalent(&function.schema_name, &function.name),
+            sql_reference: format_schema_table_equivalent(&function.schema_name, "", &function.name),
             sql_call_example: minimal_table_function_call_example(function),
             description: &function.description,
             table_function: CatalogTableFunctionValue {

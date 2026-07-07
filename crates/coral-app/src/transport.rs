@@ -275,6 +275,7 @@ pub(crate) fn table_to_proto(
 
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
+        namespace: table.namespace,
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
@@ -290,6 +291,7 @@ pub(crate) fn table_summary_to_proto(
 ) -> TableSummary {
     TableSummary {
         workspace: Some(workspace_to_proto(workspace_name)),
+        namespace: table.namespace,
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
@@ -625,6 +627,7 @@ mod tests {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
             schema_name: "demo".to_string(),
+            namespace: String::new(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
             guide: "Filter by org_id.".to_string(),
@@ -663,6 +666,7 @@ mod tests {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
             schema_name: "demo".to_string(),
+            namespace: String::new(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
             guide: "Filter by org_id.".to_string(),

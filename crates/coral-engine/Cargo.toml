@@ -19,6 +19,11 @@ datafusion.workspace = true
 datafusion-datasource.workspace = true
 datafusion-datasource-json.workspace = true
 datafusion-functions-json.workspace = true
+datafusion-table-providers = { workspace = true, features = [
+  "mysql",
+  "postgres",
+  "sqlite-bundled",
+] }
 datafusion-tracing.workspace = true
 futures.workspace = true
 httpdate.workspace = true
@@ -46,6 +51,7 @@ arrow.workspace = true
 coral-spec.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 parquet.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
