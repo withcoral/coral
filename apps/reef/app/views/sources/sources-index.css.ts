@@ -1,5 +1,6 @@
 import { keyframes, style } from '@vanilla-extract/css'
 
+import { breakpoints } from '@/styles/theme.css'
 import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({
@@ -12,32 +13,97 @@ export const spinAnimation = style({
 })
 
 export const root = style({
+  display: 'flex',
+  flexDirection: 'column',
   height: '100%',
+  minHeight: 0,
+  overflow: 'hidden',
 })
 
-export const scrollContent = style({
+export const header = style({
+  flexShrink: 0,
+})
+
+export const headerInner = style({
+  alignItems: 'flex-start',
   boxSizing: 'border-box',
   display: 'flex',
-  flex: 1,
-  minHeight: '100%',
-  paddingBlock: 32,
-  paddingInline: 24,
+  gap: 24,
+  justifyContent: 'space-between',
+  marginInline: 'auto',
+  maxWidth: 960,
+  paddingBlock: 24,
+  paddingInline: 32,
+  width: '100%',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      flexDirection: 'column',
+      gap: 16,
+      paddingBlock: 20,
+      paddingInline: 16,
+    },
+  },
 })
 
-export const container = style({
+export const headerText = style({
+  display: 'flex',
+  flex: '1 1 auto',
+  flexDirection: 'column',
+  gap: 4,
+  maxWidth: 680,
+  minWidth: 0,
+})
+
+export const searchBar = style({
+  flex: '0 0 360px',
+  maxWidth: 360,
+  width: '100%',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      flexBasis: 'auto',
+      maxWidth: '100%',
+    },
+  },
+})
+
+export const statusPanel = style({
+  boxSizing: 'border-box',
+  flexShrink: 0,
+  marginInline: 'auto',
+  maxWidth: 960,
+  paddingBlock: 16,
+  paddingInline: 32,
+  width: '100%',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      paddingInline: 16,
+    },
+  },
+})
+
+export const resultsScroll = style({
+  flex: 1,
+  minHeight: 0,
+})
+
+export const resultsContent = style({
+  boxSizing: 'border-box',
   display: 'flex',
   flex: 1,
   flexDirection: 'column',
   gap: 32,
   marginInline: 'auto',
   maxWidth: 960,
+  minHeight: '100%',
+  paddingBlock: 32,
+  paddingInline: 32,
   width: '100%',
-})
-
-export const header = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      paddingBlock: 24,
+      paddingInline: 16,
+    },
+  },
 })
 
 export const loadingState = style({
@@ -73,8 +139,4 @@ export const sectionCount = style({
   justifyContent: 'center',
   minWidth: 22,
   padding: '0 6px',
-})
-
-export const searchBar = style({
-  maxWidth: 360,
 })

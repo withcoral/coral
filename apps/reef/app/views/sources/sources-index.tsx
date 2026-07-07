@@ -113,14 +113,13 @@ export function SourcesIndex() {
 
   return (
     <>
-      <ScrollArea.Container className={styles.root} constrainWidth fillContent>
-        <div className={styles.scrollContent}>
-          <div className={styles.container}>
-            <div className={styles.header}>
+      <section className={styles.root} aria-label="Coral sources">
+        <div className={styles.header}>
+          <div className={styles.headerInner}>
+            <div className={styles.headerText}>
               <Typography.HeadingLarge as="h1">Sources</Typography.HeadingLarge>
               <Typography.Body variant="secondary">
-                Connect external systems to query their data from Coral. Click a source to install
-                or inspect it.
+                Manage sources for this workspace
               </Typography.Body>
             </div>
 
@@ -133,15 +132,21 @@ export function SourcesIndex() {
                 icon="Search"
               />
             </div>
+          </div>
+        </div>
 
-            {error ? (
-              <ErrorBanner
-                title="Couldn't load sources"
-                message={error}
-                onRetry={() => window.location.reload()}
-              />
-            ) : null}
+        {error ? (
+          <div className={styles.statusPanel}>
+            <ErrorBanner
+              title="Couldn't load sources"
+              message={error}
+              onRetry={() => window.location.reload()}
+            />
+          </div>
+        ) : null}
 
+        <ScrollArea.Container className={styles.resultsScroll} constrainWidth fillContent>
+          <div className={styles.resultsContent}>
             {loading ? (
               <div className={styles.loadingState}>
                 <Icon name="Loader" size="16" color="tertiary" className={styles.spinAnimation} />
@@ -186,8 +191,8 @@ export function SourcesIndex() {
               />
             ) : null}
           </div>
-        </div>
-      </ScrollArea.Container>
+        </ScrollArea.Container>
+      </section>
 
       <SourceInstallDialog
         name={installingName}
