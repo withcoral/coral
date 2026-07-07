@@ -515,10 +515,6 @@ impl ConfigStore {
         self.update_config_unlocked(|config| Ok(update(&mut config.catalog)))
     }
 
-    pub(crate) fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
-        self.load_config().map(|config| config.workspaces())
-    }
-
     pub(crate) fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -650,10 +646,6 @@ impl ConfigStore {
 }
 
 impl WorkspaceStore for ConfigStore {
-    fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
-        ConfigStore::list_workspaces(self)
-    }
-
     fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,

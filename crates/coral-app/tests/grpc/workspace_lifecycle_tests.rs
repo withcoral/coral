@@ -131,6 +131,22 @@ async fn create_workspace_persists_empty_workspace_table() {
 }
 
 #[tokio::test]
+async fn list_workspaces_reads_database_after_config_becomes_invalid() {
+    let harness = GrpcHarness::new().await;
+
+    harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("create workspace");
+    fs::write(harness.config_dir().join("config.toml"), "[[workspaces]\n").expect("corrupt config");
+
+    assert_eq!(workspace_names(&harness).await, vec!["default", "work"]);
+}
+
+#[tokio::test]
 async fn create_duplicate_workspace_returns_already_exists() {
     let harness = GrpcHarness::new().await;
 
