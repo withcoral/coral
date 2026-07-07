@@ -51,13 +51,6 @@ pub(crate) fn arrow_parameter_type(data_type: ManifestDataType) -> DataType {
 
 /// Resolves a DataFusion/Arrow inferred parameter type into Coral manifest
 /// spelling when the type can be expressed in function metadata.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Used by the function signature inference PR stacked on this one"
-    )
-)]
 pub(crate) fn manifest_data_type_for_arrow(data_type: &DataType) -> Option<ManifestDataType> {
     match data_type {
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Some(ManifestDataType::Utf8),
@@ -71,13 +64,6 @@ pub(crate) fn manifest_data_type_for_arrow(data_type: &DataType) -> Option<Manif
 
 /// Whether a declared manifest type is compatible with one Arrow-inferred
 /// claim for the same SQL placeholder.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Used by the function signature inference PR stacked on this one"
-    )
-)]
 pub(crate) fn manifest_claim_accepts_arrow(declared: ManifestDataType, arrow: &DataType) -> bool {
     let declared_arrow = arrow_parameter_type(declared);
     declared_arrow == *arrow
