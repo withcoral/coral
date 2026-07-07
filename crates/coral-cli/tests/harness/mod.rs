@@ -38,7 +38,9 @@ use coral_api::v1::{
     create_bundled_source_with_o_auth_response, import_source_response, search_result,
     source_input_spec::Input as ProtoSourceInput,
 };
-use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
+use coral_api::{
+    CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
+};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -724,6 +726,7 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
     search: Mutex<Vec<SearchRequest>>,
+    execute_sql_task_ids: Mutex<Vec<Option<String>>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
     describe_table: Mutex<Vec<DescribeTableRequest>>,
@@ -792,12 +795,22 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
+        let task_id = request
+            .metadata()
+            .get(CORAL_TASK_ID_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let request = request.into_inner();
         self.captured
             .execute_sql
             .lock()
             .expect("execute_sql capture")
             .push(request.clone());
+        self.captured
+            .execute_sql_task_ids
+            .lock()
+            .expect("execute_sql task id capture")
+            .push(task_id);
         let sql = request.sql;
         if sql
             .trim_start()
@@ -1293,6 +1306,14 @@ impl MockServer {
 
     pub(crate) fn search_requests(&self) -> Vec<SearchRequest> {
         self.captured.search.lock().expect("search capture").clone()
+    }
+
+    pub(crate) fn execute_sql_task_ids(&self) -> Vec<Option<String>> {
+        self.captured
+            .execute_sql_task_ids
+            .lock()
+            .expect("execute_sql task id capture")
+            .clone()
     }
 
     pub(crate) fn discover_sources_requests(&self) -> Vec<DiscoverSourcesRequest> {
