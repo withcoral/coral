@@ -74,6 +74,19 @@ impl AppStateLayout {
         self.config_dir.join("workspaces")
     }
 
+    pub(crate) fn source_specs_root(&self) -> PathBuf {
+        self.config_dir.join("source_specs")
+    }
+
+    pub(crate) fn source_spec_dir(&self, source_name: &SourceName) -> PathBuf {
+        self.source_specs_root().join(source_name.as_str())
+    }
+
+    pub(crate) fn source_spec_manifest_file(&self, source_name: &SourceName) -> PathBuf {
+        self.source_spec_dir(source_name)
+            .join(INSTALLED_MANIFEST_FILE_NAME)
+    }
+
     pub(crate) fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspaces_root().join(workspace_name.as_str())
     }

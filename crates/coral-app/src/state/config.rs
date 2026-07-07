@@ -21,6 +21,7 @@ pub(crate) struct AppConfig {
     engine: PersistedEngineConfig,
     workspaces: WorkspaceCatalog,
     catalog: SourceCatalog,
+    source_specs: SourceSpecCatalog,
 }
 
 impl Default for AppConfig {
@@ -30,6 +31,7 @@ impl Default for AppConfig {
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            source_specs: SourceSpecCatalog::default(),
         }
     }
 }
@@ -63,6 +65,14 @@ impl AppConfig {
         self.catalog.get_source(workspace_name, source_name)
     }
 
+    pub(crate) fn source_specs(&self) -> Vec<RegisteredSourceSpec> {
+        self.source_specs.list()
+    }
+
+    pub(crate) fn get_source_spec(&self, source_name: &SourceName) -> Option<RegisteredSourceSpec> {
+        self.source_specs.get(source_name)
+    }
+
     pub(crate) fn dependent_join_config(
         &self,
         selected_source_names: &[String],
@@ -88,6 +98,8 @@ struct PersistedAppConfig {
     version: u32,
     #[serde(default)]
     engine: PersistedEngineConfig,
+    #[serde(default)]
+    source_specs: BTreeMap<String, PersistedSourceSpec>,
     #[serde(default)]
     workspaces: BTreeMap<String, PersistedWorkspaceConfig>,
 }
@@ -206,6 +218,26 @@ struct PersistedInstalledSource {
     #[serde(default)]
     credential_storage: Option<CredentialStorageKind>,
     origin: SourceOrigin,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedSourceSpec {
+    #[serde(default)]
+    version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegisteredSourceSpec {
+    pub(crate) name: SourceName,
+    pub(crate) version: Option<String>,
+}
+
+impl RegisteredSourceSpec {
+    fn into_persisted(self) -> PersistedSourceSpec {
+        PersistedSourceSpec {
+            version: self.version,
+        }
+    }
 }
 
 impl PersistedInstalledSource {
@@ -333,6 +365,27 @@ impl SourceCatalog {
         workspace_name: &WorkspaceName,
     ) -> Option<BTreeMap<SourceName, InstalledSource>> {
         self.0.remove(workspace_name)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceSpecCatalog(BTreeMap<SourceName, RegisteredSourceSpec>);
+
+impl SourceSpecCatalog {
+    pub(crate) fn list(&self) -> Vec<RegisteredSourceSpec> {
+        self.0.values().cloned().collect()
+    }
+
+    pub(crate) fn get(&self, source_name: &SourceName) -> Option<RegisteredSourceSpec> {
+        self.0.get(source_name).cloned()
+    }
+
+    pub(crate) fn upsert(&mut self, source_spec: RegisteredSourceSpec) {
+        self.0.insert(source_spec.name.clone(), source_spec);
+    }
+
+    pub(crate) fn remove(&mut self, source_name: &SourceName) -> Option<RegisteredSourceSpec> {
+        self.0.remove(source_name)
     }
 }
 
@@ -660,6 +713,38 @@ impl ConfigStore {
             Ok(())
         })
     }
+
+    pub(crate) fn list_source_specs(&self) -> Result<Vec<RegisteredSourceSpec>, AppError> {
+        self.load_config().map(|config| config.source_specs())
+    }
+
+    pub(crate) fn get_source_spec(
+        &self,
+        source_name: &SourceName,
+    ) -> Result<RegisteredSourceSpec, AppError> {
+        self.load_config()?
+            .get_source_spec(source_name)
+            .ok_or_else(|| {
+                AppError::SourceNotFound(format!("source spec {}", source_name.as_str()))
+            })
+    }
+
+    pub(crate) fn upsert_source_spec(
+        &self,
+        source_spec: RegisteredSourceSpec,
+    ) -> Result<(), AppError> {
+        self.update_config(|config| {
+            config.source_specs.upsert(source_spec);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn remove_source_spec(
+        &self,
+        source_name: &SourceName,
+    ) -> Result<Option<RegisteredSourceSpec>, AppError> {
+        self.update_config(|config| Ok(config.source_specs.remove(source_name)))
+    }
 }
 
 impl WorkspaceStore for ConfigStore {
@@ -693,6 +778,20 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
 
     doc["version"] = value(i64::from(config.version));
     render_engine_config(&mut doc, &config.engine);
+
+    // Remove and rebuild the global source-spec registry index so deleted
+    // entries don't linger while preserving unrelated top-level config.
+    doc.remove("source_specs");
+    for (source_name, source_spec) in &config.source_specs {
+        ensure_implicit_table(&mut doc["source_specs"]);
+        let source_spec_item = &mut doc["source_specs"][source_name];
+        if !source_spec_item.is_table() {
+            *source_spec_item = toml_edit::table();
+        }
+        if let Some(version) = &source_spec.version {
+            source_spec_item["version"] = value(version.clone());
+        }
+    }
 
     // Remove and fully rebuild the workspaces section so removed sources and
     // removed empty workspaces don't linger.
@@ -818,6 +917,14 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
         let mut workspaces = WorkspaceCatalog::default();
         let mut catalog = SourceCatalog::default();
+        let mut source_specs = SourceSpecCatalog::default();
+        for (source_name, source_spec) in value.source_specs {
+            let source_name = SourceName::parse(&source_name)?;
+            source_specs.upsert(RegisteredSourceSpec {
+                name: source_name,
+                version: source_spec.version,
+            });
+        }
         for (workspace_name, workspace_config) in value.workspaces {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
             workspaces.insert(workspace_name.clone());
@@ -831,6 +938,7 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
             engine: value.engine,
             workspaces,
             catalog,
+            source_specs,
         })
     }
 }
@@ -854,9 +962,22 @@ impl From<&AppConfig> for PersistedAppConfig {
                 );
             }
         }
+        let source_specs = value
+            .source_specs
+            .0
+            .values()
+            .cloned()
+            .map(|source_spec| {
+                (
+                    source_spec.name.as_str().to_string(),
+                    source_spec.into_persisted(),
+                )
+            })
+            .collect();
         Self {
             version: value.version,
             engine: value.engine.clone(),
+            source_specs,
             workspaces,
         }
     }
@@ -1030,8 +1151,9 @@ mod tests {
 
     use super::{
         AppConfig, AppError, ConfigStore, PersistedAppConfig, PersistedEngineConfig,
-        PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
-        WorkspaceCatalog, load_raw_feature_overrides, render_config, set_raw_feature_override,
+        PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue, RegisteredSourceSpec,
+        SourceCatalog, SourceSpecCatalog, WorkspaceCatalog, load_raw_feature_overrides,
+        render_config, set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -1129,6 +1251,7 @@ mod tests {
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1150,12 +1273,43 @@ mod tests {
             engine: PersistedEngineConfig::default(),
             workspaces,
             catalog: SourceCatalog::default(),
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
 
         assert!(raw.contains("[workspaces.default]"));
         assert!(raw.contains("[workspaces.work]"));
+    }
+
+    #[test]
+    fn renders_and_loads_global_source_specs() {
+        let source_name = SourceName::parse("linear").expect("source");
+        let mut source_specs = SourceSpecCatalog::default();
+        source_specs.upsert(RegisteredSourceSpec {
+            name: source_name.clone(),
+            version: Some("3.0.0".to_string()),
+        });
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+            source_specs,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[source_specs.linear]"));
+        assert!(raw.contains("version = \"3.0.0\""));
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
+        )
+        .expect("config");
+        let source_spec = loaded
+            .get_source_spec(&source_name)
+            .expect("source spec should load");
+        assert_eq!(source_spec.version.as_deref(), Some("3.0.0"));
     }
 
     #[test]
@@ -1194,6 +1348,7 @@ version = 1
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1414,6 +1569,7 @@ limit = 2147483648
             },
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1440,6 +1596,7 @@ flag = true
             },
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
@@ -1466,6 +1623,7 @@ flag = true
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
@@ -1601,6 +1759,7 @@ max_concurrency = 0
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1707,6 +1866,7 @@ origin = "bundled"
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            source_specs: SourceSpecCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));

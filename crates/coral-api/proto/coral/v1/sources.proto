@@ -13,6 +13,8 @@ enum SourceOrigin {
   SOURCE_ORIGIN_BUNDLED = 1;
   // Source was imported from a user-supplied manifest.
   SOURCE_ORIGIN_IMPORTED = 2;
+  // Source was installed from a global source spec.
+  SOURCE_ORIGIN_GLOBAL_SPEC = 3;
 }
 
 // Where an installed source's credential material is stored.

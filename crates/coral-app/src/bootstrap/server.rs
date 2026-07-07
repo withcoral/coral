@@ -53,6 +53,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
+use crate::sources::source_specs::FsGlobalSourceSpecStore;
 use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
@@ -273,10 +274,12 @@ impl ServerBuilder {
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
+        let global_source_spec_store = Arc::new(FsGlobalSourceSpecStore::new(layout.clone()));
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            global_source_spec_store,
             layout.clone(),
             workspace_lifecycle_lock.clone(),
         );
@@ -303,6 +306,7 @@ impl ServerBuilder {
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
+            source_manager.clone(),
         );
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
@@ -676,7 +680,7 @@ mod tests {
 
     use std::borrow::Cow;
     use std::net::{Ipv4Addr, TcpListener};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -703,10 +707,11 @@ mod tests {
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
+    use crate::sources::source_specs::FsGlobalSourceSpecStore;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
-    use crate::workspaces::{WorkspaceManager, WorkspaceName};
+    use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceName};
     use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
@@ -725,6 +730,54 @@ enabled = false
 ",
         )
         .expect("write telemetry config");
+    }
+
+    struct TestServerComponents {
+        source_manager: SourceManager,
+        workspace_manager: WorkspaceManager,
+        query_manager: QueryManager,
+        feedback_manager: FeedbackManager,
+        episode_store: EpisodeStore,
+    }
+
+    fn test_server_components(
+        config_dir: PathBuf,
+        query_runtime_context: QueryRuntimeContext,
+    ) -> TestServerComponents {
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
+        let source_manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            workspace_lifecycle_lock.clone(),
+        );
+        let workspace_manager = WorkspaceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+            workspace_lifecycle_lock,
+        );
+        let query_manager = QueryManager::new(
+            config_store,
+            credential_manager,
+            query_runtime_context,
+            layout.clone(),
+            vec![Arc::new(NoopEngineExtensionsProvider)],
+            source_manager.clone(),
+        );
+        TestServerComponents {
+            source_manager,
+            workspace_manager,
+            query_manager,
+            feedback_manager: FeedbackManager::new(layout.clone()),
+            episode_store: EpisodeStore::new(layout),
+        }
     }
 
     #[tokio::test]
@@ -806,39 +859,15 @@ enabled = false
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        layout.ensure().expect("layout dirs");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-        );
-        let query_manager = QueryManager::new(
-            config_store,
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
+        let components = test_server_components(config_dir, QueryRuntimeContext::default());
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
-            source_manager,
-            workspace_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
+            components.source_manager,
+            components.workspace_manager,
+            components.query_manager,
+            components.feedback_manager,
+            components.episode_store,
             TraceServerComponents {
                 service: Some(trace_service),
                 local_trace_store_dir: None,
@@ -1197,39 +1226,19 @@ tables:
         )
         .expect("write fixture");
 
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-        );
-        let query_manager = QueryManager::new(
-            config_store,
-            credential_manager,
+        let components = test_server_components(
+            config_dir.clone(),
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
                 ..QueryRuntimeContext::default()
             },
-            layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
-            source_manager,
-            workspace_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
+            components.source_manager,
+            components.workspace_manager,
+            components.query_manager,
+            components.feedback_manager,
+            components.episode_store,
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
@@ -1308,36 +1317,13 @@ tables:
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
 
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-        );
-        let query_manager = QueryManager::new(
-            config_store,
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
+        let components = test_server_components(config_dir.clone(), QueryRuntimeContext::default());
         let running = start_server(
-            source_manager,
-            workspace_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
+            components.source_manager,
+            components.workspace_manager,
+            components.query_manager,
+            components.feedback_manager,
+            components.episode_store,
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
@@ -1416,36 +1402,13 @@ tables:
                 .expect("write to String");
         }
 
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-        );
-        let query_manager = QueryManager::new(
-            config_store,
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
+        let components = test_server_components(config_dir.clone(), QueryRuntimeContext::default());
         let running = start_server(
-            source_manager,
-            workspace_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
+            components.source_manager,
+            components.workspace_manager,
+            components.query_manager,
+            components.feedback_manager,
+            components.episode_store,
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )

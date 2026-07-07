@@ -25,7 +25,7 @@ use crate::query::extensions::{
     engine_extensions_for_providers,
 };
 use crate::sources::SourceName;
-use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::manager::SourceManager;
 use crate::sources::materialization::{
     incompatible_materialization_error, load_v4_materialization,
 };
@@ -58,6 +58,7 @@ pub(crate) struct QueryManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
+    source_manager: SourceManager,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 }
@@ -69,11 +70,13 @@ impl QueryManager {
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        source_manager: SourceManager,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             runtime_context,
+            source_manager,
             layout,
             engine_extensions_providers,
         }
@@ -336,7 +339,9 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
-        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
+        let installed = self
+            .source_manager
+            .resolve_installed_manifest(workspace_name, source)?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
             let materialized = load_v4_materialization(
@@ -665,6 +670,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingGlobalSourceSpec { .. } => "MISSING_GLOBAL_SOURCE_SPEC",
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
@@ -748,6 +754,8 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
+    use crate::sources::source_specs::FsGlobalSourceSpecStore;
+    use crate::workspaces::WorkspaceLifecycleLock;
 
     struct QueryManagerFixture {
         _temp: TempDir,
@@ -761,12 +769,22 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let source_manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
         let manager = QueryManager::new(
-            ConfigStore::new(layout.clone()),
-            CredentialManager::new(CredentialStore::new(layout.clone())),
+            config_store,
+            credential_manager,
             runtime_context,
             layout,
             providers,
+            source_manager,
         );
         QueryManagerFixture {
             _temp: temp,
@@ -797,6 +815,39 @@ mod tests {
             .expect_err("missing workspace should fail closed");
 
         assert_workspace_not_found(error, &missing_workspace);
+    }
+
+    #[test]
+    fn load_query_sources_skips_source_with_missing_global_source_spec() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("orphaned_global").expect("source name");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name,
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::GlobalSpec,
+                },
+            )
+            .expect("persist source");
+
+        let (sources, _config) = fixture
+            .manager
+            .load_query_sources(&workspace_name)
+            .expect("orphaned global source should be skipped");
+
+        assert!(
+            sources.is_empty(),
+            "orphaned global source should not be loaded"
+        );
     }
 
     #[tokio::test]
@@ -1210,10 +1261,12 @@ tables:
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
-        let source_manager = SourceManager::new_for_tests(
+        let source_manager = SourceManager::new(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
+            Arc::new(FsGlobalSourceSpecStore::new(fixture.manager.layout.clone())),
             fixture.manager.layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
         let workspace_name = WorkspaceName::default();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
@@ -1529,12 +1582,21 @@ surfaces:
             layout.clone(),
             CredentialStoragePreference::Keychain,
         );
+        let credential_manager = CredentialManager::new(credential_store);
+        let source_manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
         let manager = QueryManager::new(
             config_store,
-            CredentialManager::new(credential_store),
+            credential_manager,
             QueryRuntimeContext::default(),
             layout,
             Vec::new(),
+            source_manager,
         );
         let error = manager
             .load_query_sources(&workspace_name)
