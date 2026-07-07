@@ -490,19 +490,33 @@ impl QueryManager {
                     })
                 }
                 Some(CredentialStorageKind::Keychain) => {
+                    // Keychain values aren't read for passive browsing, but still
+                    // validate that every required secret is configured so a
+                    // misconfigured source fails closed here instead of silently
+                    // dropping out of the catalog during engine registration.
                     let placeholder_secrets = catalog_placeholder_secrets(
                         source_spec,
                         source.secrets.iter().map(String::as_str),
                     );
+                    let resolved_secrets =
+                        source_secrets_from_material(source, source_spec, &placeholder_secrets)?;
                     Ok(SourceSecretResolution {
-                        credential_material: placeholder_secrets.clone(),
-                        resolved_secrets: placeholder_secrets,
+                        credential_material: placeholder_secrets,
+                        resolved_secrets,
                     })
                 }
-                None => Ok(SourceSecretResolution {
-                    credential_material: BTreeMap::new(),
-                    resolved_secrets: BTreeMap::new(),
-                }),
+                None => {
+                    // No credential storage still has to satisfy required secrets;
+                    // fail closed to match the runtime path rather than let the
+                    // source vanish from the catalog.
+                    let empty = BTreeMap::new();
+                    let resolved_secrets =
+                        source_secrets_from_material(source, source_spec, &empty)?;
+                    Ok(SourceSecretResolution {
+                        credential_material: empty,
+                        resolved_secrets,
+                    })
+                }
             },
         }
     }
@@ -1793,6 +1807,87 @@ tables:
                 "API_TOKEN".to_string(),
                 CATALOG_SECRET_PLACEHOLDER.to_string()
             )])
+        );
+    }
+
+    #[test]
+    fn load_catalog_query_sources_fails_closed_for_keychain_source_missing_required_secret() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("keychain_messages").expect("source name");
+        let manifest_path = layout.manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: keychain_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
+inputs:
+  API_TOKEN:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: API_TOKEN
+tables:
+  - name: messages
+    description: Messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        // Keychain storage, but the required API_TOKEN secret was never
+        // configured (empty `secrets`) — the catalog load must fail closed
+        // rather than silently drop the source.
+        config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name,
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let manager = QueryManager::new(
+            config_store,
+            CredentialManager::new(credential_store),
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+
+        let error = manager
+            .load_catalog_query_sources(&workspace_name)
+            .expect_err("catalog load should fail closed for a missing required secret");
+        assert!(
+            matches!(error, AppError::FailedPrecondition(_)),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("API_TOKEN"),
+            "catalog load should name the missing secret: {error}"
         );
     }
 
