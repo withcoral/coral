@@ -1,4 +1,4 @@
-use sea_query::{InsertStatement, SelectStatement};
+use sea_query::{DeleteStatement, InsertStatement, SelectStatement};
 use sea_query_sqlx::SqlxBinder;
 use sqlx::postgres::PgRow;
 use sqlx::sqlite::SqliteRow;
@@ -42,6 +42,27 @@ impl<'a> CoralTx<'a> {
     }
 
     pub(super) async fn execute(&mut self, statement: InsertStatement) -> Result<(), DbError> {
+        match &mut self.backend {
+            CoralTxBackend::Sqlite(tx) => {
+                let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
+                sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+            CoralTxBackend::Postgres(tx) => {
+                let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
+                sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn execute_delete(
+        &mut self,
+        statement: DeleteStatement,
+    ) -> Result<(), DbError> {
         match &mut self.backend {
             CoralTxBackend::Sqlite(tx) => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);

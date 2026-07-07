@@ -55,7 +55,7 @@ use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
-use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
+use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, import_legacy_config};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -274,6 +274,9 @@ impl ServerBuilder {
         };
         let coral_db = CoralDb::open(database_config).await?;
         coral_db.migrate().await?;
+        let config_store = ConfigStore::new(layout.clone());
+        import_legacy_config(&coral_db, &config_store).await?;
+        let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -290,7 +293,6 @@ impl ServerBuilder {
             .then_some(installed_trace_store)
             .flatten();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let config_store = ConfigStore::new(layout.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -308,6 +310,7 @@ impl ServerBuilder {
             layout.clone(),
             active_trace_store_dir.clone(),
             workspace_lifecycle_lock,
+            Arc::clone(&coral_db),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -732,6 +735,7 @@ mod tests {
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, import_legacy_config};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
@@ -754,6 +758,21 @@ enabled = false
 ",
         )
         .expect("write telemetry config");
+    }
+
+    async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        import_legacy_config(&db, config_store)
+            .await
+            .expect("import legacy config");
+        Arc::new(db)
     }
 
     #[tokio::test]
@@ -794,6 +813,7 @@ enabled = false
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -805,6 +825,7 @@ enabled = false
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),
@@ -1186,6 +1207,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1197,6 +1219,7 @@ tables:
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),
@@ -1299,6 +1322,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1310,6 +1334,7 @@ tables:
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),
@@ -1409,6 +1434,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1420,6 +1446,7 @@ tables:
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),

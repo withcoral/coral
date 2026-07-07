@@ -21,13 +21,6 @@ impl CoralDb {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Repository harness uses transactions in tests before manager wiring lands in a later stack PR."
-        )
-    )]
     pub(crate) async fn begin(&self) -> Result<CoralTx<'_>, DbError> {
         CoralTx::begin(&self.backend).await
     }
