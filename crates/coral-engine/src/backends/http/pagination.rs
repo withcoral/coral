@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use datafusion::error::{DataFusionError, Result};
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, HeaderName};
 use serde_json::{Map, Value, json};
 
 use crate::backends::http::request::{RequestBody, set_path_value};
@@ -16,6 +16,12 @@ pub(super) struct PageState {
     pub(super) page: i64,
     pub(super) offset: i64,
     pub(super) next_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct ResponsePaginationHints {
+    pub(super) next_url: Option<String>,
+    pub(super) cursor: Option<String>,
 }
 
 pub(super) fn apply_pagination_query_pairs(
@@ -185,6 +191,30 @@ pub(super) fn extract_next_link_url(
     Ok(None)
 }
 
+pub(super) fn extract_response_cursor_header(
+    headers: &HeaderMap,
+    header_name: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(header_name) = header_name else {
+        return Ok(None);
+    };
+    let name = HeaderName::try_from(header_name).map_err(|error| {
+        DataFusionError::Execution(format!(
+            "invalid pagination response cursor header '{header_name}': {error}"
+        ))
+    })?;
+    for header in headers.get_all(name) {
+        let Ok(value) = header.to_str() else {
+            continue;
+        };
+        let value = value.trim();
+        if !value.is_empty() {
+            return Ok(Some(value.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 fn link_param_matches(item: &str, name: &str, expected: &str) -> bool {
     item.split(';').skip(1).any(|param| {
         let Some((key, value)) = param.trim().split_once('=') else {
@@ -205,7 +235,7 @@ mod tests {
 
     use super::{
         PageState, apply_pagination_body_fields, apply_pagination_query_pairs,
-        extract_next_link_url, page_is_exhausted,
+        extract_next_link_url, extract_response_cursor_header, page_is_exhausted,
     };
     use crate::backends::http::test_support::{test_http_request_target, test_http_table_spec};
     use coral_spec::{
@@ -294,6 +324,29 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("invalid pagination Link header item")
+        );
+    }
+
+    #[test]
+    fn extract_response_cursor_header_uses_first_non_empty_value() {
+        let mut headers = HeaderMap::new();
+        headers.append("x-next-cursor", HeaderValue::from_static("   "));
+        headers.append("x-next-cursor", HeaderValue::from_static("abc123"));
+
+        let cursor = extract_response_cursor_header(&headers, Some("X-Next-Cursor")).unwrap();
+
+        assert_eq!(cursor.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn extract_response_cursor_header_rejects_invalid_config_name() {
+        let headers = HeaderMap::new();
+
+        let err = extract_response_cursor_header(&headers, Some("not a header")).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid pagination response cursor header")
         );
     }
 

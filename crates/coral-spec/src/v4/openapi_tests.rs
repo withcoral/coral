@@ -1082,6 +1082,27 @@ paths:
                 properties:
                   id: {type: string}
                   nextCursor: {type: string}
+  /cursor-header:
+    get:
+      operationId: cursor-header/list
+      parameters:
+        - {name: pageToken, in: query, schema: {type: string}}
+      responses:
+        '200':
+          headers:
+            X-Next-Cursor:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
 "
         .as_bytes(),
     )
@@ -1116,6 +1137,16 @@ paths:
 
     let singleton = &rest_execution(operations.get("singleton_get").expect("singleton")).pagination;
     assert_eq!(singleton.mode, PaginationMode::None);
+
+    let cursor_header =
+        &rest_execution(operations.get("cursor_header_list").expect("cursor header")).pagination;
+    assert_eq!(cursor_header.mode, PaginationMode::CursorQuery);
+    assert_eq!(cursor_header.cursor_param.as_deref(), Some("pageToken"));
+    assert_eq!(
+        cursor_header.response_cursor_header.as_deref(),
+        Some("X-Next-Cursor")
+    );
+    assert!(cursor_header.response_cursor_path.is_empty());
 }
 
 #[test]

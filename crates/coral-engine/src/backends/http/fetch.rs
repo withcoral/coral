@@ -175,11 +175,12 @@ pub(super) async fn fetch_rows(
                 render_context,
                 allow_404_empty: target.response().allow_404_empty,
                 link_header_require_results: pagination.link_header_require_results,
+                response_cursor_header: target.pagination().response_cursor_header.as_deref(),
             },
         )
         .await?;
 
-        let Some((payload, next_url)) = request else {
+        let Some((payload, pagination_hints)) = request else {
             break;
         };
 
@@ -231,12 +232,13 @@ pub(super) async fn fetch_rows(
         match &pagination.mode {
             ValidatedPaginationMode::None => break,
             ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
-                let next_cursor =
+                let next_cursor = pagination_hints.cursor.or_else(|| {
                     get_path_value(&payload, &target.pagination().response_cursor_path)
                         .and_then(Value::as_str)
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
-                        .map(ToOwned::to_owned);
+                        .map(ToOwned::to_owned)
+                });
                 match next_cursor {
                     Some(cursor) => state.cursor = Some(cursor),
                     None => break,
@@ -265,10 +267,12 @@ pub(super) async fn fetch_rows(
                     })?;
                 state.offset = state.offset.saturating_add(step);
             }
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => match next_url {
-                Some(next) => state.next_url = Some(next),
-                None => break,
-            },
+            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => {
+                match pagination_hints.next_url {
+                    Some(next) => state.next_url = Some(next),
+                    None => break,
+                }
+            }
         }
     }
 

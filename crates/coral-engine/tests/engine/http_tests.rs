@@ -2197,6 +2197,48 @@ async fn pagination_offset_mode() {
 }
 
 #[tokio::test]
+async fn pagination_cursor_query_uses_response_header() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param_is_missing("cursor"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("X-Next-Cursor", "cursor-2")
+                .set_body_json(json!({ "data": &rows[..2] })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("cursor", "cursor-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_cursor_header", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "cursor_query",
+        "cursor_param": "cursor",
+        "response_cursor_header": "X-Next-Cursor"
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_cursor_header.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
 async fn pagination_link_header() {
     let server = MockServer::start().await;
     let rows = users_rows();

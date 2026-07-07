@@ -689,6 +689,8 @@ pub struct PaginationSpec {
     #[serde(default)]
     pub response_cursor_path: Vec<String>,
     #[serde(default)]
+    pub response_cursor_header: Option<String>,
+    #[serde(default)]
     pub page_param: Option<String>,
     #[serde(default)]
     pub page_start: i64,
@@ -714,6 +716,7 @@ impl Default for PaginationSpec {
             cursor_param: None,
             cursor_body_path: Vec::new(),
             response_cursor_path: Vec::new(),
+            response_cursor_header: None,
             page_param: None,
             page_start: 0,
             page_step: default_page_step(),
@@ -791,9 +794,9 @@ impl PaginationSpec {
                         "{schema}.{table} pagination.mode=cursor_query requires cursor_param"
                     )));
                 }
-                if self.response_cursor_path.is_empty() {
+                if self.response_cursor_path.is_empty() && self.response_cursor_header.is_none() {
                     return Err(ManifestError::validation(format!(
-                        "{schema}.{table} pagination.mode=cursor_query requires response_cursor_path"
+                        "{schema}.{table} pagination.mode=cursor_query requires response_cursor_path or response_cursor_header"
                     )));
                 }
                 Ok(ValidatedPaginationMode::CursorQuery)
@@ -804,9 +807,9 @@ impl PaginationSpec {
                         "{schema}.{table} pagination.mode=cursor_body requires cursor_body_path"
                     )));
                 }
-                if self.response_cursor_path.is_empty() {
+                if self.response_cursor_path.is_empty() && self.response_cursor_header.is_none() {
                     return Err(ManifestError::validation(format!(
-                        "{schema}.{table} pagination.mode=cursor_body requires response_cursor_path"
+                        "{schema}.{table} pagination.mode=cursor_body requires response_cursor_path or response_cursor_header"
                     )));
                 }
                 Ok(ValidatedPaginationMode::CursorBody)

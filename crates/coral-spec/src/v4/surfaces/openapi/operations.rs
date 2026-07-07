@@ -345,12 +345,17 @@ fn detect_cursor_query_pagination(
             "startingafter",
         ],
     )?;
-    let response_cursor_path = find_response_cursor_path(&context.schema)?;
+    let response_cursor_path = find_response_cursor_path(&context.schema).unwrap_or_default();
+    let response_cursor_header = response_cursor_header(context);
+    if response_cursor_path.is_empty() && response_cursor_header.is_none() {
+        return None;
+    }
     Some(PaginationSpec {
         mode: PaginationMode::CursorQuery,
         page_size: detect_page_size(inputs),
         cursor_param: Some(cursor_input.name.clone()),
         response_cursor_path,
+        response_cursor_header,
         ..PaginationSpec::default()
     })
 }
@@ -421,6 +426,36 @@ fn response_header<'a>(
         .iter()
         .find(|(name, _)| candidate_tokens.contains(&name_token(name).as_str()))
         .map(|(_, header)| header)
+}
+
+fn response_cursor_header(context: &OpenApiResponsePaginationContext) -> Option<String> {
+    const RESPONSE_CURSOR_HEADER_TOKENS: &[&str] = &[
+        "continuationtoken",
+        "nextcursor",
+        "nextmarker",
+        "nextpagetoken",
+        "nexttoken",
+        "xcontinuationtoken",
+        "xnextcursor",
+        "xnextmarker",
+        "xnextpagetoken",
+        "xnexttoken",
+    ];
+
+    context
+        .headers
+        .iter()
+        .find(|(name, header)| {
+            RESPONSE_CURSOR_HEADER_TOKENS.contains(&name_token(name).as_str())
+                && response_header_allows_string(header)
+        })
+        .map(|(name, _)| name.clone())
+}
+
+fn response_header_allows_string(header: &Value) -> bool {
+    header.get("schema").is_none_or(|schema| {
+        json_schema_type_contains(schema, "string") || schema.get("type").is_none()
+    })
 }
 
 fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
