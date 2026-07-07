@@ -15,7 +15,6 @@ use coral_engine::{
 use coral_spec::{
     ColumnSpec, FilterSpec, SourceTableFunctionSpec, TableCommon, ValidatedSourceManifest,
 };
-use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::sources::catalog::resolve_installed_manifest;
@@ -69,22 +68,11 @@ impl CatalogSnapshotLoader {
         };
 
         for source in config.workspace_sources(workspace_name) {
-            match self.load_source_catalog(workspace_name, &source) {
-                Ok(source_catalog) => {
-                    catalog.tables.extend(source_catalog.tables);
-                    catalog
-                        .table_functions
-                        .extend(source_catalog.table_functions);
-                }
-                Err(error) => {
-                    warn!(
-                        workspace = %workspace_name,
-                        source = %source.name,
-                        detail = %error,
-                        "skipping source during local catalog snapshot load"
-                    );
-                }
-            }
+            let source_catalog = self.load_source_catalog(workspace_name, &source)?;
+            catalog.tables.extend(source_catalog.tables);
+            catalog
+                .table_functions
+                .extend(source_catalog.table_functions);
         }
 
         sort_catalog(&mut catalog);
@@ -220,7 +208,7 @@ fn column_infos_from_specs(columns: &[ColumnSpec], filters: &[FilterSpec]) -> Ve
                 .find(|filter| filter.name == column.name.as_str());
             ColumnInfo {
                 name: column.name.clone(),
-                data_type: column.data_type.clone(),
+                data_type: column.data_type.as_manifest_str().to_string(),
                 nullable: column.nullable,
                 is_virtual: column.r#virtual,
                 is_required_filter: filter.is_some_and(|filter| filter.required),
@@ -258,16 +246,13 @@ fn table_function_info(schema_name: &str, function: &SourceTableFunctionSpec) ->
             .iter()
             .map(|column| TableFunctionResultColumnInfo {
                 name: column.name.clone(),
-                data_type: column.data_type.clone(),
+                data_type: column.data_type.as_manifest_str().to_string(),
                 nullable: column.nullable,
                 description: column.description.clone(),
             })
             .collect(),
         kind: function.kind,
-        search_limits_json: function
-            .search_limits
-            .as_ref()
-            .map(|limits| serde_json::to_string(limits).expect("search limits json")),
+        search_limits: function.search_limits.clone(),
     }
 }
 

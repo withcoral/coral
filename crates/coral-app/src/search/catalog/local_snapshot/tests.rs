@@ -6,6 +6,7 @@ use tempfile::tempdir;
 use super::{
     CatalogSnapshotLoader, catalog_info_from_components, runtime_components_from_manifest,
 };
+use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -108,10 +109,10 @@ functions:
         .first()
         .expect("function result column");
     assert_eq!(result_column.name, "title");
-    assert_eq!(
-        function.search_limits_json.as_deref(),
-        Some(r#"{"default_top_k":10,"max_top_k":25,"max_calls_per_query":2}"#)
-    );
+    let search_limits = function.search_limits.as_ref().expect("search limits");
+    assert_eq!(search_limits.default_top_k, 10);
+    assert_eq!(search_limits.max_top_k, 25);
+    assert_eq!(search_limits.max_calls_per_query, 2);
 }
 
 #[test]
@@ -191,7 +192,42 @@ tables:
 }
 
 #[test]
-fn loader_skips_v4_source_with_missing_materialization() {
+fn loader_fails_when_installed_manifest_cannot_be_read() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let source_name = SourceName::parse("missing").expect("source");
+
+    config_store
+        .create_workspace(&workspace_name)
+        .expect("create workspace");
+    config_store
+        .upsert_source(
+            &workspace_name,
+            InstalledSource {
+                name: source_name,
+                version: None,
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: None,
+                origin: SourceOrigin::Imported,
+            },
+        )
+        .expect("upsert source");
+
+    let error = CatalogSnapshotLoader::new(config_store, layout)
+        .load_catalog(&workspace_name)
+        .expect_err("missing installed manifest should fail catalog load");
+
+    assert!(
+        matches!(error, AppError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::NotFound),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn loader_fails_when_v4_source_missing_materialization() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let config_store = ConfigStore::new(layout.clone());
@@ -239,14 +275,16 @@ surfaces:
 ",
     );
 
-    let catalog = CatalogSnapshotLoader::new(config_store, layout)
+    let error = CatalogSnapshotLoader::new(config_store, layout)
         .load_catalog(&workspace_name)
-        .expect("catalog");
+        .expect_err("missing v4 materialization should fail catalog load");
 
-    assert_eq!(catalog.tables.len(), 1);
-    let table = catalog.tables.first().expect("healthy table");
-    assert_eq!(table.schema_name, "demo");
-    assert_eq!(table.table_name, "messages");
+    match error {
+        AppError::MissingOrIncompatibleV4Materialization { source_name, .. } => {
+            assert_eq!(source_name, stale_v4_source.as_str());
+        }
+        other => panic!("unexpected error: {other}"),
+    }
 }
 
 fn install_imported_source(
