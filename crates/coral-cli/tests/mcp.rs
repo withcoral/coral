@@ -60,6 +60,52 @@ origin = "bundled"
     )
 }
 
+fn write_query_history_trace_records(
+    config_dir: &Path,
+    records: &[Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let trace_dir = config_dir.join("telemetry").join("traces");
+    fs::create_dir_all(&trace_dir)?;
+    let mut lines = String::new();
+    for record in records {
+        lines.push_str(&serde_json::to_string(record)?);
+        lines.push('\n');
+    }
+    fs::write(
+        trace_dir.join("spans-00000000000000000001-test-0000000000000000.jsonl"),
+        lines,
+    )?;
+    Ok(())
+}
+
+fn query_history_trace_record(
+    workspace: &str,
+    trace_id: &str,
+    sql: &str,
+    sources: &[&str],
+    row_count: u64,
+    end_time_unix_nanos: i64,
+) -> Value {
+    let attributes = json!({
+        "workspace": workspace,
+        "sql": sql,
+        "status": "ok",
+        "row_count": row_count,
+        "coral.query.sources": sources,
+        "coral.query.tables": [],
+        "coral.query.table_functions": [],
+    });
+
+    json!({
+        "trace_id": trace_id,
+        "span_id": format!("{trace_id}-span"),
+        "name": "coral.query",
+        "status": "ok",
+        "end_time_unix_nanos": end_time_unix_nanos,
+        "attributes_json": attributes.to_string(),
+    })
+}
+
 fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
     assert_eq!(
         workspace.map(|workspace| workspace.name.as_str()),
@@ -520,6 +566,27 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
     ))
     .await;
     write_workspace_scoped_source_config(&server)?;
+    write_query_history_trace_records(
+        server.config_dir(),
+        &[
+            query_history_trace_record(
+                "default",
+                "default-history",
+                "SELECT title FROM github.issues",
+                &["github"],
+                7,
+                10,
+            ),
+            query_history_trace_record(
+                "work",
+                "work-history",
+                "SELECT title FROM linear.issues",
+                &["linear"],
+                3,
+                20,
+            ),
+        ],
+    )?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .args(["--workspace", "work"])
@@ -534,44 +601,7 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
     let stdout = child.stdout.take().expect("mcp stdio stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "coral-cli-workspace-stdio-test",
-                    "version": "0.0.0"
-                }
-            }
-        }),
-    )
-    .await?;
-    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
-    let instructions = initialize
-        .pointer("/result/instructions")
-        .and_then(Value::as_str)
-        .expect("initialize response should include instructions");
-    assert!(
-        instructions.contains("Current Coral workspace: work."),
-        "initialize instructions should include selected workspace: {instructions}"
-    );
-    assert!(
-        instructions.contains("Connected Coral sources: linear."),
-        "initialize instructions should include app-provided source names: {instructions}"
-    );
-    assert!(
-        !instructions.contains("Connected Coral sources: jira."),
-        "initialize instructions should not use config-store source names: {instructions}"
-    );
-    assert!(
-        !instructions.contains("Recent successful Coral SQL examples"),
-        "non-default workspace initialize instructions should not use default-workspace query history: {instructions}"
-    );
+    assert_workspace_initialize_instructions(&mut stdin, &mut stdout).await?;
 
     write_jsonrpc_message(
         &mut stdin,
@@ -615,6 +645,61 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
         child.wait().await?;
     }
     server.shutdown().await;
+    Ok(())
+}
+
+async fn assert_workspace_initialize_instructions(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_jsonrpc_message(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-workspace-stdio-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Current Coral workspace: work."),
+        "initialize instructions should include selected workspace: {instructions}"
+    );
+    assert!(
+        instructions.contains("Connected Coral sources: linear."),
+        "initialize instructions should include app-provided source names: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Connected Coral sources: jira."),
+        "initialize instructions should not use config-store source names: {instructions}"
+    );
+    assert!(
+        instructions.contains("Recent successful Coral SQL examples"),
+        "non-default workspace initialize instructions should include workspace query history: {instructions}"
+    );
+    assert!(
+        instructions.contains(
+            "1. sources: linear; row_count: 3\n```sql\nSELECT title FROM linear.issues\n```"
+        ),
+        "initialize instructions should include selected workspace query history: {instructions}"
+    );
+    assert!(
+        !instructions.contains("SELECT title FROM github.issues"),
+        "initialize instructions should not include default workspace query history: {instructions}"
+    );
     Ok(())
 }
 

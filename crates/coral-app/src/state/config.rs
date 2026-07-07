@@ -572,19 +572,6 @@ impl ConfigStore {
         Ok(config.workspace_sources(workspace_name))
     }
 
-    pub(crate) fn list_workspace_source_names(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<Vec<String>, AppError> {
-        let config = self.load_config()?;
-        config.require_workspace(workspace_name)?;
-        Ok(config
-            .workspace_sources(workspace_name)
-            .into_iter()
-            .map(|source| source.name.as_str().to_string())
-            .collect())
-    }
-
     /// Loads one installed source without taking the app state lock.
     ///
     /// Callers must already hold the state lock while using source artifacts
