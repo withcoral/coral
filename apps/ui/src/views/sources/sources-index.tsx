@@ -5,10 +5,10 @@ import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
 
 import { ErrorBanner } from '@/components/error-banner'
-import { providerIcon } from '@/lib/provider-icons'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
 import { discoverBundled, type CatalogEntry } from '@/lib/sources'
 
+import { ProviderLogo } from './provider-logo'
 import { SourceDetailDialog } from './source-detail'
 import { SourceInstallDialog } from './source-install'
 import * as styles from './sources-index.css'
@@ -234,17 +234,10 @@ function Section({
 }
 
 function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void }) {
-  const icon = providerIcon(entry.name)
   return (
     <button type="button" onClick={onClick} className={styles.card}>
       <div className={styles.cardHeader}>
-        <div className={styles.cardLogo}>
-          {icon ? (
-            <img alt="" src={icon} className={styles.cardLogoImg} />
-          ) : (
-            <Icon name="Plug" size="18" color="tertiary" />
-          )}
-        </div>
+        <ProviderLogo name={entry.name} size="medium" />
         <Typography.BodyLargeStrong as="span" className={styles.cardTitle}>
           {entry.name}
         </Typography.BodyLargeStrong>

@@ -19,7 +19,6 @@ import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
 import { Markdown } from '@/components/markdown'
-import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
   createBundledSourceWithOAuth,
@@ -29,6 +28,7 @@ import {
 } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
+import { ProviderLogo } from './provider-logo'
 import * as styles from './source-install.css'
 
 type InstallProgress =
@@ -104,7 +104,6 @@ function SourceInstallDialogContent({
   }, [name])
 
   const inputs: SourceInputSpec[] = resolved?.info.inputs ?? []
-  const icon = providerIcon(name)
   const busy = progress.kind !== 'idle'
 
   const effectiveChoice = (input: SourceInputSpec): number => methodChoices[input.key] ?? 0
@@ -208,13 +207,7 @@ function SourceInstallDialogContent({
   return (
     <>
       <div className={styles.header}>
-        <div className={styles.headerLogo}>
-          {icon ? (
-            <img alt="" className={styles.headerLogoImg} src={icon} />
-          ) : (
-            <Icon name="Plug" size="20" color="secondary" />
-          )}
-        </div>
+        <ProviderLogo name={name} size="large" />
         <div className={styles.headerText}>
           <Dialog.Title className={styles.headerTitleRow}>
             <Typography.HeadingMedium as="span" className={styles.headerTitle}>

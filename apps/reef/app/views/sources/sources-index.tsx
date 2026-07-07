@@ -7,10 +7,10 @@ import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
 
 import { ErrorBanner } from '@/components/error-banner'
-import { providerIcon } from '@/lib/provider-icons'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
 import { discoverBundled, type CatalogEntry } from '@/lib/sources'
 
+import { ProviderLogo } from './provider-logo'
 import { SourceDetailDialog } from './source-detail'
 import { SourceInstallDialog } from './source-install'
 import * as styles from './sources-index.css'
@@ -248,7 +248,7 @@ function toCardItem(entry: IndexEntry): CardItem {
   return {
     description: entry.description,
     headerPill: sourceOriginPill(entry),
-    icon: sourceIcon(entry.name),
+    icon: <ProviderLogo name={entry.name} size="small" />,
     id: sourceCardId(entry),
     title: entry.name,
   }
@@ -262,13 +262,4 @@ function sourceOriginPill(entry: IndexEntry): CardItem['headerPill'] {
 
 function sourceCardId(entry: IndexEntry) {
   return `${entry.origin}:${entry.name}`
-}
-
-function sourceIcon(name: string) {
-  const icon = providerIcon(name)
-  return icon ? (
-    <img alt="" className={styles.sourceIcon} src={icon} />
-  ) : (
-    <Icon color="tertiary" name="Plug" size="20" />
-  )
 }

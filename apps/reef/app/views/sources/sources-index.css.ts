@@ -84,12 +84,3 @@ export const sectionCount = style({
 export const searchBar = style({
   maxWidth: 360,
 })
-
-export const sourceIcon = style({
-  borderRadius: 999,
-  display: 'block',
-  flexShrink: 0,
-  height: 20,
-  objectFit: 'contain',
-  width: 20,
-})

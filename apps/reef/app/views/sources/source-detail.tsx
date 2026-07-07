@@ -11,7 +11,6 @@ import { TextInput } from '@/wax/components/inputs/text'
 import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
-import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
   deleteSource,
@@ -22,6 +21,7 @@ import {
   type SourceOriginLabel,
 } from '@/lib/sources'
 
+import { ProviderLogo } from './provider-logo'
 import * as styles from './source-detail.css'
 
 const SECRET_PLACEHOLDER = '••••••••'
@@ -197,19 +197,12 @@ function SourceDetailDialogContent({
     }
   }
 
-  const icon = providerIcon(name)
   const origin = source ? originLabel(source.origin) : null
 
   return (
     <>
       <div className={styles.header}>
-        <div className={styles.headerLogo}>
-          {icon ? (
-            <img src={icon} alt="" className={styles.headerLogoImg} />
-          ) : (
-            <Icon name="Plug" size="20" color="secondary" />
-          )}
-        </div>
+        <ProviderLogo name={name} size="large" />
         <div className={styles.headerText}>
           <Dialog.Title className={styles.headerTitleRow}>
             <Typography.HeadingMedium as="span" className={styles.headerTitle}>

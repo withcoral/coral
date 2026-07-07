@@ -9,24 +9,6 @@ export const header = style({
   gap: 12,
 })
 
-export const headerLogo = style({
-  alignItems: 'center',
-  background: theme.surface.onMainContent,
-  borderRadius: '50%',
-  display: 'flex',
-  flexShrink: 0,
-  height: 40,
-  justifyContent: 'center',
-  overflow: 'hidden',
-  width: 40,
-})
-
-export const headerLogoImg = style({
-  height: '100%',
-  objectFit: 'cover',
-  width: '100%',
-})
-
 export const headerText = style({
   display: 'flex',
   flexDirection: 'column',
