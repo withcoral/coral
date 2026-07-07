@@ -15,6 +15,7 @@ use crate::v4::surfaces::json_schema::{
 use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
 
 use super::import::OpenApiImporter;
+use super::responses::OpenApiResponsePaginationContext;
 
 impl OpenApiImporter<'_> {
     pub(super) fn import_operation(
@@ -39,9 +40,9 @@ impl OpenApiImporter<'_> {
         let mut diagnostics = Vec::new();
         let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
-        let (output, response, entity) =
+        let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
-        let pagination = detect_pagination(&parameters);
+        let pagination = detect_pagination(&parameters, &pagination_context);
         let rest_parameters = parameters
             .iter()
             .map(|input| RestParameterBinding {
@@ -299,7 +300,11 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
         .unwrap_or(false)
 }
 
-fn detect_pagination(inputs: &[IrOperationInput]) -> PaginationSpec {
+fn detect_pagination(
+    inputs: &[IrOperationInput],
+    context: &OpenApiResponsePaginationContext,
+) -> PaginationSpec {
+    let _ = (&context.schema, &context.headers, context.cardinality);
     let has_page = inputs
         .iter()
         .any(|input| input.location == IrInputLocation::Query && input.name == "page");
