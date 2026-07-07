@@ -305,29 +305,82 @@ fn detect_pagination(
     context: &OpenApiResponsePaginationContext,
 ) -> PaginationSpec {
     let _ = (&context.schema, &context.headers, context.cardinality);
-    let has_page = inputs
+    detect_offset_pagination(inputs)
+        .or_else(|| detect_page_pagination(inputs))
+        .unwrap_or_default()
+}
+
+fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
+    let offset_input = find_query_input(inputs, &["offset"])?;
+    let page_size_input = find_query_input(inputs, &["limit"])?;
+    Some(PaginationSpec {
+        mode: PaginationMode::Offset,
+        page_size: Some(page_size_spec(page_size_input)),
+        offset_param: Some(offset_input.name.clone()),
+        offset_start: numeric_input_default(offset_input).unwrap_or(0),
+        offset_step: None,
+        ..PaginationSpec::default()
+    })
+}
+
+fn detect_page_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
+    let page_input = find_query_input(inputs, &["page", "pagenumber", "pagenum"])?;
+    let page_size_input = find_query_input(
+        inputs,
+        &[
+            "limit",
+            "maxresults",
+            "pagesize",
+            "perpage",
+            "resultsperpage",
+        ],
+    )?;
+    Some(PaginationSpec {
+        mode: PaginationMode::Page,
+        page_size: Some(page_size_spec(page_size_input)),
+        page_param: Some(page_input.name.clone()),
+        page_start: numeric_input_default(page_input).unwrap_or(1),
+        page_step: 1,
+        ..PaginationSpec::default()
+    })
+}
+
+fn find_query_input<'a>(
+    inputs: &'a [IrOperationInput],
+    candidate_tokens: &[&str],
+) -> Option<&'a IrOperationInput> {
+    inputs
         .iter()
-        .any(|input| input.location == IrInputLocation::Query && input.name == "page");
-    let has_per_page = inputs
-        .iter()
-        .any(|input| input.location == IrInputLocation::Query && input.name == "per_page");
-    if has_page && has_per_page {
-        PaginationSpec {
-            mode: PaginationMode::Page,
-            page_size: Some(PageSizeSpec {
-                default: 30,
-                max: 100,
-                query_param: Some("per_page".to_string()),
-                body_path: Vec::new(),
-            }),
-            page_param: Some("page".to_string()),
-            page_start: 1,
-            page_step: 1,
-            ..PaginationSpec::default()
-        }
-    } else {
-        PaginationSpec::default()
+        .filter(|input| input.location == IrInputLocation::Query)
+        .find(|input| candidate_tokens.contains(&name_token(&input.name).as_str()))
+}
+
+fn page_size_spec(input: &IrOperationInput) -> PageSizeSpec {
+    const DEFAULT_PAGE_SIZE: usize = 10;
+    const DEFAULT_MAX_PAGE_SIZE: usize = 100;
+
+    let default = numeric_input_default(input)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PAGE_SIZE);
+    PageSizeSpec {
+        default,
+        max: default.max(DEFAULT_MAX_PAGE_SIZE),
+        query_param: Some(input.name.clone()),
+        body_path: Vec::new(),
     }
+}
+
+fn numeric_input_default(input: &IrOperationInput) -> Option<i64> {
+    input.default_value.as_deref()?.parse().ok()
+}
+
+fn name_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn fallback_operation_id(method: &str, path: &str) -> String {

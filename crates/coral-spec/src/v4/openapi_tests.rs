@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::{SourceTableFunctionKind, parse_source_manifest_yaml};
+use crate::{PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml};
 
 #[test]
 fn extracts_openapi_document_metadata() {
@@ -917,6 +917,90 @@ paths:
 }
 
 #[test]
+fn importer_infers_common_query_pagination_modes() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: pagination
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /paged:
+    get:
+      operationId: paged/list
+      parameters:
+        - {name: pageNumber, in: query, schema: {type: integer, default: 2}}
+        - {name: pageSize, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+  /offset:
+    get:
+      operationId: offset/list
+      parameters:
+        - {name: offset, in: query, schema: {type: integer, default: 5}}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("pagination import");
+    let operations = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation))
+        .collect::<BTreeMap<_, _>>();
+
+    let page = &rest_execution(operations.get("paged_list").expect("paged")).pagination;
+    assert_eq!(page.mode, PaginationMode::Page);
+    assert_eq!(page.page_param.as_deref(), Some("pageNumber"));
+    assert_eq!(page.page_start, 2);
+    let page_size = page.page_size.as_ref().expect("page size");
+    assert_eq!(page_size.default, 25);
+    assert_eq!(page_size.max, 100);
+    assert_eq!(page_size.query_param.as_deref(), Some("pageSize"));
+
+    let offset = &rest_execution(operations.get("offset_list").expect("offset")).pagination;
+    assert_eq!(offset.mode, PaginationMode::Offset);
+    assert_eq!(offset.offset_param.as_deref(), Some("offset"));
+    assert_eq!(offset.offset_start, 5);
+    assert_eq!(offset.offset_step, None);
+    let page_size = offset.page_size.as_ref().expect("limit page size");
+    assert_eq!(page_size.default, 50);
+    assert_eq!(page_size.max, 100);
+    assert_eq!(page_size.query_param.as_deref(), Some("limit"));
+}
+
+#[test]
 fn importer_treats_path_parameters_as_required_when_required_is_omitted() {
     let manifest = parse_source_manifest_yaml(
         r"
@@ -966,6 +1050,13 @@ paths:
     assert_eq!(required.get("id"), Some(&true));
     assert_eq!(required.get("tenant"), Some(&true));
     assert_eq!(required.get("include_archived"), Some(&false));
+}
+
+fn rest_execution(operation: &IrOperation) -> &RestExecutionAttachment {
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("operation should be REST");
+    };
+    rest
 }
 
 #[test]
