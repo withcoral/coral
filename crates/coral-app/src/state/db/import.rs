@@ -72,9 +72,7 @@ async fn cutover_legacy_workspace_catalog_at(
         workspaces = implicitly_provisioned_workspaces(layout)?;
     }
     let source_entries = config.source_catalog_entries();
-    let source_count = source_entries.len();
 
-    tx.workspaces().delete_all().await?;
     let mut imported_workspaces = BTreeSet::new();
     import_legacy_workspaces(
         &mut tx,
@@ -83,13 +81,14 @@ async fn cutover_legacy_workspace_catalog_at(
         &mut imported_workspaces,
     )
     .await?;
-    import_legacy_source_catalog(
+    let source_count = import_legacy_source_catalog(
         &mut tx,
         &source_entries,
         now_unix_nanos,
         &mut imported_workspaces,
     )
     .await?;
+    prune_stale_workspaces(&mut tx, &imported_workspaces).await?;
     verify_workspace_parity(&mut tx, &imported_workspaces).await?;
     tx.commit().await?;
 
@@ -192,13 +191,22 @@ async fn import_legacy_source_catalog(
     entries: &[(WorkspaceName, InstalledSource)],
     now_unix_nanos: i64,
     imported_workspaces: &mut BTreeSet<WorkspaceName>,
-) -> Result<(), AppError> {
+) -> Result<usize, AppError> {
+    let mut source_count = 0;
     for (workspace_name, source) in entries {
         imported_workspaces.insert(workspace_name.clone());
         session
             .workspaces()
             .ensure(workspace_name.as_str(), now_unix_nanos)
             .await?;
+        if session
+            .sources()
+            .get_source(workspace_name, &source.name)
+            .await?
+            .is_some()
+        {
+            continue;
+        }
         session
             .sources()
             .upsert_source(workspace_name, source, now_unix_nanos)
@@ -212,6 +220,26 @@ async fn import_legacy_source_catalog(
                 "source catalog cutover failed validation for {workspace_name}:{}",
                 source.name
             )));
+        }
+        source_count += 1;
+    }
+    Ok(source_count)
+}
+
+async fn prune_stale_workspaces<S>(
+    session: &mut S,
+    imported_workspaces: &BTreeSet<WorkspaceName>,
+) -> Result<(), AppError>
+where
+    S: DbRepos,
+{
+    let expected = imported_workspaces
+        .iter()
+        .map(WorkspaceName::as_str)
+        .collect::<BTreeSet<_>>();
+    for workspace in session.workspaces().list().await? {
+        if !expected.contains(workspace.id.as_str()) {
+            session.workspaces().delete(&workspace.id).await?;
         }
     }
     Ok(())
@@ -389,6 +417,126 @@ mod tests {
                 .has_completed(WORKSPACE_CATALOG_CUTOVER_ID)
                 .await
                 .expect("read cutover marker")
+        );
+    }
+
+    #[tokio::test]
+    async fn cutover_preserves_existing_database_sources() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let existing = source("github", None, [], [], None, SourceOrigin::Bundled);
+        let replacement = source(
+            "github",
+            Some("1.2.3"),
+            [("OWNER", "coral")],
+            [],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Imported,
+        );
+        config_store
+            .upsert_source(&workspace, replacement)
+            .expect("write config source");
+        let db = open_sqlite(&layout).await;
+        {
+            let mut tx = db.begin().await.expect("begin seed tx");
+            tx.workspaces()
+                .ensure(workspace.as_str(), 7)
+                .await
+                .expect("seed workspace");
+            tx.sources()
+                .upsert_source(&workspace, &existing, 7)
+                .await
+                .expect("seed db source");
+            tx.commit().await.expect("commit seed tx");
+        }
+
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
+            .await
+            .expect("cut over legacy config");
+
+        assert_eq!(
+            report,
+            WorkspaceCatalogCutoverReport {
+                workspace_count: 1,
+                source_count: 0,
+                cutover_performed: true,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &existing.name)
+                .await
+                .expect("get preserved source"),
+            Some(existing)
+        );
+    }
+
+    #[tokio::test]
+    async fn cutover_imports_missing_config_sources_without_overwriting_existing() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let default_workspace = WorkspaceName::parse("default").expect("workspace");
+        let other_workspace = WorkspaceName::parse("other").expect("workspace");
+        let existing_source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        let config_source = source("slack", None, [], [], None, SourceOrigin::Bundled);
+        config_store
+            .create_legacy_workspace_entry_for_tests(&default_workspace)
+            .expect("create default config workspace");
+        config_store
+            .create_legacy_workspace_entry_for_tests(&other_workspace)
+            .expect("create other config workspace");
+        config_store
+            .upsert_source(&other_workspace, config_source.clone())
+            .expect("write config source");
+        let db = open_sqlite(&layout).await;
+        {
+            let mut tx = db.begin().await.expect("begin seed tx");
+            tx.workspaces()
+                .ensure(default_workspace.as_str(), 7)
+                .await
+                .expect("seed workspace");
+            tx.sources()
+                .upsert_source(&default_workspace, &existing_source, 7)
+                .await
+                .expect("seed db source");
+            tx.commit().await.expect("commit seed tx");
+        }
+
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
+            .await
+            .expect("cut over legacy config");
+
+        assert_eq!(
+            report,
+            WorkspaceCatalogCutoverReport {
+                workspace_count: 2,
+                source_count: 1,
+                cutover_performed: true,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&default_workspace, &existing_source.name)
+                .await
+                .expect("get existing source"),
+            Some(existing_source)
+        );
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&other_workspace, &config_source.name)
+                .await
+                .expect("get imported source"),
+            Some(config_source)
         );
     }
 
