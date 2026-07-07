@@ -1,6 +1,6 @@
 import classNames from 'classnames'
-import { useMemo, useState } from 'react'
-import { NavLink, Outlet } from 'react-router'
+import { Suspense, useMemo, useState } from 'react'
+import { Await, NavLink, Outlet, useAsyncError, useRevalidator } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
 import type { ColumnDef, SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
@@ -15,6 +15,21 @@ import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './schema-explorer.css'
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+export function findSchemaTable(
+  schema: SchemaResponse,
+  schemaName: string,
+  tableName: string,
+): TableDef | undefined {
+  return schema.connectors
+    .find((connector) => connector.name === schemaName)
+    ?.tables.find((table) => table.name === tableName)
+}
 
 function SkeletonTree() {
   return (
@@ -61,7 +76,7 @@ function tablePath(schemaName: string, tableName: string) {
 }
 
 // Header + two-panel scaffold shared by the loaded view and the loading/error
-// route states (HydrateFallback / ErrorBoundary) so all three look the same.
+// states so all three look the same.
 function Frame({ children }: { children: React.ReactNode }) {
   return (
     <section aria-label="Schema explorer" className={styles.root}>
@@ -75,7 +90,7 @@ function Frame({ children }: { children: React.ReactNode }) {
   )
 }
 
-// Rendered by the schema route's HydrateFallback while the schema clientLoader resolves.
+// Suspense fallback while the schema clientLoader promise resolves.
 export function SchemaExplorerSkeleton() {
   return (
     <Frame>
@@ -91,21 +106,21 @@ export function SchemaExplorerSkeleton() {
   )
 }
 
-// Rendered by the schema route's ErrorBoundary when the schema clientLoader throws.
-export function SchemaExplorerError({
-  message,
-  onRetry,
-}: {
-  message: string
-  onRetry?: () => void
-}) {
+// Await errorElement when the schema clientLoader promise rejects.
+function SchemaLoadError() {
+  const error = useAsyncError()
+  const { revalidate } = useRevalidator()
   return (
     <Frame>
       <div className={styles.body}>
         <div className={styles.treePanel}>
           <div className={styles.treeContent}>
             <div className={styles.treeError}>
-              <ErrorBanner message={message} onRetry={onRetry} title="Failed to load schema" />
+              <ErrorBanner
+                message={formatError(error)}
+                onRetry={() => void revalidate()}
+                title="Failed to load schema"
+              />
             </div>
           </div>
         </div>
@@ -115,11 +130,20 @@ export function SchemaExplorerError({
   )
 }
 
-interface SchemaExplorerProps {
-  schema: SchemaResponse
+// Deferred loader data: stream in the skeleton, then the resolved tree. SPA mode
+// forbids HydrateFallback on non-root routes, so loading is handled with
+// Suspense/Await rather than a route-level fallback.
+export function SchemaExplorer({ schema }: { schema: Promise<SchemaResponse> }) {
+  return (
+    <Suspense fallback={<SchemaExplorerSkeleton />}>
+      <Await errorElement={<SchemaLoadError />} resolve={schema}>
+        {(resolved: SchemaResponse) => <SchemaExplorerContent schema={resolved} />}
+      </Await>
+    </Suspense>
+  )
 }
 
-export function SchemaExplorer({ schema }: SchemaExplorerProps) {
+function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
   const [search, setSearch] = useState('')
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(
     () => new Set(schema.connectors.map((connector) => connector.name)),
@@ -257,7 +281,7 @@ export function SchemaExplorer({ schema }: SchemaExplorerProps) {
         </div>
 
         <div className={styles.detailPanel}>
-          <Outlet />
+          <Outlet context={schema} />
         </div>
       </div>
     </section>
@@ -276,8 +300,7 @@ export function TableDetailEmpty() {
 }
 
 // Detail-panel scaffold for a selected table: title, description, required
-// filters, and a "Columns" section whose body (table / spinner / error) is
-// supplied by the child route.
+// filters, and a "Columns" section whose body is supplied by the child route.
 export function TableDetailLayout({
   schemaName,
   tableName,
@@ -339,8 +362,17 @@ export function ColumnsPending() {
   )
 }
 
-export function ColumnsError({ message, onRetry }: { message: string; onRetry?: () => void }) {
-  return <ErrorBanner message={message} onRetry={onRetry} title="Failed to load columns" />
+// Await errorElement when the columns clientLoader promise rejects.
+export function ColumnsLoadError() {
+  const error = useAsyncError()
+  const { revalidate } = useRevalidator()
+  return (
+    <ErrorBanner
+      message={formatError(error)}
+      onRetry={() => void revalidate()}
+      title="Failed to load columns"
+    />
+  )
 }
 
 export function ColumnsTable({ columns }: { columns: ColumnDef[] }) {
