@@ -291,7 +291,7 @@ async fn search_provider_coverage_counts_mapped_candidates() {
     let catalog_status = assert_provider_state(
         &response,
         SearchProvider::CatalogMetadata,
-        SearchProviderState::ResultsFound,
+        SearchProviderState::Partial,
     );
     let coverage = catalog_status.coverage.as_ref().expect("coverage");
     assert_eq!(

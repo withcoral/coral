@@ -393,9 +393,13 @@ fn catalog_snapshot_fingerprint(catalog: &CatalogInfo) -> String {
         update_hash(&mut hasher, &function.function_name);
         update_hash(&mut hasher, &function.description);
         update_hash(&mut hasher, function.kind.as_str());
+        let search_limits_json = function
+            .search_limits
+            .as_ref()
+            .map(|limits| serde_json::to_string(limits).expect("search limits json"));
         update_hash(
             &mut hasher,
-            function.search_limits_json.as_deref().unwrap_or_default(),
+            search_limits_json.as_deref().unwrap_or_default(),
         );
         let mut arguments = function.arguments.iter().collect::<Vec<_>>();
         arguments.sort_by(|left, right| left.name.cmp(&right.name));

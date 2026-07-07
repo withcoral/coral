@@ -23,7 +23,6 @@ use crate::search::result::{
 };
 use crate::transport::{
     catalog_item_to_proto, grpc_span, instrument_grpc, workspace_name_from_proto,
-    workspace_to_proto,
 };
 
 #[derive(Clone)]
@@ -53,8 +52,10 @@ impl SearchServiceApi for SearchService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let request = SearchRequest::new(workspace_name, &request.query, request.limit)
                 .map_err(search_status)?;
-            let response = search.search(&request, &attribution);
-            Ok(Response::new(search_response_to_proto(response)?))
+            let response = search
+                .search(&request, &attribution)
+                .map_err(search_status)?;
+            Ok(Response::new(search_response_to_proto(response)))
         })
         .await
     }
@@ -66,21 +67,19 @@ fn search_status(error: SearchManagerError) -> Status {
     }
 }
 
-fn search_response_to_proto(response: SearchResponse) -> Result<ProtoSearchResponse, Status> {
-    Ok(ProtoSearchResponse {
+fn search_response_to_proto(response: SearchResponse) -> ProtoSearchResponse {
+    ProtoSearchResponse {
         results: response
             .results
             .into_iter()
-            .map(|result| {
-                Ok::<ProtoSearchResult, Status>(ProtoSearchResult {
-                    provider: provider_kind_to_proto(result.provider) as i32,
-                    payload: Some(search_payload_to_proto(
-                        &response.workspace_name,
-                        result.payload,
-                    )?),
-                })
+            .map(|result| ProtoSearchResult {
+                provider: provider_kind_to_proto(result.provider) as i32,
+                payload: Some(search_payload_to_proto(
+                    &response.workspace_name,
+                    result.payload,
+                )),
             })
-            .collect::<Result<Vec<_>, _>>()?,
+            .collect(),
         provider_statuses: response
             .provider_statuses
             .into_iter()
@@ -92,34 +91,32 @@ fn search_response_to_proto(response: SearchResponse) -> Result<ProtoSearchRespo
             max_results: response.truncation.max_results,
             note: response.truncation.note,
         }),
-    })
+    }
 }
 
 fn search_payload_to_proto(
     workspace_name: &crate::workspaces::WorkspaceName,
     payload: SearchPayload,
-) -> Result<Payload, Status> {
-    Ok(match payload {
+) -> Payload {
+    match payload {
         SearchPayload::CatalogMetadata(result) => {
-            Payload::CatalogMetadata(catalog_metadata_to_proto(workspace_name, result)?)
+            Payload::CatalogMetadata(catalog_metadata_to_proto(workspace_name, result))
         }
-        SearchPayload::ColumnHint(result) => {
-            Payload::ColumnHint(column_hint_to_proto(workspace_name, result))
-        }
-    })
+        SearchPayload::ColumnHint(result) => Payload::ColumnHint(column_hint_to_proto(result)),
+    }
 }
 
 fn catalog_metadata_to_proto(
     workspace_name: &crate::workspaces::WorkspaceName,
     result: CatalogMetadataResult,
-) -> Result<CatalogMetadata, Status> {
-    Ok(CatalogMetadata {
-        item: Some(catalog_item_to_proto(workspace_name, result.item)?),
+) -> CatalogMetadata {
+    CatalogMetadata {
+        item: Some(catalog_item_to_proto(workspace_name, result.item)),
         matched_fields: result.matched_fields,
         table_column_preview: result
             .table_column_preview
             .map(table_column_preview_to_proto),
-    })
+    }
 }
 
 fn table_column_preview_to_proto(preview: DomainTableColumnPreview) -> SearchTableColumnPreview {
@@ -140,12 +137,8 @@ fn table_column_preview_to_proto(preview: DomainTableColumnPreview) -> SearchTab
     }
 }
 
-fn column_hint_to_proto(
-    workspace_name: &crate::workspaces::WorkspaceName,
-    result: ColumnHintResult,
-) -> ColumnHint {
+fn column_hint_to_proto(result: ColumnHintResult) -> ColumnHint {
     ColumnHint {
-        workspace: Some(workspace_to_proto(workspace_name)),
         schema_name: result.schema_name,
         surface_name: result.surface_name,
         surface_kind: surface_kind_to_proto(result.surface_kind) as i32,
