@@ -292,7 +292,7 @@ mod tests {
         MySqlConnectionSpec {
             host: template("localhost"),
             port: template(port),
-            database: template("pickl"),
+            database: template("coral"),
             user: template("root"),
             password: template("password"),
         }
@@ -313,9 +313,8 @@ mod tests {
         for (port, resolved_inputs) in cases {
             let connection = mysql_connection(port);
             let context = RenderContext::source_scoped(&resolved_inputs);
-            let error = match super::mysql_catalog(&connection, &context).await {
-                Ok(_) => panic!("invalid MySQL port should fail before provider fallback"),
-                Err(error) => error,
+            let Err(error) = super::mysql_catalog(&connection, &context).await else {
+                panic!("invalid MySQL port should fail before provider fallback");
             };
             let message = error.to_string();
             assert!(
@@ -332,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_database_source_registers_catalog_and_queries_three_part_table() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let db_path = temp.path().join("pickl.sqlite");
+        let db_path = temp.path().join("coral.sqlite");
         let conn = rusqlite::Connection::open(&db_path).expect("sqlite db");
         conn.execute_batch(
             "
@@ -346,9 +345,9 @@ mod tests {
         let database = DatabaseSourceManifest {
             common: SourceManifestCommon {
                 dsl_version: 4,
-                name: "pickl_db".to_string(),
+                name: "coral_db".to_string(),
                 version: String::new(),
-                description: "Pickl test database".to_string(),
+                description: "Coral test database".to_string(),
                 test_queries: Vec::new(),
             },
             provider: DatabaseProvider::Sqlite,
@@ -360,7 +359,7 @@ mod tests {
         };
         let source = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
-                source_name: "pickl_db".to_string(),
+                source_name: "coral_db".to_string(),
                 authored_version: None,
                 description: String::new(),
                 declared_inputs: Vec::new(),
@@ -376,21 +375,21 @@ mod tests {
         let tables = CoralQuery::list_tables(
             &sources,
             QueryRuntimeConfig::default(),
-            Some("pickl_db"),
+            Some("coral_db"),
             Some("users"),
         )
         .await
         .expect("list tables");
         assert_eq!(tables.len(), 1);
         let table = tables.first().expect("table metadata");
-        assert_eq!(table.schema_name, "pickl_db");
+        assert_eq!(table.schema_name, "coral_db");
         assert_eq!(table.namespace, "main");
         assert_eq!(table.table_name, "users");
 
         let result = CoralQuery::execute_sql(
             &sources,
             QueryRuntimeConfig::default(),
-            "SELECT id FROM pickl_db.main.users WHERE name = 'Lin'",
+            "SELECT id FROM coral_db.main.users WHERE name = 'Lin'",
         )
         .await
         .expect("query sqlite table");
@@ -403,7 +402,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             scanned_sources,
-            ["pickl_db"],
+            ["coral_db"],
             "scan attributes to the source"
         );
 
@@ -411,13 +410,13 @@ mod tests {
             &sources,
             QueryRuntimeConfig::default(),
             "SELECT schema_name, namespace, table_name FROM coral.tables \
-             WHERE schema_name = 'pickl_db' AND namespace = 'main' AND table_name = 'users'",
+             WHERE schema_name = 'coral_db' AND namespace = 'main' AND table_name = 'users'",
         )
         .await
         .expect("query coral tables");
         assert_eq!(catalog_result.row_count(), 1);
 
-        for filter in ["pickl_db", "pickl_db.main"] {
+        for filter in ["coral_db", "coral_db.main"] {
             let tables = CoralQuery::list_tables(
                 &sources,
                 QueryRuntimeConfig::default(),

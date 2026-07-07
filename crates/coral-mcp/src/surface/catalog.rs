@@ -631,7 +631,7 @@ impl<'a> From<&'a ProtoTable> for FoundTableValue<'a> {
             found: true,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format!("{}.{}", table.schema_name, table.name),
+            name: format_table_name(&table.schema_name, &table.namespace, &table.name),
             description: &table.description,
             guide: &table.guide,
             required_filters: &table.required_filters,
@@ -750,7 +750,11 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
             kind: CatalogTableFunctionKind::TableFunction,
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
-            sql_reference: format_schema_table_equivalent(&function.schema_name, "", &function.name),
+            sql_reference: format_schema_table_equivalent(
+                &function.schema_name,
+                "",
+                &function.name,
+            ),
             sql_call_example: minimal_table_function_call_example(function),
             description: &function.description,
             table_function: CatalogTableFunctionValue {

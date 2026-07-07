@@ -816,14 +816,14 @@ mod tests {
         let manifest = V4SourceManifest {
             common: V4SourceCommon {
                 dsl_version: 4,
-                name: "pickl".to_string(),
+                name: "coral".to_string(),
                 description: String::new(),
                 test_queries: Vec::new(),
             },
             declared_inputs: Vec::new(),
             surfaces: vec![V4Surface {
                 id: "db".to_string(),
-                relation_namespace: "pickl_db".to_string(),
+                relation_namespace: "coral_db".to_string(),
                 surface_type: SurfaceType::Database,
                 descriptor: SurfaceDescriptor::Database {
                     provider: DatabaseProvider::Sqlite,
@@ -832,7 +832,7 @@ mod tests {
                 runtime: SurfaceRuntimeConfig::Database(DatabaseRuntimeConfig {
                     provider: DatabaseProvider::Sqlite,
                     connection: DatabaseConnectionSpec::Sqlite(SqliteConnectionSpec {
-                        path: coral_spec::ParsedTemplate::parse("/tmp/pickl.sqlite")
+                        path: coral_spec::ParsedTemplate::parse("/tmp/coral.sqlite")
                             .expect("sqlite path template"),
                     }),
                 }),
@@ -847,12 +847,12 @@ mod tests {
             panic!("expected database component");
         };
 
-        assert_eq!(database.common.name, "pickl_db");
+        assert_eq!(database.common.name, "coral_db");
         assert_eq!(database.provider, DatabaseProvider::Sqlite);
         let DatabaseConnectionSpec::Sqlite(connection) = &database.connection else {
             panic!("sqlite connection");
         };
-        assert_eq!(connection.path.raw(), "/tmp/pickl.sqlite");
+        assert_eq!(connection.path.raw(), "/tmp/coral.sqlite");
     }
 
     #[test]

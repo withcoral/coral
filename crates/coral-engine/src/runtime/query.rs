@@ -277,8 +277,8 @@ async fn register_runtime_sources(
 /// Matches a user-supplied source/schema filter against one table.
 ///
 /// Database sources expose three-part names, so a table is addressable by its
-/// source schema (`pickl_db`) or the dotted schema-namespace combination
-/// (`pickl_db.main`). Tables without a namespace reduce to the plain
+/// source schema (`coral_db`) or the dotted schema-namespace combination
+/// (`coral_db.main`). Tables without a namespace reduce to the plain
 /// schema-name match.
 fn table_schema_matches(schema_name: &str, namespace: &str, value: &str) -> bool {
     if schema_name == value {

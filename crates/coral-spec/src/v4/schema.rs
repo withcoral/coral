@@ -6,7 +6,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::backends::database::DatabaseProvider;
 use crate::backends::http::RateLimitSpec;
 use crate::backends::mcp::McpServerSpec;
 use crate::{AuthSpec, HeaderSpec};
@@ -30,17 +29,22 @@ struct V4SourceManifestSchema {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(untagged)]
 enum V4SurfaceSchema {
     Openapi(V4OpenApiSurfaceSchema),
     Mcp(V4McpSurfaceSchema),
-    Database(V4DatabaseSurfaceSchema),
+    PostgresDatabase(V4PostgresDatabaseSurfaceSchema),
+    MySqlDatabase(V4MySqlDatabaseSurfaceSchema),
+    SqliteDatabase(V4SqliteDatabaseSurfaceSchema),
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("oneOf" = [{ "required": ["url"] }, { "required": ["file"] }]))]
 struct V4OpenApiSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "openapi"))]
+    surface_type: String,
     #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +78,9 @@ struct V4OpenApiSurfaceSchema {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4McpSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "mcp"))]
+    surface_type: String,
     #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,7 +99,10 @@ struct V4McpSurfaceSchema {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct V4DatabaseSurfaceSchema {
+struct V4PostgresDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
     #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,9 +116,85 @@ struct V4DatabaseSurfaceSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
-    provider: DatabaseProvider,
-    #[schemars(extend("minProperties" = 1))]
-    connection: BTreeMap<String, String>,
+    #[schemars(extend("const" = "postgres"))]
+    provider: String,
+    connection: V4PostgresConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4MySqlDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        required,
+        length(min = 1),
+        pattern(r"^[a-z][a-z0-9_]*$"),
+        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+    )]
+    namespace_suffix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
+    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
+    #[schemars(extend("const" = "mysql"))]
+    provider: String,
+    connection: V4MySqlConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4SqliteDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        required,
+        length(min = 1),
+        pattern(r"^[a-z][a-z0-9_]*$"),
+        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+    )]
+    namespace_suffix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
+    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
+    #[schemars(extend("const" = "sqlite"))]
+    provider: String,
+    connection: V4SqliteConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4PostgresConnectionSchema {
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sslmode: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4MySqlConnectionSchema {
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4SqliteConnectionSchema {
+    path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -288,7 +374,7 @@ surfaces:
     #[test]
     fn generated_schema_accepts_database_surface() {
         let raw = r#"
-name: pickl_db
+name: coral_db
 dsl_version: 4
 surfaces:
   - id: db
@@ -300,8 +386,8 @@ surfaces:
     connection:
       host: localhost
       port: "5432"
-      database: pickl
-      user: pickl_reader
+      database: coral
+      user: coral_reader
       password: "{{input.DB_PASSWORD}}"
 "#;
 

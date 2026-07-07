@@ -629,23 +629,15 @@ fn write_materialization(
     let mut first_surface_error = None;
     for surface in &manifest.surfaces {
         let materialized_surface = match materialize_surface(manifest, surface, inputs) {
-            Ok(materialized_surface) => materialized_surface,
+            Ok(Some(materialized_surface)) => materialized_surface,
+            Ok(None) => continue,
             Err(error) => {
-                let message = format!(
-                    "failed to materialize source '{}' surface '{}': {error}",
-                    manifest.common.name, surface.id
-                );
+                let (message, diagnostic) =
+                    surface_materialization_failure_diagnostic(manifest, surface, &error);
                 if first_surface_error.is_none() {
                     first_surface_error = Some(message.clone());
                 }
-                diagnostics.push(Diagnostic {
-                    code: "SURFACE_MATERIALIZATION_FAILED".to_string(),
-                    severity: DiagnosticSeverity::Warning,
-                    message,
-                    surface_id: Some(surface.id.clone()),
-                    operation_id: None,
-                    projection_name: None,
-                });
+                diagnostics.push(diagnostic);
                 continue;
             }
         };
@@ -723,6 +715,26 @@ fn write_materialization(
     Ok(())
 }
 
+fn surface_materialization_failure_diagnostic(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    error: &AppError,
+) -> (String, Diagnostic) {
+    let message = format!(
+        "failed to materialize source '{}' surface '{}': {error}",
+        manifest.common.name, surface.id
+    );
+    let diagnostic = Diagnostic {
+        code: "SURFACE_MATERIALIZATION_FAILED".to_string(),
+        severity: DiagnosticSeverity::Warning,
+        message: message.clone(),
+        surface_id: Some(surface.id.clone()),
+        operation_id: None,
+        projection_name: None,
+    };
+    (message, diagnostic)
+}
+
 struct MaterializedSurfaceBuild {
     raw_document: Vec<u8>,
     normalized_document: Vec<u8>,
@@ -734,14 +746,11 @@ fn materialize_surface(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     inputs: &MaterializationInputs,
-) -> Result<MaterializedSurfaceBuild, AppError> {
+) -> Result<Option<MaterializedSurfaceBuild>, AppError> {
     match surface.surface_type {
-        SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
-        SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
-        SurfaceType::Database => Err(AppError::FailedPrecondition(format!(
-            "DSL v4 database surface '{}' cannot be materialized yet",
-            surface.id
-        ))),
+        SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface).map(Some),
+        SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs).map(Some),
+        SurfaceType::Database => Ok(None),
     }
 }
 

@@ -411,16 +411,7 @@ fn table_not_found_hint(
     let schema_lower = schema.to_lowercase();
     let tables_in_schema: Vec<&TableInfo> = known_tables
         .iter()
-        .filter(|info| {
-            if info.schema_name.to_lowercase() == schema_lower {
-                return true;
-            }
-            // Namespaced tables are referenced as schema.namespace.table, so
-            // the failing reference's schema part may be the dotted compound.
-            !info.namespace.is_empty()
-                && format!("{}.{}", info.schema_name, info.namespace).to_lowercase()
-                    == schema_lower
-        })
+        .filter(|info| table_schema_matches(info, &schema_lower))
         .collect();
 
     if tables_in_schema.is_empty() {
@@ -487,16 +478,28 @@ fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
     } else {
         format!("`{reference}` or `{fully_quoted_reference}`")
     };
+    let reference_shape = if info.namespace.is_empty() {
+        "schema.table"
+    } else {
+        "schema.namespace.table"
+    };
 
     format!(
         "`\"{missing}\"` is one quoted identifier, so SQL looks for a table literally named \
          `{missing}`. Use {suggestions} in `FROM`/`JOIN` clauses; do not quote the whole \
-         `schema.table` string.",
+         `{reference_shape}` string.",
     )
 }
 
 fn raw_schema_table_name(info: &TableInfo) -> String {
-    format!("{}.{}", info.schema_name, info.table_name)
+    if info.namespace.is_empty() {
+        format!("{}.{}", info.schema_name, info.table_name)
+    } else {
+        format!(
+            "{}.{}.{}",
+            info.schema_name, info.namespace, info.table_name
+        )
+    }
 }
 
 /// Renders `schema.table` with per-component SQL quoting (dotted source
@@ -615,8 +618,10 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
             }
 
             // Pick the longest contiguous prefix of `body` that matches a
-            // registered schema (case-insensitive). This recovers dotted
-            // source names like `"foo.bar"` from their exploded form.
+            // registered source schema or database schema.namespace compound
+            // (case-insensitive). This recovers dotted source names like
+            // `"foo.bar"` from their exploded form and keeps namespaced
+            // database misses scoped to the remote namespace.
             for schema_len in (1..body.len()).rev() {
                 let candidate_schema = join_ref_parts(
                     body.get(..schema_len)
@@ -657,7 +662,17 @@ fn schema_is_registered(candidate: &str, known_tables: &[TableInfo]) -> bool {
     let lowered = candidate.to_lowercase();
     known_tables
         .iter()
-        .any(|info| info.schema_name.to_lowercase() == lowered)
+        .any(|info| table_schema_matches(info, &lowered))
+}
+
+fn table_schema_matches(info: &TableInfo, schema_lower: &str) -> bool {
+    if info.schema_name.to_lowercase() == schema_lower {
+        return true;
+    }
+    // Namespaced tables are referenced as schema.namespace.table, so the
+    // failing reference's schema part may be the dotted compound.
+    !info.namespace.is_empty()
+        && format!("{}.{}", info.schema_name, info.namespace).to_lowercase() == schema_lower
 }
 
 // ---------------------------------------------------------------------------
@@ -693,6 +708,13 @@ mod tests {
             guide: String::new(),
             columns: vec![],
             required_filters: vec![],
+        }
+    }
+
+    fn namespaced_table(schema: &str, namespace: &str, name: &str) -> TableInfo {
+        TableInfo {
+            namespace: namespace.to_string(),
+            ..table(schema, name)
         }
     }
 
@@ -880,6 +902,29 @@ mod tests {
     }
 
     #[test]
+    fn table_not_found_namespaced_reference_uses_compound_schema() {
+        let tables = vec![namespaced_table("coral_db", "main", "users")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "coral_db", "main", "usrs"]),
+            &tables,
+        );
+
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("coral_db.main")
+        );
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("usrs")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("coral_db.main.users"),
+            "namespaced miss should suggest the queryable table reference, got: {hint}"
+        );
+    }
+
+    #[test]
     fn table_not_found_strips_datafusion_catalog_prefix_from_display() {
         let tables = vec![table("hockey", "Master")];
         let err = StructuredQueryError::table_not_found(
@@ -957,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn table_not_found_quoted_qualified_name_suggests_sql_reference() {
+    fn table_not_found_quoted_qualified_names_suggest_sql_references() {
         // `FROM "github.pulls"` reaches the planner as a single bare
         // identifier under the synthetic `public` schema. When that flat
         // string exactly matches a visible `schema_name.table_name`, point
@@ -988,6 +1033,38 @@ mod tests {
         );
         assert!(
             hint.contains("do not quote the whole `schema.table` string"),
+            "hint should explicitly reject whole-reference quoting, got: {hint}"
+        );
+
+        // `FROM "coral_db.main.users"` is one bare table name under the
+        // synthetic `public` schema. For database surfaces, the flat string
+        // must match schema.namespace.table, not just schema.table.
+        let tables = vec![namespaced_table("coral_db", "main", "users")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "public", "coral_db.main.users"]),
+            &tables,
+        );
+
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("coral_db.main.users")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("`\"coral_db.main.users\"` is one quoted identifier"),
+            "hint should explain whole-reference quoting, got: {hint}"
+        );
+        assert!(
+            hint.contains("`coral_db.main.users`"),
+            "hint should suggest the SQL-safe three-part reference, got: {hint}"
+        );
+        assert!(
+            hint.contains("`\"coral_db\".\"main\".\"users\"`"),
+            "hint should show per-identifier quoting as the alternative, got: {hint}"
+        );
+        assert!(
+            hint.contains("do not quote the whole `schema.namespace.table` string"),
             "hint should explicitly reject whole-reference quoting, got: {hint}"
         );
     }

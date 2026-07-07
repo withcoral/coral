@@ -497,5 +497,9 @@ WHERE title LIKE '%bug%'",
             format_schema_table_equivalent("git\"hub", "", "pulls"),
             "\"git\"\"hub\".pulls"
         );
+        assert_eq!(
+            format_schema_table_equivalent("coral_db", "Main.Schema", "users"),
+            "coral_db.\"Main.Schema\".users"
+        );
     }
 }

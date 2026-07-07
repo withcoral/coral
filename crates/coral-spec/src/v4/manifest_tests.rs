@@ -69,7 +69,7 @@ surfaces:
 fn parses_v4_database_surface_with_provider_specific_connection() {
     let manifest = parse_source_manifest_yaml(
         r#"
-name: pickl_db
+name: coral_db
 dsl_version: 4
 surfaces:
   - id: db
@@ -84,13 +84,13 @@ surfaces:
         default: "5432"
       DB_USER:
         kind: variable
-        default: pickl_reader
+        default: coral_reader
       DB_PASSWORD:
         kind: secret
     connection:
       host: "{{input.DB_HOST}}"
       port: "{{input.DB_PORT}}"
-      database: pickl
+      database: coral
       user: "{{input.DB_USER}}"
       password: "{{input.DB_PASSWORD}}"
       sslmode: require
@@ -101,7 +101,7 @@ surfaces:
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("surface");
     assert_eq!(surface.surface_type, SurfaceType::Database);
-    assert_eq!(surface.relation_namespace, "pickl_db");
+    assert_eq!(surface.relation_namespace, "coral_db");
     assert!(matches!(
         &surface.descriptor,
         SurfaceDescriptor::Database {
@@ -118,7 +118,7 @@ surfaces:
     };
     assert_eq!(connection.host.raw(), "{{input.DB_HOST}}");
     assert_eq!(connection.port.raw(), "{{input.DB_PORT}}");
-    assert_eq!(connection.database.raw(), "pickl");
+    assert_eq!(connection.database.raw(), "coral");
     assert_eq!(connection.user.raw(), "{{input.DB_USER}}");
     assert_eq!(connection.password.raw(), "{{input.DB_PASSWORD}}");
     assert_eq!(
@@ -131,7 +131,7 @@ surfaces:
 fn rejects_v4_database_connection_templates_referencing_runtime_tokens() {
     let error = parse_source_manifest_yaml(
         r#"
-name: pickl_db
+name: coral_db
 dsl_version: 4
 surfaces:
   - id: db
@@ -141,7 +141,7 @@ surfaces:
       host: localhost
       port: "5432"
       database: "{{filter.tenant}}"
-      user: pickl_reader
+      user: coral_reader
       password: "{{input.DB_PASSWORD}}"
     inputs:
       DB_PASSWORD:

@@ -67,6 +67,7 @@ pub(crate) struct CatalogSearchResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CatalogMetadataField {
     SchemaName,
+    Namespace,
     TableName,
     FunctionName,
     Name,
@@ -81,6 +82,7 @@ impl CatalogMetadataField {
     pub(crate) fn as_proto_name(self) -> &'static str {
         match self {
             Self::SchemaName => "schema_name",
+            Self::Namespace => "namespace",
             Self::TableName => "table_name",
             Self::FunctionName => "function_name",
             Self::Name => "name",
@@ -409,15 +411,14 @@ fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadata
     let schema_name = table_addressable_schema_name(table);
     let name = table_addressable_name(table);
     let mut matches = Vec::new();
-    if [
-        table.schema_name.as_str(),
-        table.namespace.as_str(),
-        schema_name.as_str(),
-    ]
-    .into_iter()
-    .any(|value| !value.is_empty() && regex.is_match(value))
+    let namespace_matches = !table.namespace.is_empty() && regex.is_match(&table.namespace);
+    if regex.is_match(&table.schema_name)
+        || (!namespace_matches && schema_name != table.schema_name && regex.is_match(&schema_name))
     {
         matches.push(CatalogMetadataField::SchemaName);
+    }
+    if namespace_matches {
+        matches.push(CatalogMetadataField::Namespace);
     }
     if regex.is_match(&table.table_name) {
         matches.push(CatalogMetadataField::TableName);
@@ -638,7 +639,7 @@ mod tests {
 
     fn database_table(namespace: &str, table_name: &str) -> TableInfo {
         let mut table = table(Vec::new());
-        table.schema_name = "pickl_db".to_string();
+        table.schema_name = "coral_db".to_string();
         table.namespace = namespace.to_string();
         table.table_name = table_name.to_string();
         table
@@ -667,44 +668,58 @@ mod tests {
         let main = database_table("main", "users");
         let analytics = database_table("analytics", "events");
         let tables = vec![main, analytics];
+        let main_table = tables.first().expect("main table");
 
         assert!(table_matches_ref(
-            &tables[0],
-            CatalogTableRef::new("pickl_db.main", "users")
+            main_table,
+            CatalogTableRef::new("coral_db.main", "users")
         ));
         assert!(!table_matches_ref(
-            &tables[0],
-            CatalogTableRef::new("pickl_db.analytics", "users")
+            main_table,
+            CatalogTableRef::new("coral_db.analytics", "users")
         ));
         assert_eq!(
             table_matched_fields(
-                &tables[0],
-                &regex::Regex::new("^pickl_db\\.main\\.users$").expect("regex")
+                main_table,
+                &regex::Regex::new("^coral_db\\.main\\.users$").expect("regex")
             ),
             vec![CatalogMetadataField::Name]
+        );
+        assert_eq!(
+            table_matched_fields(main_table, &regex::Regex::new("^main$").expect("regex")),
+            vec![CatalogMetadataField::Namespace]
+        );
+        assert_eq!(
+            table_matched_fields(
+                main_table,
+                &regex::Regex::new("^coral_db\\.main$").expect("regex")
+            ),
+            vec![CatalogMetadataField::SchemaName]
         );
 
         assert_eq!(
             available_table_schemas(&tables),
-            vec!["pickl_db.analytics", "pickl_db.main"]
+            vec!["coral_db.analytics", "coral_db.main"]
         );
         let same_schema =
-            same_schema_tables(&tables, CatalogTableRef::new("pickl_db.main", "missing"));
+            same_schema_tables(&tables, CatalogTableRef::new("coral_db.main", "missing"));
         assert_eq!(same_schema.len(), 1);
-        assert_eq!(same_schema[0].namespace, "main");
-        assert_eq!(same_schema[0].table_name, "users");
+        let same_schema_table = same_schema.first().expect("same schema table");
+        assert_eq!(same_schema_table.namespace, "main");
+        assert_eq!(same_schema_table.table_name, "users");
 
         let suggestions = missing_table_suggestions(
             &tables,
-            CatalogTableRef::new("pickl_db.main", "user"),
+            CatalogTableRef::new("coral_db.main", "user"),
             &same_schema,
         );
         assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].namespace, "main");
-        assert_eq!(suggestions[0].table_name, "users");
+        let suggestion = suggestions.first().expect("suggestion");
+        assert_eq!(suggestion.namespace, "main");
+        assert_eq!(suggestion.table_name, "users");
         assert!(table_metadata_contains_literal(
-            &same_schema[0],
-            "pickl_db.main.users"
+            same_schema_table,
+            "coral_db.main.users"
         ));
     }
 }
