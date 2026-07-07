@@ -52,6 +52,20 @@ impl SqliteCatalogIndex {
         clippy::unused_self,
         reason = "kept as an instance method so catalog provider can own index capability consistently"
     )]
+    pub(crate) fn rebuild(
+        &self,
+        connection: &mut Connection,
+        workspace_name: &WorkspaceName,
+        snapshot: &CatalogIndexSnapshot,
+        force: bool,
+    ) -> Result<CatalogRebuildResult, SqliteSearchError> {
+        rebuild_catalog_documents(connection, workspace_name, snapshot, force)
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "kept as an instance method so catalog provider can own index capability consistently"
+    )]
     pub(crate) fn projection_is_current(
         &self,
         connection: &Connection,
@@ -159,6 +173,36 @@ fn refresh_catalog_documents_after_stale_check(
     })
 }
 
+fn rebuild_catalog_documents(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    snapshot: &CatalogIndexSnapshot,
+    force: bool,
+) -> Result<CatalogRebuildResult, SqliteSearchError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current_fingerprint = catalog_fingerprint(&transaction, workspace_name)?;
+    let old_document_count = catalog_document_count(&transaction, workspace_name)?;
+    let projection_changed = current_fingerprint.as_deref() != Some(snapshot.fingerprint.as_str());
+    let rebuild_performed = force || projection_changed;
+
+    if rebuild_performed {
+        replace_catalog_documents(&transaction, workspace_name, snapshot)?;
+    }
+
+    let new_document_count = if rebuild_performed {
+        catalog_document_count(&transaction, workspace_name)?
+    } else {
+        old_document_count
+    };
+    transaction.commit()?;
+    Ok(CatalogRebuildResult {
+        old_document_count,
+        new_document_count,
+        projection_changed,
+        rebuild_performed,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogIndexSnapshot {
     pub(crate) documents: Vec<CatalogIndexDocument>,
@@ -211,6 +255,14 @@ impl CatalogIndexDocumentKind {
 pub(crate) struct CatalogRefreshResult {
     pub(crate) refreshed: bool,
     pub(crate) document_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CatalogRebuildResult {
+    pub(crate) old_document_count: u32,
+    pub(crate) new_document_count: u32,
+    pub(crate) projection_changed: bool,
+    pub(crate) rebuild_performed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

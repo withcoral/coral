@@ -2,6 +2,7 @@
 
 pub(crate) mod catalog;
 pub(crate) mod engine;
+pub(crate) mod maintenance;
 pub(crate) mod manager;
 pub(crate) mod provider;
 pub(crate) mod result;

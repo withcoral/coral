@@ -76,10 +76,91 @@ fn clear_workspace_removes_workspace_documents_and_invalidates_fingerprint() {
 
     assert_eq!(result.deleted_document_count, 3);
     assert_eq!(store.catalog_document_count().expect("document count"), 0);
+    assert_eq!(
+        catalog_fts_document_count(&store),
+        0,
+        "clear should remove workspace FTS rows"
+    );
+    assert_eq!(
+        schema_version(&store),
+        crate::search::sqlite_store::SEARCH_SQLITE_SCHEMA_VERSION.to_string(),
+        "clear should leave schema metadata intact"
+    );
     assert!(
         !store
             .catalog_projection_is_current(&snapshot.fingerprint)
             .expect("projection invalidated")
+    );
+}
+
+#[test]
+fn forced_rebuild_runs_when_fingerprint_is_unchanged() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let snapshot = catalog_index_snapshot();
+    store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh catalog");
+
+    {
+        let connection = store.connect_for_test().expect("connect");
+        let workspace_name = WorkspaceName::default();
+        connection
+            .execute(
+                "DELETE FROM catalog_documents WHERE workspace = ?1 AND doc_id = ?2",
+                (
+                    workspace_name.as_str(),
+                    "catalog:function:github.search_deployments",
+                ),
+            )
+            .expect("corrupt catalog projection");
+    }
+    assert!(
+        store
+            .catalog_projection_is_current(&snapshot.fingerprint)
+            .expect("fingerprint should still be current"),
+        "the corruption keeps the fingerprint current so normal refresh would skip"
+    );
+    assert_eq!(store.catalog_document_count().expect("document count"), 2);
+
+    let rebuild = store
+        .rebuild_catalog_projection(&snapshot, true)
+        .expect("force rebuild catalog");
+
+    assert_eq!(rebuild.old_document_count, 2);
+    assert_eq!(rebuild.new_document_count, 3);
+    assert!(!rebuild.projection_changed);
+    assert!(rebuild.rebuild_performed);
+    assert_eq!(store.catalog_document_count().expect("document count"), 3);
+    assert_eq!(
+        catalog_fts_document_count(&store),
+        3,
+        "force rebuild should recreate matching FTS rows"
+    );
+}
+
+#[test]
+fn compaction_reports_checkpoint_and_vacuum_status() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    store
+        .refresh_catalog_projection(&catalog_index_snapshot())
+        .expect("refresh catalog");
+    store
+        .clear_catalog_workspace()
+        .expect("clear workspace catalog");
+
+    let compaction = store.compact_after_clear();
+
+    assert!(
+        compaction.wal_checkpoint_truncate_completed,
+        "WAL checkpoint/truncate should complete: {}",
+        compaction.note
+    );
+    assert!(
+        compaction.vacuum_completed,
+        "VACUUM should complete: {}",
+        compaction.note
     );
 }
 
@@ -391,6 +472,30 @@ fn probe_past_limit_reports_retrieval_limited() {
 fn catalog_store(temp: &TempDir) -> SqliteSearchStore {
     SqliteSearchStore::open(temp.path().join("search.sqlite3"), WorkspaceName::default())
         .expect("store")
+}
+
+fn catalog_fts_document_count(store: &SqliteSearchStore) -> u32 {
+    let connection = store.connect_for_test().expect("connect");
+    let workspace_name = WorkspaceName::default();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM catalog_documents_fts WHERE workspace = ?1",
+            [workspace_name.as_str()],
+            |row| row.get(0),
+        )
+        .expect("FTS count");
+    u32::try_from(count).expect("FTS count should fit")
+}
+
+fn schema_version(store: &SqliteSearchStore) -> String {
+    let connection = store.connect_for_test().expect("connect");
+    connection
+        .query_row(
+            "SELECT value FROM search_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("schema version")
 }
 
 fn catalog_index_snapshot() -> CatalogIndexSnapshot {

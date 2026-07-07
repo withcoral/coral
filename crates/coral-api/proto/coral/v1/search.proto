@@ -29,6 +29,120 @@ message SearchResponse {
   SearchResultTruncation truncation = 3;
 }
 
+// Search index maintenance request.
+message RebuildSearchIndexRequest {
+  // Workspace whose local search data should be rebuilt.
+  Workspace workspace = 1;
+  // Index provider to rebuild.
+  SearchIndexProvider provider = 2;
+  // Force a rebuild even when the persisted fingerprint says the projection is current.
+  bool force = 3;
+}
+
+// Search index maintenance response.
+message RebuildSearchIndexResponse {
+  // Per-provider maintenance results.
+  repeated SearchMaintenanceProviderResult provider_results = 1;
+}
+
+// Search data removal request.
+message ClearSearchDataRequest {
+  // Workspace whose local search data should be removed.
+  Workspace workspace = 1;
+  // Data scope to remove.
+  SearchDataScope scope = 2;
+  // Removal target. PR 4A supports workspace-scoped clears only.
+  SearchClearTarget target = 3;
+}
+
+// Search data removal response.
+message ClearSearchDataResponse {
+  // Per-provider maintenance results.
+  repeated SearchMaintenanceProviderResult provider_results = 1;
+  // Best-effort SQLite compaction status after row deletion.
+  SearchCompactionStatus compaction = 2;
+}
+
+// Search index provider selection for maintenance.
+enum SearchIndexProvider {
+  // Unknown index provider.
+  SEARCH_INDEX_PROVIDER_UNSPECIFIED = 0;
+  // Catalog metadata provider.
+  SEARCH_INDEX_PROVIDER_CATALOG = 1;
+  // Local observed-value provider.
+  SEARCH_INDEX_PROVIDER_OBSERVED_VALUES = 2;
+  // All available index providers.
+  SEARCH_INDEX_PROVIDER_ALL = 3;
+}
+
+// Search data scope for destructive maintenance.
+enum SearchDataScope {
+  // Unknown data scope.
+  SEARCH_DATA_SCOPE_UNSPECIFIED = 0;
+  // Local observed-value memory only.
+  SEARCH_DATA_SCOPE_OBSERVED = 1;
+  // All app-owned local search data for the target.
+  SEARCH_DATA_SCOPE_ALL = 2;
+}
+
+// Target for destructive search-data maintenance.
+message SearchClearTarget {
+  // Workspace or source target selected for the clear operation.
+  oneof target {
+    // Clear the selected scope for the whole workspace.
+    bool workspace = 1;
+    // Reserved for source-scoped clear in a later PR.
+    string source_name = 2;
+  }
+}
+
+// Provider-local maintenance result.
+message SearchMaintenanceProviderResult {
+  // Provider that handled this maintenance step.
+  SearchProvider provider = 1;
+  // Provider state after the maintenance step.
+  SearchProviderState state = 2;
+  // Human-readable note.
+  string note = 3;
+  // Structured provider-local maintenance coverage.
+  SearchProviderCoverage coverage = 4;
+  // Provider-specific maintenance detail.
+  oneof detail {
+    // Catalog rebuild detail.
+    CatalogRebuildResult catalog_rebuild = 10;
+    // Catalog clear detail.
+    CatalogClearResult catalog_clear = 11;
+  }
+}
+
+// Catalog rebuild detail.
+message CatalogRebuildResult {
+  // Document rows present before rebuild.
+  uint32 old_document_count = 1;
+  // Document rows present after rebuild.
+  uint32 new_document_count = 2;
+  // Whether the catalog fingerprint differed from the snapshot being rebuilt.
+  bool projection_changed = 3;
+  // Whether a delete-and-reinsert rebuild was performed.
+  bool rebuild_performed = 4;
+}
+
+// Catalog clear detail.
+message CatalogClearResult {
+  // Catalog document rows deleted from the workspace projection.
+  uint32 deleted_document_count = 1;
+}
+
+// Best-effort SQLite compaction status after destructive maintenance.
+message SearchCompactionStatus {
+  // Whether `PRAGMA wal_checkpoint(TRUNCATE)` completed.
+  bool wal_checkpoint_truncate_completed = 1;
+  // Whether `VACUUM` completed.
+  bool vacuum_completed = 2;
+  // Human-readable compaction note.
+  string note = 3;
+}
+
 // Result truncation metadata.
 message SearchResultTruncation {
   // Whether more results were available than returned.
@@ -223,4 +337,8 @@ message ObservedValue {
 service SearchService {
   // Routes a clue to typed Coral search hints.
   rpc Search(SearchRequest) returns (SearchResponse);
+  // Rebuilds app-owned local search index projections.
+  rpc RebuildSearchIndex(RebuildSearchIndexRequest) returns (RebuildSearchIndexResponse);
+  // Clears app-owned local search data for a workspace-scoped target.
+  rpc ClearSearchData(ClearSearchDataRequest) returns (ClearSearchDataResponse);
 }

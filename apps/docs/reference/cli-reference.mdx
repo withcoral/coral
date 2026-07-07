@@ -81,6 +81,47 @@ answer the question by itself; use the returned `sql_reference` or
 | `--json`  | flag    | `false` | Render the shared machine-readable JSON response          |
 | `--limit` | integer | `10`    | Maximum results to return, from 1 to 50                   |
 
+## `coral search-index`
+
+Manage app-owned local search indexes.
+
+### `coral search-index rebuild`
+
+Rebuild an app-owned local search index.
+
+```shellscript
+coral search-index rebuild --provider catalog
+coral search-index rebuild --provider catalog --force
+```
+
+#### Options
+
+| Option               | Type | Default   | Description                                                     |
+| -------------------- | ---- | --------- | --------------------------------------------------------------- |
+| `--provider catalog` | enum | `catalog` | Search index provider to rebuild                                |
+| `--force`            | flag | `false`   | Rebuild even when the stored projection fingerprint is current   |
+
+### `coral search-index clear`
+
+Clear app-owned local search data for the current workspace.
+The global `--workspace [NAME]` flag is required as destructive confirmation:
+use it bare to confirm the selected workspace, or pass a name to select and
+confirm that workspace. Although `--workspace` is global, it may appear inside
+the `search-index clear` command.
+
+```shellscript
+coral search-index clear --scope all --workspace --yes
+coral search-index clear --scope all --workspace work --yes
+```
+
+#### Options
+
+| Option                      | Type        | Default  | Description                                      |
+| --------------------------- | ----------- | -------- | ------------------------------------------------ |
+| `--scope all`               | enum        | required | Search data scope to clear                       |
+| global `--workspace [NAME]` | flag/string | required | Confirm workspace-scoped deletion; with `NAME`, also select that workspace |
+| `--yes`                     | flag        | required | Confirm destructive search-data deletion         |
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.
