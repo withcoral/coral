@@ -301,13 +301,13 @@ impl ServerBuilder {
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
         let query_manager = QueryManager::new(
-            config_store,
+            config_store.clone(),
             credential_manager,
             query_runtime_context,
             layout.clone(),
             self.config.engine_extensions_providers,
         );
-        let search_manager = SearchManager::new(layout, query_manager.clone());
+        let search_manager = SearchManager::new(layout, config_store);
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {
@@ -851,13 +851,13 @@ enabled = false
             None,
         );
         let query_manager = QueryManager::new(
-            config_store,
+            config_store.clone(),
             credential_manager,
             QueryRuntimeContext::default(),
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
+        let search_manager = SearchManager::new(layout.clone(), config_store);
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
@@ -1245,7 +1245,7 @@ tables:
             None,
         );
         let query_manager = QueryManager::new(
-            config_store,
+            config_store.clone(),
             credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
@@ -1254,7 +1254,7 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
+        let search_manager = SearchManager::new(layout.clone(), config_store);
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1360,13 +1360,13 @@ tables:
             None,
         );
         let query_manager = QueryManager::new(
-            config_store,
+            config_store.clone(),
             credential_manager,
             QueryRuntimeContext::default(),
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
+        let search_manager = SearchManager::new(layout.clone(), config_store);
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1472,13 +1472,13 @@ tables:
             None,
         );
         let query_manager = QueryManager::new(
-            config_store,
+            config_store.clone(),
             credential_manager,
             QueryRuntimeContext::default(),
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), query_manager.clone());
+        let search_manager = SearchManager::new(layout.clone(), config_store);
         let running = start_server(
             ServerManagers {
                 source: source_manager,

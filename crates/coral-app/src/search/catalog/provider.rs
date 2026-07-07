@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 
 use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 
+use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogItem;
 use crate::query::QueryAttribution;
-use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_hits};
 use crate::search::catalog::snapshot::{
     CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
@@ -46,20 +47,23 @@ struct CatalogProjectionState {
 #[derive(Clone)]
 pub(crate) struct CatalogMetadataProvider {
     layout: AppStateLayout,
-    queries: QueryManager,
+    catalog_loader: CatalogSnapshotLoader,
 }
 
 impl CatalogMetadataProvider {
-    pub(crate) fn new(layout: AppStateLayout, queries: QueryManager) -> Self {
-        Self { layout, queries }
+    pub(crate) fn new(layout: AppStateLayout, catalog_loader: CatalogSnapshotLoader) -> Self {
+        Self {
+            layout,
+            catalog_loader,
+        }
     }
 
-    pub(crate) async fn search(
+    pub(crate) fn search(
         &self,
         request: &SearchRequest,
-        attribution: &QueryAttribution,
+        _attribution: &QueryAttribution,
     ) -> ProviderSearchOutcome {
-        let catalog = match self.load_catalog(request, attribution).await {
+        let catalog = match self.load_catalog(request) {
             Ok(catalog) => catalog,
             Err(error) => return catalog_query_error_outcome(&error),
         };
@@ -78,14 +82,8 @@ impl CatalogMetadataProvider {
         catalog_search_outcome(request, &catalog, search_hits, &projection)
     }
 
-    async fn load_catalog(
-        &self,
-        request: &SearchRequest,
-        attribution: &QueryAttribution,
-    ) -> Result<CatalogInfo, QueryManagerError> {
-        self.queries
-            .list_catalog(&request.workspace_name, None, attribution)
-            .await
+    fn load_catalog(&self, request: &SearchRequest) -> Result<CatalogInfo, AppError> {
+        self.catalog_loader.load_catalog(&request.workspace_name)
     }
 
     fn prepare_projection(
@@ -520,25 +518,15 @@ fn find_function<'a>(
     })
 }
 
-fn catalog_query_error_outcome(error: &QueryManagerError) -> ProviderSearchOutcome {
+fn catalog_query_error_outcome(error: &AppError) -> ProviderSearchOutcome {
     ProviderSearchOutcome {
         candidates: Vec::new(),
         status: ProviderStatus {
             provider: SearchProviderKind::CatalogMetadata,
             state: SearchProviderState::Error,
-            note: format!(
-                "Catalog metadata snapshot is unavailable: {}",
-                catalog_query_error_message(error)
-            ),
+            note: format!("Catalog metadata snapshot is unavailable: {error}"),
             coverage: Some(ProviderCoverage::default()),
         },
-    }
-}
-
-fn catalog_query_error_message(error: &QueryManagerError) -> String {
-    match error {
-        QueryManagerError::App(error) => error.to_string(),
-        QueryManagerError::Core(error) => error.to_string(),
     }
 }
 

@@ -53,7 +53,7 @@ impl SearchServiceApi for SearchService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let request = SearchRequest::new(workspace_name, &request.query, request.limit)
                 .map_err(search_status)?;
-            let response = search.search(&request, &attribution).await;
+            let response = search.search(&request, &attribution);
             Ok(Response::new(search_response_to_proto(response)?))
         })
         .await

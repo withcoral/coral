@@ -17,7 +17,7 @@ impl UniversalSearchEngine {
         Self { catalog }
     }
 
-    pub(crate) async fn search(
+    pub(crate) fn search(
         &self,
         request: &SearchRequest,
         attribution: &QueryAttribution,
@@ -28,7 +28,7 @@ impl UniversalSearchEngine {
             limit = request.limit,
             "running Universal Search"
         );
-        let catalog = self.catalog.search(request, attribution).await;
+        let catalog = self.catalog.search(request, attribution);
         let provider_has_more = catalog
             .status
             .coverage
