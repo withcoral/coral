@@ -291,7 +291,7 @@ impl ServerBuilder {
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
-        let source_manager = SourceManager::with_db(
+        let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),

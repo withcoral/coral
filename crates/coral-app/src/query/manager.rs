@@ -1266,6 +1266,7 @@ surfaces:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import v4 source");
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
@@ -1341,6 +1342,7 @@ surfaces:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import v4 source");
 
         let source_name = SourceName::parse("github_v4_pagination_override").expect("source name");

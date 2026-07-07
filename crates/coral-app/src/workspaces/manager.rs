@@ -58,11 +58,11 @@ impl WorkspaceManager {
         self.store.list_workspaces()
     }
 
-    pub(crate) fn create_workspace(
+    pub(crate) async fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let _lifecycle_guard = self.lifecycle_lock.lock().await;
         self.store.create_workspace(workspace_name)
     }
 
@@ -77,7 +77,7 @@ impl WorkspaceManager {
         }
 
         let (deleted, workspace_dir_backup) = {
-            let _lifecycle_guard = self.lifecycle_lock.lock();
+            let _lifecycle_guard = self.lifecycle_lock.lock().await;
             let deleted = self
                 .store
                 .delete_workspace(workspace_name)?

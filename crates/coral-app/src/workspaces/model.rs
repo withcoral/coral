@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::sources::model::InstalledSource;
 use crate::workspaces::WorkspaceName;
@@ -24,17 +26,14 @@ pub(crate) struct WorkspaceLifecycleLock {
 
 impl WorkspaceLifecycleLock {
     #[must_use = "bind the returned guard for the full critical section"]
-    pub(crate) fn lock(&self) -> WorkspaceLifecycleGuard<'_> {
+    pub(crate) async fn lock(&self) -> WorkspaceLifecycleGuard {
         WorkspaceLifecycleGuard {
-            _guard: self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            _guard: Arc::clone(&self.inner).lock_owned().await,
         }
     }
 }
 
 #[must_use]
-pub(crate) struct WorkspaceLifecycleGuard<'a> {
-    _guard: MutexGuard<'a, ()>,
+pub(crate) struct WorkspaceLifecycleGuard {
+    _guard: OwnedMutexGuard<()>,
 }

@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::CoralDb;
 use super::session::DbRepos;
+use super::{CoralDb, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::sources::model::InstalledSource;
 use crate::state::ConfigStore;
@@ -105,18 +104,6 @@ where
         }
     }
     Ok(())
-}
-
-fn now_unix_nanos_i64() -> Result<i64, AppError> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "system clock timestamp exceeds i64 nanoseconds: {error}"
-        ))
-    })
 }
 
 #[cfg(test)]
