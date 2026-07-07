@@ -2,7 +2,6 @@
 
 use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
-use coral_api::v1::episode_service_client::EpisodeServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::search_service_client::SearchServiceClient;
@@ -57,9 +56,6 @@ pub type SearchClient = SearchServiceClient<GrpcService>;
 /// Public feedback-submission gRPC client.
 pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 
-/// Public episode-registration gRPC client.
-pub type EpisodeClient = EpisodeServiceClient<GrpcService>;
-
 /// Public Coral client handle.
 ///
 /// Wraps the generated gRPC clients for a Coral endpoint.
@@ -71,7 +67,6 @@ pub struct AppClient {
     query: QueryClient,
     search: SearchClient,
     feedback: FeedbackClient,
-    episode: EpisodeClient,
 }
 
 impl AppClient {
@@ -96,8 +91,7 @@ impl AppClient {
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
         let search_client = SearchClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE);
-        let feedback_client = FeedbackClient::new(grpc_service(channel.clone(), &grpc_endpoint));
-        let episode_client = EpisodeClient::new(grpc_service(channel, &grpc_endpoint));
+        let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
             source: source_client,
             workspace: workspace_client,
@@ -105,7 +99,6 @@ impl AppClient {
             query: query_client,
             search: search_client,
             feedback: feedback_client,
-            episode: episode_client,
         })
     }
 
@@ -143,12 +136,6 @@ impl AppClient {
     /// Returns a cloned feedback-submission client.
     pub fn feedback_client(&self) -> FeedbackClient {
         self.feedback.clone()
-    }
-
-    #[must_use]
-    /// Returns a cloned episode-registration client.
-    pub fn episode_client(&self) -> EpisodeClient {
-        self.episode.clone()
     }
 }
 

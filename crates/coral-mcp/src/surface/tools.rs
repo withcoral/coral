@@ -3,14 +3,12 @@ use serde_json::Value;
 
 use super::catalog::{describe_table_tool, list_catalog_tool, list_columns_tool};
 use super::context::ToolDescriptionContext;
-use super::episode::{open_episode_tool, with_episode_id_argument};
 use super::feedback::feedback_tool;
 use super::search::search_tool;
 use super::sql::sql_tool;
 
 pub(crate) fn available_tools(
     context: &ToolDescriptionContext,
-    episodes_enabled: bool,
     feedback_enabled: bool,
 ) -> Vec<Tool> {
     let mut tools = vec![
@@ -20,18 +18,8 @@ pub(crate) fn available_tools(
         describe_table_tool(),
         list_columns_tool(),
     ];
-    if episodes_enabled {
-        tools = tools.into_iter().map(with_episode_id_argument).collect();
-        tools.push(open_episode_tool());
-    }
     if feedback_enabled {
-        let feedback = feedback_tool();
-        let feedback = if episodes_enabled {
-            with_episode_id_argument(feedback)
-        } else {
-            feedback
-        };
-        tools.push(feedback);
+        tools.push(feedback_tool());
     }
     tools
 }
@@ -78,7 +66,7 @@ mod tests {
         let context =
             ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
 
-        let tools = available_tools(&context, false, false);
+        let tools = available_tools(&context, false);
         let sql_tool = tool_by_name(&tools, "sql");
         let sql_description = sql_tool.description.as_deref().expect("sql description");
         assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
@@ -112,56 +100,20 @@ mod tests {
     }
 
     #[test]
-    fn available_tools_decorate_episode_aware_tools() {
-        let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, true, false);
-        let sql_tool = tool_by_name(&tools, "sql");
-        let episode_id_schema = sql_tool
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .and_then(|properties| properties.get("episode_id"))
-            .expect("episode_id schema");
-
-        assert_eq!(
-            episode_id_schema.get("description").and_then(Value::as_str),
-            Some(
-                "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode."
-            )
-        );
-
-        let open_episode = tool_by_name(&tools, "open_episode");
-        let properties = open_episode
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("open_episode properties");
-        assert!(!properties.contains_key("episode_id"));
-    }
-
-    #[test]
     fn available_tools_add_feedback_last_when_enabled() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, true, true);
+        let tools = available_tools(&context, true);
 
         assert_eq!(
             tools.last().map(|tool| tool.name.as_ref()),
             Some("feedback")
         );
-        let properties = tools
-            .last()
-            .expect("feedback tool")
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("feedback properties");
-        assert!(properties.contains_key("episode_id"));
     }
 
     #[test]
     fn available_tools_keep_default_order() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, false, false);
+        let tools = available_tools(&context, false);
         let names = tools
             .iter()
             .map(|tool| tool.name.as_ref())
@@ -186,7 +138,7 @@ mod tests {
             .collect::<Vec<_>>();
         let context = ToolDescriptionContext::new(1, 0, names);
 
-        let tools = available_tools(&context, false, false);
+        let tools = available_tools(&context, false);
         let description = tool_by_name(&tools, "sql")
             .description
             .as_deref()
@@ -200,46 +152,10 @@ mod tests {
     }
 
     #[test]
-    fn available_tools_do_not_mutate_base_tool_schemas() {
-        let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let default_tools = available_tools(&context, false, false);
-        let episode_tools = available_tools(&context, true, false);
-
-        let default_properties = tool_by_name(&default_tools, "sql")
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("default properties");
-        let episode_properties = tool_by_name(&episode_tools, "sql")
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("episode properties");
-
-        assert!(!default_properties.contains_key("episode_id"));
-        assert!(episode_properties.contains_key("episode_id"));
-    }
-
-    #[test]
-    fn feedback_tool_is_not_decorated_when_episodes_are_disabled() {
-        let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, false, true);
-        let feedback = tools.last().expect("feedback tool");
-        let properties = feedback
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("feedback properties");
-
-        assert_eq!(feedback.name, "feedback");
-        assert!(!properties.contains_key("episode_id"));
-    }
-
-    #[test]
     fn all_advertised_tools_have_object_input_schemas() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
 
-        for tool in available_tools(&context, true, true) {
+        for tool in available_tools(&context, true) {
             assert_eq!(
                 tool.input_schema.get("type"),
                 Some(&Value::String("object".into()))

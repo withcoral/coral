@@ -15,7 +15,6 @@ use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
-use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
@@ -43,8 +42,6 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
-use crate::episode::service::EpisodeService;
-use crate::episode::store::EpisodeStore;
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -292,7 +289,6 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let episode_store = EpisodeStore::new(layout.clone());
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -322,7 +318,6 @@ impl ServerBuilder {
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
-                episode_store,
             },
             trace_components,
             self.config.mode,
@@ -421,7 +416,6 @@ struct ServerManagers {
     query: QueryManager,
     search: SearchManager,
     feedback: FeedbackManager,
-    episode_store: EpisodeStore,
 }
 
 async fn start_server(
@@ -439,7 +433,6 @@ async fn start_server(
         query,
         search,
         feedback,
-        episode_store,
     } = managers;
     let source_service = SourceService::new(source, query.clone());
     let workspace_service = WorkspaceService::new(workspace);
@@ -447,7 +440,6 @@ async fn start_server(
     let query_service = QueryService::new(query);
     let search_service = SearchService::new(search);
     let feedback_service = FeedbackService::new(feedback);
-    let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
@@ -461,16 +453,6 @@ async fn start_server(
         ))
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
-        )))
-        // Registered unconditionally, like `FeedbackService` above: the local
-        // transport is feature-agnostic by design (effective features are resolved
-        // in `coral-cli`, which gates the *consumers*, not the routes). The
-        // `episodes` feature gates the only caller — the `coral-mcp` episode surface —
-        // so on a default/disabled install this endpoint is reachable but inert:
-        // nothing opens an episode, so no intent is ever written. See the
-        // `EpisodeService` module docs and `open_episode_*` server tests below.
-        .add_service(GrpcMethodAnnotatedService::new(EpisodeServiceServer::new(
-            episode_service,
         )))
         .add_service(GrpcMethodAnnotatedService::new(
             QueryServiceServer::new(query_service)
@@ -705,13 +687,12 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use coral_api::v1::episode_service_client::EpisodeServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-        ListTracesRequest, OpenEpisodeRequest, Workspace, import_source_response,
+        ListTracesRequest, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -724,7 +705,6 @@ mod tests {
         TraceServerComponents, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
@@ -782,52 +762,6 @@ enabled = false
         server.shutdown().await.expect("shutdown");
     }
 
-    /// The `OpenEpisode` route is registered unconditionally — the transport is
-    /// feature-agnostic, and the `episodes` feature gates the `coral-mcp` consumer
-    /// rather than the route. Drive the full path end-to-end through a real
-    /// `EpisodeServiceClient` on a default install (episodes disabled) and confirm
-    /// the call is served and the intent is persisted. Guards against a dropped or
-    /// miswired `EpisodeServiceServer` route, which the direct-`EpisodeService`
-    /// unit tests cannot catch.
-    #[tokio::test]
-    async fn open_episode_through_server_persists() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir.clone())
-            .start()
-            .await
-            .expect("start server");
-        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
-            .expect("endpoint")
-            .connect()
-            .await
-            .expect("connect");
-        let mut episode_client = EpisodeServiceClient::new(channel);
-
-        episode_client
-            .open_episode(Request::new(OpenEpisodeRequest {
-                workspace: Some(default_workspace()),
-                episode_id: "ep_smoke".to_string(),
-                intent: "find the HR onboarding form".to_string(),
-                parent_episode_id: String::new(),
-            }))
-            .await
-            .expect("OpenEpisode is served regardless of the episodes feature");
-
-        // The handler ran the full path through to the per-workspace episode log.
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let raw = std::fs::read_to_string(layout.episodes_file(&WorkspaceName::default()))
-            .expect("episode file should exist");
-        assert!(raw.contains("ep_smoke"), "episode id should be persisted");
-        assert!(
-            raw.contains("find the HR onboarding form"),
-            "intent should be persisted"
-        );
-        server.shutdown().await.expect("shutdown");
-    }
-
     #[tokio::test]
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
@@ -843,7 +777,6 @@ enabled = false
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -867,7 +800,6 @@ enabled = false
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
-                episode_store,
             },
             TraceServerComponents {
                 service: Some(trace_service),
@@ -1237,7 +1169,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1262,7 +1193,6 @@ tables:
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
-                episode_store,
             },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
@@ -1352,7 +1282,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1374,7 +1303,6 @@ tables:
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
-                episode_store,
             },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
@@ -1464,7 +1392,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1486,7 +1413,6 @@ tables:
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
-                episode_store,
             },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
