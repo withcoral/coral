@@ -15,6 +15,7 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
+use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -502,7 +503,7 @@ impl SourceManager {
         let credential_guard = self
             .credential_manager
             .material_guard(workspace_name, &credential_set_id)?;
-        let _state_lock = self.config_store.state_lock_exclusive()?;
+        let state_lock = self.config_store.state_lock_exclusive()?;
         let stored = self
             .config_store
             .get_source_unlocked(workspace_name, source_name)?;
@@ -568,6 +569,8 @@ impl SourceManager {
             &self.layout.workspaces_root(),
             self.layout.workspace_dir(workspace_name).parent(),
         );
+        drop(state_lock);
+        self.clear_catalog_projection_for_source_best_effort(workspace_name, source_name);
         Ok(removed)
     }
 
@@ -595,7 +598,7 @@ impl SourceManager {
         let credential_guard = self
             .credential_manager
             .material_guard(workspace_name, &credential_set_id)?;
-        let _state_lock = self.config_store.state_lock_exclusive()?;
+        let state_lock = self.config_store.state_lock_exclusive()?;
         let credential_storage = match self.source_persist_storage_with_state_lock_held(
             workspace_name,
             request.candidate,
@@ -738,7 +741,40 @@ impl SourceManager {
         cleanup_materialization_backup(materialization_backup);
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
+        drop(state_lock);
+        self.clear_catalog_projection_for_source_best_effort(workspace_name, &source_name);
         Ok(resolved)
+    }
+
+    fn clear_catalog_projection_for_source_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        let search_sqlite_file = self.layout.search_sqlite_file(workspace_name);
+        if !search_sqlite_file.exists() {
+            return;
+        }
+        match SqliteSearchStore::open_workspace(&self.layout, workspace_name)
+            .and_then(|store| store.clear_catalog_source(source_name.as_str()))
+        {
+            Ok(result) => {
+                tracing::debug!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    deleted_document_count = result.deleted_document_count,
+                    "cleared SQLite catalog projection for source lifecycle change"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    search_sqlite_file = %search_sqlite_file.display(),
+                    "source lifecycle changed, but failed to clear SQLite catalog projection: {error}"
+                );
+            }
+        }
     }
 
     fn prepare_v4_materialization(

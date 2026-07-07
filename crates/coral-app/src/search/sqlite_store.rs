@@ -15,7 +15,8 @@ use std::time::Duration;
 use rusqlite::{Connection, ErrorCode};
 
 use crate::search::catalog::sqlite_index::{
-    CatalogIndexSnapshot, CatalogRefreshResult, CatalogSearchHits, SqliteCatalogIndex,
+    CatalogClearResult, CatalogIndexSnapshot, CatalogRefreshResult, CatalogSearchHits,
+    SqliteCatalogIndex,
 };
 use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
@@ -125,6 +126,19 @@ impl SqliteSearchStore {
     pub(crate) fn catalog_document_count(&self) -> Result<u32, SqliteSearchError> {
         let connection = self.connect()?;
         SqliteCatalogIndex::new().document_count(&connection, &self.workspace_name)
+    }
+
+    pub(crate) fn clear_catalog_source(
+        &self,
+        source_name: &str,
+    ) -> Result<CatalogClearResult, SqliteSearchError> {
+        let mut connection = self.connect()?;
+        SqliteCatalogIndex::new().clear_source(&mut connection, &self.workspace_name, source_name)
+    }
+
+    pub(crate) fn clear_catalog_workspace(&self) -> Result<CatalogClearResult, SqliteSearchError> {
+        let mut connection = self.connect()?;
+        SqliteCatalogIndex::new().clear_workspace(&mut connection, &self.workspace_name)
     }
 
     pub(crate) fn search_catalog(
