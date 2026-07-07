@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use coral_spec::v4::SurfaceDescriptor;
+use coral_spec::v4::{SurfaceDescriptor, SurfaceType};
 use serde_yaml::Value as YamlValue;
 
 use crate::bootstrap::AppError;
@@ -755,6 +755,13 @@ impl SourceManager {
         let Some(v4) = manifest.as_v4() else {
             return Ok(None);
         };
+        if v4
+            .surfaces
+            .iter()
+            .all(|surface| surface.surface_type == SurfaceType::Database)
+        {
+            return Ok(None);
+        }
         if matches!(origin, SourceOrigin::Bundled)
             && v4.surfaces.iter().any(|surface| {
                 matches!(

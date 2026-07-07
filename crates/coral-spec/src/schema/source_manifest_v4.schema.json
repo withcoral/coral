@@ -39,121 +39,99 @@
   ],
   "$defs": {
     "V4SurfaceSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OpenApiSurfaceSchema"
+        },
+        {
+          "$ref": "#/$defs/V4McpSurfaceSchema"
+        },
+        {
+          "$ref": "#/$defs/V4PostgresDatabaseSurfaceSchema"
+        },
+        {
+          "$ref": "#/$defs/V4MySqlDatabaseSurfaceSchema"
+        },
+        {
+          "$ref": "#/$defs/V4SqliteDatabaseSurfaceSchema"
+        }
+      ]
+    },
+    "V4OpenApiSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "openapi"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "namespace_suffix": {
+          "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4InputSpecSchema"
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "base_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auth": {
+          "$ref": "#/$defs/AuthSpec",
+          "default": {
+            "type": "HeaderAuth",
+            "headers": []
+          }
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeaderSpec"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/RateLimitSpec",
+          "default": {
+            "extra_statuses": [],
+            "retry_after_header": null,
+            "remaining_header": null,
+            "reset_header": null
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id"
+      ],
       "oneOf": [
         {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "^[a-z][a-z0-9_]*$"
-            },
-            "namespace_suffix": {
-              "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
-              "type": "string",
-              "minLength": 1,
-              "pattern": "^[a-z][a-z0-9_]*$"
-            },
-            "url": {
-              "type": "string",
-              "pattern": "^https://"
-            },
-            "file": {
-              "type": "string",
-              "minLength": 1
-            },
-            "inputs": {
-              "type": "object",
-              "additionalProperties": {
-                "$ref": "#/$defs/V4InputSpecSchema"
-              },
-              "propertyNames": {
-                "minLength": 1
-              }
-            },
-            "base_url": {
-              "type": "string",
-              "minLength": 1
-            },
-            "auth": {
-              "$ref": "#/$defs/AuthSpec",
-              "default": {
-                "type": "HeaderAuth",
-                "headers": []
-              }
-            },
-            "request_headers": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/HeaderSpec"
-              }
-            },
-            "rate_limit": {
-              "$ref": "#/$defs/RateLimitSpec",
-              "default": {
-                "extra_statuses": [],
-                "retry_after_header": null,
-                "remaining_header": null,
-                "reset_header": null
-              }
-            },
-            "type": {
-              "type": "string",
-              "const": "openapi"
-            }
-          },
-          "additionalProperties": false,
           "required": [
-            "type",
-            "id"
-          ],
-          "oneOf": [
-            {
-              "required": [
-                "url"
-              ]
-            },
-            {
-              "required": [
-                "file"
-              ]
-            }
+            "url"
           ]
         },
         {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "^[a-z][a-z0-9_]*$"
-            },
-            "namespace_suffix": {
-              "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
-              "type": "string",
-              "minLength": 1,
-              "pattern": "^[a-z][a-z0-9_]*$"
-            },
-            "inputs": {
-              "type": "object",
-              "additionalProperties": {
-                "$ref": "#/$defs/V4InputSpecSchema"
-              },
-              "propertyNames": {
-                "minLength": 1
-              }
-            },
-            "server": {
-              "$ref": "#/$defs/McpServerSpec"
-            },
-            "type": {
-              "type": "string",
-              "const": "mcp"
-            }
-          },
-          "additionalProperties": false,
           "required": [
-            "type",
-            "id",
-            "server"
+            "file"
           ]
         }
       ]
@@ -1106,6 +1084,43 @@
       },
       "additionalProperties": false
     },
+    "V4McpSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "mcp"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "namespace_suffix": {
+          "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4InputSpecSchema"
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "server": {
+          "$ref": "#/$defs/McpServerSpec"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "server"
+      ]
+    },
     "McpServerSpec": {
       "description": "MCP server connection settings.",
       "oneOf": [
@@ -1214,6 +1229,206 @@
       "type": "string",
       "enum": [
         "bearer"
+      ]
+    },
+    "V4PostgresDatabaseSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "database"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "namespace_suffix": {
+          "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4InputSpecSchema"
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "provider": {
+          "type": "string",
+          "const": "postgres"
+        },
+        "connection": {
+          "$ref": "#/$defs/V4PostgresConnectionSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "provider",
+        "connection"
+      ]
+    },
+    "V4PostgresConnectionSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "sslmode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "database",
+        "user",
+        "password"
+      ]
+    },
+    "V4MySqlDatabaseSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "database"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "namespace_suffix": {
+          "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4InputSpecSchema"
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "provider": {
+          "type": "string",
+          "const": "mysql"
+        },
+        "connection": {
+          "$ref": "#/$defs/V4MySqlConnectionSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "provider",
+        "connection"
+      ]
+    },
+    "V4MySqlConnectionSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "database",
+        "user",
+        "password"
+      ]
+    },
+    "V4SqliteDatabaseSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "database"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "namespace_suffix": {
+          "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4InputSpecSchema"
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "provider": {
+          "type": "string",
+          "const": "sqlite"
+        },
+        "connection": {
+          "$ref": "#/$defs/V4SqliteConnectionSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "provider",
+        "connection"
+      ]
+    },
+    "V4SqliteConnectionSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
       ]
     }
   },

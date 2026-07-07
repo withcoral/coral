@@ -156,6 +156,7 @@ impl CompiledBackendSource for FileCompiledSource {
                     inputs,
                 },
             }],
+            catalogs: Vec::new(),
         })
     }
 }

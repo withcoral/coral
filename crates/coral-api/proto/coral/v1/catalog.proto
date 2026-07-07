@@ -61,6 +61,9 @@ message Table {
   repeated string required_filters = 6;
   // User-facing query guidance.
   string guide = 7;
+  // Inner namespace for database sources (the remote schema); such tables
+  // are addressed as schema_name.namespace.name. Empty for two-part tables.
+  string namespace = 8;
 }
 
 // Table metadata without full column definitions.
@@ -78,6 +81,9 @@ message TableSummary {
   repeated string required_filters = 5;
   // User-facing query guidance.
   string guide = 6;
+  // Inner namespace for database sources (the remote schema); such tables
+  // are addressed as schema_name.namespace.name. Empty for two-part tables.
+  string namespace = 7;
 }
 
 // An argument accepted by a query-visible table function.

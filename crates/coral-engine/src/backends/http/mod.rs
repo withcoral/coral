@@ -176,6 +176,7 @@ impl CompiledBackendSource for HttpCompiledSource {
                     inputs,
                 },
             }],
+            catalogs: Vec::new(),
         })
     }
 }

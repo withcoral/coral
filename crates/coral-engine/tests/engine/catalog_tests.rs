@@ -660,6 +660,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "is_required_filter",
             "description",
             "filter_mode",
+            "namespace",
         ]
     );
 }

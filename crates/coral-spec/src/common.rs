@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
 
-const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
+const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "datafusion", "public"];
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]

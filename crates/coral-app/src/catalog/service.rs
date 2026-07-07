@@ -44,37 +44,40 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let attribution = QueryAttribution::from_extensions(request.extensions());
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = optional_trimmed(&request.schema_name);
-            let kind = catalog_item_kind_from_proto(request.kind)?;
-            let catalog_page = catalog
-                .list_catalog(&workspace_name, schema_name, kind, pagination, &attribution)
-                .await
-                .map_err(query_status)?;
-            let page = catalog_page.items;
-            let pagination = pagination_to_proto(
-                page.total,
-                page.limit,
-                page.offset,
-                page.has_more,
-                page.next_offset,
-            );
-            Ok(Response::new(ListCatalogResponse {
-                items: page
-                    .items
-                    .into_iter()
-                    .map(|item| catalog_item_to_proto(&workspace_name, item))
-                    .collect(),
-                pagination: Some(pagination),
-                counts: Some(ProtoCatalogCounts {
-                    table_count: catalog_page.counts.table_count,
-                    table_function_count: catalog_page.counts.table_function_count,
-                }),
-            }))
-        })
+        instrument_grpc(
+            span,
+            Box::pin(async move {
+                let request = request.into_inner();
+                let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let schema_name = optional_trimmed(&request.schema_name);
+                let kind = catalog_item_kind_from_proto(request.kind)?;
+                let catalog_page = catalog
+                    .list_catalog(&workspace_name, schema_name, kind, pagination, &attribution)
+                    .await
+                    .map_err(query_status)?;
+                let page = catalog_page.items;
+                let pagination = pagination_to_proto(
+                    page.total,
+                    page.limit,
+                    page.offset,
+                    page.has_more,
+                    page.next_offset,
+                );
+                Ok(Response::new(ListCatalogResponse {
+                    items: page
+                        .items
+                        .into_iter()
+                        .map(|item| catalog_item_to_proto(&workspace_name, item))
+                        .collect(),
+                    pagination: Some(pagination),
+                    counts: Some(ProtoCatalogCounts {
+                        table_count: catalog_page.counts.table_count,
+                        table_function_count: catalog_page.counts.table_function_count,
+                    }),
+                }))
+            }),
+        )
         .await
     }
 
@@ -85,43 +88,46 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let attribution = QueryAttribution::from_extensions(request.extensions());
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = optional_trimmed(&request.schema_name);
-            let kind = catalog_item_kind_from_proto(request.kind)?;
-            let pagination = search_pagination(request.pagination.map(pagination_from_proto))
-                .map_err(app_status)?;
-            let page = catalog
-                .search_catalog(
-                    &workspace_name,
-                    SearchCatalogQuery {
-                        pattern: &request.pattern,
-                        schema_name,
-                        kind,
-                        ignore_case: request.ignore_case,
-                        pagination,
-                    },
-                    &attribution,
-                )
-                .await
-                .map_err(query_status)?;
-            let pagination = pagination_to_proto(
-                page.total,
-                page.limit,
-                page.offset,
-                page.has_more,
-                page.next_offset,
-            );
-            Ok(Response::new(SearchCatalogResponse {
-                items: page
-                    .items
-                    .into_iter()
-                    .map(|result| catalog_search_result_to_proto(&workspace_name, result))
-                    .collect(),
-                pagination: Some(pagination),
-            }))
-        })
+        instrument_grpc(
+            span,
+            Box::pin(async move {
+                let request = request.into_inner();
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let schema_name = optional_trimmed(&request.schema_name);
+                let kind = catalog_item_kind_from_proto(request.kind)?;
+                let pagination = search_pagination(request.pagination.map(pagination_from_proto))
+                    .map_err(app_status)?;
+                let page = catalog
+                    .search_catalog(
+                        &workspace_name,
+                        SearchCatalogQuery {
+                            pattern: &request.pattern,
+                            schema_name,
+                            kind,
+                            ignore_case: request.ignore_case,
+                            pagination,
+                        },
+                        &attribution,
+                    )
+                    .await
+                    .map_err(query_status)?;
+                let pagination = pagination_to_proto(
+                    page.total,
+                    page.limit,
+                    page.offset,
+                    page.has_more,
+                    page.next_offset,
+                );
+                Ok(Response::new(SearchCatalogResponse {
+                    items: page
+                        .items
+                        .into_iter()
+                        .map(|result| catalog_search_result_to_proto(&workspace_name, result))
+                        .collect(),
+                    pagination: Some(pagination),
+                }))
+            }),
+        )
         .await
     }
 
@@ -132,24 +138,27 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let attribution = QueryAttribution::from_extensions(request.extensions());
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
-            let table_name = required_trimmed(&request.table_name, "table_name")?;
-            let result = catalog
-                .describe_table(
+        instrument_grpc(
+            span,
+            Box::pin(async move {
+                let request = request.into_inner();
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
+                let table_name = required_trimmed(&request.table_name, "table_name")?;
+                let result = catalog
+                    .describe_table(
+                        &workspace_name,
+                        CatalogTableRef::new(&schema_name, &table_name),
+                        &attribution,
+                    )
+                    .await
+                    .map_err(query_status)?;
+                Ok(Response::new(describe_table_response_to_proto(
                     &workspace_name,
-                    CatalogTableRef::new(&schema_name, &table_name),
-                    &attribution,
-                )
-                .await
-                .map_err(query_status)?;
-            Ok(Response::new(describe_table_response_to_proto(
-                &workspace_name,
-                result,
-            )))
-        })
+                    result,
+                )))
+            }),
+        )
         .await
     }
 
@@ -160,46 +169,49 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let attribution = QueryAttribution::from_extensions(request.extensions());
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
-            let table_name = required_trimmed(&request.table_name, "table_name")?;
-            let pagination = column_pagination(request.pagination.map(pagination_from_proto))
-                .map_err(app_status)?;
-            let page = catalog
-                .list_columns(
-                    &workspace_name,
-                    ListColumnsQuery {
-                        table_ref: CatalogTableRef::new(&schema_name, &table_name),
-                        pattern: request.pattern.as_deref(),
-                        ignore_case: request.ignore_case,
-                        required_only: request.required_only,
-                        pagination,
-                    },
-                    &attribution,
-                )
-                .await
-                .map_err(query_status)?
-                .ok_or_else(|| {
-                    Status::not_found(format!("table '{schema_name}.{table_name}' not found"))
-                })?;
-            let pagination = pagination_to_proto(
-                page.total,
-                page.limit,
-                page.offset,
-                page.has_more,
-                page.next_offset,
-            );
-            Ok(Response::new(ListColumnsResponse {
-                columns: page
-                    .items
-                    .into_iter()
-                    .map(column_search_result_to_proto)
-                    .collect(),
-                pagination: Some(pagination),
-            }))
-        })
+        instrument_grpc(
+            span,
+            Box::pin(async move {
+                let request = request.into_inner();
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
+                let table_name = required_trimmed(&request.table_name, "table_name")?;
+                let pagination = column_pagination(request.pagination.map(pagination_from_proto))
+                    .map_err(app_status)?;
+                let page = catalog
+                    .list_columns(
+                        &workspace_name,
+                        ListColumnsQuery {
+                            table_ref: CatalogTableRef::new(&schema_name, &table_name),
+                            pattern: request.pattern.as_deref(),
+                            ignore_case: request.ignore_case,
+                            required_only: request.required_only,
+                            pagination,
+                        },
+                        &attribution,
+                    )
+                    .await
+                    .map_err(query_status)?
+                    .ok_or_else(|| {
+                        Status::not_found(format!("table '{schema_name}.{table_name}' not found"))
+                    })?;
+                let pagination = pagination_to_proto(
+                    page.total,
+                    page.limit,
+                    page.offset,
+                    page.has_more,
+                    page.next_offset,
+                );
+                Ok(Response::new(ListColumnsResponse {
+                    columns: page
+                        .items
+                        .into_iter()
+                        .map(column_search_result_to_proto)
+                        .collect(),
+                    pagination: Some(pagination),
+                }))
+            }),
+        )
         .await
     }
 }

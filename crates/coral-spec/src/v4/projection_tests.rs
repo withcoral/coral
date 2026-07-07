@@ -1,6 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;

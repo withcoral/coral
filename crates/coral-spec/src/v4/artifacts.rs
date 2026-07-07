@@ -231,6 +231,7 @@ surfaces:
         match surface_type {
             SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
             SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+            SurfaceType::Database => unreachable!("database surfaces are not materialized"),
         }
     }
 

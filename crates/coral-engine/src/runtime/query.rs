@@ -274,6 +274,23 @@ async fn register_runtime_sources(
     register_sources(ctx, source_candidates, source_decorators).await
 }
 
+/// Matches a user-supplied source/schema filter against one table.
+///
+/// Database sources expose three-part names, so a table is addressable by its
+/// source schema (`coral_db`) or the dotted schema-namespace combination
+/// (`coral_db.main`). Tables without a namespace reduce to the plain
+/// schema-name match.
+fn table_schema_matches(schema_name: &str, namespace: &str, value: &str) -> bool {
+    if schema_name == value {
+        return true;
+    }
+    !namespace.is_empty()
+        && value
+            .strip_prefix(schema_name)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|rest| rest == namespace)
+}
+
 impl QueryRuntimeAdapter {
     pub(crate) fn list_tables(
         &self,
@@ -282,7 +299,11 @@ impl QueryRuntimeAdapter {
     ) -> Vec<TableInfo> {
         self.tables
             .iter()
-            .filter(|table| source_filter.is_none_or(|value| table.schema_name == value))
+            .filter(|table| {
+                source_filter.is_none_or(|value| {
+                    table_schema_matches(&table.schema_name, &table.namespace, value)
+                })
+            })
             .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
             .cloned()
             .collect()
@@ -314,9 +335,9 @@ impl QueryRuntimeAdapter {
                 .tables
                 .iter()
                 .filter(|table| {
-                    schema_filters
-                        .iter()
-                        .any(|schema| table.schema_name == *schema)
+                    schema_filters.iter().any(|schema| {
+                        table_schema_matches(&table.schema_name, &table.namespace, schema)
+                    })
                 })
                 .cloned()
                 .collect(),
@@ -337,7 +358,10 @@ impl QueryRuntimeAdapter {
         if let Some(table) = self
             .tables
             .iter()
-            .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+            .find(|table| {
+                table_schema_matches(&table.schema_name, &table.namespace, schema_name)
+                    && table.table_name == table_name
+            })
             .cloned()
         {
             return DescribeTableInfo {
@@ -535,13 +559,23 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, table_name)) = relation_parts(table_reference) else {
             return;
         };
-        if self
-            .tables
-            .iter()
-            .any(|table| table.schema_name == schema_name && table.table_name == table_name)
-        {
+        // Three-part references put the source schema in the catalog slot and
+        // the inner namespace in the schema slot.
+        let catalog_name = table_reference.catalog();
+        if self.tables.iter().any(|table| match catalog_name {
+            Some(catalog) => {
+                table.schema_name == catalog
+                    && table.namespace == schema_name
+                    && table.table_name == table_name
+            }
+            None => {
+                table.schema_name == schema_name
+                    && table.namespace.is_empty()
+                    && table.table_name == table_name
+            }
+        }) {
             tables.insert(QueryTableUsage::new(
-                self.source_name_for_schema(schema_name),
+                self.source_name_for_schema(catalog_name.unwrap_or(schema_name)),
                 schema_name,
                 table_name,
             ));
@@ -832,6 +866,7 @@ fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
 fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
     TableInfo {
         schema_name: table.schema_name.clone(),
+        namespace: table.namespace.clone(),
         table_name: table.table_name.clone(),
         description: table.description.clone(),
         guide: table.guide.clone(),
@@ -871,6 +906,7 @@ mod tests {
             memory: QueryMemoryConfig::default(),
             tables: vec![TableInfo {
                 schema_name: "demo".to_string(),
+                namespace: String::new(),
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
                 guide: "Query event rows.".to_string(),
