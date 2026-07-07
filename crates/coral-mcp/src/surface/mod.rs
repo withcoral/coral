@@ -11,6 +11,7 @@ mod schema;
 mod search;
 mod source_names;
 mod sql;
+mod task;
 mod tool_names;
 mod tools;
 mod values;
@@ -29,5 +30,10 @@ pub(crate) use resources::{
 };
 pub(crate) use search::search_arguments;
 pub(crate) use sql::{SqlBatchValue, SqlQueryResultValue, sql_arguments};
+pub(crate) use task::{
+    EndTaskArguments, StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus,
+    end_task_arguments, required_task_id_argument, required_tool_intent_argument,
+    start_task_arguments,
+};
 pub(crate) use tool_names::ToolName;
 pub(crate) use tools::{available_tools, build_tool_result};

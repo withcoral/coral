@@ -2,14 +2,15 @@
 
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
-    ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, SearchRequest, Source, SubmitFeedbackRequest,
-    TableSummary as ProtoTableSummary, catalog_item,
+    EndTaskRequest, ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListSourcesRequest, PaginationRequest, SearchRequest, Source, StartTaskRequest,
+    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
+    catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient,
+    AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient, TaskClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
-    search_response_json_value,
+    search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -22,18 +23,23 @@ use rmcp::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tonic::Request;
+use tonic::{
+    Request,
+    metadata::{Ascii, MetadataValue},
+};
 
 use crate::{
     McpOptions, McpQueryExample,
     surface::{
-        CatalogToolKind, FeedbackStoredValue, SqlBatchValue, SqlQueryResultValue,
+        CatalogToolKind, EndTaskArguments, FeedbackStoredValue, SqlBatchValue, SqlQueryResultValue,
+        StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus,
         ToolDescriptionContext, ToolName, available_tools, build_tool_result,
-        describe_table_arguments, describe_table_value, feedback_arguments, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_value,
-        list_columns_arguments, list_columns_table_fallback_value, list_columns_value,
-        search_arguments, sql_arguments, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        describe_table_arguments, describe_table_value, end_task_arguments, feedback_arguments,
+        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
+        list_catalog_value, list_columns_arguments, list_columns_table_fallback_value,
+        list_columns_value, required_task_id_argument, required_tool_intent_argument,
+        search_arguments, sql_arguments, start_task_arguments, status_to_error_data,
+        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -58,6 +64,45 @@ fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
 
+fn task_id_from_backend_response(
+    operation: &'static str,
+    value: &str,
+) -> Result<TaskId, tonic::Status> {
+    if value.is_empty() {
+        return Err(tonic::Status::internal(format!(
+            "{operation} response missing task_id"
+        )));
+    }
+    TaskId::from_uuid_str(value)
+        .map_err(|_err| tonic::Status::internal(format!("{operation} response invalid task_id")))
+}
+
+fn task_started_value(task: &coral_api::v1::Task) -> Result<TaskStartedValue, tonic::Status> {
+    let task_id = task_id_from_backend_response("start task", &task.task_id)?;
+    Ok(TaskStartedValue {
+        task_id,
+        message: "Task started.",
+        instructions: "Pass this task_id as task_id on subsequent Coral MCP tool calls for this work, then call end_task when the task is complete.",
+    })
+}
+
+fn task_status_to_proto(status: TaskStatus) -> ProtoTaskStatus {
+    match status {
+        TaskStatus::Completed => ProtoTaskStatus::Completed,
+        TaskStatus::Failed => ProtoTaskStatus::Failed,
+    }
+}
+
+fn task_status_from_proto(status: i32) -> Result<TaskStatus, tonic::Status> {
+    match ProtoTaskStatus::try_from(status) {
+        Ok(ProtoTaskStatus::Completed) => Ok(TaskStatus::Completed),
+        Ok(ProtoTaskStatus::Failed) => Ok(TaskStatus::Failed),
+        Ok(ProtoTaskStatus::Unspecified) | Err(_) => Err(tonic::Status::internal(
+            "end task response missing task status",
+        )),
+    }
+}
+
 impl ToolCallOutcome {
     fn success(value: Value) -> Self {
         Self::Payload(value)
@@ -71,6 +116,78 @@ impl ToolCallOutcome {
     }
 }
 
+#[derive(Debug, Default)]
+struct TaskCallContext {
+    task_id: Option<TaskId>,
+    task_id_metadata: Option<MetadataValue<Ascii>>,
+    intent: Option<String>,
+}
+
+impl TaskCallContext {
+    fn from_tool_request(
+        options: &McpOptions,
+        tool_name: Option<ToolName>,
+        arguments: Option<&Map<String, Value>>,
+    ) -> Result<Self, ErrorData> {
+        let Some(tool_name) = tool_name else {
+            return Ok(Self::default());
+        };
+        if !requires_task_context(options, tool_name) {
+            return Ok(Self::default());
+        }
+        let intent = required_tool_intent_argument(arguments, "intent")?;
+        let task_id = (!matches!(tool_name, ToolName::StartTask))
+            .then(|| required_task_id_argument(arguments, "task_id"))
+            .transpose()?;
+        let task_id_metadata = task_id
+            .as_ref()
+            .map(TaskId::as_str)
+            .map(|task_id| {
+                task_id.parse().map_err(|error| {
+                    ErrorData::invalid_params(
+                        format!("argument 'task_id' is not valid metadata: {error}"),
+                        None,
+                    )
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            task_id,
+            task_id_metadata,
+            intent: Some(intent),
+        })
+    }
+
+    fn record_telemetry(&self, span: &tracing::Span) {
+        if let Some(task_id) = self.task_id.as_ref() {
+            telemetry::record_task_id(span, task_id.as_str());
+        }
+        if let Some(intent) = self.intent.as_ref() {
+            telemetry::record_tool_intent(span, intent);
+        }
+    }
+
+    fn into_metadata(self) -> Option<MetadataValue<Ascii>> {
+        self.task_id_metadata
+    }
+}
+
+fn requires_task_context(options: &McpOptions, tool_name: ToolName) -> bool {
+    if !options.tasks_enabled {
+        return false;
+    }
+    match tool_name {
+        ToolName::Sql
+        | ToolName::Search
+        | ToolName::ListCatalog
+        | ToolName::DescribeTable
+        | ToolName::ListColumns
+        | ToolName::StartTask
+        | ToolName::EndTask => true,
+        ToolName::Feedback => options.feedback_enabled,
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
     source: SourceClient,
@@ -78,6 +195,7 @@ pub(crate) struct CoralMcpServer {
     query: QueryClient,
     search: SearchClient,
     feedback: FeedbackClient,
+    task: TaskClient,
     startup_context: McpStartupContext,
     options: McpOptions,
 }
@@ -137,6 +255,7 @@ impl CoralMcpServer {
             query: app.query_client(),
             search: app.search_client(),
             feedback: app.feedback_client(),
+            task: app.task_client(),
             startup_context,
             options,
         }
@@ -297,11 +416,15 @@ impl CoralMcpServer {
     async fn execute_sql_batch(
         &self,
         queries: Vec<String>,
+        task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<SqlBatchValue, tonic::Status> {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, sql) in queries.into_iter().enumerate() {
             let server = self.clone();
-            tasks.spawn(async move { server.execute_one_sql_query(index, sql).await });
+            let task_id_metadata = task_id_metadata.clone();
+            tasks.spawn(async move {
+                with_task_metadata(task_id_metadata, server.execute_one_sql_query(index, sql)).await
+            });
         }
 
         let mut results = Vec::new();
@@ -309,6 +432,49 @@ impl CoralMcpServer {
             results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
         }
         Ok(SqlBatchValue::from_unordered(results))
+    }
+
+    async fn start_task_value(
+        &self,
+        arguments: StartTaskArguments,
+    ) -> Result<Value, tonic::Status> {
+        let mut task_client = self.task.clone();
+        let task = task_client
+            .start_task(Request::new(StartTaskRequest {
+                workspace: Some(self.workspace()),
+                intent: arguments.intent,
+            }))
+            .await?
+            .into_inner()
+            .task
+            .ok_or_else(|| tonic::Status::internal("start task response missing task"))?;
+        serialize_tool_value(task_started_value(&task)?)
+    }
+
+    async fn end_task_value(&self, arguments: EndTaskArguments) -> Result<Value, tonic::Status> {
+        let mut task_client = self.task.clone();
+        let task_end = task_client
+            .end_task(Request::new(EndTaskRequest {
+                workspace: Some(self.workspace()),
+                task_id: arguments.task_id.as_str().to_string(),
+                task_status: task_status_to_proto(arguments.task_status) as i32,
+            }))
+            .await?
+            .into_inner()
+            .task_end
+            .ok_or_else(|| tonic::Status::internal("end task response missing task_end"))?;
+        let task_id = task_id_from_backend_response("end task", &task_end.task_id)?;
+        if task_id != arguments.task_id {
+            return Err(tonic::Status::internal(
+                "end task response task_id did not match request",
+            ));
+        }
+        serialize_tool_value(TaskEndedValue {
+            task_id,
+            task_status: task_status_from_proto(task_end.task_status)?,
+            success: "Task ended.",
+            note: "Task status recorded.",
+        })
     }
 
     async fn submit_feedback_value(
@@ -411,11 +577,15 @@ impl CoralMcpServer {
     async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
+        task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref().parse::<ToolName>().ok() {
             Some(ToolName::Sql) => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
-                match self.execute_sql_batch(arguments.queries).await {
+                match self
+                    .execute_sql_batch(arguments.queries, task_id_metadata)
+                    .await
+                {
                     Ok(batch) => Ok(ToolCallOutcome::SqlBatch(batch)),
                     Err(status) => Ok(ToolCallOutcome::ToolError {
                         operation: "Query",
@@ -436,6 +606,26 @@ impl CoralMcpServer {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
             }
+            Some(ToolName::StartTask) if self.options.tasks_enabled => {
+                let arguments = start_task_arguments(request.arguments.as_ref())?;
+                match self.start_task_value(arguments).await {
+                    Ok(value) => Ok(ToolCallOutcome::success(value)),
+                    Err(status) if status.code() == tonic::Code::InvalidArgument => {
+                        Err(status_to_error_data(&status))
+                    }
+                    Err(status) => Ok(ToolCallOutcome::ToolError {
+                        operation: "Task start",
+                        status,
+                    }),
+                }
+            }
+            Some(ToolName::EndTask) if self.options.tasks_enabled => {
+                let arguments = end_task_arguments(request.arguments.as_ref())?;
+                Ok(ToolCallOutcome::from_value_result(
+                    "Task end",
+                    self.end_task_value(arguments).await,
+                ))
+            }
             Some(ToolName::Feedback) if self.options.feedback_enabled => {
                 let arguments = feedback_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
@@ -448,10 +638,9 @@ impl CoralMcpServer {
                     .await,
                 ))
             }
-            None | Some(ToolName::Feedback) => Err(ErrorData::invalid_params(
-                format!("tool '{}' not found", request.name),
-                None,
-            )),
+            None | Some(ToolName::StartTask | ToolName::EndTask | ToolName::Feedback) => Err(
+                ErrorData::invalid_params(format!("tool '{}' not found", request.name), None),
+            ),
         }
     }
 
@@ -552,7 +741,11 @@ impl ServerHandler for CoralMcpServer {
                 visible_function_count,
                 source_names,
             );
-            let tools = available_tools(&tool_context, self.options.feedback_enabled);
+            let tools = available_tools(
+                &tool_context,
+                self.options.tasks_enabled,
+                self.options.feedback_enabled,
+            );
             Ok(ListToolsResult::with_all_items(tools))
         })
         .await
@@ -565,7 +758,32 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
-        let outcome = telemetry::instrument(span.clone(), self.dispatch_tool(request)).await;
+        let tool_name = request.name.as_ref().parse::<ToolName>().ok();
+        let inject_task_metadata =
+            !matches!(tool_name, Some(ToolName::StartTask | ToolName::EndTask));
+        let task_context = TaskCallContext::from_tool_request(
+            &self.options,
+            tool_name,
+            request.arguments.as_ref(),
+        );
+        let outcome = match task_context {
+            Ok(task_context) => {
+                task_context.record_telemetry(&span);
+                let task_id_metadata = inject_task_metadata
+                    .then(|| task_context.into_metadata())
+                    .flatten();
+                let dispatch_task_id_metadata = task_id_metadata.clone();
+                telemetry::instrument(
+                    span.clone(),
+                    with_task_metadata(
+                        task_id_metadata,
+                        self.dispatch_tool(request, dispatch_task_id_metadata),
+                    ),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         finish_tool_call(&span, outcome)
     }
 
@@ -728,8 +946,26 @@ fn normalize_query_examples(
 
 #[cfg(test)]
 mod startup_context_tests {
-    use super::{MAX_INITIAL_QUERY_EXAMPLES, McpStartupContext};
+    use super::{MAX_INITIAL_QUERY_EXAMPLES, McpStartupContext, task_id_from_backend_response};
     use crate::McpQueryExample;
+
+    #[test]
+    fn task_id_from_backend_response_canonicalizes_uuid() {
+        let task_id =
+            task_id_from_backend_response("start task", "550e8400e29b41d4a716446655440000")
+                .expect("task id should parse");
+
+        assert_eq!(task_id.as_str(), "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn task_id_from_backend_response_rejects_malformed_uuid() {
+        let status = task_id_from_backend_response("end task", "not-a-uuid")
+            .expect_err("malformed backend task id should fail");
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(status.message(), "end task response invalid task_id");
+    }
 
     #[test]
     fn startup_context_sorts_and_dedupes_source_names() {
