@@ -263,6 +263,10 @@ impl SourceFunctionNode {
         &self.table_reference
     }
 
+    pub(crate) fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
     pub(crate) fn declared_args_with_call_exprs(
         &self,
     ) -> impl Iterator<Item = (&SourceFunctionArgument, &Expr)> {

@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{ScalarValue, TableReference};
 use datafusion::dataframe::DataFrame;
@@ -52,6 +53,11 @@ pub(crate) struct QueryRuntimeAdapter {
     failures: Vec<SourceRegistrationFailure>,
     schema_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+}
+
+pub(crate) struct PlannedSql {
+    pub(crate) plan: LogicalPlan,
+    pub(crate) schema: SchemaRef,
 }
 
 struct FallbackRuntime {
@@ -413,6 +419,24 @@ impl QueryRuntimeAdapter {
             }
             Err(error) => Err(self.sql_execution_failure_to_core(error, sql)),
         }
+    }
+
+    pub(crate) async fn plan_sql(&self, sql: &str) -> Result<PlannedSql, CoreError> {
+        let df = self
+            .ctx
+            .sql_with_options(sql, read_only_sql_options())
+            .await
+            .map_err(|err| {
+                datafusion_to_core_with_sql_and_table_functions(
+                    &err,
+                    &self.tables,
+                    &self.table_functions,
+                    Some(sql),
+                )
+            })?;
+        let plan = df.logical_plan().clone();
+        let schema = Arc::clone(plan.schema().inner());
+        Ok(PlannedSql { plan, schema })
     }
 
     async fn execute_sql_once(
