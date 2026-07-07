@@ -81,6 +81,7 @@ Additional hint guidance:
 - Use `functions` with `kind: search` for provider-native search endpoints that accept query text and return provider-ranked candidates.
 - Add `search_limits` to every `kind: search` function.
 - Keep search function arguments close to the provider API, and use `bind.arg` when the SQL argument name should differ from the request argument name.
+- Set a function arg `type` when the provider argument is not string-shaped; omitted arg types default to `Utf8`.
 - Search result columns should include stable identifiers and useful candidate metadata such as title, URL, score, rank, or timestamps when the provider returns them.
 - Do not model provider-native search as a table filter. Use `mode: contains` only for ordinary substring filters on normal list/detail tables. Provider-ranked retrieval belongs in a `kind: search` function.
 - If a search result is not a complete entity, make sure the returned identifier can be used with ordinary detail tables or required filters.

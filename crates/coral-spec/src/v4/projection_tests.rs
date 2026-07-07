@@ -765,6 +765,16 @@ components:
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
     assert_eq!(pull_commits.0, "repos_pulls_commits");
+    let pull_commits_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "pulls_list_commits")
+        .expect("pull commits projection");
+    let pull_number_arg = projection_arg_specs(pull_commits_projection)
+        .into_iter()
+        .find(|arg| arg.name == "pull_number")
+        .expect("pull_number arg");
+    assert_eq!(pull_number_arg.data_type, ManifestDataType::Int64);
 
     let catalog_collision_diagnostics = catalog
         .diagnostics
