@@ -15,14 +15,23 @@ use crate::search::catalog::snapshot::{
 use crate::search::catalog::sqlite_index::{
     CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
 };
+use crate::search::maintenance::{
+    CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult, SearchClearTarget,
+    SearchCompactionStatus, SearchDataScope, SearchMaintenanceDetail,
+    SearchMaintenanceProviderResult, SearchProviderClearOutcome, SearchProviderClearRequest,
+    SearchProviderMaintenance, SearchProviderRebuildRequest,
+};
 use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
     CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchCandidate,
-    SearchFieldRole, SearchPayload, SearchProviderKind, SearchProviderState, SearchRequest,
-    SearchSurfaceKind, TableColumnPreview, TableColumnPreviewColumn,
+    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind, SearchProviderState,
+    SearchRequest, SearchSurfaceKind, TableColumnPreview, TableColumnPreviewColumn,
 };
-use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
+use crate::search::sqlite_store::{
+    SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
+};
 use crate::state::AppStateLayout;
+use crate::workspaces::WorkspaceName;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
@@ -83,7 +92,14 @@ impl CatalogMetadataProvider {
     }
 
     fn load_catalog(&self, request: &SearchRequest) -> Result<CatalogInfo, AppError> {
-        self.catalog_loader.load_catalog(&request.workspace_name)
+        self.load_catalog_for_workspace(&request.workspace_name)
+    }
+
+    fn load_catalog_for_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<CatalogInfo, AppError> {
+        self.catalog_loader.load_catalog(workspace_name)
     }
 
     fn prepare_projection(
@@ -177,6 +193,142 @@ impl CatalogMetadataProvider {
             .saturating_mul(CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER)
             .max(CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT);
         store.search_catalog(&request.terms, retrieval_limit)
+    }
+}
+
+impl SearchProviderMaintenance for CatalogMetadataProvider {
+    fn rebuild_index(
+        &self,
+        request: SearchProviderRebuildRequest<'_>,
+    ) -> Result<SearchMaintenanceProviderResult, SearchManagerError> {
+        let catalog = self.load_catalog_for_workspace(request.workspace_name)?;
+        let snapshot = CatalogSearchSnapshot::from_catalog(&catalog).index_snapshot();
+        let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
+            .map_err(|error| search_sqlite_app_error(&error))?;
+        let result = store
+            .rebuild_catalog_projection(&snapshot, request.force)
+            .map_err(|error| search_sqlite_app_error(&error))?;
+        Ok(catalog_rebuild_provider_result(
+            result.old_document_count,
+            result.new_document_count,
+            result.projection_changed,
+            result.rebuild_performed,
+            request.force,
+        ))
+    }
+
+    fn clear_data(
+        &self,
+        request: SearchProviderClearRequest<'_>,
+    ) -> Result<SearchProviderClearOutcome, SearchManagerError> {
+        if request.scope != SearchDataScope::All {
+            return Err(AppError::InvalidInput(
+                "catalog search provider supports only all search-data clear scope".to_string(),
+            )
+            .into());
+        }
+        match request.target {
+            SearchClearTarget::Workspace => {
+                let store =
+                    SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
+                        .map_err(|error| search_sqlite_app_error(&error))?;
+                let result = store
+                    .clear_catalog_workspace()
+                    .map_err(|error| search_sqlite_app_error(&error))?;
+                let compaction = store.compact_after_clear();
+                Ok(SearchProviderClearOutcome {
+                    provider_result: catalog_clear_provider_result(result.deleted_document_count),
+                    compaction: search_compaction_status(compaction),
+                })
+            }
+            SearchClearTarget::Source(source_name) => Err(AppError::InvalidInput(format!(
+                "source-scoped catalog search-data clear is not implemented yet for source '{source_name}'"
+            ))
+            .into()),
+        }
+    }
+}
+
+fn catalog_rebuild_provider_result(
+    old_document_count: u32,
+    new_document_count: u32,
+    projection_changed: bool,
+    rebuild_performed: bool,
+    force: bool,
+) -> SearchMaintenanceProviderResult {
+    let note = if rebuild_performed && force {
+        "force rebuilt catalog search projection"
+    } else if rebuild_performed {
+        "rebuilt catalog search projection"
+    } else {
+        "catalog search projection already current"
+    }
+    .to_string();
+    SearchMaintenanceProviderResult {
+        provider: SearchProviderKind::CatalogMetadata,
+        state: if new_document_count == 0 {
+            SearchProviderState::Empty
+        } else {
+            SearchProviderState::ResultsFound
+        },
+        note,
+        coverage: ProviderCoverage {
+            eligible_units: new_document_count,
+            searched_units: new_document_count,
+            failed_units: 0,
+            returned_count: new_document_count,
+            has_more: false,
+            budget_exhausted: false,
+            timed_out: false,
+            stale_index: false,
+        },
+        detail: Some(SearchMaintenanceDetail::CatalogRebuild(
+            CatalogRebuildMaintenanceResult {
+                old_document_count,
+                new_document_count,
+                projection_changed,
+                rebuild_performed,
+            },
+        )),
+    }
+}
+
+fn catalog_clear_provider_result(deleted_document_count: u32) -> SearchMaintenanceProviderResult {
+    SearchMaintenanceProviderResult {
+        provider: SearchProviderKind::CatalogMetadata,
+        state: SearchProviderState::Empty,
+        note: "cleared catalog search projection".to_string(),
+        coverage: ProviderCoverage {
+            eligible_units: deleted_document_count,
+            searched_units: deleted_document_count,
+            failed_units: 0,
+            returned_count: 0,
+            has_more: false,
+            budget_exhausted: false,
+            timed_out: false,
+            stale_index: false,
+        },
+        detail: Some(SearchMaintenanceDetail::CatalogClear(
+            CatalogClearMaintenanceResult {
+                deleted_document_count,
+            },
+        )),
+    }
+}
+
+fn search_compaction_status(result: SqliteSearchCompactionResult) -> SearchCompactionStatus {
+    SearchCompactionStatus {
+        wal_checkpoint_truncate_completed: result.wal_checkpoint_truncate_completed,
+        vacuum_completed: result.vacuum_completed,
+        note: result.note,
+    }
+}
+
+fn search_sqlite_app_error(error: &SqliteSearchError) -> AppError {
+    if error.is_lock_contention() {
+        AppError::Unavailable(format!("SQLite search maintenance is busy: {error}"))
+    } else {
+        AppError::FailedPrecondition(format!("SQLite search maintenance failed: {error}"))
     }
 }
 

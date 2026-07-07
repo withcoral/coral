@@ -1,15 +1,27 @@
 //! App-level Universal Search manager.
 
+use tokio::task;
+
+use crate::bootstrap::AppError;
 use crate::query::QueryAttribution;
 use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::engine::UniversalSearchEngine;
-use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
+use crate::search::maintenance::{
+    ClearSearchDataRequest, ClearSearchDataResponse, RebuildSearchIndexRequest,
+    RebuildSearchIndexResponse, SearchIndexProvider, SearchMaintenanceProviderResult,
+    SearchProviderClearRequest, SearchProviderMaintenance, SearchProviderRebuildRequest,
+};
+use crate::search::result::{
+    ProviderCoverage, SearchManagerError, SearchProviderKind, SearchProviderState, SearchRequest,
+    SearchResponse,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceManager;
 
 #[derive(Clone)]
 pub(crate) struct SearchManager {
+    catalog: CatalogMetadataProvider,
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
 }
@@ -23,6 +35,7 @@ impl SearchManager {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout, catalog_loader);
         Self {
+            catalog: catalog.clone(),
             engine: UniversalSearchEngine::new(catalog),
             workspaces: workspace_manager,
         }
@@ -37,5 +50,99 @@ impl SearchManager {
             .require_workspace(&request.workspace_name)
             .await?;
         Ok(self.engine.search(request, attribution))
+    }
+
+    pub(crate) async fn rebuild_index(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
+        self.workspaces
+            .require_workspace(&request.workspace_name)
+            .await?;
+        let search = self.clone();
+        let request = request.clone();
+        run_blocking_search_operation(move || search.rebuild_index_blocking(&request)).await
+    }
+
+    fn rebuild_index_blocking(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
+        let provider_results = match request.provider {
+            SearchIndexProvider::Catalog => vec![self.rebuild_catalog_index(request)?],
+            SearchIndexProvider::ObservedValues => vec![skipped_rebuild_provider_result(
+                SearchProviderKind::ObservedValues,
+                "observed-value search index rebuild is not implemented yet",
+            )],
+            SearchIndexProvider::All => vec![
+                self.rebuild_catalog_index(request)?,
+                skipped_rebuild_provider_result(
+                    SearchProviderKind::ObservedValues,
+                    "observed-value search index rebuild is not implemented yet",
+                ),
+            ],
+        };
+        Ok(RebuildSearchIndexResponse { provider_results })
+    }
+
+    pub(crate) async fn clear_data(
+        &self,
+        request: &ClearSearchDataRequest,
+    ) -> Result<ClearSearchDataResponse, SearchManagerError> {
+        self.workspaces
+            .require_workspace(&request.workspace_name)
+            .await?;
+        let search = self.clone();
+        let request = request.clone();
+        run_blocking_search_operation(move || search.clear_data_blocking(&request)).await
+    }
+
+    fn clear_data_blocking(
+        &self,
+        request: &ClearSearchDataRequest,
+    ) -> Result<ClearSearchDataResponse, SearchManagerError> {
+        let outcome = self.catalog.clear_data(SearchProviderClearRequest {
+            workspace_name: &request.workspace_name,
+            scope: request.scope,
+            target: &request.target,
+        })?;
+        Ok(ClearSearchDataResponse {
+            provider_results: vec![outcome.provider_result],
+            compaction: outcome.compaction,
+        })
+    }
+
+    fn rebuild_catalog_index(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> Result<SearchMaintenanceProviderResult, SearchManagerError> {
+        self.catalog.rebuild_index(SearchProviderRebuildRequest {
+            workspace_name: &request.workspace_name,
+            force: request.force,
+        })
+    }
+}
+
+async fn run_blocking_search_operation<T, F>(operation: F) -> Result<T, SearchManagerError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, SearchManagerError> + Send + 'static,
+{
+    let span = tracing::Span::current();
+    task::spawn_blocking(move || span.in_scope(operation))
+        .await
+        .map_err(AppError::from)?
+}
+
+fn skipped_rebuild_provider_result(
+    provider: SearchProviderKind,
+    note: &'static str,
+) -> SearchMaintenanceProviderResult {
+    SearchMaintenanceProviderResult {
+        provider,
+        state: SearchProviderState::Skipped,
+        note: note.to_string(),
+        coverage: ProviderCoverage::default(),
+        detail: None,
     }
 }
