@@ -1,5 +1,4 @@
 import { create } from '@bufbuild/protobuf'
-import { useNavigate } from 'react-router'
 
 import type { Route } from './+types/source-detail'
 import { action as sourcesAction, type SourcesActionData } from './sources-action'
@@ -10,10 +9,15 @@ import {
   type Source,
   type SourceInfo,
 } from '@/generated/coral/v1/sources_pb'
-import { SourceDetailDialog } from '@/views/sources/source-detail'
+import { SourceDetailView } from '@/views/sources/source-detail'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
 import { WORKSPACE } from '@/lib/constants'
-import { originLabel, type CatalogEntry } from '@/lib/sources'
+import {
+  originLabel,
+  toCatalogSource,
+  toCatalogSourceInputSpecs,
+  type CatalogEntry,
+} from '@/lib/sources'
 import { errorMessage } from '@/lib/utils'
 
 interface SourceDetailRouteData {
@@ -56,20 +60,8 @@ export async function action(args: Route.ActionArgs): Promise<SourcesActionData 
   return sourcesAction(args)
 }
 
-export default function SourceDetailRoute({ params }: Route.ComponentProps) {
-  const navigate = useNavigate()
-  const name = params.sourceName ?? null
-
-  return (
-    <SourceDetailDialog
-      name={name}
-      open
-      onOpenChange={(open) => {
-        if (!open) navigate('/sources')
-      }}
-      onRemoved={() => navigate('/sources')}
-    />
-  )
+export default function SourceDetailRoute({ actionData, loaderData }: Route.ComponentProps) {
+  return <SourceDetailView actionData={actionData} loaderData={loaderData} />
 }
 
 async function getSourceInfo(
@@ -99,11 +91,11 @@ function sourceDetailEntry(name: string, source: Source | null, info: SourceInfo
   return {
     description:
       info?.description ?? (origin === 'imported' ? 'Imported source' : 'Configured source'),
-    info: info ?? undefined,
+    inputSpecs: info ? toCatalogSourceInputSpecs(info) : undefined,
     installed: source ? true : (info?.installed ?? false),
     name: source?.name || info?.name || name,
     origin,
-    source: source ?? undefined,
+    source: source ? toCatalogSource(source) : undefined,
     version: source?.version || info?.version || '',
   } satisfies CatalogEntry
 }

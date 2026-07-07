@@ -1,13 +1,6 @@
-import { create } from '@bufbuild/protobuf'
 import classNames from 'classnames'
-import { useEffect, useMemo, useState } from 'react'
-
-import {
-  OAuthCredentialRetrievalSchema,
-  type OAuthCredentialMethod,
-  type SourceCredentialMethod,
-  type SourceInputSpec,
-} from '@/generated/coral/v1/sources_pb'
+import { useMemo, useState } from 'react'
+import { Form } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { Icon as ButtonIcon } from '@/wax/components/button/icon'
@@ -15,60 +8,48 @@ import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
 import { Markdown } from '@/components/markdown'
-import {
-  createBundledSource,
-  createBundledSourceWithOAuth,
-  getSourceInfo,
-  type InstallInput,
-  type ResolvedSourceInfo,
+import type {
+  CatalogEntry,
+  CatalogOAuthCredentialMethod,
+  CatalogSourceCredentialMethod,
+  CatalogSourceInputSpec,
 } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
 import { ProviderLogo } from './provider-logo'
 import * as styles from './source-install.css'
 
-type InstallProgress =
-  | { kind: 'idle' }
-  | { kind: 'busy' }
-  | {
-      kind: 'awaiting-oauth'
-      inputKey: string
-      authorizationUrl: string
-      userCode: string
-      verificationUri: string
-      verificationUriComplete: string
-    }
-  | { kind: 'oauth-completed'; inputKey: string }
-
 function formatFieldName(key: string): string {
   return toSentenceCase(key.replace(/_/g, ' '))
 }
 
 export function SourceInstallDialog({
-  name,
+  actionError,
+  entry,
   open,
   onOpenChange,
-  onInstalled,
+  submitting,
 }: {
-  name: string | null
+  actionError?: string | null
+  entry: CatalogEntry | null
   open: boolean
   onOpenChange: (open: boolean) => void
-  onInstalled: (name: string) => void
+  submitting?: boolean
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup size="l">
-          {name ? (
+          {entry ? (
             <SourceInstallDialogContent
-              name={name}
+              actionError={actionError}
+              entry={entry}
               onCancel={() => onOpenChange(false)}
-              onInstalled={onInstalled}
+              submitting={submitting ?? false}
             />
           ) : null}
         </Dialog.Popup>
@@ -78,39 +59,27 @@ export function SourceInstallDialog({
 }
 
 function SourceInstallDialogContent({
-  name,
+  actionError,
+  entry,
   onCancel,
-  onInstalled,
+  submitting,
 }: {
-  name: string
+  actionError?: string | null
+  entry: CatalogEntry
   onCancel: () => void
-  onInstalled: (name: string) => void
+  submitting: boolean
 }) {
-  const [resolved, setResolved] = useState<ResolvedSourceInfo | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [methodChoices, setMethodChoices] = useState<Record<string, number>>({})
-  const [progress, setProgress] = useState<InstallProgress>({ kind: 'idle' })
-  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    getSourceInfo(name)
-      .then((info) => !cancelled && setResolved(info))
-      .catch((e) => !cancelled && setLoadError(e instanceof Error ? e.message : String(e)))
-    return () => {
-      cancelled = true
-    }
-  }, [name])
+  const inputSpecs = entry.inputSpecs
+  const inputs: CatalogSourceInputSpec[] = inputSpecs ?? []
 
-  const inputs: SourceInputSpec[] = resolved?.info.inputs ?? []
-  const busy = progress.kind !== 'idle'
-
-  const effectiveChoice = (input: SourceInputSpec): number => methodChoices[input.key] ?? 0
+  const effectiveChoice = (input: CatalogSourceInputSpec): number => methodChoices[input.key] ?? 0
 
   const canSubmit = useMemo(() => {
-    if (!resolved) return false
-    return resolved.info.inputs.every((input) => {
+    if (!inputSpecs) return false
+    return inputSpecs.every((input) => {
       if (!input.required) return true
       const choice = methodChoices[input.key] ?? 0
       if (input.input.case === 'variable') {
@@ -128,172 +97,75 @@ function SourceInstallDialogContent({
       }
       return true
     })
-  }, [resolved, values, methodChoices])
-
-  async function submit() {
-    if (!resolved) return
-    setError(null)
-    setProgress({ kind: 'busy' })
-
-    try {
-      const bindings: InstallInput[] = []
-      const retrievalProtos = []
-
-      for (const input of inputs) {
-        if (input.input.case === 'variable') {
-          const value = (values[input.key] ?? input.input.value.defaultValue ?? '').trim()
-          if (value.length > 0) bindings.push({ key: input.key, value, secret: false })
-          continue
-        }
-        if (input.input.case !== 'secret') continue
-
-        const method = input.input.value.credential?.methods[effectiveChoice(input)]
-        if (!method || method.method.case === 'sourceConfig') {
-          const value = (values[input.key] ?? '').trim()
-          if (value.length > 0) bindings.push({ key: input.key, value, secret: true })
-          continue
-        }
-        if (method.method.case === 'oauth') {
-          retrievalProtos.push(
-            create(OAuthCredentialRetrievalSchema, {
-              inputKey: input.key,
-              methodIndex: effectiveChoice(input),
-              credentialInputs: oauthCredentialInputs(method.method.value, values),
-            }),
-          )
-        }
-      }
-
-      const callbacks = {
-        onAuthorization: (event: {
-          inputKey: string
-          authorizationUrl: string
-          userCode: string
-          verificationUri: string
-          verificationUriComplete: string
-        }) => {
-          setProgress({
-            kind: 'awaiting-oauth',
-            inputKey: event.inputKey,
-            authorizationUrl: event.authorizationUrl,
-            userCode: event.userCode,
-            verificationUri: event.verificationUri,
-            verificationUriComplete: event.verificationUriComplete,
-          })
-          window.open(event.authorizationUrl, '_blank', 'noopener,noreferrer')
-        },
-        onCompleted: (event: { inputKey: string }) => {
-          setProgress({ kind: 'oauth-completed', inputKey: event.inputKey })
-        },
-      }
-
-      if (retrievalProtos.length === 0) {
-        await createBundledSource(name, bindings)
-      } else {
-        await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
-      }
-
-      addToast('neutral', {
-        title: `Configured ${name}`,
-        description: 'Credentials were saved but not verified.',
-      })
-      onInstalled(name)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      setProgress({ kind: 'idle' })
-    }
-  }
+  }, [inputSpecs, values, methodChoices])
 
   return (
-    <>
+    <Form method="post">
+      <input type="hidden" name="_intent" value="install" />
+      <input type="hidden" name="name" value={entry.name} />
+
       <div className={styles.header}>
-        <ProviderLogo name={name} size="large" />
+        <ProviderLogo name={entry.name} size="large" />
         <div className={styles.headerText}>
           <Dialog.Title className={styles.headerTitleRow}>
             <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-              {name}
+              {entry.name}
             </Typography.HeadingMedium>
             <span className={styles.headerPill}>Core</span>
           </Dialog.Title>
           <Dialog.Description render={<div />}>
-            <Markdown>{resolved?.info.description ?? 'Officially supported by Coral.'}</Markdown>
+            <Markdown>{entry.description}</Markdown>
           </Dialog.Description>
         </div>
       </div>
 
-      {loadError ? (
+      {!inputSpecs ? (
         <div className={classNames(styles.alertBox, styles.alertError)}>
           <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>{loadError}</Typography.BodySmall>
+          <Typography.BodySmall>Source metadata is unavailable.</Typography.BodySmall>
+        </div>
+      ) : inputs.length === 0 ? (
+        <Typography.BodySmall variant="tertiary">
+          No configuration needed — click Add source to install.
+        </Typography.BodySmall>
+      ) : (
+        <div className={styles.fieldGroup}>
+          {inputs.map((input) => (
+            <InputRow
+              key={input.key}
+              input={input}
+              methodIndex={effectiveChoice(input)}
+              values={values}
+              disabled={submitting}
+              onValueChange={(key, value) => setValues((p) => ({ ...p, [key]: value }))}
+              onMethodChange={(key, index) => setMethodChoices((p) => ({ ...p, [key]: index }))}
+            />
+          ))}
+        </div>
+      )}
+
+      {actionError ? (
+        <div className={classNames(styles.alertBox, styles.alertError)}>
+          <Icon color="inherit" name="CircleAlert" size="14" />
+          <Typography.BodySmall>{actionError}</Typography.BodySmall>
         </div>
       ) : null}
 
-      {resolved === null && !loadError ? (
-        <Typography.BodySmall variant="tertiary">Loading…</Typography.BodySmall>
-      ) : !resolved ? null : (
-        <>
-          {inputs.length === 0 ? (
-            <Typography.BodySmall variant="tertiary">
-              No configuration needed — click Add source to install.
-            </Typography.BodySmall>
-          ) : (
-            <div className={styles.fieldGroup}>
-              {inputs.map((input) => (
-                <InputRow
-                  key={input.key}
-                  input={input}
-                  methodIndex={effectiveChoice(input)}
-                  values={values}
-                  disabled={busy}
-                  onValueChange={(key, value) => setValues((p) => ({ ...p, [key]: value }))}
-                  onMethodChange={(key, index) => setMethodChoices((p) => ({ ...p, [key]: index }))}
-                />
-              ))}
-            </div>
-          )}
-
-          {progress.kind === 'awaiting-oauth' ? (
-            <OAuthProgress
-              authorizationUrl={progress.authorizationUrl}
-              inputKey={progress.inputKey}
-              userCode={progress.userCode}
-              verificationUri={progress.verificationUri}
-              verificationUriComplete={progress.verificationUriComplete}
-            />
-          ) : null}
-          {progress.kind === 'oauth-completed' ? (
-            <div className={styles.oauthBox}>
-              <Icon name="CircleCheck" size="16" color="success" />
-              <Typography.BodySmall variant="primary">
-                {progress.inputKey} authorized. Finishing install…
-              </Typography.BodySmall>
-            </div>
-          ) : null}
-
-          {error ? (
-            <div className={classNames(styles.alertBox, styles.alertError)}>
-              <Icon color="inherit" name="CircleAlert" size="14" />
-              <Typography.BodySmall>{error}</Typography.BodySmall>
-            </div>
-          ) : null}
-
-          <Dialog.Actions>
-            <ButtonContainer disabled={busy} onClick={onCancel} size="32" variant="bare">
-              <ButtonText>Cancel</ButtonText>
-            </ButtonContainer>
-            <ButtonContainer
-              disabled={busy || !canSubmit}
-              onClick={() => void submit()}
-              size="32"
-              variant="primary"
-            >
-              {busy ? <ButtonIcon name="Loader" /> : null}
-              <ButtonText>{busyLabel(progress)}</ButtonText>
-            </ButtonContainer>
-          </Dialog.Actions>
-        </>
-      )}
-    </>
+      <Dialog.Actions>
+        <ButtonContainer disabled={submitting} onClick={onCancel} size="32" variant="bare">
+          <ButtonText>Cancel</ButtonText>
+        </ButtonContainer>
+        <ButtonContainer
+          disabled={submitting || !canSubmit}
+          size="32"
+          type="submit"
+          variant="primary"
+        >
+          {submitting ? <ButtonIcon name="Loader" /> : null}
+          <ButtonText>{submitting ? 'Adding…' : 'Add source'}</ButtonText>
+        </ButtonContainer>
+      </Dialog.Actions>
+    </Form>
   )
 }
 
@@ -305,7 +177,7 @@ function InputRow({
   onValueChange,
   onMethodChange,
 }: {
-  input: SourceInputSpec
+  input: CatalogSourceInputSpec
   methodIndex: number
   values: Record<string, string>
   disabled: boolean
@@ -317,6 +189,7 @@ function InputRow({
     return (
       <Field input={input}>
         <TextInput
+          name={`var:${input.key}`}
           value={values[input.key] ?? def}
           onChange={(value) => onValueChange(input.key, value)}
           placeholder={def || formatFieldName(input.key)}
@@ -334,6 +207,10 @@ function InputRow({
 
   return (
     <Field input={input} fullWidth={methods.length > 1 || isOAuth(selected)}>
+      {methods.length > 0 ? (
+        <input type="hidden" name={`method:${input.key}`} value={methodIndex} />
+      ) : null}
+
       {methods.length > 1 ? (
         <div className={styles.methodTabs}>
           {methods.map((m, i) => (
@@ -353,6 +230,7 @@ function InputRow({
 
       {!selected || selected.method.case === 'sourceConfig' ? (
         <TextInput
+          name={`sec:${input.key}`}
           type="password"
           value={values[input.key] ?? ''}
           onChange={(value) => onValueChange(input.key, value)}
@@ -376,7 +254,7 @@ function Field({
   children,
   fullWidth,
 }: {
-  input: SourceInputSpec
+  input: CatalogSourceInputSpec
   children: React.ReactNode
   fullWidth?: boolean
 }) {
@@ -395,7 +273,7 @@ function OAuthFields({
   disabled,
   onValueChange,
 }: {
-  oauth: OAuthCredentialMethod
+  oauth: CatalogOAuthCredentialMethod
   values: Record<string, string>
   disabled: boolean
   onValueChange: (key: string, value: string) => void
@@ -404,7 +282,7 @@ function OAuthFields({
   if (fields.length === 0) {
     return (
       <Typography.BodySmall variant="secondary">
-        Click Add source to open your browser and complete sign-in.
+        OAuth installation will be handled by the route action.
       </Typography.BodySmall>
     )
   }
@@ -426,64 +304,14 @@ function OAuthFields({
   )
 }
 
-function OAuthProgress({
-  authorizationUrl,
-  inputKey,
-  userCode,
-  verificationUri,
-  verificationUriComplete,
-}: {
-  authorizationUrl: string
-  inputKey: string
-  userCode: string
-  verificationUri: string
-  verificationUriComplete: string
-}) {
-  const link = verificationUriComplete || authorizationUrl
-  const displayUri = verificationUri || authorizationUrl
-
-  return (
-    <div className={styles.oauthBox}>
-      <Icon name="Loader" size="16" color="secondary" />
-      <div>
-        <Typography.BodySmall variant="primary">
-          Waiting for {formatFieldName(inputKey)} authorization in your browser…
-        </Typography.BodySmall>
-        {userCode ? (
-          <>
-            <Typography.BodySmall variant="secondary">
-              Enter code <code className={styles.oauthCode}>{userCode}</code> at{' '}
-              <a href={link} target="_blank" rel="noopener noreferrer">
-                {displayUri}
-              </a>
-              .
-            </Typography.BodySmall>
-            <Typography.BodySmall variant="tertiary">
-              If the new tab didn't open, use the link above.
-            </Typography.BodySmall>
-          </>
-        ) : (
-          <Typography.BodySmall variant="tertiary">
-            If the new tab didn't open,{' '}
-            <a href={authorizationUrl} target="_blank" rel="noopener noreferrer">
-              click here to open it
-            </a>
-            .
-          </Typography.BodySmall>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function methodLabel(method: SourceCredentialMethod, index: number): string {
+function methodLabel(method: CatalogSourceCredentialMethod, index: number): string {
   if (method.label) return method.label
   if (method.method.case === 'sourceConfig') return 'Paste token'
   if (method.method.case === 'oauth') return 'OAuth'
   return `Method ${index + 1}`
 }
 
-function isOAuth(method: SourceCredentialMethod | undefined): boolean {
+function isOAuth(method: CatalogSourceCredentialMethod | undefined): boolean {
   return method?.method.case === 'oauth'
 }
 
@@ -494,7 +322,7 @@ interface OAuthInput {
   required: boolean
 }
 
-function oauthInputs(oauth: OAuthCredentialMethod): OAuthInput[] {
+function oauthInputs(oauth: CatalogOAuthCredentialMethod): OAuthInput[] {
   const out: OAuthInput[] = []
   const id = oauth.client?.id
   if (id?.input) {
@@ -512,24 +340,12 @@ function oauthInputs(oauth: OAuthCredentialMethod): OAuthInput[] {
   return out
 }
 
-function oauthMethodReady(oauth: OAuthCredentialMethod, values: Record<string, string>): boolean {
-  return oauthInputs(oauth)
-    .filter((input) => input.required)
-    .every(({ key }) => (values[key] ?? '').trim().length > 0)
-}
-
-function oauthCredentialInputs(
-  oauth: OAuthCredentialMethod,
+function oauthMethodReady(
+  oauth: CatalogOAuthCredentialMethod,
   values: Record<string, string>,
-): { key: string; value: string }[] {
-  return oauthInputs(oauth)
-    .map(({ key }) => ({ key, value: (values[key] ?? '').trim() }))
-    .filter((entry) => entry.value.length > 0)
-}
-
-function busyLabel(progress: InstallProgress): string {
-  if (progress.kind === 'busy') return 'Adding…'
-  if (progress.kind === 'awaiting-oauth') return 'Awaiting OAuth…'
-  if (progress.kind === 'oauth-completed') return 'Finishing…'
-  return 'Add source'
+): boolean {
+  return oauthInputs(oauth).every((input) => {
+    if (!input.required) return true
+    return (values[input.key] ?? input.defaultValue ?? '').trim().length > 0
+  })
 }

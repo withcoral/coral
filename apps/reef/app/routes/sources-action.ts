@@ -12,7 +12,7 @@ import {
 } from '@/generated/coral/v1/sources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
 import { WORKSPACE } from '@/lib/constants'
-import { type InstallInput, originLabel } from '@/lib/sources'
+import { originLabel } from '@/lib/sources'
 import { errorMessage } from '@/lib/utils'
 
 export type SourceActionIntent = 'delete' | 'edit' | 'install'
@@ -25,6 +25,12 @@ export type SourcesActionData =
       status: 'error'
     }
   | undefined
+
+interface InstallInput {
+  key: string
+  value: string
+  secret: boolean
+}
 
 export async function action({
   request,

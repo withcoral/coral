@@ -1,5 +1,7 @@
 import { Outlet, type ShouldRevalidateFunctionArgs } from 'react-router'
 
+import type { Route } from './+types/sources'
+
 import { SourcesIndex } from '@/views/sources/sources-index'
 
 export { action } from './sources-action'
@@ -11,7 +13,7 @@ export function shouldRevalidate({
   formMethod,
   nextUrl,
 }: ShouldRevalidateFunctionArgs) {
-  if (formMethod && formMethod !== 'GET') return defaultShouldRevalidate
+  if (formMethod && formMethod.toUpperCase() !== 'GET') return true
   if (
     currentUrl.pathname !== nextUrl.pathname &&
     isSourcesDetailNavigation(currentUrl.pathname, nextUrl.pathname)
@@ -29,10 +31,10 @@ function isSourcesDetailNavigation(currentPath: string, nextPath: string) {
   return currentIsSources && nextIsSources
 }
 
-export default function SourcesRoute() {
+export default function SourcesRoute({ loaderData }: Route.ComponentProps) {
   return (
     <>
-      <SourcesIndex />
+      <SourcesIndex entries={loaderData.entries} loadError={loaderData.loadError} />
       <Outlet />
     </>
   )

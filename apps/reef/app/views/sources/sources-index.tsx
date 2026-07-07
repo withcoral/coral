@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useRevalidator } from 'react-router'
 
 import { Button, Card, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
@@ -8,22 +9,23 @@ import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
 import { ErrorBanner } from '@/components/error-banner'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
-import { discoverBundled, type CatalogEntry } from '@/lib/sources'
+import type { CatalogEntry } from '@/lib/sources'
 
 import { ProviderLogo } from './provider-logo'
-import { SourceDetailDialog } from './source-detail'
-import { SourceInstallDialog } from './source-install'
 import * as styles from './sources-index.css'
 
 type IndexEntry = CatalogEntry
 
-export function SourcesIndex() {
-  const [bundled, setBundled] = useState<CatalogEntry[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+export function SourcesIndex({
+  entries,
+  loadError = null,
+}: {
+  entries: CatalogEntry[]
+  loadError?: string | null
+}) {
   const [search, setSearch] = useState('')
-  const [installingName, setInstallingName] = useState<string | null>(null)
-  const [detailName, setDetailName] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const revalidator = useRevalidator()
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -39,24 +41,11 @@ export function SourcesIndex() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const refresh = useCallback(async () => {
-    try {
-      setBundled(await discoverBundled())
-      setError(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }, [])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  const loading = bundled === null && !error
+  const loading = revalidator.state === 'loading' && entries.length === 0 && !loadError
 
   const allEntries = useMemo<IndexEntry[]>(
-    () => (bundled ?? []).toSorted((a, b) => a.name.localeCompare(b.name)),
-    [bundled],
+    () => entries.toSorted((a, b) => a.name.localeCompare(b.name)),
+    [entries],
   )
 
   const filtered = useMemo(() => {
@@ -92,125 +81,88 @@ export function SourcesIndex() {
     return ordered
   }, [filtered])
 
-  const onPick = (entry: IndexEntry) => {
-    if (entry.installed) {
-      setDetailName(entry.name)
-    } else {
-      setInstallingName(entry.name)
-    }
-  }
-
-  const onInstalled = useCallback(() => {
-    setInstallingName(null)
-    void refresh()
-  }, [refresh])
-
-  const onRemoved = useCallback(() => {
-    setDetailName(null)
-    void refresh()
-  }, [refresh])
-
   return (
-    <>
-      <section className={styles.root} aria-label="Coral sources">
-        <div className={styles.header}>
-          <div className={styles.headerInner}>
-            <div className={styles.headerText}>
-              <Typography.HeadingLarge as="h1">Sources</Typography.HeadingLarge>
-              <Typography.Body variant="secondary">
-                Manage sources for this workspace
-              </Typography.Body>
-            </div>
-
-            <div className={styles.searchBar}>
-              <TextInput
-                ref={searchInputRef}
-                value={search}
-                onChange={setSearch}
-                placeholder="Search sources…"
-                icon="Search"
-              />
-            </div>
+    <section className={styles.root} aria-label="Coral sources">
+      <div className={styles.header}>
+        <div className={styles.headerInner}>
+          <div className={styles.headerText}>
+            <Typography.HeadingLarge as="h1">Sources</Typography.HeadingLarge>
+            <Typography.Body variant="secondary">
+              Connect external systems to query their data from Coral. Click a source to install or
+              inspect it.
+            </Typography.Body>
           </div>
-        </div>
 
-        {error ? (
-          <div className={styles.statusPanel}>
-            <ErrorBanner
-              title="Couldn't load sources"
-              message={error}
-              onRetry={() => window.location.reload()}
+          <div className={styles.searchBar}>
+            <TextInput
+              ref={searchInputRef}
+              value={search}
+              onChange={setSearch}
+              placeholder="Search sources…"
+              icon="Search"
             />
           </div>
-        ) : null}
+        </div>
+      </div>
 
-        <ScrollArea.Container className={styles.resultsScroll} constrainWidth fillContent>
-          <div className={styles.resultsContent}>
-            {loading ? (
-              <div className={styles.loadingState}>
-                <Icon name="Loader" size="16" color="tertiary" className={styles.spinAnimation} />
-                <Typography.BodySmall variant="tertiary">Loading sources…</Typography.BodySmall>
-              </div>
-            ) : null}
+      {loadError ? (
+        <div className={styles.statusPanel}>
+          <ErrorBanner
+            title="Couldn't load sources"
+            message={loadError}
+            onRetry={() => revalidator.revalidate()}
+          />
+        </div>
+      ) : null}
 
-            {!loading && !error && allEntries.length === 0 ? (
-              <EmptyPage
-                description="Check the Coral build for a populated catalog."
-                iconName="Plug"
-                title="No sources available"
-              />
-            ) : null}
+      <ScrollArea.Container className={styles.resultsScroll} constrainWidth fillContent>
+        <div className={styles.resultsContent}>
+          {loading ? (
+            <div className={styles.loadingState}>
+              <Icon name="Loader" size="16" color="tertiary" className={styles.spinAnimation} />
+              <Typography.BodySmall variant="tertiary">Loading sources…</Typography.BodySmall>
+            </div>
+          ) : null}
 
-            {connected.length > 0 ? (
-              <Section title="Configured" count={connected.length}>
-                <SourceCardList entries={connected} onPick={onPick} />
-              </Section>
-            ) : null}
+          {!loading && !loadError && allEntries.length === 0 ? (
+            <EmptyPage
+              description="Check the Coral build for a populated catalog."
+              iconName="Plug"
+              title="No sources available"
+            />
+          ) : null}
 
-            {sections.map((section) => (
-              <Section key={section.key} title={section.label} count={section.entries.length}>
-                <SourceCardList entries={section.entries} onPick={onPick} />
-              </Section>
-            ))}
+          {connected.length > 0 ? (
+            <Section title="Configured" count={connected.length}>
+              <SourceCardList entries={connected} />
+            </Section>
+          ) : null}
 
-            {connected.length === 0 &&
-            sections.length === 0 &&
-            !loading &&
-            !error &&
-            allEntries.length > 0 ? (
-              <EmptyPage
-                action={
-                  <Button.TextButton onClick={() => setSearch('')} variant="secondary">
-                    Clear search
-                  </Button.TextButton>
-                }
-                description="Try adjusting your search."
-                iconName="Search"
-                title="No matching sources"
-              />
-            ) : null}
-          </div>
-        </ScrollArea.Container>
-      </section>
+          {sections.map((section) => (
+            <Section key={section.key} title={section.label} count={section.entries.length}>
+              <SourceCardList entries={section.entries} />
+            </Section>
+          ))}
 
-      <SourceInstallDialog
-        name={installingName}
-        open={installingName !== null}
-        onOpenChange={(open) => {
-          if (!open) setInstallingName(null)
-        }}
-        onInstalled={onInstalled}
-      />
-
-      <SourceDetailDialog
-        name={detailName}
-        open={detailName !== null}
-        onOpenChange={(open) => {
-          if (!open) setDetailName(null)
-        }}
-        onRemoved={onRemoved}
-      />
-    </>
+          {connected.length === 0 &&
+          sections.length === 0 &&
+          !loading &&
+          !loadError &&
+          allEntries.length > 0 ? (
+            <EmptyPage
+              action={
+                <Button.TextButton onClick={() => setSearch('')} variant="secondary">
+                  Clear search
+                </Button.TextButton>
+              }
+              description="Try adjusting your search."
+              iconName="Search"
+              title="No matching sources"
+            />
+          ) : null}
+        </div>
+      </ScrollArea.Container>
+    </section>
   )
 }
 
@@ -234,24 +186,20 @@ function Section({
   )
 }
 
-function SourceCardList({
-  entries,
-  onPick,
-}: {
-  entries: IndexEntry[]
-  onPick: (entry: IndexEntry) => void
-}) {
+function SourceCardList({ entries }: { entries: IndexEntry[] }) {
   return (
     <Card.List>
       {entries.map((entry) => (
         <Card.Item key={sourceCardId(entry)}>
           <Card.Card
-            as="button"
+            as={Link}
             description={entry.description}
             headerPill={sourceOriginPill(entry)}
             icon={<ProviderLogo name={entry.name} size="small" />}
-            onClick={() => onPick(entry)}
+            prefetch="intent"
+            preventScrollReset
             title={entry.name}
+            to={`/sources/${encodeURIComponent(entry.name)}`}
           />
         </Card.Item>
       ))}
