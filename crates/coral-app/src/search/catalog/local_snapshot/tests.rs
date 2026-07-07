@@ -170,26 +170,13 @@ tables:
     config_store
         .create_workspace(&workspace_name)
         .expect("create workspace");
-    std::fs::create_dir_all(layout.source_dir(&workspace_name, &source_name))
-        .expect("create source dir");
-    std::fs::write(
-        layout.manifest_file(&workspace_name, &source_name),
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &source_name,
         manifest_yaml,
-    )
-    .expect("write manifest");
-    config_store
-        .upsert_source(
-            &workspace_name,
-            InstalledSource {
-                name: source_name,
-                version: Some("1.0.0".to_string()),
-                variables: BTreeMap::new(),
-                secrets: Vec::new(),
-                credential_storage: None,
-                origin: SourceOrigin::Imported,
-            },
-        )
-        .expect("upsert source");
+    );
 
     let catalog = CatalogSnapshotLoader::new(config_store, layout)
         .load_catalog(&workspace_name)
@@ -201,6 +188,94 @@ tables:
             .iter()
             .any(|table| table.schema_name == "demo" && table.table_name == "messages")
     );
+}
+
+#[test]
+fn loader_skips_v4_source_with_missing_materialization() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let healthy_source = SourceName::parse("demo").expect("source");
+    let stale_v4_source = SourceName::parse("stale_v4").expect("source");
+
+    config_store
+        .create_workspace(&workspace_name)
+        .expect("create workspace");
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &healthy_source,
+        r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+    );
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &stale_v4_source,
+        r"
+name: stale_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    );
+
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
+        .load_catalog(&workspace_name)
+        .expect("catalog");
+
+    assert_eq!(catalog.tables.len(), 1);
+    let table = catalog.tables.first().expect("healthy table");
+    assert_eq!(table.schema_name, "demo");
+    assert_eq!(table.table_name, "messages");
+}
+
+fn install_imported_source(
+    layout: &AppStateLayout,
+    config_store: &ConfigStore,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    manifest_yaml: &str,
+) {
+    std::fs::create_dir_all(layout.source_dir(workspace_name, source_name))
+        .expect("create source dir");
+    std::fs::write(
+        layout.manifest_file(workspace_name, source_name),
+        manifest_yaml,
+    )
+    .expect("write manifest");
+    config_store
+        .upsert_source(
+            workspace_name,
+            InstalledSource {
+                name: source_name.clone(),
+                version: None,
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: None,
+                origin: SourceOrigin::Imported,
+            },
+        )
+        .expect("upsert source");
 }
 
 fn catalog_for_manifest(manifest_yaml: &str) -> coral_engine::CatalogInfo {

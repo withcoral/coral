@@ -76,9 +76,6 @@ impl CatalogSnapshotLoader {
                         .table_functions
                         .extend(source_catalog.table_functions);
                 }
-                Err(error @ AppError::MissingOrIncompatibleV4Materialization { .. }) => {
-                    return Err(error);
-                }
                 Err(error) => {
                     warn!(
                         workspace = %workspace_name,
@@ -195,7 +192,6 @@ fn catalog_info_from_components(components: &[RuntimeSourceComponent]) -> Catalo
         }
     }
 
-    sort_catalog(&mut catalog);
     catalog
 }
 
@@ -210,6 +206,10 @@ fn table_info(schema_name: &str, common: &TableCommon) -> TableInfo {
     }
 }
 
+// Keep this mapping aligned with coral-engine's catalog registration helpers:
+// `registered_columns_from_specs` and `required_filter_names`. The local
+// snapshot must mirror runtime-visible manifest metadata without compiling
+// providers or inferring file schemas.
 fn column_infos_from_specs(columns: &[ColumnSpec], filters: &[FilterSpec]) -> Vec<ColumnInfo> {
     columns
         .iter()

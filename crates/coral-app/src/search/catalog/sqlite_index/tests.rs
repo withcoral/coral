@@ -62,48 +62,6 @@ fn refresh_and_search_catalog_metadata() {
 }
 
 #[test]
-fn clear_source_removes_source_documents_and_invalidates_fingerprint() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let workspace = WorkspaceName::default();
-    let snapshot = multi_source_catalog_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh catalog");
-    assert!(
-        store
-            .catalog_projection_is_current(&snapshot.fingerprint)
-            .expect("projection current")
-    );
-
-    let result = store
-        .clear_catalog_source("github")
-        .expect("clear source catalog");
-
-    assert_eq!(result.deleted_document_count, 3);
-    assert!(
-        !store
-            .catalog_projection_is_current(&snapshot.fingerprint)
-            .expect("projection invalidated")
-    );
-    assert_eq!(store.catalog_document_count().expect("document count"), 1);
-
-    let connection = store.connect_for_test().expect("connect");
-    let github_fts_count: u32 = connection
-        .query_row(
-            "
-            SELECT count(*)
-            FROM catalog_documents_fts
-            WHERE workspace = ?1 AND doc_id LIKE '%github%'
-            ",
-            [workspace.as_str()],
-            |row| row.get(0),
-        )
-        .expect("fts count");
-    assert_eq!(github_fts_count, 0);
-}
-
-#[test]
 fn clear_workspace_removes_workspace_documents_and_invalidates_fingerprint() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
@@ -449,26 +407,6 @@ fn catalog_index_snapshot() -> CatalogIndexSnapshot {
             }),
         ],
     }
-}
-
-fn multi_source_catalog_snapshot() -> CatalogIndexSnapshot {
-    let mut snapshot = catalog_index_snapshot();
-    snapshot.documents.push(CatalogIndexDocument {
-        doc_id: "catalog:table:slack.messages".to_string(),
-        doc_kind: CatalogIndexDocumentKind::CatalogTable,
-        source_name: "slack".to_string(),
-        surface_kind: "table".to_string(),
-        surface_name: "messages".to_string(),
-        field_name: String::new(),
-        field_role: String::new(),
-        qualified_name: "slack.messages".to_string(),
-        title: "messages".to_string(),
-        description: "Slack messages".to_string(),
-        searchable_text: "slack messages".to_string(),
-        payload_json: "{}".to_string(),
-    });
-    snapshot.fingerprint = "multi-source-fixture".to_string();
-    snapshot
 }
 
 fn fts_weight_snapshot() -> CatalogIndexSnapshot {

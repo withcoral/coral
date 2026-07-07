@@ -570,7 +570,7 @@ impl SourceManager {
             self.layout.workspace_dir(workspace_name).parent(),
         );
         drop(state_lock);
-        self.clear_catalog_projection_for_source_best_effort(workspace_name, source_name);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
         Ok(removed)
     }
 
@@ -742,11 +742,14 @@ impl SourceManager {
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
         drop(state_lock);
-        self.clear_catalog_projection_for_source_best_effort(workspace_name, &source_name);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(
+            workspace_name,
+            &source_name,
+        );
         Ok(resolved)
     }
 
-    fn clear_catalog_projection_for_source_best_effort(
+    fn clear_catalog_projection_for_source_lifecycle_best_effort(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
@@ -756,7 +759,7 @@ impl SourceManager {
             return;
         }
         match SqliteSearchStore::open_workspace(&self.layout, workspace_name)
-            .and_then(|store| store.clear_catalog_source(source_name.as_str()))
+            .and_then(|store| store.clear_catalog_workspace())
         {
             Ok(result) => {
                 tracing::debug!(

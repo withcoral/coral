@@ -128,14 +128,6 @@ impl SqliteSearchStore {
         SqliteCatalogIndex::new().document_count(&connection, &self.workspace_name)
     }
 
-    pub(crate) fn clear_catalog_source(
-        &self,
-        source_name: &str,
-    ) -> Result<CatalogClearResult, SqliteSearchError> {
-        let mut connection = self.connect()?;
-        SqliteCatalogIndex::new().clear_source(&mut connection, &self.workspace_name, source_name)
-    }
-
     pub(crate) fn clear_catalog_workspace(&self) -> Result<CatalogClearResult, SqliteSearchError> {
         let mut connection = self.connect()?;
         SqliteCatalogIndex::new().clear_workspace(&mut connection, &self.workspace_name)

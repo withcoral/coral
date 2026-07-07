@@ -77,19 +77,6 @@ impl SqliteCatalogIndex {
         clippy::unused_self,
         reason = "kept as an instance method so catalog provider can own index capability consistently"
     )]
-    pub(crate) fn clear_source(
-        &self,
-        connection: &mut Connection,
-        workspace_name: &WorkspaceName,
-        source_name: &str,
-    ) -> Result<CatalogClearResult, SqliteSearchError> {
-        clear_catalog_source_documents(connection, workspace_name, source_name)
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "kept as an instance method so catalog provider can own index capability consistently"
-    )]
     pub(crate) fn clear_workspace(
         &self,
         connection: &mut Connection,
@@ -344,38 +331,6 @@ fn replace_catalog_documents(
         ],
     )?;
     Ok(())
-}
-
-fn clear_catalog_source_documents(
-    connection: &mut Connection,
-    workspace_name: &WorkspaceName,
-    source_name: &str,
-) -> Result<CatalogClearResult, SqliteSearchError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute(
-        "
-        DELETE FROM catalog_documents_fts
-        WHERE workspace = ?1
-          AND doc_id IN (
-              SELECT doc_id
-              FROM catalog_documents
-              WHERE workspace = ?1 AND source_name = ?2
-          )
-        ",
-        params![workspace_name.as_str(), source_name],
-    )?;
-    let deleted_document_count = transaction.execute(
-        "
-        DELETE FROM catalog_documents
-        WHERE workspace = ?1 AND source_name = ?2
-        ",
-        params![workspace_name.as_str(), source_name],
-    )?;
-    clear_catalog_fingerprint(&transaction, workspace_name)?;
-    transaction.commit()?;
-    Ok(CatalogClearResult {
-        deleted_document_count: u32::try_from(deleted_document_count).unwrap_or(u32::MAX),
-    })
 }
 
 fn clear_catalog_workspace_documents(
