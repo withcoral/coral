@@ -1001,6 +1001,124 @@ paths:
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps related response-driven pagination cases together."
+)]
+fn importer_infers_response_driven_pagination_modes() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: response_pagination
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /cursor:
+    get:
+      operationId: cursor/list
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 20}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                  meta:
+                    type: object
+                    properties:
+                      nextCursor: {type: string}
+  /link:
+    get:
+      operationId: link/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+  /singleton:
+    get:
+      operationId: singleton/get
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  nextCursor: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("response pagination import");
+    let operations = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation))
+        .collect::<BTreeMap<_, _>>();
+
+    let cursor = &rest_execution(operations.get("cursor_list").expect("cursor")).pagination;
+    assert_eq!(cursor.mode, PaginationMode::CursorQuery);
+    assert_eq!(cursor.cursor_param.as_deref(), Some("cursor"));
+    assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
+    assert_eq!(
+        cursor
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("limit")
+    );
+
+    let link = &rest_execution(operations.get("link_list").expect("link")).pagination;
+    assert_eq!(link.mode, PaginationMode::LinkHeader);
+    assert_eq!(link.page_param, None);
+    assert_eq!(
+        link.page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("per_page")
+    );
+
+    let singleton = &rest_execution(operations.get("singleton_get").expect("singleton")).pagination;
+    assert_eq!(singleton.mode, PaginationMode::None);
+}
+
+#[test]
 fn importer_treats_path_parameters_as_required_when_required_is_omitted() {
     let manifest = parse_source_manifest_yaml(
         r"

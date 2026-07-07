@@ -5,12 +5,13 @@ use serde_json::{Map, Value};
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrOperationNaming, IrScalarType, RestExecutionAttachment, RestParameterBinding,
-    RestRequestBody,
+    IrOperationNaming, IrScalarType, OutputCardinality, RestExecutionAttachment,
+    RestParameterBinding, RestRequestBody,
 };
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
-    json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_display,
+    json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
+    json_schema_type_display,
 };
 use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
 
@@ -304,10 +305,54 @@ fn detect_pagination(
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> PaginationSpec {
-    let _ = (&context.schema, &context.headers, context.cardinality);
-    detect_offset_pagination(inputs)
+    if !is_paginated_cardinality(context.cardinality) {
+        return PaginationSpec::default();
+    }
+    detect_link_header_pagination(inputs, context)
+        .or_else(|| detect_cursor_query_pagination(inputs, context))
+        .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
         .unwrap_or_default()
+}
+
+fn detect_link_header_pagination(
+    inputs: &[IrOperationInput],
+    context: &OpenApiResponsePaginationContext,
+) -> Option<PaginationSpec> {
+    response_header(context, &["link"])?;
+    Some(PaginationSpec {
+        mode: PaginationMode::LinkHeader,
+        page_size: detect_page_size(inputs),
+        ..PaginationSpec::default()
+    })
+}
+
+fn detect_cursor_query_pagination(
+    inputs: &[IrOperationInput],
+    context: &OpenApiResponsePaginationContext,
+) -> Option<PaginationSpec> {
+    let cursor_input = find_optional_query_input(
+        inputs,
+        &[
+            "after",
+            "continuationtoken",
+            "cursor",
+            "marker",
+            "nextcursor",
+            "nextpagetoken",
+            "nexttoken",
+            "pagetoken",
+            "startingafter",
+        ],
+    )?;
+    let response_cursor_path = find_response_cursor_path(&context.schema)?;
+    Some(PaginationSpec {
+        mode: PaginationMode::CursorQuery,
+        page_size: detect_page_size(inputs),
+        cursor_param: Some(cursor_input.name.clone()),
+        response_cursor_path,
+        ..PaginationSpec::default()
+    })
 }
 
 fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
@@ -325,7 +370,19 @@ fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpe
 
 fn detect_page_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
     let page_input = find_query_input(inputs, &["page", "pagenumber", "pagenum"])?;
-    let page_size_input = find_query_input(
+    let page_size = detect_page_size(inputs)?;
+    Some(PaginationSpec {
+        mode: PaginationMode::Page,
+        page_size: Some(page_size),
+        page_param: Some(page_input.name.clone()),
+        page_start: numeric_input_default(page_input).unwrap_or(1),
+        page_step: 1,
+        ..PaginationSpec::default()
+    })
+}
+
+fn detect_page_size(inputs: &[IrOperationInput]) -> Option<PageSizeSpec> {
+    find_query_input(
         inputs,
         &[
             "limit",
@@ -334,15 +391,8 @@ fn detect_page_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec>
             "perpage",
             "resultsperpage",
         ],
-    )?;
-    Some(PaginationSpec {
-        mode: PaginationMode::Page,
-        page_size: Some(page_size_spec(page_size_input)),
-        page_param: Some(page_input.name.clone()),
-        page_start: numeric_input_default(page_input).unwrap_or(1),
-        page_step: 1,
-        ..PaginationSpec::default()
-    })
+    )
+    .map(page_size_spec)
 }
 
 fn find_query_input<'a>(
@@ -353,6 +403,63 @@ fn find_query_input<'a>(
         .iter()
         .filter(|input| input.location == IrInputLocation::Query)
         .find(|input| candidate_tokens.contains(&name_token(&input.name).as_str()))
+}
+
+fn find_optional_query_input<'a>(
+    inputs: &'a [IrOperationInput],
+    candidate_tokens: &[&str],
+) -> Option<&'a IrOperationInput> {
+    find_query_input(inputs, candidate_tokens).filter(|input| !input.required)
+}
+
+fn response_header<'a>(
+    context: &'a OpenApiResponsePaginationContext,
+    candidate_tokens: &[&str],
+) -> Option<&'a Value> {
+    context
+        .headers
+        .iter()
+        .find(|(name, _)| candidate_tokens.contains(&name_token(name).as_str()))
+        .map(|(_, header)| header)
+}
+
+fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
+    let properties = schema.get("properties").and_then(Value::as_object)?;
+    for (name, property) in properties {
+        if is_response_cursor_property(name, property) {
+            return Some(vec![name.clone()]);
+        }
+    }
+    for (name, property) in properties {
+        if !json_schema_type_contains(property, "object") {
+            continue;
+        }
+        if let Some(mut path) = find_response_cursor_path(property) {
+            path.insert(0, name.clone());
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
+    const RESPONSE_CURSOR_TOKENS: &[&str] = &[
+        "endcursor",
+        "nextcursor",
+        "nextmarker",
+        "nextpagetoken",
+        "nexttoken",
+    ];
+
+    RESPONSE_CURSOR_TOKENS.contains(&name_token(name).as_str())
+        && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
+}
+
+fn is_paginated_cardinality(cardinality: OutputCardinality) -> bool {
+    matches!(
+        cardinality,
+        OutputCardinality::List | OutputCardinality::WrappedList
+    )
 }
 
 fn page_size_spec(input: &IrOperationInput) -> PageSizeSpec {
