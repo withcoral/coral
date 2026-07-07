@@ -15,6 +15,9 @@ use crate::state::{
 pub enum Feature {
     /// Expose the optional MCP `feedback` tool.
     Feedback,
+    /// Expose MCP task lifecycle tools and task attribution for follow-up Coral
+    /// MCP tool calls via the `coral-task-id` metadata key.
+    Tasks,
 }
 
 impl Feature {
@@ -65,14 +68,24 @@ struct FeatureSpec {
     disable_flag: &'static str,
 }
 
-const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
-    feature: Feature::Feedback,
-    key: "feedback",
-    default_enabled: false,
-    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
-    enable_flag: "enable-feedback",
-    disable_flag: "disable-feedback",
-}];
+const FEATURE_SPECS: &[FeatureSpec] = &[
+    FeatureSpec {
+        feature: Feature::Feedback,
+        key: "feedback",
+        default_enabled: false,
+        description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
+        enable_flag: "enable-feedback",
+        disable_flag: "disable-feedback",
+    },
+    FeatureSpec {
+        feature: Feature::Tasks,
+        key: "tasks",
+        default_enabled: false,
+        description: "Exposes MCP task lifecycle tools and tags follow-up Coral tool calls with task ids. Off by default.",
+        enable_flag: "enable-tasks",
+        disable_flag: "disable-tasks",
+    },
+];
 
 /// How a feature's value is configured in Coral's local config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
