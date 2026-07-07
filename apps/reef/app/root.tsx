@@ -5,6 +5,7 @@ import {
   readSidebarCollapsedCookie,
   readSidebarCollapsedCookieValue,
 } from './components/sidebar/sidebar-state'
+import { NavigationProgressBar } from './components/navigation-progress-bar'
 import { ensureCoralRuntime } from './lib/coral-runtime'
 import './styles/globals.css'
 import './wax/theme/global.css'
@@ -105,7 +106,12 @@ export async function clientLoader(_args: Route.ClientLoaderArgs) {
 clientLoader.hydrate = true as const
 
 export default function App() {
-  return <Outlet />
+  return (
+    <>
+      <NavigationProgressBar />
+      <Outlet />
+    </>
+  )
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
