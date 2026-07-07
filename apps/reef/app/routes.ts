@@ -8,7 +8,10 @@ export default [
   layout('routes/app-shell.tsx', [
     index('routes/index.tsx'),
     route('sources', 'routes/sources.tsx', [route(':sourceName', 'routes/source-detail.tsx')]),
-    route('schema', 'routes/schema.tsx'),
+    route('schema', 'routes/schema.tsx', [
+      index('routes/schema-empty.tsx'),
+      route(':schemaName/:tableName', 'routes/schema-table.tsx'),
+    ]),
     route('traces', 'routes/traces.tsx'),
     ...(isDesktopApp ? [route('settings', 'routes/settings.tsx')] : []),
   ]),

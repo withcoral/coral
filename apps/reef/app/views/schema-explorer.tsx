@@ -1,14 +1,9 @@
 import classNames from 'classnames'
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
+import { NavLink, Outlet } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
-import {
-  fetchTableColumnsFromCoral,
-  type ColumnDef,
-  type SchemaGroup,
-  type SchemaResponse,
-  type TableDef,
-} from '@/lib/schema-explorer'
+import type { ColumnDef, SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
 import { IconButton } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
@@ -20,17 +15,6 @@ import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './schema-explorer.css'
-
-interface SelectedTable {
-  schemaName: string
-  table: TableDef
-}
-
-interface ColumnLoadState {
-  error?: string
-  key?: string
-  loading: boolean
-}
 
 function SkeletonTree() {
   return (
@@ -72,13 +56,8 @@ function visibleTablesForSchema(schema: SchemaGroup, search: string) {
   return schema.tables.filter((table) => tableMatchesSearch(table, search))
 }
 
-function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return String(error)
-}
-
-function tableKey(schemaName: string, tableName: string) {
-  return `${schemaName}.${tableName}`
+function tablePath(schemaName: string, tableName: string) {
+  return `/schema/${encodeURIComponent(schemaName)}/${encodeURIComponent(tableName)}`
 }
 
 // Header + two-panel scaffold shared by the loaded view and the loading/error
@@ -96,7 +75,7 @@ function Frame({ children }: { children: React.ReactNode }) {
   )
 }
 
-// Rendered by the route's HydrateFallback while the schema clientLoader resolves.
+// Rendered by the schema route's HydrateFallback while the schema clientLoader resolves.
 export function SchemaExplorerSkeleton() {
   return (
     <Frame>
@@ -112,7 +91,7 @@ export function SchemaExplorerSkeleton() {
   )
 }
 
-// Rendered by the route's ErrorBoundary when the schema clientLoader throws.
+// Rendered by the schema route's ErrorBoundary when the schema clientLoader throws.
 export function SchemaExplorerError({
   message,
   onRetry,
@@ -145,11 +124,6 @@ export function SchemaExplorer({ schema }: SchemaExplorerProps) {
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(
     () => new Set(schema.connectors.map((connector) => connector.name)),
   )
-  const [selectedTable, setSelectedTable] = useState<SelectedTable | null>(null)
-  // Columns load lazily per table; overlay them here so the loader-provided
-  // schema stays the immutable source of truth.
-  const [columnsByTable, setColumnsByTable] = useState<Map<string, ColumnDef[]>>(() => new Map())
-  const [columnState, setColumnState] = useState<ColumnLoadState>({ loading: false })
 
   const normalizedSearch = search.trim().toLowerCase()
   const filteredSchemas = useMemo(
@@ -170,38 +144,6 @@ export function SchemaExplorer({ schema }: SchemaExplorerProps) {
       return next
     })
   }
-
-  const loadTableColumns = useCallback(async (schemaName: string, table: TableDef) => {
-    const key = tableKey(schemaName, table.name)
-    setColumnState({ key, loading: true })
-
-    try {
-      const columns = await fetchTableColumnsFromCoral(schemaName, table.name)
-      setColumnsByTable((previous) => new Map(previous).set(key, columns))
-      setColumnState((previous) => (previous.key === key ? { loading: false } : previous))
-    } catch (error) {
-      setColumnState((previous) =>
-        previous.key === key ? { error: formatError(error), key, loading: false } : previous,
-      )
-    }
-  }, [])
-
-  const handleSelectTable = (schemaName: string, table: TableDef) => {
-    setSelectedTable({ schemaName, table })
-    if (!columnsByTable.has(tableKey(schemaName, table.name))) {
-      void loadTableColumns(schemaName, table)
-    }
-  }
-
-  const selectedTableKey = selectedTable
-    ? tableKey(selectedTable.schemaName, selectedTable.table.name)
-    : undefined
-  const selectedColumns = selectedTableKey ? columnsByTable.get(selectedTableKey) : undefined
-  const columnsLoaded = selectedColumns !== undefined
-  const selectedColumnsLoading =
-    !!selectedTableKey && columnState.key === selectedTableKey && columnState.loading
-  const selectedColumnsError =
-    selectedTableKey && columnState.key === selectedTableKey ? columnState.error : undefined
 
   return (
     <section aria-label="Schema explorer" className={styles.root}>
@@ -287,29 +229,22 @@ export function SchemaExplorer({ schema }: SchemaExplorerProps) {
 
                         {expanded ? (
                           <div className={styles.connectorChildren} id={connectorChildrenId}>
-                            {visibleTables.map((table) => {
-                              const key = tableKey(connector.name, table.name)
-                              const isSelected =
-                                selectedTable?.schemaName === connector.name &&
-                                selectedTable.table.name === table.name
-
-                              return (
-                                <button
-                                  aria-current={isSelected ? 'true' : undefined}
-                                  className={classNames(styles.tableButton, {
-                                    [styles.tableButtonSelected]: isSelected,
-                                  })}
-                                  key={key}
-                                  onClick={() => handleSelectTable(connector.name, table)}
-                                  type="button"
-                                >
-                                  <Icon color="secondary" name="Table2" size="14" />
-                                  <Typography.BodyStrong as="span" className={styles.tableName}>
-                                    {table.name}
-                                  </Typography.BodyStrong>
-                                </button>
-                              )
-                            })}
+                            {visibleTables.map((table) => (
+                              <NavLink
+                                className={({ isActive }) =>
+                                  classNames(styles.tableButton, {
+                                    [styles.tableButtonSelected]: isActive,
+                                  })
+                                }
+                                key={tablePath(connector.name, table.name)}
+                                to={tablePath(connector.name, table.name)}
+                              >
+                                <Icon color="secondary" name="Table2" size="14" />
+                                <Typography.BodyStrong as="span" className={styles.tableName}>
+                                  {table.name}
+                                </Typography.BodyStrong>
+                              </NavLink>
+                            ))}
                           </div>
                         ) : null}
                       </div>
@@ -322,131 +257,138 @@ export function SchemaExplorer({ schema }: SchemaExplorerProps) {
         </div>
 
         <div className={styles.detailPanel}>
-          {selectedTable ? (
-            <div className={styles.detailContent}>
-              <div className={styles.detailHeader}>
-                <div>
-                  <Typography.HeadingSmall as="h2">
-                    {selectedTable.schemaName}.{selectedTable.table.name}
-                  </Typography.HeadingSmall>
-                  {selectedTable.table.description ? (
-                    <Typography.BodySmall as="p" className={styles.description}>
-                      {selectedTable.table.description}
-                    </Typography.BodySmall>
-                  ) : null}
-                </div>
-                {selectedTable.table.requiredFilters.length > 0 ? (
-                  <Tooltip
-                    content={`The following filters are required: ${selectedTable.table.requiredFilters.join(', ')}`}
-                    side="top"
-                  >
-                    <div
-                      aria-label={`Required filters: ${selectedTable.table.requiredFilters.join(', ')}`}
-                      className={styles.requiredFilterGroup}
-                      tabIndex={0}
-                    >
-                      {selectedTable.table.requiredFilters.map((filter) => (
-                        <Pill color="orange" key={filter}>
-                          {filter}
-                        </Pill>
-                      ))}
-                    </div>
-                  </Tooltip>
-                ) : null}
-              </div>
-
-              <div className={styles.section}>
-                <Typography.BodySmallStrong>Columns</Typography.BodySmallStrong>
-                {selectedColumnsLoading ? (
-                  <div className={styles.loadingState}>
-                    <Icon
-                      className={styles.spinAnimation}
-                      color="secondary"
-                      name="Loader"
-                      size="18"
-                    />
-                    <Typography.BodySmall variant="tertiary">Loading columns</Typography.BodySmall>
-                  </div>
-                ) : selectedColumnsError ? (
-                  <ErrorBanner
-                    message={selectedColumnsError}
-                    onRetry={() =>
-                      selectedTable
-                        ? loadTableColumns(selectedTable.schemaName, selectedTable.table)
-                        : undefined
-                    }
-                    title="Failed to load columns"
-                  />
-                ) : columnsLoaded && selectedColumns && selectedColumns.length > 0 ? (
-                  <Table.Wrapper variant="compact">
-                    <Table.Root>
-                      <Table.Head>
-                        <Table.Row>
-                          <Table.HeaderCell>Name</Table.HeaderCell>
-                          <Table.HeaderCell>Type</Table.HeaderCell>
-                          <Table.HeaderCell>Description</Table.HeaderCell>
-                        </Table.Row>
-                      </Table.Head>
-                      <Table.Body>
-                        {selectedColumns.map((column) => (
-                          <Table.Row
-                            className={classNames({
-                              [styles.virtualRow]: column.virtual,
-                            })}
-                            key={column.name}
-                          >
-                            <Table.Cell>
-                              {column.name}
-                              {column.filterable ? (
-                                <Tooltip
-                                  content="Required filter: queries for this table must include a filter on this field."
-                                  side="top"
-                                >
-                                  <span
-                                    aria-label="Required filter"
-                                    className={styles.requiredStar}
-                                    tabIndex={0}
-                                  >
-                                    *
-                                  </span>
-                                </Tooltip>
-                              ) : null}
-                            </Table.Cell>
-                            <Table.Cell>{column.type}</Table.Cell>
-                            <Table.Cell className={styles.cellTruncate} mono={false}>
-                              {column.description ?? '-'}
-                            </Table.Cell>
-                          </Table.Row>
-                        ))}
-                      </Table.Body>
-                    </Table.Root>
-                  </Table.Wrapper>
-                ) : columnsLoaded ? (
-                  <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
-                    No columns reported for this table.
-                  </Typography.BodySmall>
-                ) : (
-                  <div className={styles.loadingState}>
-                    <Icon
-                      className={styles.spinAnimation}
-                      color="secondary"
-                      name="Loader"
-                      size="18"
-                    />
-                    <Typography.BodySmall variant="tertiary">Loading columns</Typography.BodySmall>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className={styles.detailEmpty}>
-              <Typography.Body variant="secondary">
-                Select a table from the schema tree to inspect its columns.
-              </Typography.Body>
-            </div>
-          )}
+          <Outlet />
         </div>
       </div>
     </section>
+  )
+}
+
+// Rendered at /schema (index) before a table is selected.
+export function TableDetailEmpty() {
+  return (
+    <div className={styles.detailEmpty}>
+      <Typography.Body variant="secondary">
+        Select a table from the schema tree to inspect its columns.
+      </Typography.Body>
+    </div>
+  )
+}
+
+// Detail-panel scaffold for a selected table: title, description, required
+// filters, and a "Columns" section whose body (table / spinner / error) is
+// supplied by the child route.
+export function TableDetailLayout({
+  schemaName,
+  tableName,
+  table,
+  children,
+}: {
+  schemaName: string
+  tableName: string
+  table?: TableDef
+  children: React.ReactNode
+}) {
+  return (
+    <div className={styles.detailContent}>
+      <div className={styles.detailHeader}>
+        <div>
+          <Typography.HeadingSmall as="h2">
+            {schemaName}.{tableName}
+          </Typography.HeadingSmall>
+          {table?.description ? (
+            <Typography.BodySmall as="p" className={styles.description}>
+              {table.description}
+            </Typography.BodySmall>
+          ) : null}
+        </div>
+        {table && table.requiredFilters.length > 0 ? (
+          <Tooltip
+            content={`The following filters are required: ${table.requiredFilters.join(', ')}`}
+            side="top"
+          >
+            <div
+              aria-label={`Required filters: ${table.requiredFilters.join(', ')}`}
+              className={styles.requiredFilterGroup}
+              tabIndex={0}
+            >
+              {table.requiredFilters.map((filter) => (
+                <Pill color="orange" key={filter}>
+                  {filter}
+                </Pill>
+              ))}
+            </div>
+          </Tooltip>
+        ) : null}
+      </div>
+
+      <div className={styles.section}>
+        <Typography.BodySmallStrong>Columns</Typography.BodySmallStrong>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+export function ColumnsPending() {
+  return (
+    <div className={styles.loadingState}>
+      <Icon className={styles.spinAnimation} color="secondary" name="Loader" size="18" />
+      <Typography.BodySmall variant="tertiary">Loading columns</Typography.BodySmall>
+    </div>
+  )
+}
+
+export function ColumnsError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return <ErrorBanner message={message} onRetry={onRetry} title="Failed to load columns" />
+}
+
+export function ColumnsTable({ columns }: { columns: ColumnDef[] }) {
+  if (columns.length === 0) {
+    return (
+      <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
+        No columns reported for this table.
+      </Typography.BodySmall>
+    )
+  }
+
+  return (
+    <Table.Wrapper variant="compact">
+      <Table.Root>
+        <Table.Head>
+          <Table.Row>
+            <Table.HeaderCell>Name</Table.HeaderCell>
+            <Table.HeaderCell>Type</Table.HeaderCell>
+            <Table.HeaderCell>Description</Table.HeaderCell>
+          </Table.Row>
+        </Table.Head>
+        <Table.Body>
+          {columns.map((column) => (
+            <Table.Row
+              className={classNames({ [styles.virtualRow]: column.virtual })}
+              key={column.name}
+            >
+              <Table.Cell>
+                {column.name}
+                {column.filterable ? (
+                  <Tooltip
+                    content="Required filter: queries for this table must include a filter on this field."
+                    side="top"
+                  >
+                    <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
+                      *
+                    </span>
+                  </Tooltip>
+                ) : null}
+              </Table.Cell>
+              <Table.Cell>{column.type}</Table.Cell>
+              <Table.Cell className={styles.cellTruncate} mono={false}>
+                {column.description ?? '-'}
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Root>
+    </Table.Wrapper>
   )
 }
