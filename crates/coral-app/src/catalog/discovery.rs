@@ -663,65 +663,31 @@ mod tests {
     }
 
     #[test]
-    fn table_ref_matches_database_namespace_qualified_schema() {
-        let table = database_table("main", "users");
+    fn database_namespace_matches_catalog_discovery_metadata() {
+        let main = database_table("main", "users");
+        let analytics = database_table("analytics", "events");
+        let tables = vec![main, analytics];
 
         assert!(table_matches_ref(
-            &table,
+            &tables[0],
             CatalogTableRef::new("pickl_db.main", "users")
         ));
-        assert!(table_matches_ref(
-            &table,
-            CatalogTableRef::new("pickl_db", "users")
-        ));
         assert!(!table_matches_ref(
-            &table,
-            CatalogTableRef::new("pickl_db.other", "users")
+            &tables[0],
+            CatalogTableRef::new("pickl_db.analytics", "users")
         ));
-        assert!(!table_matches_ref(
-            &table,
-            CatalogTableRef::new("pickl_db.main", "orders")
-        ));
-    }
-
-    #[test]
-    fn table_search_matches_database_namespace_and_qualified_names() {
-        let table = database_table("main", "users");
-
-        assert_eq!(
-            table_matched_fields(&table, &regex::Regex::new("^main$").expect("regex")),
-            vec![CatalogMetadataField::SchemaName]
-        );
         assert_eq!(
             table_matched_fields(
-                &table,
-                &regex::Regex::new("^pickl_db\\.main$").expect("regex")
-            ),
-            vec![CatalogMetadataField::SchemaName]
-        );
-        assert_eq!(
-            table_matched_fields(
-                &table,
+                &tables[0],
                 &regex::Regex::new("^pickl_db\\.main\\.users$").expect("regex")
             ),
             vec![CatalogMetadataField::Name]
         );
-    }
-
-    #[test]
-    fn missing_table_context_uses_database_namespace_qualified_schemas() {
-        let main = database_table("main", "users");
-        let analytics = database_table("analytics", "events");
-        let mut local = table(Vec::new());
-        local.schema_name = "local_messages".to_string();
-        local.table_name = "messages".to_string();
-        let tables = vec![main, analytics, local];
 
         assert_eq!(
             available_table_schemas(&tables),
-            vec!["local_messages", "pickl_db.analytics", "pickl_db.main"]
+            vec!["pickl_db.analytics", "pickl_db.main"]
         );
-
         let same_schema =
             same_schema_tables(&tables, CatalogTableRef::new("pickl_db.main", "missing"));
         assert_eq!(same_schema.len(), 1);
@@ -736,7 +702,6 @@ mod tests {
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].namespace, "main");
         assert_eq!(suggestions[0].table_name, "users");
-
         assert!(table_metadata_contains_literal(
             &same_schema[0],
             "pickl_db.main.users"

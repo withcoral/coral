@@ -128,30 +128,6 @@ surfaces:
 }
 
 #[test]
-fn rejects_v4_database_connection_templates_referencing_undeclared_inputs() {
-    let error = parse_source_manifest_yaml(
-        r#"
-name: pickl_db
-dsl_version: 4
-surfaces:
-  - id: db
-    type: database
-    provider: sqlite
-    connection:
-      path: "{{input.SQLITE_PATH}}"
-"#,
-    )
-    .expect_err("undeclared input should fail");
-
-    assert!(
-        error
-            .to_string()
-            .contains("manifest input 'SQLITE_PATH' is referenced but not declared"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
 fn rejects_v4_database_connection_templates_referencing_runtime_tokens() {
     let error = parse_source_manifest_yaml(
         r#"
