@@ -1,9 +1,8 @@
 import classNames from 'classnames'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { ErrorBanner } from '@/components/error-banner'
 import {
-  fetchSchemaFromCoral,
   fetchTableColumnsFromCoral,
   type ColumnDef,
   type SchemaGroup,
@@ -82,64 +81,79 @@ function tableKey(schemaName: string, tableName: string) {
   return `${schemaName}.${tableName}`
 }
 
-function withTableColumns(
-  schema: SchemaResponse | null,
-  schemaName: string,
-  tableName: string,
-  columns: ColumnDef[],
-): SchemaResponse | null {
-  if (!schema) return schema
-
-  return {
-    connectors: schema.connectors.map((connector) =>
-      connector.name === schemaName
-        ? {
-            ...connector,
-            tables: connector.tables.map((table) =>
-              table.name === tableName ? { ...table, columns, columnsLoaded: true } : table,
-            ),
-          }
-        : connector,
-    ),
-  }
+// Header + two-panel scaffold shared by the loaded view and the loading/error
+// route states (HydrateFallback / ErrorBoundary) so all three look the same.
+function Frame({ children }: { children: React.ReactNode }) {
+  return (
+    <section aria-label="Schema explorer" className={styles.root}>
+      <div className={styles.header}>
+        <div className={styles.headerTitle}>
+          <Typography.HeadingSmall as="h1">Schema explorer</Typography.HeadingSmall>
+        </div>
+      </div>
+      {children}
+    </section>
+  )
 }
 
-export function SchemaExplorer() {
-  const [schema, setSchema] = useState<SchemaResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+// Rendered by the route's HydrateFallback while the schema clientLoader resolves.
+export function SchemaExplorerSkeleton() {
+  return (
+    <Frame>
+      <div className={styles.body}>
+        <div className={styles.treePanel}>
+          <div className={styles.treeContent}>
+            <SkeletonTree />
+          </div>
+        </div>
+        <div className={styles.detailPanel} />
+      </div>
+    </Frame>
+  )
+}
+
+// Rendered by the route's ErrorBoundary when the schema clientLoader throws.
+export function SchemaExplorerError({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry?: () => void
+}) {
+  return (
+    <Frame>
+      <div className={styles.body}>
+        <div className={styles.treePanel}>
+          <div className={styles.treeContent}>
+            <div className={styles.treeError}>
+              <ErrorBanner message={message} onRetry={onRetry} title="Failed to load schema" />
+            </div>
+          </div>
+        </div>
+        <div className={styles.detailPanel} />
+      </div>
+    </Frame>
+  )
+}
+
+interface SchemaExplorerProps {
+  schema: SchemaResponse
+}
+
+export function SchemaExplorer({ schema }: SchemaExplorerProps) {
   const [search, setSearch] = useState('')
-  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(new Set())
+  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(
+    () => new Set(schema.connectors.map((connector) => connector.name)),
+  )
   const [selectedTable, setSelectedTable] = useState<SelectedTable | null>(null)
+  // Columns load lazily per table; overlay them here so the loader-provided
+  // schema stays the immutable source of truth.
+  const [columnsByTable, setColumnsByTable] = useState<Map<string, ColumnDef[]>>(() => new Map())
   const [columnState, setColumnState] = useState<ColumnLoadState>({ loading: false })
-
-  const loadSchema = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-
-    try {
-      const data = await fetchSchemaFromCoral()
-      setSchema(data)
-      setExpandedSchemas(new Set(data.connectors.map((connector) => connector.name)))
-      setSelectedTable(null)
-      setColumnState({ loading: false })
-    } catch (error) {
-      setSchema({ connectors: [] })
-      setLoadError(formatError(error))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadSchema()
-  }, [loadSchema])
 
   const normalizedSearch = search.trim().toLowerCase()
   const filteredSchemas = useMemo(
-    () =>
-      schema?.connectors.filter((connector) => schemaMatchesSearch(connector, normalizedSearch)) ??
-      [],
+    () => schema.connectors.filter((connector) => schemaMatchesSearch(connector, normalizedSearch)),
     [normalizedSearch, schema],
   )
 
@@ -158,26 +172,12 @@ export function SchemaExplorer() {
   }
 
   const loadTableColumns = useCallback(async (schemaName: string, table: TableDef) => {
-    if (table.columnsLoaded) return
-
     const key = tableKey(schemaName, table.name)
     setColumnState({ key, loading: true })
 
     try {
       const columns = await fetchTableColumnsFromCoral(schemaName, table.name)
-      setSchema((previous) => withTableColumns(previous, schemaName, table.name, columns))
-      setSelectedTable((previous) =>
-        previous?.schemaName === schemaName && previous.table.name === table.name
-          ? {
-              schemaName,
-              table: {
-                ...previous.table,
-                columns,
-                columnsLoaded: true,
-              },
-            }
-          : previous,
-      )
+      setColumnsByTable((previous) => new Map(previous).set(key, columns))
       setColumnState((previous) => (previous.key === key ? { loading: false } : previous))
     } catch (error) {
       setColumnState((previous) =>
@@ -188,12 +188,16 @@ export function SchemaExplorer() {
 
   const handleSelectTable = (schemaName: string, table: TableDef) => {
     setSelectedTable({ schemaName, table })
-    void loadTableColumns(schemaName, table)
+    if (!columnsByTable.has(tableKey(schemaName, table.name))) {
+      void loadTableColumns(schemaName, table)
+    }
   }
 
   const selectedTableKey = selectedTable
     ? tableKey(selectedTable.schemaName, selectedTable.table.name)
     : undefined
+  const selectedColumns = selectedTableKey ? columnsByTable.get(selectedTableKey) : undefined
+  const columnsLoaded = selectedColumns !== undefined
   const selectedColumnsLoading =
     !!selectedTableKey && columnState.key === selectedTableKey && columnState.loading
   const selectedColumnsError =
@@ -237,17 +241,7 @@ export function SchemaExplorer() {
 
           <div className={styles.treeContent}>
             <ScrollArea constrainWidth>
-              {loading ? (
-                <SkeletonTree />
-              ) : loadError ? (
-                <div className={styles.treeError}>
-                  <ErrorBanner
-                    message={loadError}
-                    onRetry={loadSchema}
-                    title="Failed to load schema"
-                  />
-                </div>
-              ) : normalizedSearch && filteredSchemas.length === 0 ? (
+              {normalizedSearch && filteredSchemas.length === 0 ? (
                 <div className={styles.treeEmpty}>
                   <Typography.BodySmall variant="tertiary">
                     No results for "{search}"
@@ -383,7 +377,7 @@ export function SchemaExplorer() {
                     }
                     title="Failed to load columns"
                   />
-                ) : selectedTable.table.columnsLoaded && selectedTable.table.columns.length > 0 ? (
+                ) : columnsLoaded && selectedColumns && selectedColumns.length > 0 ? (
                   <Table.Wrapper variant="compact">
                     <Table.Root>
                       <Table.Head>
@@ -394,7 +388,7 @@ export function SchemaExplorer() {
                         </Table.Row>
                       </Table.Head>
                       <Table.Body>
-                        {selectedTable.table.columns.map((column) => (
+                        {selectedColumns.map((column) => (
                           <Table.Row
                             className={classNames({
                               [styles.virtualRow]: column.virtual,
@@ -427,7 +421,7 @@ export function SchemaExplorer() {
                       </Table.Body>
                     </Table.Root>
                   </Table.Wrapper>
-                ) : selectedTable.table.columnsLoaded ? (
+                ) : columnsLoaded ? (
                   <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
                     No columns reported for this table.
                   </Typography.BodySmall>
