@@ -11,32 +11,10 @@ export const root = style({
   minHeight: 0,
 })
 
-export const header = style({
-  alignItems: 'center',
-  borderBlockEnd: `1px solid ${theme.stroke.secondary}`,
-  display: 'flex',
-  flexShrink: 0,
-  minHeight: 56,
-  paddingBlock: 12,
-  paddingInline: 32,
-  '@media': {
-    [`screen and (max-width: ${breakpoints.mobile})`]: {
-      paddingInline: 16,
-    },
-  },
-})
-
-export const headerTitle = style({
-  alignItems: 'baseline',
-  display: 'flex',
-  gap: 12,
-  '@media': {
-    [`screen and (max-width: ${breakpoints.mobile})`]: {
-      alignItems: 'flex-start',
-      flexDirection: 'column',
-      gap: 2,
-    },
-  },
+// Search field placed in the shared PageHeader's actions slot.
+export const headerSearch = style({
+  width: 280,
+  maxWidth: '40vw',
 })
 
 export const body = style({
@@ -65,23 +43,6 @@ export const treePanel = style({
       width: '100%',
     },
   },
-})
-
-export const treePanelToolbar = style({
-  borderBlockEnd: `1px solid ${theme.stroke.primary}`,
-  paddingBlock: 10,
-  paddingInline: 12,
-})
-
-export const searchRow = style({
-  position: 'relative',
-})
-
-export const clearButton = style({
-  insetInlineEnd: 8,
-  position: 'absolute',
-  top: '50%',
-  transform: 'translateY(-50%)',
 })
 
 export const treeContent = style({

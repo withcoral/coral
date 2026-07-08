@@ -4,7 +4,8 @@ import { Await, NavLink, Outlet, useAsyncError, useParams, useRevalidator } from
 
 import { ErrorBanner } from '@/components/error-banner'
 import type { ColumnDef, SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
-import { Container as ButtonContainer, IconButton } from '@/wax/components/button'
+import { PageHeader } from '@/views/traces/page-header'
+import { Container as ButtonContainer } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Pill } from '@/wax/components/pill'
@@ -80,11 +81,7 @@ function tablePath(schemaName: string, tableName: string) {
 function Frame({ children }: { children: React.ReactNode }) {
   return (
     <section aria-label="Schema explorer" className={styles.root}>
-      <div className={styles.header}>
-        <div className={styles.headerTitle}>
-          <Typography.HeadingSmall as="h1">Schema explorer</Typography.HeadingSmall>
-        </div>
-      </div>
+      <PageHeader title="Schema explorer" />
       {children}
     </section>
   )
@@ -172,40 +169,32 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
 
   return (
     <section aria-label="Schema explorer" className={styles.root}>
-      <div className={styles.header}>
-        <div className={styles.headerTitle}>
-          <Typography.HeadingSmall as="h1">Schema explorer</Typography.HeadingSmall>
-          <Typography.BodySmall as="span" variant="tertiary">
-            {filteredSchemas.length} {filteredSchemas.length === 1 ? 'schema' : 'schemas'} /{' '}
-            {filteredTableCount} {filteredTableCount === 1 ? 'table' : 'tables'}
-          </Typography.BodySmall>
+      <PageHeader
+        title={
+          <>
+            <Typography.BodyStrong as="span" variant="secondary">
+              Schema explorer
+            </Typography.BodyStrong>
+            <Typography.BodySmall as="span" variant="tertiary">
+              {filteredSchemas.length} {filteredSchemas.length === 1 ? 'schema' : 'schemas'} /{' '}
+              {filteredTableCount} {filteredTableCount === 1 ? 'table' : 'tables'}
+            </Typography.BodySmall>
+          </>
+        }
+      >
+        <div className={styles.headerSearch}>
+          <TextInput
+            icon="Search"
+            onChange={setSearch}
+            placeholder="Filter schemas and tables"
+            type="search"
+            value={search}
+          />
         </div>
-      </div>
+      </PageHeader>
 
       <div className={styles.body}>
         <div className={styles.treePanel}>
-          <div className={styles.treePanelToolbar}>
-            <div className={styles.searchRow}>
-              <TextInput
-                icon="Search"
-                onChange={setSearch}
-                placeholder="Filter schemas and tables"
-                type="search"
-                value={search}
-              />
-              {search ? (
-                <IconButton
-                  className={styles.clearButton}
-                  name="X"
-                  onClick={() => setSearch('')}
-                  size="22"
-                  tooltipText="Clear filter"
-                  variant="bare"
-                />
-              ) : null}
-            </div>
-          </div>
-
           <div className={styles.treeContent}>
             <ScrollArea constrainWidth>
               {normalizedSearch && filteredSchemas.length === 0 ? (
