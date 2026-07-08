@@ -247,6 +247,33 @@ async fn infer_udf_signature_uses_column_comparison_for_argument_type() {
 }
 
 #[tokio::test]
+async fn infer_udf_signature_accepts_declared_float_with_integer_planner_evidence() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_jsonl_file(temp.path(), "events.jsonl", &[json!({"id": 1})]);
+    let search = build_source(search_function_manifest("numeric_claim_search"));
+    let events = build_source(events_manifest("numeric_claim_events", temp.path()));
+
+    let signature = CoralQuery::infer_udf_signature(
+        &[search, events],
+        test_runtime(),
+        udf(
+            "numeric_claim",
+            "select issue.title \
+             from numeric_claim_search.search_issues(q => 'status', min_score => $min_score) issue \
+             cross join numeric_claim_events.events event \
+             where $min_score > event.id",
+        ),
+    )
+    .await
+    .expect("declared Float64 argument should accept Int64 comparison evidence");
+
+    assert_eq!(
+        argument_types(&signature),
+        [("min_score", ManifestDataType::Float64)]
+    );
+}
+
+#[tokio::test]
 async fn infer_udf_signature_rejects_ambiguous_argument_type() {
     let error = CoralQuery::infer_udf_signature(
         &[],
@@ -265,6 +292,63 @@ async fn infer_udf_signature_rejects_ambiguous_argument_type() {
     );
     assert!(
         error.to_string().contains("CAST($value AS VARCHAR)"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !error.to_string().contains("Error during planning"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn infer_udf_signature_rejects_anonymous_placeholder() {
+    let error = CoralQuery::infer_udf_signature(
+        &[],
+        test_runtime(),
+        udf(
+            "anonymous_placeholder",
+            "select cast(? as VARCHAR) as value",
+        ),
+    )
+    .await
+    .expect_err("anonymous placeholder should fail");
+
+    assert_eq!(error.status_code(), StatusCode::InvalidArgument);
+    assert!(
+        error
+            .to_string()
+            .contains("SQL parameter '?' is not supported in UDF SQL"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("use a named parameter like $value"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn infer_udf_signature_rejects_numeric_placeholder() {
+    let error = CoralQuery::infer_udf_signature(
+        &[],
+        test_runtime(),
+        udf("numeric_placeholder", "select cast($1 as VARCHAR) as value"),
+    )
+    .await
+    .expect_err("numeric placeholder should fail");
+
+    assert_eq!(error.status_code(), StatusCode::InvalidArgument);
+    assert!(
+        error
+            .to_string()
+            .contains("SQL parameter '$1' is not supported in UDF SQL"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("use a descriptive named parameter like $value"),
         "unexpected error: {error}"
     );
 }

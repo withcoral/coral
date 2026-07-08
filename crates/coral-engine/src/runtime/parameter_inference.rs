@@ -20,6 +20,11 @@ pub(crate) struct InferredParameter {
 
 #[derive(Debug)]
 pub(crate) enum ParameterInferenceError {
+    Planner(DataFusionError),
+    UnsupportedParameterName {
+        parameter: String,
+        suggestion: &'static str,
+    },
     NoEvidence {
         parameter: String,
     },
@@ -54,14 +59,19 @@ pub(crate) enum EvidenceSource {
     SourceFunctionArgument { function: String, argument: String },
 }
 
-pub(crate) fn infer_parameters(plan: &LogicalPlan) -> Result<Vec<InferredParameter>> {
-    let parameters = placeholder_names(plan)?;
+pub(crate) fn infer_parameters(
+    plan: &LogicalPlan,
+) -> std::result::Result<Vec<InferredParameter>, ParameterInferenceError> {
+    let parameters = placeholder_names(plan).map_err(ParameterInferenceError::Planner)?;
+    for parameter in &parameters {
+        reject_unsupported_parameter_name(parameter)?;
+    }
 
-    let mut evidence = planner_evidence(plan)?;
-    evidence.extend(cast_evidence(plan)?);
-    evidence.extend(source_function_evidence(plan)?);
+    let mut evidence = planner_evidence(plan).map_err(ParameterInferenceError::Planner)?;
+    evidence.extend(cast_evidence(plan).map_err(ParameterInferenceError::Planner)?);
+    evidence.extend(source_function_evidence(plan).map_err(ParameterInferenceError::Planner)?);
 
-    resolve(parameters, evidence).map_err(|error| DataFusionError::Plan(error.to_string()))
+    resolve(parameters, evidence)
 }
 
 fn placeholder_names(plan: &LogicalPlan) -> Result<BTreeSet<String>> {
@@ -73,6 +83,27 @@ fn placeholder_names(plan: &LogicalPlan) -> Result<BTreeSet<String>> {
         Ok(())
     })?;
     Ok(names)
+}
+
+fn reject_unsupported_parameter_name(
+    parameter: &str,
+) -> std::result::Result<(), ParameterInferenceError> {
+    if parameter == "?" {
+        return Err(ParameterInferenceError::UnsupportedParameterName {
+            parameter: parameter.to_string(),
+            suggestion: "use a named parameter like $value",
+        });
+    }
+
+    let unprefixed = parameter.strip_prefix('$').unwrap_or(parameter);
+    if !unprefixed.is_empty() && unprefixed.chars().all(|char| char.is_ascii_digit()) {
+        return Err(ParameterInferenceError::UnsupportedParameterName {
+            parameter: parameter.to_string(),
+            suggestion: "use a descriptive named parameter like $value",
+        });
+    }
+
+    Ok(())
 }
 
 /// Read directly off the plan rather than via
@@ -272,6 +303,14 @@ fn conflict(parameter: &str, claims: &[TypeEvidence]) -> ParameterInferenceError
 impl fmt::Display for ParameterInferenceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Planner(error) => write!(f, "{error}"),
+            Self::UnsupportedParameterName {
+                parameter,
+                suggestion,
+            } => write!(
+                f,
+                "SQL parameter '{parameter}' is not supported in UDF SQL; {suggestion}"
+            ),
             Self::NoEvidence { parameter } => write!(
                 f,
                 "SQL parameter '{parameter}' has no inferred type; cast it in SQL, for example CAST({parameter} AS VARCHAR)"

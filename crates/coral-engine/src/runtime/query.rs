@@ -3,7 +3,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{ScalarValue, TableReference};
 use datafusion::dataframe::DataFrame;
@@ -57,7 +56,6 @@ pub(crate) struct QueryRuntimeAdapter {
 
 pub(crate) struct PlannedSql {
     pub(crate) plan: LogicalPlan,
-    pub(crate) schema: SchemaRef,
 }
 
 struct FallbackRuntime {
@@ -434,9 +432,9 @@ impl QueryRuntimeAdapter {
                     Some(sql),
                 )
             })?;
-        let plan = df.logical_plan().clone();
-        let schema = Arc::clone(plan.schema().inner());
-        Ok(PlannedSql { plan, schema })
+        Ok(PlannedSql {
+            plan: df.logical_plan().clone(),
+        })
     }
 
     async fn execute_sql_once(

@@ -68,6 +68,7 @@ pub(crate) fn manifest_claim_accepts_arrow(declared: ManifestDataType, arrow: &D
     let declared_arrow = arrow_parameter_type(declared);
     declared_arrow == *arrow
         || (is_string_family(&declared_arrow) && is_string_family(arrow))
+        || (declared == ManifestDataType::Float64 && matches!(arrow, DataType::Int64))
         || (declared == ManifestDataType::Timestamp && matches!(arrow, DataType::Timestamp(_, _)))
 }
 

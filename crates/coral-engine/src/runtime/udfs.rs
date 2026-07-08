@@ -29,7 +29,7 @@ pub(crate) async fn infer_udf_signature(
 
     Ok(UdfRuntimeSignature {
         arguments,
-        result_columns: result_columns(planned.schema.as_ref()),
+        result_columns: result_columns(planned.plan.schema().inner().as_ref()),
     })
 }
 
