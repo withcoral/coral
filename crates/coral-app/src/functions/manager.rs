@@ -7,7 +7,7 @@ use coral_spec::parse_function_sql;
 
 use crate::bootstrap::AppError;
 use crate::functions::model::{FunctionName, InstalledFunction};
-use crate::functions::storage::{
+use crate::functions::store::{
     ConfigFunctionRegistry, FsFunctionArtifactStore, FunctionArtifactStore, FunctionRegistry,
 };
 use crate::state::{AppStateLayout, ConfigStore};
