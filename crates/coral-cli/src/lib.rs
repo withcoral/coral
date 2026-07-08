@@ -160,15 +160,16 @@ struct SearchIndexArgs {
 
 #[derive(Debug, Subcommand)]
 enum SearchIndexCommand {
-    /// Rebuild an app-owned local search index
+    /// Rebuild a local search index.
+    ///
+    /// Coral skips the rebuild when the index is already up to date unless you pass `--force`.
     Rebuild(SearchRebuildArgs),
     /// Clear Coral's local search data for one workspace.
     ///
-    /// This command is destructive, so it requires `--yes` and the global
-    /// `--workspace` flag. Use `--workspace NAME` to clear `NAME`. Use bare
-    /// `--workspace` to clear the workspace Coral would otherwise select:
-    /// `CORAL_WORKSPACE` when set, otherwise `default`. The global flag may appear
-    /// after `clear`.
+    /// Clear deletes local search data, so Coral requires both `--yes` and
+    /// `--workspace`. Use `--workspace NAME` to clear that workspace. Use
+    /// `--workspace` with no name to clear the workspace Coral would normally use
+    /// for this command: `CORAL_WORKSPACE` if it is set, or `default` otherwise.
     Clear(SearchClearArgs),
 }
 
