@@ -24,17 +24,17 @@ use coral_api::v1::{
     CatalogSearchResult, Column, ColumnHint, ColumnSearchResult, CreateBundledSourceRequest,
     CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
-    DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
-    ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, RemoveFunctionRequest,
-    RemoveFunctionResponse, SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole,
-    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
-    SearchResult, SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
+    DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse,
+    ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
+    QueryPlan, SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchProvider,
+    SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse, SearchResult,
+    SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
     SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
     SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
@@ -744,7 +744,7 @@ struct Captured {
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
     add_function: Mutex<Vec<AddFunctionRequest>>,
     list_functions: Mutex<Vec<ListFunctionsRequest>>,
-    remove_function: Mutex<Vec<RemoveFunctionRequest>>,
+    remove_function: Mutex<Vec<DeleteFunctionRequest>>,
     list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
     create_workspace: Mutex<Vec<CreateWorkspaceRequest>>,
     delete_workspace: Mutex<Vec<DeleteWorkspaceRequest>>,
@@ -1044,17 +1044,17 @@ impl FunctionService for MockFunctionService {
         }))
     }
 
-    async fn remove_function(
+    async fn delete_function(
         &self,
-        request: Request<RemoveFunctionRequest>,
-    ) -> Result<Response<RemoveFunctionResponse>, Status> {
+        request: Request<DeleteFunctionRequest>,
+    ) -> Result<Response<DeleteFunctionResponse>, Status> {
         self.captured
             .remove_function
             .lock()
             .expect("remove_function capture")
             .push(request.into_inner());
         Err(Status::unimplemented(
-            "mock function remove is not implemented",
+            "mock function delete is not implemented",
         ))
     }
 }

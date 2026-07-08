@@ -29,8 +29,8 @@ use clap::{
 };
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
-    AddFunctionRequest, CreateWorkspaceRequest, DeleteWorkspaceRequest, ExecuteSqlRequest,
-    Function, ListFunctionsRequest, ListWorkspacesRequest, RemoveFunctionRequest, SearchRequest,
+    AddFunctionRequest, CreateWorkspaceRequest, DeleteFunctionRequest, DeleteWorkspaceRequest,
+    ExecuteSqlRequest, Function, ListFunctionsRequest, ListWorkspacesRequest, SearchRequest,
     Workspace,
 };
 #[cfg(feature = "embedded-ui")]
@@ -980,13 +980,16 @@ async fn run_function(
                 .await
                 .map_err(anyhow::Error::from)?
                 .into_inner();
+            let function = function.function.ok_or_else(|| {
+                anyhow::anyhow!("function service returned no function after add")
+            })?;
             println!("Added function {}", function.name);
         }
         FunctionCommand::Remove { name } => {
             let name = function_name_arg(&name)?;
             let mut client = app.function_client();
             client
-                .remove_function(Request::new(RemoveFunctionRequest {
+                .delete_function(Request::new(DeleteFunctionRequest {
                     workspace: Some(workspace.clone()),
                     name: name.clone(),
                 }))
@@ -1004,7 +1007,7 @@ fn function_publish_summary(function: &Function) -> String {
     };
     let mut targets = Vec::new();
     if let Some(target) = publish.table_function.as_ref() {
-        targets.push(format!("sql: {}.{}", target.schema, target.name));
+        targets.push(format!("sql: {}.{}", target.schema_name, target.name));
     }
     if targets.is_empty() {
         "-".to_string()
