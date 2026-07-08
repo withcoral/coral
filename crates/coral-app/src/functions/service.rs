@@ -2,9 +2,9 @@
 
 use coral_api::v1::function_service_server::FunctionService as FunctionServiceApi;
 use coral_api::v1::{
-    AddFunctionRequest, AddFunctionResponse, Function, FunctionArgument, FunctionPublish,
-    FunctionResultColumn, FunctionTableFunctionPublish, ListFunctionsRequest,
-    ListFunctionsResponse, RemoveFunctionRequest, RemoveFunctionResponse,
+    AddFunctionRequest, AddFunctionResponse, DeleteFunctionRequest, DeleteFunctionResponse,
+    Function, FunctionArgument, FunctionPublish, FunctionTableFunctionPublish,
+    ListFunctionsRequest, ListFunctionsResponse, TableFunctionResultColumn,
 };
 use coral_engine::{UdfRuntimeDefinition, UdfRuntimePublish, UdfRuntimeTableFunctionPublish};
 use tonic::{Request, Response, Status};
@@ -49,11 +49,11 @@ impl FunctionServiceApi for FunctionService {
                 .validate_udf_sql(&workspace_name, &inner.sql)
                 .await
                 .map_err(query_status)?;
-            let function = functions
+            functions
                 .install_validated_user_function(&workspace_name, &inner.sql, &runtime_function)
                 .map_err(app_status)?;
             Ok(Response::new(AddFunctionResponse {
-                name: function.name.as_str().to_string(),
+                function: Some(runtime_function_to_proto(&workspace_name, runtime_function)),
             }))
         })
         .await
@@ -80,10 +80,10 @@ impl FunctionServiceApi for FunctionService {
         .await
     }
 
-    async fn remove_function(
+    async fn delete_function(
         &self,
-        request: Request<RemoveFunctionRequest>,
-    ) -> Result<Response<RemoveFunctionResponse>, Status> {
+        request: Request<DeleteFunctionRequest>,
+    ) -> Result<Response<DeleteFunctionResponse>, Status> {
         let span = grpc_span(&request);
         let functions = self.functions.clone();
         instrument_grpc(span, async move {
@@ -93,7 +93,7 @@ impl FunctionServiceApi for FunctionService {
             functions
                 .remove_user_function(&workspace_name, &function_name)
                 .map_err(app_status)?;
-            Ok(Response::new(RemoveFunctionResponse {}))
+            Ok(Response::new(DeleteFunctionResponse {}))
         })
         .await
     }
@@ -123,10 +123,11 @@ fn runtime_function_to_proto(
         result_columns: function
             .result_columns
             .into_iter()
-            .map(|column| FunctionResultColumn {
+            .map(|column| TableFunctionResultColumn {
                 name: column.name,
                 data_type: column.data_type.to_string(),
                 nullable: column.nullable,
+                description: String::new(),
             })
             .collect(),
     }
@@ -144,7 +145,7 @@ fn function_table_function_publish_to_proto(
     publish: UdfRuntimeTableFunctionPublish,
 ) -> FunctionTableFunctionPublish {
     FunctionTableFunctionPublish {
-        schema: publish.schema,
+        schema_name: publish.schema,
         name: publish.name,
         description: publish.description,
     }
