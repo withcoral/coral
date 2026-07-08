@@ -405,10 +405,7 @@ async fn infer_runtime_function(
     spec: &FunctionSpec,
 ) -> Result<UdfRuntimeDefinition, AppError> {
     let mut runtime_function = runtime_function_without_signature(spec);
-    let sql_definition = UdfRuntimeSqlDefinition {
-        name: runtime_function.name.clone(),
-        implementation: runtime_function.implementation.clone(),
-    };
+    let sql_definition = runtime_sql_definition(&runtime_function);
     let signature =
         CoralQuery::infer_udf_signature(selected_sources, runtime_config, sql_definition)
             .await
@@ -418,6 +415,13 @@ async fn infer_runtime_function(
     runtime_function.arguments = signature.arguments;
     runtime_function.result_columns = signature.result_columns;
     Ok(runtime_function)
+}
+
+fn runtime_sql_definition(function: &UdfRuntimeDefinition) -> UdfRuntimeSqlDefinition {
+    UdfRuntimeSqlDefinition {
+        name: function.name.clone(),
+        implementation: function.implementation.clone(),
+    }
 }
 
 fn runtime_function_without_signature(spec: &FunctionSpec) -> UdfRuntimeDefinition {
