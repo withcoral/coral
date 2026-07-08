@@ -9,8 +9,8 @@ use crate::backends::http::ProviderQueryError;
 use crate::backends::http::client::HttpSourceClient;
 use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::{
-    PageState, apply_pagination_body_fields, apply_pagination_query_pairs, page_is_exhausted,
-    pagination_state_values, resolve_page_size,
+    PageAdvance, PageAdvanceContext, advance_pagination_state, apply_pagination_body_fields,
+    apply_pagination_query_pairs, initial_page_state, pagination_state_values, resolve_page_size,
 };
 use crate::backends::http::request::{build_query_pairs, build_request_body};
 use crate::backends::http::target::HttpFetchTarget;
@@ -19,7 +19,7 @@ use crate::backends::http::url::{join_url, normalize_base_url};
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{RenderContext, render_template};
-use coral_spec::ValidatedPaginationMode;
+use coral_spec::{HttpMethod, ValidatedPaginationMode};
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
 
@@ -67,17 +67,10 @@ pub(super) async fn fetch_rows(
 
     let active_request = target.resolved_request();
 
-    let mut state = PageState {
-        page: target.pagination().page_start,
-        offset: match &pagination.mode {
-            ValidatedPaginationMode::Offset(offset) => offset.start,
-            _ => target.pagination().offset_start,
-        },
-        ..PageState::default()
-    };
+    let mut state = initial_page_state(&pagination);
 
     let mut page_count = 0usize;
-    let max_pages = target.pagination().max_pages.unwrap_or(DEFAULT_MAX_PAGES);
+    let max_pages = pagination.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
 
     loop {
         page_count += 1;
@@ -121,7 +114,7 @@ pub(super) async fn fetch_rows(
             (Vec::new(), None)
         } else {
             let mut query_pairs = build_query_pairs(active_request, &render_context)?;
-            apply_pagination_query_pairs(&mut query_pairs, target, &pagination, &state, page_size)
+            apply_pagination_query_pairs(&mut query_pairs, &pagination, &state, page_size)
                 .map_err(|error| {
                     pagination_error(
                         &client.source_schema,
@@ -136,7 +129,6 @@ pub(super) async fn fetch_rows(
             apply_pagination_body_fields(
                 &mut body,
                 &active_request.body,
-                target,
                 &pagination,
                 &state,
                 page_size,
@@ -173,16 +165,14 @@ pub(super) async fn fetch_rows(
                 body_capture: client.body_capture,
                 render_context,
                 allow_404_empty: target.response().allow_404_empty,
-                link_header_require_results: pagination.link_header_require_results,
-                response_cursor_header: target.pagination().response_cursor_header.as_deref(),
-                next_url_header: target.pagination().next_url_header.as_deref(),
             },
         )
         .await?;
 
-        let Some((payload, pagination_hints)) = request else {
+        let Some(response) = request else {
             break;
         };
+        let payload = response.payload;
 
         if !target.response().ok_path.is_empty() {
             let ok = get_path_value(&payload, &target.response().ok_path)
@@ -229,54 +219,41 @@ pub(super) async fn fetch_rows(
             break;
         }
 
-        match &pagination.mode {
-            ValidatedPaginationMode::None => break,
-            ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
-                let next_cursor = pagination_hints.cursor.or_else(|| {
-                    get_path_value(&payload, &target.pagination().response_cursor_path)
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(ToOwned::to_owned)
-                });
-                match next_cursor {
-                    Some(cursor) => state.cursor = Some(cursor),
-                    None => break,
-                }
-            }
-            ValidatedPaginationMode::Page => {
-                if page_is_exhausted(rows_on_page, page_size) {
-                    break;
-                }
-                state.page = state.page.saturating_add(target.pagination().page_step);
-            }
-            ValidatedPaginationMode::Offset(offset) => {
-                if page_is_exhausted(rows_on_page, page_size) {
-                    break;
-                }
-                let step = offset
-                    .resolve_step(page_size, &client.source_schema, target.name())
-                    .map_err(|error| {
-                        provider_error(ProviderQueryError::Pagination {
-                            source_schema: client.source_schema.clone(),
-                            table: target.name().to_string(),
-                            method: None,
-                            url: None,
-                            detail: error.to_string(),
-                        })
-                    })?;
-                state.offset = state.offset.saturating_add(step);
-            }
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => {
-                match pagination_hints.next_url {
-                    Some(next) => state.next_url = Some(next),
-                    None => break,
-                }
-            }
+        let page_advance = advance_pagination_state(
+            &mut state,
+            &pagination,
+            PageAdvanceContext {
+                payload: &payload,
+                response_headers: &response.headers,
+                request_url: &url,
+                rows_on_page,
+                page_size,
+                source_schema: &client.source_schema,
+                table_name: target.name(),
+            },
+        )
+        .map_err(|error| {
+            pagination_error(
+                &client.source_schema,
+                target.name(),
+                Some(http_method_label(active_request.method)),
+                Some(&url),
+                &error,
+            )
+        })?;
+        if page_advance == PageAdvance::Stop {
+            break;
         }
     }
 
     Ok(all_rows)
+}
+
+fn http_method_label(method: HttpMethod) -> &'static str {
+    match method {
+        HttpMethod::GET => "GET",
+        HttpMethod::POST => "POST",
+    }
 }
 
 fn resolve_fetch_limits(

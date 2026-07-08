@@ -16,11 +16,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::resolve_auth_headers;
-use crate::backends::http::error::{pagination_error, provider_error};
-use crate::backends::http::pagination::{
-    ResponsePaginationHints, extract_next_link_url, extract_next_url_header,
-    extract_response_cursor_header,
-};
+use crate::backends::http::error::provider_error;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
@@ -52,9 +48,12 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) body_capture: HttpBodyCapture,
     pub(super) render_context: RenderContext<'a>,
     pub(super) allow_404_empty: bool,
-    pub(super) link_header_require_results: bool,
-    pub(super) response_cursor_header: Option<&'a str>,
-    pub(super) next_url_header: Option<&'a str>,
+}
+
+#[derive(Debug)]
+pub(super) struct DecodedHttpResponse {
+    pub(super) payload: Value,
+    pub(super) headers: HeaderMap,
 }
 
 #[expect(
@@ -65,9 +64,9 @@ pub(super) async fn execute_request(
     http: &reqwest::Client,
     request_timeout: Duration,
     request: OutgoingHttpRequest<'_>,
-) -> Result<Option<(Value, ResponsePaginationHints)>> {
+) -> Result<Option<DecodedHttpResponse>> {
     enum ResponseOutcome {
-        Done(Result<Option<(Value, ResponsePaginationHints)>>),
+        Done(Result<Option<DecodedHttpResponse>>),
         Retry(Duration),
     }
 
@@ -88,9 +87,6 @@ pub(super) async fn execute_request(
         body_capture,
         render_context,
         allow_404_empty,
-        link_header_require_results,
-        response_cursor_header,
-        next_url_header,
     } = request;
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
@@ -305,53 +301,7 @@ pub(super) async fn execute_request(
                 ))));
             }
 
-            let next_url =
-                extract_next_link_url(response.headers(), url, link_header_require_results)
-                    .map_err(|error| {
-                        record_http_processing_error(&request_span, "PAGINATION", &error);
-                        pagination_error(
-                            source_schema,
-                            table_name,
-                            Some(method_label),
-                            Some(&logged_url),
-                            &error,
-                        )
-                    });
-            let next_url = match next_url {
-                Ok(next_url) => next_url,
-                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
-            };
-            let header_next_url = extract_next_url_header(response.headers(), url, next_url_header)
-                .map_err(|error| {
-                    record_http_processing_error(&request_span, "PAGINATION", &error);
-                    pagination_error(
-                        source_schema,
-                        table_name,
-                        Some(method_label),
-                        Some(&logged_url),
-                        &error,
-                    )
-                });
-            let next_url = match header_next_url {
-                Ok(header_next_url) => next_url.or(header_next_url),
-                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
-            };
-            let cursor = extract_response_cursor_header(response.headers(), response_cursor_header)
-                .map_err(|error| {
-                    record_http_processing_error(&request_span, "PAGINATION", &error);
-                    pagination_error(
-                        source_schema,
-                        table_name,
-                        Some(method_label),
-                        Some(&logged_url),
-                        &error,
-                    )
-                });
-            let cursor = match cursor {
-                Ok(cursor) => cursor,
-                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
-            };
-            let pagination = ResponsePaginationHints { next_url, cursor };
+            let response_headers = response.headers().clone();
 
             match decode_response_body(
                 response,
@@ -369,7 +319,10 @@ pub(super) async fn execute_request(
             .instrument(request_span.clone())
             .await
             {
-                Ok(payload) => ResponseOutcome::Done(Ok(Some((payload, pagination)))),
+                Ok(payload) => ResponseOutcome::Done(Ok(Some(DecodedHttpResponse {
+                    payload,
+                    headers: response_headers,
+                }))),
                 Err(mut error) => {
                     // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
                     // idempotent GET requests may be retried or surfaced as retryable.
@@ -547,9 +500,6 @@ mod tests {
                 body_capture: HttpBodyCapture::default(),
                 render_context,
                 allow_404_empty: false,
-                link_header_require_results: false,
-                response_cursor_header: None,
-                next_url_header: None,
             },
         )
         .await

@@ -7,7 +7,7 @@ use reqwest::header::{HeaderMap, HeaderName};
 use serde_json::{Map, Value, json};
 
 use crate::backends::http::request::{RequestBody, set_path_value};
-use crate::backends::http::target::HttpFetchTarget;
+use crate::backends::shared::json_path::get_path_value;
 use coral_spec::{BodySpec, PageSizeSpec, ValidatedPagination, ValidatedPaginationMode};
 
 #[derive(Debug, Clone, Default)]
@@ -24,9 +24,36 @@ pub(super) struct ResponsePaginationHints {
     pub(super) cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PageAdvance {
+    Continue,
+    Stop,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PageAdvanceContext<'a> {
+    pub(super) payload: &'a Value,
+    pub(super) response_headers: &'a HeaderMap,
+    pub(super) request_url: &'a str,
+    pub(super) rows_on_page: usize,
+    pub(super) page_size: Option<usize>,
+    pub(super) source_schema: &'a str,
+    pub(super) table_name: &'a str,
+}
+
+pub(super) fn initial_page_state(pagination: &ValidatedPagination) -> PageState {
+    PageState {
+        page: pagination.page_start,
+        offset: match &pagination.mode {
+            ValidatedPaginationMode::Offset(offset) => offset.start,
+            _ => 0,
+        },
+        ..PageState::default()
+    }
+}
+
 pub(super) fn apply_pagination_query_pairs(
     params: &mut Vec<(String, String)>,
-    target: &HttpFetchTarget,
     pagination: &ValidatedPagination,
     state: &PageState,
     page_size: Option<usize>,
@@ -42,13 +69,13 @@ pub(super) fn apply_pagination_query_pairs(
         | ValidatedPaginationMode::Auto
         | ValidatedPaginationMode::CursorBody => {}
         ValidatedPaginationMode::LinkHeader => {
-            if let Some(name) = &target.pagination().page_param {
+            if let Some(name) = &pagination.page_param {
                 params.push((name.clone(), state.page.to_string()));
             }
         }
         ValidatedPaginationMode::CursorQuery => {
             if let Some(cursor) = &state.cursor {
-                let name = target.pagination().cursor_param.clone().ok_or_else(|| {
+                let name = pagination.cursor_param.clone().ok_or_else(|| {
                     DataFusionError::Execution(
                         "cursor_query pagination requires cursor_param".to_string(),
                     )
@@ -57,7 +84,7 @@ pub(super) fn apply_pagination_query_pairs(
             }
         }
         ValidatedPaginationMode::Page => {
-            let name = target.pagination().page_param.clone().ok_or_else(|| {
+            let name = pagination.page_param.clone().ok_or_else(|| {
                 DataFusionError::Execution("page pagination requires page_param".to_string())
             })?;
             params.push((name, state.page.to_string()));
@@ -73,7 +100,6 @@ pub(super) fn apply_pagination_query_pairs(
 pub(super) fn apply_pagination_body_fields(
     body: &mut Option<RequestBody>,
     body_spec: &BodySpec,
-    target: &HttpFetchTarget,
     pagination: &ValidatedPagination,
     state: &PageState,
     page_size: Option<usize>,
@@ -82,7 +108,7 @@ pub(super) fn apply_pagination_body_fields(
         .zip(pagination.page_size.as_ref())
         .is_some_and(|(_, spec)| !spec.body_path.is_empty());
     let needs_cursor_body = matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
-        && !target.pagination().cursor_body_path.is_empty()
+        && !pagination.cursor_body_path.is_empty()
         && state.cursor.is_some();
 
     if !needs_page_size_body && !needs_cursor_body {
@@ -112,12 +138,12 @@ pub(super) fn apply_pagination_body_fields(
     if matches!(pagination.mode, ValidatedPaginationMode::CursorBody)
         && let Some(cursor) = &state.cursor
     {
-        if target.pagination().cursor_body_path.is_empty() {
+        if pagination.cursor_body_path.is_empty() {
             return Err(DataFusionError::Execution(
                 "cursor_body pagination requires cursor_body_path".to_string(),
             ));
         }
-        set_path_value(root, &target.pagination().cursor_body_path, json!(cursor))?;
+        set_path_value(root, &pagination.cursor_body_path, json!(cursor))?;
     }
 
     Ok(())
@@ -144,6 +170,100 @@ pub(super) fn pagination_state_values(state: &PageState) -> HashMap<String, Stri
         values.insert("cursor".to_string(), cursor.clone());
     }
     values
+}
+
+pub(super) fn advance_pagination_state(
+    state: &mut PageState,
+    pagination: &ValidatedPagination,
+    context: PageAdvanceContext<'_>,
+) -> Result<PageAdvance> {
+    match &pagination.mode {
+        ValidatedPaginationMode::None => Ok(PageAdvance::Stop),
+        ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
+            let hints = extract_response_pagination_hints(
+                context.response_headers,
+                context.request_url,
+                pagination,
+            )?;
+            let next_cursor = hints.cursor.or_else(|| {
+                get_path_value(context.payload, &pagination.response_cursor_path)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+            });
+            match next_cursor {
+                Some(cursor) => {
+                    state.cursor = Some(cursor);
+                    Ok(PageAdvance::Continue)
+                }
+                None => Ok(PageAdvance::Stop),
+            }
+        }
+        ValidatedPaginationMode::Page => {
+            if page_is_exhausted(context.rows_on_page, context.page_size) {
+                return Ok(PageAdvance::Stop);
+            }
+            state.page = state.page.saturating_add(pagination.page_step);
+            Ok(PageAdvance::Continue)
+        }
+        ValidatedPaginationMode::Offset(offset) => {
+            if page_is_exhausted(context.rows_on_page, context.page_size) {
+                return Ok(PageAdvance::Stop);
+            }
+            let step = offset
+                .resolve_step(context.page_size, context.source_schema, context.table_name)
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            state.offset = state.offset.saturating_add(step);
+            Ok(PageAdvance::Continue)
+        }
+        ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => {
+            let hints = extract_response_pagination_hints(
+                context.response_headers,
+                context.request_url,
+                pagination,
+            )?;
+            match hints.next_url {
+                Some(next) => {
+                    state.next_url = Some(next);
+                    Ok(PageAdvance::Continue)
+                }
+                None => Ok(PageAdvance::Stop),
+            }
+        }
+    }
+}
+
+pub(super) fn extract_response_pagination_hints(
+    headers: &HeaderMap,
+    request_url: &str,
+    pagination: &ValidatedPagination,
+) -> Result<ResponsePaginationHints> {
+    let next_url = match pagination.mode {
+        ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => {
+            let link_next_url = extract_next_link_url(
+                headers,
+                request_url,
+                pagination.link_header_require_results,
+            )?;
+            let header_next_url = extract_next_url_header(
+                headers,
+                request_url,
+                pagination.next_url_header.as_deref(),
+            )?;
+            link_next_url.or(header_next_url)
+        }
+        _ => None,
+    };
+
+    let cursor = match pagination.mode {
+        ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
+            extract_response_cursor_header(headers, pagination.response_cursor_header.as_deref())?
+        }
+        _ => None,
+    };
+
+    Ok(ResponsePaginationHints { next_url, cursor })
 }
 
 pub(super) fn extract_next_link_url(
@@ -278,11 +398,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        PageState, apply_pagination_body_fields, apply_pagination_query_pairs,
-        extract_next_link_url, extract_next_url_header, extract_response_cursor_header,
-        page_is_exhausted,
+        PageAdvance, PageAdvanceContext, PageState, advance_pagination_state,
+        apply_pagination_body_fields, apply_pagination_query_pairs, extract_next_link_url,
+        extract_next_url_header, extract_response_cursor_header, page_is_exhausted,
     };
-    use crate::backends::http::test_support::{test_http_request_target, test_http_table_spec};
+    use crate::backends::http::test_support::test_http_table_spec;
     use coral_spec::{
         BodySpec, HttpMethod, PaginationMode, PaginationSpec, ParsedTemplate, RequestSpec,
         ValidatedPaginationMode, ValueSourceSpec,
@@ -468,17 +588,43 @@ mod tests {
     }
 
     #[test]
-    fn apply_pagination_query_pairs_uses_typed_offset_param() {
-        let table = test_http_table_spec(
-            &json!([]),
-            &RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
+    fn advance_cursor_pagination_ignores_unrelated_link_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "link",
+            HeaderValue::from_static("<https://attacker.example/steal>; rel=\"next\""),
         );
+        let pagination = PaginationSpec {
+            mode: PaginationMode::CursorQuery,
+            cursor_param: Some("cursor".to_string()),
+            response_cursor_path: vec!["meta".to_string(), "next_cursor".to_string()],
+            ..PaginationSpec::default()
+        }
+        .validated("demo", "items")
+        .unwrap();
+        let mut state = PageState::default();
+
+        let advance = advance_pagination_state(
+            &mut state,
+            &pagination,
+            PageAdvanceContext {
+                payload: &json!({"meta": {"next_cursor": "cursor-2"}}),
+                response_headers: &headers,
+                request_url: "https://api.example.com/items",
+                rows_on_page: 1,
+                page_size: None,
+                source_schema: "demo",
+                table_name: "items",
+            },
+        )
+        .unwrap();
+
+        assert_eq!(advance, PageAdvance::Continue);
+        assert_eq!(state.cursor.as_deref(), Some("cursor-2"));
+    }
+
+    #[test]
+    fn apply_pagination_query_pairs_uses_typed_offset_param() {
         let pagination = PaginationSpec {
             mode: PaginationMode::Offset,
             page_size: Some(coral_spec::PageSizeSpec {
@@ -500,8 +646,7 @@ mod tests {
             ..PageState::default()
         };
 
-        let target = test_http_request_target(&table);
-        apply_pagination_query_pairs(&mut params, &target, &pagination, &state, Some(25)).unwrap();
+        apply_pagination_query_pairs(&mut params, &pagination, &state, Some(25)).unwrap();
 
         assert_eq!(
             params,
@@ -547,8 +692,7 @@ mod tests {
             ..PageState::default()
         };
 
-        let target = test_http_request_target(&table);
-        apply_pagination_query_pairs(&mut params, &target, &pagination, &state, Some(25)).unwrap();
+        apply_pagination_query_pairs(&mut params, &pagination, &state, Some(25)).unwrap();
 
         assert_eq!(
             params,
@@ -565,16 +709,6 @@ mod tests {
 
     #[test]
     fn apply_pagination_body_fields_rejects_declared_text_body_even_when_absent() {
-        let table = test_http_table_spec(
-            &json!([]),
-            &RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
-        );
         let body_spec = BodySpec::Text {
             content: ValueSourceSpec::Filter {
                 key: "sql".to_string(),
@@ -593,12 +727,9 @@ mod tests {
         .validated("demo", "items")
         .unwrap();
         let mut body = None;
-        let target = test_http_request_target(&table);
-
         let error = apply_pagination_body_fields(
             &mut body,
             &body_spec,
-            &target,
             &pagination,
             &PageState::default(),
             Some(25),

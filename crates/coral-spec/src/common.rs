@@ -737,7 +737,16 @@ impl Default for PaginationSpec {
 pub struct ValidatedPagination {
     pub mode: ValidatedPaginationMode,
     pub page_size: Option<PageSizeSpec>,
+    pub cursor_param: Option<String>,
+    pub cursor_body_path: Vec<String>,
+    pub response_cursor_path: Vec<String>,
+    pub response_cursor_header: Option<String>,
+    pub page_param: Option<String>,
+    pub page_start: i64,
+    pub page_step: i64,
     pub link_header_require_results: bool,
+    pub next_url_header: Option<String>,
+    pub max_pages: Option<usize>,
 }
 
 /// The validated pagination mode selected for one HTTP table.
@@ -774,11 +783,25 @@ impl PaginationSpec {
 
     pub fn validated(&self, schema: &str, table: &str) -> Result<ValidatedPagination> {
         let page_size = self.validated_page_size(schema, table)?;
+        if matches!(self.max_pages, Some(0)) {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.max_pages must be > 0"
+            )));
+        }
         let mode = self.validated_mode(schema, table, page_size.is_some())?;
         Ok(ValidatedPagination {
             mode,
             page_size,
+            cursor_param: self.cursor_param.clone(),
+            cursor_body_path: self.cursor_body_path.clone(),
+            response_cursor_path: self.response_cursor_path.clone(),
+            response_cursor_header: self.response_cursor_header.clone(),
+            page_param: self.page_param.clone(),
+            page_start: self.page_start,
+            page_step: self.page_step,
             link_header_require_results: self.link_header_require_results,
+            next_url_header: self.next_url_header.clone(),
+            max_pages: self.max_pages,
         })
     }
 
@@ -795,6 +818,15 @@ impl PaginationSpec {
         {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} pagination.response_cursor_header must not be empty"
+            )));
+        }
+        if self
+            .next_url_header
+            .as_deref()
+            .is_some_and(|header| header.trim().is_empty())
+        {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.next_url_header must not be empty"
             )));
         }
 
@@ -1426,6 +1458,20 @@ mod tests {
     }
 
     #[test]
+    fn pagination_max_pages_zero_is_rejected() {
+        let pagination = PaginationSpec {
+            max_pages: Some(0),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.max_pages must be > 0")
+        );
+    }
+
+    #[test]
     fn cursor_query_pagination_rejects_empty_response_cursor_header() {
         let pagination = PaginationSpec {
             mode: PaginationMode::CursorQuery,
@@ -1456,6 +1502,21 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("demo.items pagination.response_cursor_header must not be empty")
+        );
+    }
+
+    #[test]
+    fn link_pagination_rejects_blank_next_url_header() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::LinkHeader,
+            next_url_header: Some("   ".to_string()),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.next_url_header must not be empty")
         );
     }
 
