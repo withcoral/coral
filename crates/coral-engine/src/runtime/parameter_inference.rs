@@ -1,16 +1,4 @@
-//! Infers manifest types for SQL placeholders by collecting evidence and
-//! resolving it per parameter.
-//!
-//! Three independent sources contribute claims about a placeholder's type:
-//! the types `DataFusion`'s planner writes onto placeholders during SQL
-//! planning (comparisons, `BETWEEN`, `IN`, `LIKE`), explicit `CAST` /
-//! `TRY_CAST` targets, and declared source table-function argument types.
-//! Collection never merges: an untyped occurrence is simply no evidence.
-//! [`resolve`] then decides per parameter: declared claims outrank Arrow
-//! claims, disagreements are errors carrying every claim with its
-//! provenance, and a parameter with no claims at all is ambiguous.
-//! Arrow-to-manifest lowering is lossy by design — see [`crate::types`] for
-//! the policies and their invariants.
+//! SQL placeholder type inference for UDF planning.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -24,25 +12,21 @@ use datafusion::logical_expr::{Expr, LogicalPlan};
 use crate::runtime::source_functions::SourceFunctionNode;
 use crate::types::{manifest_claim_accepts_arrow, manifest_data_type_for_arrow};
 
-/// One SQL parameter with its resolved manifest type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InferredParameter {
     pub(crate) name: String,
     pub(crate) data_type: ManifestDataType,
 }
 
-/// Why a parameter's type could not be resolved.
 #[derive(Debug)]
 pub(crate) enum ParameterInferenceError {
-    /// No source produced a claim for the parameter.
-    NoEvidence { parameter: String },
-    /// Claims disagree; every claim is included so the author can see both
-    /// sides of the disagreement.
+    NoEvidence {
+        parameter: String,
+    },
     Conflict {
         parameter: String,
         claims: Vec<TypeEvidence>,
     },
-    /// The claims agree, but on a type the manifest vocabulary cannot express.
     Inexpressible {
         parameter: String,
         data_type: DataType,
@@ -50,7 +34,6 @@ pub(crate) enum ParameterInferenceError {
     },
 }
 
-/// One claim about one parameter's type, tagged with where it came from.
 #[derive(Debug, Clone)]
 pub(crate) struct TypeEvidence {
     parameter: String,
@@ -58,17 +41,12 @@ pub(crate) struct TypeEvidence {
     source: EvidenceSource,
 }
 
-/// What a claim says the type is, in whichever vocabulary the source speaks.
 #[derive(Debug, Clone)]
 enum TypeClaim {
-    /// A manifest type stated by metadata; carries more information than any
-    /// Arrow spelling (`Json` has no Arrow spelling of its own).
     Declared(ManifestDataType),
-    /// An Arrow type observed in the plan.
     Arrow(DataType),
 }
 
-/// Where a claim came from; shown verbatim in conflict errors.
 #[derive(Debug, Clone)]
 pub(crate) enum EvidenceSource {
     Planner,
@@ -76,7 +54,6 @@ pub(crate) enum EvidenceSource {
     SourceFunctionArgument { function: String, argument: String },
 }
 
-/// Infers the manifest type of every SQL placeholder in `plan`.
 pub(crate) fn infer_parameters(plan: &LogicalPlan) -> Result<Vec<InferredParameter>> {
     let parameters = placeholder_names(plan)?;
 
@@ -87,7 +64,6 @@ pub(crate) fn infer_parameters(plan: &LogicalPlan) -> Result<Vec<InferredParamet
     resolve(parameters, evidence).map_err(|error| DataFusionError::Plan(error.to_string()))
 }
 
-/// Every placeholder referenced by the plan, typed or not.
 fn placeholder_names(plan: &LogicalPlan) -> Result<BTreeSet<String>> {
     let mut names = BTreeSet::new();
     for_each_expr(plan, |expr| {
@@ -99,8 +75,6 @@ fn placeholder_names(plan: &LogicalPlan) -> Result<BTreeSet<String>> {
     Ok(names)
 }
 
-/// Claims from types the planner already wrote onto placeholders.
-///
 /// Read directly off the plan rather than via
 /// [`LogicalPlan::get_parameter_fields`], which folds occurrences with its
 /// own merge semantics: an untyped occurrence can erase an earlier typed
@@ -125,7 +99,6 @@ fn planner_evidence(plan: &LogicalPlan) -> Result<Vec<TypeEvidence>> {
     Ok(evidence)
 }
 
-/// Claims from explicit `CAST` / `TRY_CAST` targets over a placeholder.
 fn cast_evidence(plan: &LogicalPlan) -> Result<Vec<TypeEvidence>> {
     let mut evidence = Vec::new();
     for_each_expr(plan, |expr| {
@@ -147,8 +120,6 @@ fn cast_evidence(plan: &LogicalPlan) -> Result<Vec<TypeEvidence>> {
     Ok(evidence)
 }
 
-/// Claims from declared source table-function argument types, for
-/// placeholders passed directly as argument values.
 fn source_function_evidence(plan: &LogicalPlan) -> Result<Vec<TypeEvidence>> {
     let mut evidence = Vec::new();
     plan.apply_with_subqueries(|node| {
@@ -176,7 +147,6 @@ fn source_function_evidence(plan: &LogicalPlan) -> Result<Vec<TypeEvidence>> {
     Ok(evidence)
 }
 
-/// Visits every expression in the plan, including subqueries.
 fn for_each_expr(plan: &LogicalPlan, mut visit: impl FnMut(&Expr) -> Result<()>) -> Result<()> {
     plan.apply_with_subqueries(|node| {
         node.apply_expressions(|expr| {
@@ -189,7 +159,6 @@ fn for_each_expr(plan: &LogicalPlan, mut visit: impl FnMut(&Expr) -> Result<()>)
     Ok(())
 }
 
-/// Resolves each parameter's claims to one manifest type.
 fn resolve(
     parameters: BTreeSet<String>,
     evidence: Vec<TypeEvidence>,
@@ -214,10 +183,6 @@ fn resolve(
     Ok(inferred)
 }
 
-/// Resolves one parameter's claims by precedence: a declared claim wins and
-/// every Arrow claim must be a spelling it accepts; with no declaration, all
-/// Arrow claims must resolve to the same manifest type; with no claims at
-/// all, the parameter is ambiguous.
 fn resolve_parameter(
     parameter: &str,
     claims: &[TypeEvidence],
@@ -235,7 +200,6 @@ fn resolve_parameter(
     }
 }
 
-/// The single declared type, if any declared claims exist.
 fn agreed_declared_type(
     parameter: &str,
     claims: &[TypeEvidence],
@@ -254,8 +218,6 @@ fn agreed_declared_type(
     Ok(agreed)
 }
 
-/// Checks that every Arrow claim is a spelling the declared type accepts
-/// (see [`manifest_claim_accepts_arrow`]).
 fn ensure_arrow_claims_accept(
     parameter: &str,
     declared: ManifestDataType,
@@ -272,8 +234,6 @@ fn ensure_arrow_claims_accept(
     Ok(())
 }
 
-/// The single manifest type all Arrow claims resolve to, if any exist.
-///
 /// Each claim resolves to manifest spelling before agreement is checked, so
 /// Arrow spelling differences (`Utf8` vs `Utf8View`, timestamp units) cannot
 /// manufacture conflicts.

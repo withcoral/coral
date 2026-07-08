@@ -20,8 +20,8 @@ pub use query::{
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 pub use udfs::{
-    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimeResultColumn,
-    UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeArgument, UdfRuntimeImplementation, UdfRuntimeResultColumn, UdfRuntimeSignature,
+    UdfRuntimeSqlDefinition,
 };
 
 #[cfg(test)]

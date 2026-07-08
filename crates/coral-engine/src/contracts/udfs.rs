@@ -1,8 +1,4 @@
 //! Engine runtime UDF contracts supplied by the app layer.
-//!
-//! These are not the user-authored UDF file format. The app/spec layers
-//! parse and validate authored UDFs, then supply these runtime definitions
-//! to the engine for planning and execution.
 
 use coral_spec::ManifestDataType;
 
@@ -33,29 +29,12 @@ impl UdfRuntimeSqlDefinition {
     }
 }
 
-/// One validated UDF made available to the query runtime.
-#[derive(Debug, Clone)]
-pub struct UdfRuntimeDefinition {
-    /// Stable UDF id within one workspace.
-    pub name: String,
-    /// Typed arguments accepted by the UDF.
-    pub arguments: Vec<UdfRuntimeArgument>,
-    /// Executable UDF implementation.
-    pub implementation: UdfRuntimeImplementation,
-    /// Columns inferred by planning the UDF SQL body.
-    pub result_columns: Vec<UdfRuntimeResultColumn>,
-}
-
 /// One typed UDF argument.
 #[derive(Debug, Clone)]
 pub struct UdfRuntimeArgument {
     /// Argument name.
     pub name: String,
-    /// Declared argument type in manifest spelling. `Json` and `Timestamp`
-    /// can only originate from source-function arg bindings; parameters
-    /// inferred from casts or comparisons are always `Utf8`/`Int64`/
-    /// `Float64`/`Boolean`. All string-shaped types bind as string SQL
-    /// parameters at execution.
+    /// Argument type in manifest spelling.
     pub data_type: ManifestDataType,
 }
 
