@@ -4,10 +4,16 @@ mod collector;
 mod publisher;
 mod sensitive;
 mod source_scope;
+pub(crate) mod provider;
+mod sqlite_projection;
 mod sqlite_queue;
 mod sqlite_store;
 mod writer;
 
 pub(crate) use publisher::SearchObservationHandle;
+pub(crate) use sqlite_projection::ObservedValuesDrainBudget;
+
+#[cfg(test)]
+pub(crate) use sqlite_queue::{ObservedValuesQueueJob, ObservedValuesSurfaceKind};
 #[cfg(test)]
 pub(crate) use sqlite_store::SqliteObservedValuesStore;

@@ -119,7 +119,6 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
-                        SourceObservationMode::Disabled,
                     )
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
@@ -155,7 +154,6 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
-                        SourceObservationMode::Disabled,
                     )
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
@@ -197,11 +195,7 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_without_source_observations(
-                        workspace_name,
-                        &loaded_sources,
-                        &config,
-                    )
+                    .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
@@ -259,11 +253,7 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_without_source_observations(
-                        workspace_name,
-                        &loaded_sources,
-                        &config,
-                    )
+                    .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::explain_sql(&sources, runtime, sql)
@@ -303,7 +293,7 @@ impl QueryManager {
             (source, loaded_source, version, config)
         };
         let runtime = self
-            .runtime_config_without_source_observations(
+            .runtime_config(
                 workspace_name,
                 std::slice::from_ref(&loaded_source),
                 &config,
@@ -466,22 +456,6 @@ impl QueryManager {
             selected_sources,
             config,
             CredentialResolutionMode::Refreshing,
-            SourceObservationMode::Enabled,
-        )
-    }
-
-    fn runtime_config_without_source_observations(
-        &self,
-        workspace_name: &WorkspaceName,
-        selected_sources: &[LoadedQuerySource],
-        config: &AppConfig,
-    ) -> Result<QueryRuntimeConfig, AppError> {
-        self.runtime_config_with_credential_mode(
-            workspace_name,
-            selected_sources,
-            config,
-            CredentialResolutionMode::Refreshing,
-            SourceObservationMode::Disabled,
         )
     }
 
@@ -491,14 +465,11 @@ impl QueryManager {
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
         credential_resolution_mode: CredentialResolutionMode,
-        source_observation_mode: SourceObservationMode,
     ) -> Result<QueryRuntimeConfig, AppError> {
         let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, &query_sources);
-        if matches!(source_observation_mode, SourceObservationMode::Enabled)
-            && let Some(search_observations) = &self.search_observations
-        {
+        if let Some(search_observations) = &self.search_observations {
             let observed_extensions =
                 search_observations.extensions_for(workspace_name, &query_sources);
             extensions
@@ -561,12 +532,6 @@ enum QueryOperation {
     ListTables,
     ListCatalog,
     DescribeTable,
-}
-
-#[derive(Clone, Copy)]
-enum SourceObservationMode {
-    Enabled,
-    Disabled,
 }
 
 impl QueryOperation {
@@ -1208,62 +1173,6 @@ mod tests {
             .body_capture_max_bytes
             .expect("body capture config");
         assert_eq!(config, 42);
-    }
-
-    #[test]
-    fn metadata_runtime_config_skips_observed_values_publishers() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let workspace_name = WorkspaceName::default();
-        let manager =
-            fixture
-                .manager
-                .clone()
-                .with_search_observation_handle(SearchObservationHandle::new(
-                    fixture.manager.layout.clone(),
-                ));
-        let loaded_source = observed_values_loaded_source();
-
-        let runtime = manager
-            .runtime_config_without_source_observations(
-                &workspace_name,
-                std::slice::from_ref(&loaded_source),
-                &AppConfig::default(),
-            )
-            .expect("metadata runtime config");
-
-        assert!(runtime.extensions.source_observation_publishers.is_empty());
-        assert!(
-            !manager.layout.search_sqlite_file(&workspace_name).exists(),
-            "metadata runtime config should not open the observed-values SQLite store"
-        );
-    }
-
-    #[test]
-    fn execution_runtime_config_attaches_observed_values_publishers() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let workspace_name = WorkspaceName::default();
-        let manager =
-            fixture
-                .manager
-                .clone()
-                .with_search_observation_handle(SearchObservationHandle::new(
-                    fixture.manager.layout.clone(),
-                ));
-        let loaded_source = observed_values_loaded_source();
-
-        let runtime = manager
-            .runtime_config(
-                &workspace_name,
-                std::slice::from_ref(&loaded_source),
-                &AppConfig::default(),
-            )
-            .expect("execution runtime config");
-
-        assert_eq!(runtime.extensions.source_observation_publishers.len(), 1);
-        assert!(
-            manager.layout.search_sqlite_file(&workspace_name).exists(),
-            "execution runtime config should open the observed-values SQLite store"
-        );
     }
 
     #[test]
@@ -1935,38 +1844,5 @@ tables:
                 .as_deref(),
             Some("stored-token")
         );
-    }
-
-    fn observed_values_loaded_source() -> LoadedQuerySource {
-        let source_spec = parse_source_manifest_yaml(
-            r"
-name: github
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: https://api.github.com
-tables:
-  - name: issues
-    description: Issues
-    request:
-      path: /issues
-    columns:
-      - name: title
-        type: Utf8
-",
-        )
-        .expect("parse source manifest");
-        LoadedQuerySource {
-            source: InstalledSource {
-                name: SourceName::parse("github").expect("source name"),
-                version: None,
-                variables: BTreeMap::new(),
-                secrets: Vec::new(),
-                credential_storage: None,
-                origin: SourceOrigin::Bundled,
-            },
-            query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
-            credential_material: BTreeMap::new(),
-        }
     }
 }

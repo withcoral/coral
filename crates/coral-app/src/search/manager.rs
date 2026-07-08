@@ -1,5 +1,7 @@
 //! App-level Universal Search manager.
 
+use std::time::{Duration, Instant};
+
 use crate::query::QueryAttribution;
 use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::provider::CatalogMetadataProvider;
@@ -9,6 +11,8 @@ use crate::search::maintenance::{
     RebuildSearchIndexResponse, SearchMaintenanceResult, SearchProviderClearRequest,
     SearchProviderMaintenance, SearchProviderRebuildRequest,
 };
+use crate::search::observed::ObservedValuesDrainBudget;
+use crate::search::observed::provider::ObservedValuesProvider;
 use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -16,17 +20,23 @@ use crate::workspaces::WorkspaceName;
 #[derive(Clone)]
 pub(crate) struct SearchManager {
     catalog: CatalogMetadataProvider,
+    observed: ObservedValuesProvider,
     engine: UniversalSearchEngine,
     config_store: ConfigStore,
 }
 
+const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(1);
+
 impl SearchManager {
     pub(crate) fn new(layout: AppStateLayout, config_store: ConfigStore) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
-        let catalog = CatalogMetadataProvider::new(layout, catalog_loader);
+        let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
+        let observed = ObservedValuesProvider::new(layout);
         Self {
             catalog: catalog.clone(),
-            engine: UniversalSearchEngine::new(catalog),
+            observed: observed.clone(),
+            engine: UniversalSearchEngine::new(catalog, observed),
             config_store,
         }
     }
@@ -65,6 +75,49 @@ impl SearchManager {
             results: vec![outcome.result],
             storage_cleanup: outcome.storage_cleanup,
         })
+    }
+
+    pub(crate) fn drain_before_shutdown(&self) -> Result<(), SearchManagerError> {
+        let workspaces = {
+            let _state_lock = self.config_store.state_lock_shared()?;
+            self.config_store.load_config_unlocked()?.workspaces()
+        };
+        let deadline = Instant::now() + SHUTDOWN_DRAIN_BUDGET;
+        for workspace in workspaces {
+            let remaining_budget = deadline.saturating_duration_since(Instant::now());
+            if remaining_budget.is_zero() {
+                tracing::debug!(
+                    workspace = %workspace.name,
+                    "skipping observed-value shutdown drain because budget expired"
+                );
+                break;
+            }
+            match self.observed.drain_queue(
+                &workspace.name,
+                ObservedValuesDrainBudget::new(MANUAL_DRAIN_MAX_JOBS, remaining_budget),
+            ) {
+                Ok(result) => {
+                    tracing::debug!(
+                        workspace = %workspace.name,
+                        queue_jobs_processed = result.queue_jobs_processed,
+                        stale_jobs_skipped = result.stale_jobs_skipped,
+                        failed_jobs = result.failed_jobs,
+                        remaining_queue_depth = result.remaining_queue_depth,
+                        budget_exhausted = result.budget_exhausted,
+                        remaining_budget_ms = remaining_budget.as_millis(),
+                        "drained observed-value queue before shutdown"
+                    );
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        workspace = %workspace.name,
+                        error = ?error,
+                        "failed to drain observed-value queue before shutdown"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     fn require_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), SearchManagerError> {

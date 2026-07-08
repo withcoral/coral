@@ -91,6 +91,7 @@ impl SearchObservationHandle {
     pub(crate) fn clear_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
         self.store
             .clear_workspace(workspace_name)
+            .map(|_result| ())
             .map_err(|error| observed_values_store_error(&error))
     }
 
@@ -101,6 +102,7 @@ impl SearchObservationHandle {
     ) -> Result<(), AppError> {
         self.store
             .clear_source(workspace_name, source_name)
+            .map(|_result| ())
             .map_err(|error| observed_values_store_error(&error))
     }
 
