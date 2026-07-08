@@ -250,7 +250,19 @@ async fn register_source(
             claim_registration_catalogs(&registration, seen_catalogs)?;
             return Ok(registration);
         }
-        Some(CacheLookup::Stale(registration)) => Some(registration),
+        Some(CacheLookup::Refreshing(registration)) => {
+            tracing::debug!(
+                source = %source.source_name(),
+                "reusing stale cached source registration while refresh is in progress"
+            );
+            claim_registration_schemas(&registration, seen_schemas)?;
+            claim_registration_catalogs(&registration, seen_catalogs)?;
+            return Ok(registration);
+        }
+        Some(CacheLookup::Stale {
+            registration,
+            claim,
+        }) => Some((registration, claim)),
         None => None,
     };
 
@@ -258,11 +270,11 @@ async fn register_source(
         Ok(registration) => registration,
         Err(error) => {
             // Availability over freshness: a source that registered before
-            // keeps serving its last known catalog when a refresh fails, and
-            // `touch` defers the next refresh attempt by one time-to-live so
-            // an unreachable source costs one attempt per window, not one
-            // per query.
-            let Some(registration) = stale else {
+            // keeps serving its last known catalog when a claimed refresh
+            // fails. The cache claim defers the next refresh attempt by one
+            // time-to-live so an unreachable source costs one attempt per
+            // window, not one per query.
+            let Some((registration, claim)) = stale else {
                 return Err(error);
             };
             tracing::warn!(
@@ -271,7 +283,7 @@ async fn register_source(
                 "source registration refresh failed; keeping stale cached registration"
             );
             if let Some(cache) = registration_cache {
-                cache.touch(source.source_name());
+                cache.refresh_failed(&claim);
             }
             claim_registration_schemas(&registration, seen_schemas)?;
             claim_registration_catalogs(&registration, seen_catalogs)?;

@@ -37,8 +37,15 @@ struct CachedRegistration {
     fingerprint: String,
     registration: BackendRegistration,
     refreshed_at: Instant,
+    refresh_status: RefreshStatus,
     #[cfg(test)]
     force_stale: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RefreshStatus {
+    Idle,
+    Refreshing { started_at: Instant },
 }
 
 impl CachedRegistration {
@@ -55,9 +62,23 @@ impl CachedRegistration {
 pub(crate) enum CacheLookup {
     /// The entry is within its time-to-live and can be used as is.
     Fresh(BackendRegistration),
-    /// The entry outlived its time-to-live. Callers should re-register the
-    /// source and fall back to this registration only when that fails.
-    Stale(BackendRegistration),
+    /// The entry outlived its time-to-live and this caller claimed the refresh.
+    /// Callers should re-register the source and fall back to this registration
+    /// only when that fails.
+    Stale {
+        registration: BackendRegistration,
+        claim: RegistrationRefreshClaim,
+    },
+    /// Another caller is already refreshing this stale entry. Reuse the cached
+    /// registration rather than starting another backend registration.
+    Refreshing(BackendRegistration),
+}
+
+/// Handle for the refresh attempt that moved an entry into `Refreshing`.
+pub(crate) struct RegistrationRefreshClaim {
+    source_name: String,
+    fingerprint: String,
+    started_at: Instant,
 }
 
 impl std::fmt::Debug for RegistrationCache {
@@ -98,17 +119,30 @@ impl RegistrationCache {
     /// Returns the cached registration for `source_name` when its fingerprint
     /// still matches, marked fresh or stale by the entry's age.
     pub(crate) fn lookup(&self, source_name: &str, fingerprint: &str) -> Option<CacheLookup> {
-        let entries = self.entries();
-        let entry = entries.get(source_name)?;
+        let mut entries = self.entries();
+        let entry = entries.get_mut(source_name)?;
         if entry.fingerprint != fingerprint {
             return None;
         }
         let registration = entry.registration.clone();
-        Some(if entry.is_fresh(self.ttl) {
-            CacheLookup::Fresh(registration)
-        } else {
-            CacheLookup::Stale(registration)
-        })
+        if entry.is_fresh(self.ttl) {
+            return Some(CacheLookup::Fresh(registration));
+        }
+        match entry.refresh_status {
+            RefreshStatus::Idle => {
+                let started_at = Instant::now();
+                entry.refresh_status = RefreshStatus::Refreshing { started_at };
+                Some(CacheLookup::Stale {
+                    registration,
+                    claim: RegistrationRefreshClaim {
+                        source_name: source_name.to_string(),
+                        fingerprint: fingerprint.to_string(),
+                        started_at,
+                    },
+                })
+            }
+            RefreshStatus::Refreshing { .. } => Some(CacheLookup::Refreshing(registration)),
+        }
     }
 
     /// Stores `registration` for `source_name`, replacing any previous entry
@@ -119,30 +153,45 @@ impl RegistrationCache {
         fingerprint: &str,
         registration: &BackendRegistration,
     ) {
-        self.entries().insert(
+        let mut entries = self.entries();
+        entries.insert(
             source_name.to_string(),
             CachedRegistration {
                 fingerprint: fingerprint.to_string(),
                 registration: registration.clone(),
                 refreshed_at: Instant::now(),
+                refresh_status: RefreshStatus::Idle,
                 #[cfg(test)]
                 force_stale: false,
             },
         );
     }
 
-    /// Restarts the time-to-live of the entry for `source_name`.
+    /// Restarts the time-to-live after a claimed refresh fails.
     ///
     /// Used after a failed refresh so a stale entry keeps serving queries and
     /// the refresh retries once per time-to-live window instead of on every
-    /// runtime build.
-    pub(crate) fn touch(&self, source_name: &str) {
-        if let Some(entry) = self.entries().get_mut(source_name) {
-            entry.refreshed_at = Instant::now();
-            #[cfg(test)]
-            {
-                entry.force_stale = false;
-            }
+    /// runtime build. The claim check prevents an old failed refresh from
+    /// touching a newer entry that was stored while the refresh was in flight.
+    pub(crate) fn refresh_failed(&self, claim: &RegistrationRefreshClaim) {
+        let mut entries = self.entries();
+        let Some(entry) = entries.get_mut(&claim.source_name) else {
+            return;
+        };
+        if entry.fingerprint != claim.fingerprint {
+            return;
+        }
+        if !matches!(
+            entry.refresh_status,
+            RefreshStatus::Refreshing { started_at } if started_at == claim.started_at
+        ) {
+            return;
+        }
+        entry.refreshed_at = Instant::now();
+        entry.refresh_status = RefreshStatus::Idle;
+        #[cfg(test)]
+        {
+            entry.force_stale = false;
         }
     }
 
@@ -164,5 +213,46 @@ impl RegistrationCache {
         if let Some(entry) = self.entries().get_mut(source_name) {
             entry.force_stale = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crate::backends::BackendRegistration;
+    use crate::runtime::registration_cache::{CacheLookup, RegistrationCache};
+
+    fn registration() -> BackendRegistration {
+        BackendRegistration {
+            schemas: Vec::new(),
+            catalogs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn stale_lookup_claims_refresh_and_ignores_late_old_claims() {
+        let cache = RegistrationCache::with_ttl(Duration::from_hours(1));
+        let registration = registration();
+        cache.store("fake", "v1", &registration);
+        cache.force_stale("fake");
+
+        let claim = match cache.lookup("fake", "v1").expect("stale entry") {
+            CacheLookup::Stale { claim, .. } => claim,
+            _ => panic!("stale entry should be claimed by first lookup"),
+        };
+        assert!(matches!(
+            cache.lookup("fake", "v1"),
+            Some(CacheLookup::Refreshing(_))
+        ));
+
+        cache.store("fake", "v2", &registration);
+        cache.force_stale("fake");
+        cache.refresh_failed(&claim);
+
+        assert!(
+            matches!(cache.lookup("fake", "v2"), Some(CacheLookup::Stale { .. })),
+            "a failed refresh from v1 must not touch the newer v2 entry"
+        );
     }
 }
