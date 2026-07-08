@@ -89,7 +89,7 @@ For catalog search, the `catalog_metadata` provider status reports whether searc
 
 ## `coral search-index`
 
-Manage app-owned local search indexes.
+Manage Coral's local search indexes.
 
 ### `coral search-index rebuild`
 
@@ -109,11 +109,13 @@ coral search-index rebuild --provider catalog --force
 
 ### `coral search-index clear`
 
-Clear app-owned local search data for the current workspace.
-The global `--workspace [NAME]` flag is required as destructive confirmation:
-use it bare to confirm the selected workspace, or pass a name to select and
-confirm that workspace. Although `--workspace` is global, it may appear inside
-the `search-index clear` command.
+Clear Coral's local search data for one workspace.
+
+This command is destructive, so it requires `--yes` and the global
+`--workspace` flag. Use `--workspace NAME` to clear `NAME`. Use bare
+`--workspace` to clear the workspace Coral would otherwise select:
+`CORAL_WORKSPACE` when set, otherwise `default`. The global flag may appear
+after `clear`.
 
 ```shellscript
 coral search-index clear --scope all --workspace --yes
