@@ -788,6 +788,16 @@ impl PaginationSpec {
         table: &str,
         has_page_size: bool,
     ) -> Result<ValidatedPaginationMode> {
+        if self
+            .response_cursor_header
+            .as_deref()
+            .is_some_and(|header| header.trim().is_empty())
+        {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.response_cursor_header must not be empty"
+            )));
+        }
+
         match self.mode {
             PaginationMode::None => Ok(ValidatedPaginationMode::None),
             PaginationMode::Auto => Ok(ValidatedPaginationMode::Auto),
@@ -1412,6 +1422,40 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("demo.items pagination.mode=offset requires offset_step or page_size")
+        );
+    }
+
+    #[test]
+    fn cursor_query_pagination_rejects_empty_response_cursor_header() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::CursorQuery,
+            cursor_param: Some("cursor".to_string()),
+            response_cursor_path: vec!["meta".to_string(), "next_cursor".to_string()],
+            response_cursor_header: Some(String::new()),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.response_cursor_header must not be empty")
+        );
+    }
+
+    #[test]
+    fn cursor_body_pagination_rejects_blank_response_cursor_header() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::CursorBody,
+            cursor_body_path: vec!["cursor".to_string()],
+            response_cursor_path: vec!["meta".to_string(), "next_cursor".to_string()],
+            response_cursor_header: Some("   ".to_string()),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.response_cursor_header must not be empty")
         );
     }
 

@@ -2247,7 +2247,7 @@ async fn pagination_link_header() {
         .and(query_param_is_missing("page"))
         .respond_with(
             ResponseTemplate::new(200)
-                .append_header("Link", "</api/users?page=2>; rel=\"next\"")
+                .append_header("Link", "<?page=2>; rel=\"next\"")
                 .set_body_json(json!({ "data": &rows[..2] })),
         )
         .mount(&server)
@@ -2287,7 +2287,7 @@ async fn pagination_next_url_header() {
         .and(query_param_is_missing("page"))
         .respond_with(
             ResponseTemplate::new(200)
-                .append_header("X-Next-Page-Url", "/api/users?page=2")
+                .append_header("X-Next-Page-Url", "?page=2")
                 .set_body_json(json!({ "data": &rows[..2] })),
         )
         .mount(&server)

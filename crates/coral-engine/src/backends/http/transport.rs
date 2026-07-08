@@ -43,7 +43,6 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) table_headers: &'a [HeaderSpec],
     pub(super) table_name: &'a str,
     pub(super) method: HttpMethod,
-    pub(super) base_url: &'a str,
     pub(super) url: &'a str,
     pub(super) query_pairs: &'a [(String, String)],
     pub(super) body: Option<&'a RequestBody>,
@@ -80,7 +79,6 @@ pub(super) async fn execute_request(
         table_headers,
         table_name,
         method,
-        base_url,
         url,
         query_pairs,
         body,
@@ -308,7 +306,7 @@ pub(super) async fn execute_request(
             }
 
             let next_url =
-                extract_next_link_url(response.headers(), base_url, link_header_require_results)
+                extract_next_link_url(response.headers(), url, link_header_require_results)
                     .map_err(|error| {
                         record_http_processing_error(&request_span, "PAGINATION", &error);
                         pagination_error(
@@ -323,19 +321,17 @@ pub(super) async fn execute_request(
                 Ok(next_url) => next_url,
                 Err(error) => break 'response ResponseOutcome::Done(Err(error)),
             };
-            let header_next_url =
-                extract_next_url_header(response.headers(), base_url, next_url_header).map_err(
-                    |error| {
-                        record_http_processing_error(&request_span, "PAGINATION", &error);
-                        pagination_error(
-                            source_schema,
-                            table_name,
-                            Some(method_label),
-                            Some(&logged_url),
-                            &error,
-                        )
-                    },
-                );
+            let header_next_url = extract_next_url_header(response.headers(), url, next_url_header)
+                .map_err(|error| {
+                    record_http_processing_error(&request_span, "PAGINATION", &error);
+                    pagination_error(
+                        source_schema,
+                        table_name,
+                        Some(method_label),
+                        Some(&logged_url),
+                        &error,
+                    )
+                });
             let next_url = match header_next_url {
                 Ok(header_next_url) => next_url.or(header_next_url),
                 Err(error) => break 'response ResponseOutcome::Done(Err(error)),
@@ -542,7 +538,6 @@ mod tests {
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,
-                base_url: &base_url,
                 url: &url,
                 query_pairs: &query_pairs,
                 body: None,

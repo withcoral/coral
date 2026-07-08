@@ -144,10 +144,10 @@ pub(super) fn pagination_state_values(state: &PageState) -> HashMap<String, Stri
 
 pub(super) fn extract_next_link_url(
     headers: &HeaderMap,
-    base_url: &str,
+    request_url: &str,
     require_results_true: bool,
 ) -> Result<Option<String>> {
-    let base = pagination_base_url(base_url)?;
+    let base = pagination_request_url(request_url)?;
 
     for header in headers.get_all("link") {
         let Ok(header) = header.to_str() else {
@@ -182,7 +182,7 @@ pub(super) fn extract_next_link_url(
 
 pub(super) fn extract_next_url_header(
     headers: &HeaderMap,
-    base_url: &str,
+    request_url: &str,
     header_name: Option<&str>,
 ) -> Result<Option<String>> {
     let Some(header_name) = header_name else {
@@ -193,7 +193,7 @@ pub(super) fn extract_next_url_header(
             "invalid pagination next URL header '{header_name}': {error}"
         ))
     })?;
-    let base = pagination_base_url(base_url)?;
+    let base = pagination_request_url(request_url)?;
     for header in headers.get_all(name) {
         let Ok(value) = header.to_str() else {
             continue;
@@ -234,10 +234,10 @@ pub(super) fn extract_response_cursor_header(
     Ok(None)
 }
 
-fn pagination_base_url(base_url: &str) -> Result<reqwest::Url> {
-    reqwest::Url::parse(base_url).map_err(|e| {
+fn pagination_request_url(request_url: &str) -> Result<reqwest::Url> {
+    reqwest::Url::parse(request_url).map_err(|e| {
         DataFusionError::Execution(format!(
-            "invalid base URL for pagination links '{base_url}': {e}"
+            "invalid request URL for pagination links '{request_url}': {e}"
         ))
     })
 }
@@ -293,6 +293,24 @@ mod tests {
         );
 
         let next = extract_next_link_url(&headers, "https://api.example.com", false).unwrap();
+
+        assert_eq!(
+            next,
+            Some("https://api.example.com/v1/resources?page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_next_link_url_resolves_query_links_against_request_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert("link", HeaderValue::from_static("<?page=2>; rel=\"next\""));
+
+        let next = extract_next_link_url(
+            &headers,
+            "https://api.example.com/v1/resources?page=1",
+            false,
+        )
+        .unwrap();
 
         assert_eq!(
             next,
@@ -402,6 +420,24 @@ mod tests {
         let next =
             extract_next_url_header(&headers, "https://api.example.com", Some("X-Next-Page-Url"))
                 .unwrap();
+
+        assert_eq!(
+            next,
+            Some("https://api.example.com/v1/resources?page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_next_url_header_resolves_query_links_against_request_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-next-page-url", HeaderValue::from_static("?page=2"));
+
+        let next = extract_next_url_header(
+            &headers,
+            "https://api.example.com/v1/resources?page=1",
+            Some("X-Next-Page-Url"),
+        )
+        .unwrap();
 
         assert_eq!(
             next,

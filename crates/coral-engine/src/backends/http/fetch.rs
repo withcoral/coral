@@ -164,7 +164,6 @@ pub(super) async fn fetch_rows(
                 table_headers: &active_request.headers,
                 table_name: target.name(),
                 method: active_request.method,
-                base_url: &base_url,
                 url: &url,
                 query_pairs: &query_pairs,
                 body: body.as_ref(),
