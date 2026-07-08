@@ -6,16 +6,11 @@ import "coral/v1/resources.proto";
 
 // One scalar function argument.
 message FunctionArgument {
-  reserved 3;
-  reserved "required";
-
   // Argument name.
   string name = 1;
   // Scalar argument type in ManifestDataType spelling, such as Utf8, Int64,
   // Float64, Boolean, Timestamp, or Json.
   string data_type = 2;
-  // User-facing description.
-  string description = 4;
 }
 
 // One function result column.
@@ -26,8 +21,6 @@ message FunctionResultColumn {
   string data_type = 2;
   // Whether the column can contain null values.
   bool nullable = 3;
-  // User-facing description.
-  string description = 4;
 }
 
 // SQL table-function publication target.
@@ -48,16 +41,18 @@ message FunctionPublish {
 
 // Function definition exposed by function lifecycle APIs.
 message Function {
+  // Workspace whose runtime-ready catalog exposes this function.
+  Workspace workspace = 1;
   // Stable function name.
-  string name = 1;
+  string name = 2;
   // User-facing description.
-  string description = 2;
+  string description = 3;
   // Arguments inferred from the planned function SQL.
-  repeated FunctionArgument arguments = 3;
+  repeated FunctionArgument arguments = 4;
   // Published function surfaces.
-  FunctionPublish publish = 4;
+  FunctionPublish publish = 5;
   // Result columns inferred from the planned function SQL.
-  repeated FunctionResultColumn result_columns = 5;
+  repeated FunctionResultColumn result_columns = 6;
 }
 
 // Installs or replaces one user function after validation.
