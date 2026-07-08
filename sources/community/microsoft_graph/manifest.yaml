@@ -1,0 +1,64 @@
+name: microsoft_graph
+dsl_version: 4
+description: >-
+  Preview Microsoft Graph source generated from the full v1.0 Microsoft Graph
+  OpenAPI description. Uses delegated Microsoft OAuth for work/school accounts.
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/v1.0/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+    inputs:
+      MS_GRAPH_TENANT_ID:
+        kind: variable
+        default: organizations
+        hint: >-
+          Microsoft Entra tenant authority. Use organizations for any
+          work/school account, or a tenant GUID for a specific tenant.
+      MS_GRAPH_ACCESS_TOKEN:
+        kind: secret
+        hint: >-
+          Microsoft Graph delegated access token. Choose Sign in with Microsoft
+          during interactive setup.
+        credential:
+          methods:
+            - type: oauth
+              label: Sign in with Microsoft
+              description: >-
+                Authenticate with your Microsoft work/school account to grant
+                Coral delegated Microsoft Graph read access.
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://localhost
+                redirect_uri_port_mode: random
+                endpoints:
+                  authorization_url: https://login.microsoftonline.com/{{input.MS_GRAPH_TENANT_ID}}/oauth2/v2.0/authorize
+                  token_url: https://login.microsoftonline.com/{{input.MS_GRAPH_TENANT_ID}}/oauth2/v2.0/token
+                client:
+                  id:
+                    input: MS_GRAPH_OAUTH_CLIENT_ID
+                    default: 4eedabf0-b27e-4c98-ac7b-4c7f5d504bee
+                scopes:
+                  scope:
+                    delimiter: space
+                    values:
+                      - https://graph.microsoft.com/User.Read
+                      - https://graph.microsoft.com/Chat.Read
+                      - https://graph.microsoft.com/Chat.ReadBasic
+                      - https://graph.microsoft.com/Team.ReadBasic.All
+                      - https://graph.microsoft.com/Channel.ReadBasic.All
+                      - https://graph.microsoft.com/Files.Read
+                      - https://graph.microsoft.com/Files.Read.All
+                      - https://graph.microsoft.com/Sites.Read.All
+                      - offline_access
+            - type: source_config
+              label: Paste access token
+              description: Paste an existing Microsoft Graph access token.
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{input.MS_GRAPH_ACCESS_TOKEN}}
