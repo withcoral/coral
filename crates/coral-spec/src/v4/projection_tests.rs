@@ -488,6 +488,100 @@ paths:
 }
 
 #[test]
+fn projection_generation_keeps_opaque_link_header_page_tokens_public() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: link_page_tokens
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: string}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "items_list")
+        .expect("items projection");
+    let operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == projection.operation_id)
+        .expect("items operation");
+
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST execution");
+    };
+    assert_eq!(rest.pagination.mode, PaginationMode::LinkHeader);
+    assert_eq!(rest.pagination.page_param, None);
+    assert_eq!(
+        rest.pagination
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("per_page")
+    );
+    assert_eq!(projection.visibility, ProjectionVisibility::Published);
+
+    let exposures = projection
+        .inputs
+        .iter()
+        .map(|input| (input.wire_name.as_str(), input.sql_exposure))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Filter));
+    assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
+
+    let filter_names = projection_filter_specs(projection)
+        .into_iter()
+        .map(|filter| filter.name)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(filter_names, BTreeSet::from(["page".to_string()]));
+
+    let request = request_spec_for_projection(projection, operation).expect("request");
+    let query_names = request
+        .query
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(query_names, BTreeSet::from(["page"]));
+}
+
+#[test]
 fn projection_generation_uses_omitted_path_required_for_table_function_args() {
     let manifest = parse_source_manifest_yaml(
         r"

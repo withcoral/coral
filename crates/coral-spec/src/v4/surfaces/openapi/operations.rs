@@ -324,7 +324,7 @@ fn detect_link_header_pagination(
     if !has_link_header && next_url_header.is_none() {
         return None;
     }
-    let page_input = find_page_input(inputs);
+    let page_input = find_numeric_page_input(inputs);
     Some(PaginationSpec {
         mode: PaginationMode::LinkHeader,
         page_size: detect_page_size(inputs),
@@ -417,6 +417,15 @@ fn detect_page_size(inputs: &[IrOperationInput]) -> Option<PageSizeSpec> {
 
 fn find_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
     find_query_input(inputs, &["page", "pagenumber", "pagenum"])
+}
+
+fn find_numeric_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
+    find_page_input(inputs).filter(|input| {
+        matches!(
+            input.data_type,
+            IrScalarType::Integer | IrScalarType::Number
+        ) || numeric_input_default(input).is_some()
+    })
 }
 
 fn find_query_input<'a>(
