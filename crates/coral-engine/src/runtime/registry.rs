@@ -322,8 +322,28 @@ async fn register_source(
         None => None,
     };
 
-    let registration = match source.register(ctx, registration_context).await {
-        Ok(registration) => registration,
+    match source.register(ctx, registration_context).await {
+        Ok(registration) => {
+            let refresh_claim = stale.map(|(_registration, claim)| claim);
+            if let Err(error) = claim_registration_schemas(&registration, seen_schemas)
+                .and_then(|()| claim_registration_catalogs(&registration, seen_catalogs))
+            {
+                if let (Some(cache), Some(claim)) = (registration_cache, refresh_claim.as_ref()) {
+                    cache.refresh_failed(claim, false);
+                }
+                return Err(error);
+            }
+
+            if let (Some(cache), Some(fingerprint)) = (registration_cache, fingerprint.as_deref()) {
+                if let Some(claim) = refresh_claim {
+                    cache.refresh_succeeded(&claim, &registration);
+                } else {
+                    cache.store(source.source_name(), fingerprint, &registration);
+                }
+            }
+
+            Ok(SourceRegistrationAttempt::Ready(registration))
+        }
         Err(error) => {
             // Availability over freshness: a source that registered before
             // keeps serving its last known catalog when a claimed refresh
@@ -333,20 +353,13 @@ async fn register_source(
             let Some((registration, claim)) = stale else {
                 return Err(error);
             };
-            return Ok(SourceRegistrationAttempt::StaleRefreshFailed {
+            Ok(SourceRegistrationAttempt::StaleRefreshFailed {
                 registration,
                 error,
                 claim,
-            });
+            })
         }
-    };
-    claim_registration_schemas(&registration, seen_schemas)?;
-    claim_registration_catalogs(&registration, seen_catalogs)?;
-    if let (Some(cache), Some(fingerprint)) = (registration_cache, fingerprint.as_deref()) {
-        cache.store(source.source_name(), fingerprint, &registration);
     }
-
-    Ok(SourceRegistrationAttempt::Ready(registration))
 }
 
 fn claim_registration_schemas(
@@ -891,7 +904,7 @@ mod tests {
     async fn failed_refresh_honors_abort_source_failure_policy() {
         let registrations = Arc::new(AtomicUsize::new(0));
         let fail = Arc::new(AtomicBool::new(false));
-        let cache = RegistrationCache::with_ttl(std::time::Duration::ZERO);
+        let cache = RegistrationCache::with_ttl(std::time::Duration::from_hours(1));
 
         register_once(
             vec![failable_candidate(
@@ -904,6 +917,7 @@ mod tests {
         )
         .await;
 
+        cache.force_stale("fake");
         fail.store(true, Ordering::SeqCst);
         let failures = Arc::new(AtomicUsize::new(0));
         let mut source_decorators: Vec<Box<dyn SourceDecorator>> =
