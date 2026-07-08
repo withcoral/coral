@@ -2207,6 +2207,57 @@ tables:
         (manifest, rendered_token_url)
     }
 
+    fn v4_manifest_with_templated_oauth_endpoints(
+        openapi_file: &std::path::Path,
+        token_url: &str,
+        redirect_port: u16,
+    ) -> (String, String) {
+        let token_url_template = token_url.replace("/token", "/{{input.OUTLOOK_TENANT_ID}}/token");
+        let rendered_token_url = token_url.replace("/token", "/organizations/token");
+        let manifest = format!(
+            r#"
+name: secured_messages
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    inputs:
+      API_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              label: Connect
+              description: Use OAuth.
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
+                endpoints:
+                  authorization_url: https://provider.example.com/{{{{input.OUTLOOK_TENANT_ID}}}}/oauth/authorize
+                  token_url: {token_url_template}
+                client:
+                  id:
+                    default: default-client
+      OUTLOOK_TENANT_ID:
+        kind: variable
+      API_BASE:
+        kind: variable
+    base_url: "{{{{input.API_BASE}}}}"
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{{{input.API_TOKEN}}}}
+"#,
+            openapi_file.display()
+        );
+        (manifest, rendered_token_url)
+    }
+
     fn oauth_import_bindings_with_tenant() -> SourceBindings {
         SourceBindings {
             variables: vec![
@@ -3249,37 +3300,93 @@ tables:
             },
             event_tx,
         );
-        let callback = async {
-            let event = event_rx
-                .recv()
-                .await
-                .expect("authorization event")
-                .into_event();
-            let ImportSourceWithCredentialsEvent::OAuthAuthorization {
-                input_key,
-                authorization_url,
-                ..
-            } = event
-            else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-            let parsed = Url::parse(&authorization_url).expect("authorization url");
-            assert_eq!(parsed.path(), "/organizations/oauth/authorize");
-            callback(&authorization_url, redirect_port).await;
-            let event = event_rx
-                .recv()
-                .await
-                .expect("completion event")
-                .into_event();
-            let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-        };
+        let callback = authorize_oauth_import(&mut event_rx, redirect_port);
 
         let (source, ()) = tokio::join!(import, callback);
         let source = source.expect("import source with OAuth");
+        assert_eq!(source.secrets, vec!["API_TOKEN"]);
+        let captured = fixture.token_server.await.expect("token server");
+        assert_eq!(
+            captured.form.get("code").map(String::as_str),
+            Some("test-code")
+        );
+        let material = credential_manager
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("access-token")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.method")
+                .map(String::as_str),
+            Some("oauth")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.token_url")
+                .map(String::as_str),
+            Some(rendered_token_url.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn import_v4_with_oauth_persists_retrieved_material() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write descriptor");
+
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let fixture = OAuthFixture::new();
+        let redirect_port = free_loopback_port();
+        let (manifest_yaml, rendered_token_url) = v4_manifest_with_templated_oauth_endpoints(
+            &openapi_file,
+            &fixture.token_url,
+            redirect_port,
+        );
+        assert!(
+            manifest_yaml
+                .find("      API_TOKEN:")
+                .expect("API_TOKEN input")
+                < manifest_yaml
+                    .find("      OUTLOOK_TENANT_ID:")
+                    .expect("tenant input"),
+            "tenant variable should exercise v4 surface input order after the OAuth secret"
+        );
+        let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let import = manager.import_source_with_credentials(
+            &workspace_name,
+            ImportSourceWithCredentialsCommand {
+                manifest_yaml,
+                bindings: oauth_import_bindings_with_tenant(),
+                oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
+                    input_key: "API_TOKEN".to_string(),
+                    method_index: 0,
+                    credential_inputs: Vec::new(),
+                }],
+            },
+            event_tx,
+        );
+        let callback = authorize_oauth_import(&mut event_rx, redirect_port);
+
+        let (source, ()) = tokio::join!(import, callback);
+        let source = source.expect("import v4 source with OAuth");
         assert_eq!(source.secrets, vec!["API_TOKEN"]);
         let captured = fixture.token_server.await.expect("token server");
         assert_eq!(
@@ -3453,6 +3560,39 @@ tables:
             .expect("callback response")
             .error_for_status()
             .expect("callback success");
+    }
+
+    async fn authorize_oauth_import(
+        event_rx: &mut mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
+        redirect_port: u16,
+    ) {
+        let event = event_rx
+            .recv()
+            .await
+            .expect("authorization event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::OAuthAuthorization {
+            input_key,
+            authorization_url,
+            ..
+        } = event
+        else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
+        let parsed = Url::parse(&authorization_url).expect("authorization url");
+        assert_eq!(parsed.path(), "/organizations/oauth/authorize");
+        callback(&authorization_url, redirect_port).await;
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("completion event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
     }
 
     fn import_event_channel() -> (

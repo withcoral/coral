@@ -105,8 +105,294 @@ enum V4InputSpecSchema {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hint: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<Value>,
+        credential: Option<V4CredentialSpecSchema>,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4CredentialSpecSchema {
+    #[schemars(length(min = 1))]
+    methods: Vec<V4CredentialMethodSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum V4CredentialMethodSchema {
+    SourceConfig {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+    },
+    Oauth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+        oauth: Box<V4OAuthCredentialMethodSchema>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthCredentialMethodSchema {
+    AuthorizationCode(Box<V4AuthorizationCodeOAuthCredentialMethodSchema>),
+    DeviceCode(Box<V4DeviceCodeOAuthCredentialMethodSchema>),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4AuthorizationCodeOAuthCredentialMethodSchema {
+    flow: V4AuthorizationCodeOAuthFlowSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1))]
+    resource: Option<String>,
+    #[serde(rename = "redirect_uri")]
+    #[schemars(length(min = 1))]
+    redirect: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    redirect_uri_port_mode: Option<V4OAuthRedirectUriPortModeSchema>,
+    endpoints: V4AuthorizationCodeOAuthEndpointsSchema,
+    client: V4OAuthClientSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scopes: Option<V4OAuthScopesSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4DeviceCodeOAuthCredentialMethodSchema {
+    flow: V4DeviceCodeOAuthFlowSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1))]
+    resource: Option<String>,
+    endpoints: V4DeviceCodeOAuthEndpointsSchema,
+    client: V4DeviceCodeOAuthClientSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scopes: Option<V4OAuthScopesSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4AuthorizationCodeOAuthFlowSchema {
+    #[serde(rename = "type")]
+    flow_type: V4AuthorizationCodeOAuthFlowTypeSchema,
+    pkce: V4OAuthPkceModeSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4AuthorizationCodeOAuthFlowTypeSchema {
+    AuthorizationCode,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4OAuthPkceModeSchema {
+    Required,
+    Disabled,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4OAuthRedirectUriPortModeSchema {
+    Fixed,
+    Random,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4DeviceCodeOAuthFlowSchema {
+    #[serde(rename = "type")]
+    flow_type: V4DeviceCodeOAuthFlowTypeSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pkce: Option<V4OAuthDisabledPkceModeSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4DeviceCodeOAuthFlowTypeSchema {
+    DeviceCode,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4OAuthDisabledPkceModeSchema {
+    Disabled,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4AuthorizationCodeOAuthEndpointsSchema {
+    #[serde(rename = "authorization_url")]
+    #[schemars(length(min = 1))]
+    authorization: String,
+    #[serde(rename = "token_url")]
+    #[schemars(length(min = 1))]
+    token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4DeviceCodeOAuthEndpointsSchema {
+    #[serde(rename = "token_url")]
+    #[schemars(length(min = 1))]
+    token: String,
+    #[serde(rename = "device_authorization_url")]
+    #[schemars(length(min = 1))]
+    device_authorization: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthClientSchema {
+    Public(Box<V4OAuthPublicClientSchema>),
+    Confidential(Box<V4OAuthConfidentialClientSchema>),
+    Dynamic(Box<V4OAuthDynamicClientSchema>),
+    PublicDynamic(Box<V4OAuthPublicDynamicClientSchema>),
+    ConfidentialDynamic(Box<V4OAuthConfidentialDynamicClientSchema>),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4DeviceCodeOAuthClientSchema {
+    Public(Box<V4OAuthPublicClientSchema>),
+    Dynamic(Box<V4OAuthDynamicClientSchema>),
+    PublicDynamic(Box<V4OAuthPublicDynamicClientSchema>),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthPublicClientSchema {
+    id: V4OAuthClientIdSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthConfidentialClientSchema {
+    id: V4OAuthClientIdWithInputSchema,
+    secret: V4OAuthClientSecretSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthDynamicClientSchema {
+    dynamic_registration: V4OAuthDynamicClientRegistrationSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthPublicDynamicClientSchema {
+    id: V4OAuthClientIdSchema,
+    dynamic_registration: V4OAuthDynamicClientRegistrationSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthConfidentialDynamicClientSchema {
+    id: V4OAuthClientIdWithInputSchema,
+    secret: V4OAuthClientSecretSchema,
+    dynamic_registration: V4OAuthDynamicClientRegistrationSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthClientIdSchema {
+    DefaultAndInput(V4OAuthClientIdDefaultAndInputSchema),
+    Default(V4OAuthClientIdDefaultSchema),
+    Input(V4OAuthClientIdInputSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthClientIdWithInputSchema {
+    DefaultAndInput(V4OAuthClientIdDefaultAndInputSchema),
+    Input(V4OAuthClientIdInputSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthClientIdDefaultAndInputSchema {
+    #[schemars(length(min = 1))]
+    default: String,
+    #[schemars(length(min = 1))]
+    input: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthClientIdDefaultSchema {
+    #[schemars(length(min = 1))]
+    default: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthClientIdInputSchema {
+    #[schemars(length(min = 1))]
+    input: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthClientSecretSchema {
+    #[schemars(length(min = 1))]
+    input: String,
+    transport: V4OAuthClientSecretTransportSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4OAuthClientSecretTransportSchema {
+    BasicAuth,
+    RequestBody,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthDynamicClientRegistrationSchema {
+    #[schemars(length(min = 1))]
+    registration_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1))]
+    client_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_endpoint_auth_method: Option<V4OAuthDynamicClientRegistrationAuthMethodSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_refresh_token_grant: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4OAuthDynamicClientRegistrationAuthMethodSchema {
+    None,
+    ClientSecretBasic,
+    ClientSecretPost,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthScopesSchema {
+    scope: V4OAuthScopeSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthScopeSchema {
+    delimiter: V4OAuthScopeDelimiterSchema,
+    #[schemars(length(min = 1), inner(length(min = 1)))]
+    values: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4OAuthScopeDelimiterSchema {
+    Space,
+    Comma,
 }
 
 /// Generate the JSON Schema for authored DSL v4 source manifests.
@@ -304,6 +590,104 @@ surfaces:
             "generated schema should accept flattened MCP value sources: {errors:?}"
         );
         parse_source_manifest_yaml(raw).expect("parser accepts flattened MCP value sources");
+    }
+
+    #[test]
+    fn generated_schema_accepts_oauth_surface_input_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    inputs:
+      TENANT_ID:
+        kind: variable
+        default: organizations
+      API_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              label: Connect
+              description: Use OAuth.
+              hint: Authorize in your browser.
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:0/oauth/callback
+                redirect_uri_port_mode: random
+                endpoints:
+                  authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
+                  token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
+                client:
+                  dynamic_registration:
+                    registration_url: https://login.example.com/{{input.TENANT_ID}}/oauth/register
+                    client_name: Coral Demo
+                    token_endpoint_auth_method: none
+                    request_refresh_token_grant: true
+                scopes:
+                  scope:
+                    delimiter: space
+                    values:
+                      - read
+            - type: source_config
+              label: Paste token
+    base_url: https://api.example.com
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: bearer
+          key: API_TOKEN
+";
+
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept v4 OAuth surface input: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts v4 OAuth surface input");
+    }
+
+    #[test]
+    fn generated_schema_rejects_unknown_oauth_surface_input_field() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    inputs:
+      API_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:0/oauth/callback
+                endpoints:
+                  authorization_url: https://login.example.com/oauth/authorize
+                  token_url: https://login.example.com/oauth/token
+                client:
+                  id:
+                    default: demo-client
+                unsupported: true
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "generated schema should reject unknown OAuth fields"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject unknown OAuth fields");
     }
 
     #[test]

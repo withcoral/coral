@@ -206,7 +206,16 @@
                 "null"
               ]
             },
-            "credential": true,
+            "credential": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/V4CredentialSpecSchema"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "kind": {
               "type": "string",
               "const": "secret"
@@ -216,6 +225,580 @@
           "required": [
             "kind"
           ]
+        }
+      ]
+    },
+    "V4CredentialSpecSchema": {
+      "type": "object",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/V4CredentialMethodSchema"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "methods"
+      ]
+    },
+    "V4CredentialMethodSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "source_config"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "oauth": {
+              "$ref": "#/$defs/V4OAuthCredentialMethodSchema"
+            },
+            "type": {
+              "type": "string",
+              "const": "oauth"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "oauth"
+          ]
+        }
+      ]
+    },
+    "V4OAuthCredentialMethodSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthCredentialMethodSchema"
+        },
+        {
+          "$ref": "#/$defs/V4DeviceCodeOAuthCredentialMethodSchema"
+        }
+      ]
+    },
+    "V4AuthorizationCodeOAuthCredentialMethodSchema": {
+      "type": "object",
+      "properties": {
+        "flow": {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthFlowSchema"
+        },
+        "resource": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "redirect_uri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "redirect_uri_port_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/V4OAuthRedirectUriPortModeSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoints": {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthEndpointsSchema"
+        },
+        "client": {
+          "$ref": "#/$defs/V4OAuthClientSchema"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/V4OAuthScopesSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "flow",
+        "redirect_uri",
+        "endpoints",
+        "client"
+      ]
+    },
+    "V4AuthorizationCodeOAuthFlowSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthFlowTypeSchema"
+        },
+        "pkce": {
+          "$ref": "#/$defs/V4OAuthPkceModeSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "pkce"
+      ]
+    },
+    "V4AuthorizationCodeOAuthFlowTypeSchema": {
+      "type": "string",
+      "enum": [
+        "authorization_code"
+      ]
+    },
+    "V4OAuthPkceModeSchema": {
+      "type": "string",
+      "enum": [
+        "required",
+        "disabled"
+      ]
+    },
+    "V4OAuthRedirectUriPortModeSchema": {
+      "type": "string",
+      "enum": [
+        "fixed",
+        "random"
+      ]
+    },
+    "V4AuthorizationCodeOAuthEndpointsSchema": {
+      "type": "object",
+      "properties": {
+        "authorization_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "authorization_url",
+        "token_url"
+      ]
+    },
+    "V4OAuthClientSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthPublicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthConfidentialClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthDynamicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthPublicDynamicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthConfidentialDynamicClientSchema"
+        }
+      ]
+    },
+    "V4OAuthPublicClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "V4OAuthClientIdSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthClientIdDefaultAndInputSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthClientIdDefaultSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthClientIdInputSchema"
+        }
+      ]
+    },
+    "V4OAuthClientIdDefaultAndInputSchema": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "default",
+        "input"
+      ]
+    },
+    "V4OAuthClientIdDefaultSchema": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "default"
+      ]
+    },
+    "V4OAuthClientIdInputSchema": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input"
+      ]
+    },
+    "V4OAuthConfidentialClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdWithInputSchema"
+        },
+        "secret": {
+          "$ref": "#/$defs/V4OAuthClientSecretSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "secret"
+      ]
+    },
+    "V4OAuthClientIdWithInputSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthClientIdDefaultAndInputSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthClientIdInputSchema"
+        }
+      ]
+    },
+    "V4OAuthClientSecretSchema": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "$ref": "#/$defs/V4OAuthClientSecretTransportSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "transport"
+      ]
+    },
+    "V4OAuthClientSecretTransportSchema": {
+      "type": "string",
+      "enum": [
+        "basic_auth",
+        "request_body"
+      ]
+    },
+    "V4OAuthDynamicClientSchema": {
+      "type": "object",
+      "properties": {
+        "dynamic_registration": {
+          "$ref": "#/$defs/V4OAuthDynamicClientRegistrationSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dynamic_registration"
+      ]
+    },
+    "V4OAuthDynamicClientRegistrationSchema": {
+      "type": "object",
+      "properties": {
+        "registration_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "client_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "token_endpoint_auth_method": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/V4OAuthDynamicClientRegistrationAuthMethodSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "request_refresh_token_grant": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "registration_url"
+      ]
+    },
+    "V4OAuthDynamicClientRegistrationAuthMethodSchema": {
+      "type": "string",
+      "enum": [
+        "none",
+        "client_secret_basic",
+        "client_secret_post"
+      ]
+    },
+    "V4OAuthPublicDynamicClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdSchema"
+        },
+        "dynamic_registration": {
+          "$ref": "#/$defs/V4OAuthDynamicClientRegistrationSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "dynamic_registration"
+      ]
+    },
+    "V4OAuthConfidentialDynamicClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdWithInputSchema"
+        },
+        "secret": {
+          "$ref": "#/$defs/V4OAuthClientSecretSchema"
+        },
+        "dynamic_registration": {
+          "$ref": "#/$defs/V4OAuthDynamicClientRegistrationSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "secret",
+        "dynamic_registration"
+      ]
+    },
+    "V4OAuthScopesSchema": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/V4OAuthScopeSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope"
+      ]
+    },
+    "V4OAuthScopeSchema": {
+      "type": "object",
+      "properties": {
+        "delimiter": {
+          "$ref": "#/$defs/V4OAuthScopeDelimiterSchema"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "delimiter",
+        "values"
+      ]
+    },
+    "V4OAuthScopeDelimiterSchema": {
+      "type": "string",
+      "enum": [
+        "space",
+        "comma"
+      ]
+    },
+    "V4DeviceCodeOAuthCredentialMethodSchema": {
+      "type": "object",
+      "properties": {
+        "flow": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthFlowSchema"
+        },
+        "resource": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "endpoints": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthEndpointsSchema"
+        },
+        "client": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthClientSchema"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/V4OAuthScopesSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "flow",
+        "endpoints",
+        "client"
+      ]
+    },
+    "V4DeviceCodeOAuthFlowSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthFlowTypeSchema"
+        },
+        "pkce": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/V4OAuthDisabledPkceModeSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "V4DeviceCodeOAuthFlowTypeSchema": {
+      "type": "string",
+      "enum": [
+        "device_code"
+      ]
+    },
+    "V4OAuthDisabledPkceModeSchema": {
+      "type": "string",
+      "enum": [
+        "disabled"
+      ]
+    },
+    "V4DeviceCodeOAuthEndpointsSchema": {
+      "type": "object",
+      "properties": {
+        "token_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "device_authorization_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "token_url",
+        "device_authorization_url"
+      ]
+    },
+    "V4DeviceCodeOAuthClientSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthPublicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthDynamicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthPublicDynamicClientSchema"
         }
       ]
     },
