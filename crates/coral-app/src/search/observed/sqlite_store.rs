@@ -1,5 +1,7 @@
 //! `SQLite` observed-values queue and governance operations.
 
+use std::collections::BTreeMap;
+
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 
 use crate::search::observed::sqlite_queue::{
@@ -24,14 +26,35 @@ impl SqliteObservedValuesStore {
         Self { layout }
     }
 
+    #[cfg(test)]
     pub(crate) fn current_generations(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &str,
     ) -> Result<ObservedValuesGeneration, SqliteSearchError> {
+        let mut generations =
+            self.current_generations_for_sources(workspace_name, [source_name])?;
+        let Some(generation) = generations.remove(source_name) else {
+            return Ok(ObservedValuesGeneration::ZERO);
+        };
+        Ok(generation)
+    }
+
+    pub(crate) fn current_generations_for_sources<'a>(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<BTreeMap<String, ObservedValuesGeneration>, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
-        observed_generations(&connection, workspace_name, source_name)
+        let mut generations = BTreeMap::new();
+        for source_name in source_names {
+            generations.insert(
+                source_name.to_string(),
+                observed_generations(&connection, workspace_name, source_name)?,
+            );
+        }
+        Ok(generations)
     }
 
     pub(crate) fn enqueue_source_scan(
@@ -412,6 +435,51 @@ mod tests {
             store
                 .pending_queue_job_count(&workspace)
                 .expect("queue count"),
+            0
+        );
+    }
+
+    #[test]
+    fn current_generations_for_sources_reads_all_sources_with_one_store_open() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+
+        store
+            .clear_source(&workspace, "github")
+            .expect("clear github");
+        store
+            .clear_source(&workspace, "slack")
+            .expect("clear slack");
+        store
+            .clear_source(&workspace, "slack")
+            .expect("clear slack again");
+
+        let generations = store
+            .current_generations_for_sources(&workspace, ["github", "slack", "notion"])
+            .expect("generations");
+
+        assert_eq!(
+            generations
+                .get("github")
+                .expect("github generation")
+                .source_generation,
+            1
+        );
+        assert_eq!(
+            generations
+                .get("slack")
+                .expect("slack generation")
+                .source_generation,
+            2
+        );
+        assert_eq!(
+            generations
+                .get("notion")
+                .expect("notion generation")
+                .source_generation,
             0
         );
     }

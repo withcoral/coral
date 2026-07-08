@@ -163,7 +163,6 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let operation_workspace_name = workspace_name.clone();
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
@@ -171,7 +170,7 @@ impl SourceServiceApi for SourceService {
             };
             let response_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
-                sources.create_bundled_source(&operation_workspace_name, &command)
+                sources.create_bundled_source(&workspace_name, &command)
             })
             .await?;
             Ok(Response::new(CreateBundledSourceResponse {
@@ -236,13 +235,12 @@ impl SourceServiceApi for SourceService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
-                let operation_workspace_name = workspace_name.clone();
                 let command = ImportSourceCommand {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
                 };
                 let installed = run_blocking_source_operation(move || {
-                    sources.import_source(&operation_workspace_name, &command)
+                    sources.import_source(&workspace_name, &command)
                 })
                 .await?;
                 let response = ImportSourceResponse {
@@ -288,9 +286,8 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let operation_workspace_name = workspace_name.clone();
             run_blocking_source_operation(move || {
-                sources.delete_source(&operation_workspace_name, &source_name)
+                sources.delete_source(&workspace_name, &source_name)
             })
             .await?;
             Ok(Response::new(DeleteSourceResponse {}))

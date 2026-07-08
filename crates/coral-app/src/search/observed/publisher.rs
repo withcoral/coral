@@ -45,22 +45,24 @@ impl SearchObservationHandle {
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
     ) -> EngineExtensions {
+        let generations = match self.store.current_generations_for_sources(
+            workspace_name,
+            selected_sources.iter().map(QuerySource::source_name),
+        ) {
+            Ok(generations) => generations,
+            Err(error) => {
+                tracing::debug!(
+                    workspace = %workspace_name.as_str(),
+                    error = %error,
+                    "skipping observed-values publishers"
+                );
+                return EngineExtensions::default();
+            }
+        };
         let mut scopes = HashMap::new();
         for source in selected_sources {
-            let generation = match self
-                .store
-                .current_generations(workspace_name, source.source_name())
-            {
-                Ok(generation) => generation,
-                Err(error) => {
-                    tracing::debug!(
-                        workspace = %workspace_name.as_str(),
-                        source = %source.source_name(),
-                        error = %error,
-                        "skipping observed-values publisher for source"
-                    );
-                    continue;
-                }
+            let Some(generation) = generations.get(source.source_name()).copied() else {
+                continue;
             };
             for scope in source_surface_scopes(source, generation) {
                 scopes.insert(scope.key(), scope);

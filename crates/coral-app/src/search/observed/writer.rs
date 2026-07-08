@@ -44,19 +44,12 @@ pub(super) enum ObservedValuesTryEnqueueError {
     Disconnected,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(super) enum ObservedValuesWriterShutdownError {
+    #[error("writer mutex poisoned")]
     MutexPoisoned,
+    #[error("writer thread panicked")]
     Panicked,
-}
-
-impl std::fmt::Display for ObservedValuesWriterShutdownError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MutexPoisoned => f.write_str("writer mutex poisoned"),
-            Self::Panicked => f.write_str("writer thread panicked"),
-        }
-    }
 }
 
 impl ObservedValuesWriter {
