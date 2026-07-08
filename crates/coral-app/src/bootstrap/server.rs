@@ -408,6 +408,7 @@ fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseCo
 pub struct RunningServer {
     endpoint_uri: String,
     local_trace_store_dir: Option<PathBuf>,
+    search_observations: Mutex<Option<SearchObservationHandle>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
@@ -456,6 +457,14 @@ impl RunningServer {
         let task = self.task.lock().expect("task mutex poisoned").take();
         if let Some(task) = task {
             task.await??;
+        }
+        if let Some(search_observations) = self
+            .search_observations
+            .lock()
+            .expect("search observation mutex poisoned")
+            .take()
+        {
+            search_observations.shutdown()?;
         }
         Ok(())
     }
@@ -513,9 +522,9 @@ async fn start_server(
         feedback,
         task,
     } = managers;
+    let source = source.with_search_observation_handle(search_observations.clone());
     let query = query.with_search_observation_handle(search_observations.clone());
-    let source_service = SourceService::new(source, query.clone(), workspace.clone())
-        .with_search_observation_handle(search_observations);
+    let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
     let function_service = FunctionService::new(query.clone());
@@ -569,6 +578,7 @@ async fn start_server(
     Ok(RunningServer {
         endpoint_uri,
         local_trace_store_dir,
+        search_observations: Mutex::new(Some(search_observations)),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })

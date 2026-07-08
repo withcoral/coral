@@ -15,6 +15,7 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
+use crate::search::observed::SearchObservationHandle;
 use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
@@ -43,6 +44,7 @@ pub(crate) struct SourceManager {
     layout: AppStateLayout,
     lifecycle_lock: WorkspaceLifecycleLock,
     diagnostic_reporter: SourceDiagnosticReporter,
+    search_observations: Option<SearchObservationHandle>,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -218,7 +220,16 @@ impl SourceManager {
             layout,
             lifecycle_lock,
             diagnostic_reporter,
+            search_observations: None,
         }
+    }
+
+    pub(crate) fn with_search_observation_handle(
+        mut self,
+        search_observations: SearchObservationHandle,
+    ) -> Self {
+        self.search_observations = Some(search_observations);
+        self
     }
 
     pub(crate) fn list_workspace_sources(
@@ -595,7 +606,7 @@ impl SourceManager {
         drop(state_lock);
         self.diagnostic_reporter
             .clear_source(workspace_name, source_name);
-        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
+        self.clear_source_lifecycle_search_state_best_effort(workspace_name, source_name);
         Ok(removed)
     }
 
@@ -767,11 +778,37 @@ impl SourceManager {
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
         drop(state_lock);
-        self.clear_catalog_projection_for_source_lifecycle_best_effort(
-            workspace_name,
-            &source_name,
-        );
+        self.clear_source_lifecycle_search_state_best_effort(workspace_name, &source_name);
         Ok(resolved)
+    }
+
+    fn clear_source_lifecycle_search_state_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        self.clear_observed_values_for_source_lifecycle_best_effort(workspace_name, source_name);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
+    }
+
+    fn clear_observed_values_for_source_lifecycle_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        let Some(search_observations) = &self.search_observations else {
+            return;
+        };
+        if !self.layout.search_sqlite_file(workspace_name).exists() {
+            return;
+        }
+        if let Err(error) = search_observations.clear_source(workspace_name, source_name.as_str()) {
+            warn!(
+                workspace = %workspace_name,
+                source = %source_name,
+                "source lifecycle changed, but failed to clear observed-values state: {error}"
+            );
+        }
     }
 
     fn clear_catalog_projection_for_source_lifecycle_best_effort(
