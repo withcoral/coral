@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package coral.v1;
 
+import "coral/v1/catalog.proto";
 import "coral/v1/resources.proto";
 
 // One scalar function argument.
@@ -13,20 +14,10 @@ message FunctionArgument {
   string data_type = 2;
 }
 
-// One function result column.
-message FunctionResultColumn {
-  // Column name.
-  string name = 1;
-  // Arrow/DataFusion data type rendered as text.
-  string data_type = 2;
-  // Whether the column can contain null values.
-  bool nullable = 3;
-}
-
 // SQL table-function publication target.
 message FunctionTableFunctionPublish {
   // SQL schema.
-  string schema = 1;
+  string schema_name = 1;
   // SQL table-function name.
   string name = 2;
   // User-facing description.
@@ -41,18 +32,18 @@ message FunctionPublish {
 
 // Function definition exposed by function lifecycle APIs.
 message Function {
-  // Workspace whose runtime-ready catalog exposes this function.
-  Workspace workspace = 1;
   // Stable function name.
-  string name = 2;
+  string name = 1;
   // User-facing description.
-  string description = 3;
+  string description = 2;
   // Arguments inferred from the planned function SQL.
-  repeated FunctionArgument arguments = 4;
+  repeated FunctionArgument arguments = 3;
   // Published function surfaces.
-  FunctionPublish publish = 5;
+  FunctionPublish publish = 4;
   // Result columns inferred from the planned function SQL.
-  repeated FunctionResultColumn result_columns = 6;
+  repeated TableFunctionResultColumn result_columns = 5;
+  // Workspace whose runtime-ready catalog exposes this function.
+  Workspace workspace = 6;
 }
 
 // Installs or replaces one user function after validation.
@@ -63,10 +54,10 @@ message AddFunctionRequest {
   string sql = 2;
 }
 
-// Persisted function install response. Function metadata is returned by ListFunctions.
+// Function install response.
 message AddFunctionResponse {
-  // Stable function name.
-  string name = 1;
+  // Installed runtime-ready function.
+  Function function = 1;
 }
 
 // Lists runtime-ready installed functions in one workspace.
@@ -81,16 +72,16 @@ message ListFunctionsResponse {
   repeated Function functions = 1;
 }
 
-// Removes one user function.
-message RemoveFunctionRequest {
+// Deletes one user function.
+message DeleteFunctionRequest {
   // Workspace that owns the function.
   Workspace workspace = 1;
   // Function name.
   string name = 2;
 }
 
-// Empty remove response.
-message RemoveFunctionResponse {}
+// Empty delete response.
+message DeleteFunctionResponse {}
 
 // Function lifecycle APIs.
 service FunctionService {
@@ -98,6 +89,6 @@ service FunctionService {
   rpc AddFunction(AddFunctionRequest) returns (AddFunctionResponse);
   // Lists installed functions that are runtime-ready for the current workspace sources.
   rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse);
-  // Removes one user function.
-  rpc RemoveFunction(RemoveFunctionRequest) returns (RemoveFunctionResponse);
+  // Deletes one user function.
+  rpc DeleteFunction(DeleteFunctionRequest) returns (DeleteFunctionResponse);
 }
