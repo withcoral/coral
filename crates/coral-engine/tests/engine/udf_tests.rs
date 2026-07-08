@@ -170,7 +170,6 @@ fn udf_argument(name: &str, data_type: ManifestDataType) -> UdfRuntimeArgument {
     UdfRuntimeArgument {
         name: name.to_string(),
         data_type,
-        description: String::new(),
     }
 }
 
