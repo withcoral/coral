@@ -723,7 +723,7 @@ fn write_materialization(
             },
         )));
     }
-    let projections = generate_projection_catalog(manifest, &semantic_irs)
+    let projections = generate_projection_catalog(manifest, &semantic_irs, &BTreeMap::new())
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     diagnostics.extend(projections.diagnostics.clone());
     for ir in &semantic_irs {

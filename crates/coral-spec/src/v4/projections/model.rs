@@ -58,6 +58,11 @@ pub struct ProjectionInput {
     pub data_type: ManifestDataType,
     pub default_value: Option<String>,
     pub description: String,
+    /// Whether this filter input is a complete exact lookup: the API returns
+    /// every row matching an equality value, so dependent joins may bind to
+    /// it. Meaningless (and false) for non-filter exposures.
+    #[serde(default)]
+    pub lookup_key: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

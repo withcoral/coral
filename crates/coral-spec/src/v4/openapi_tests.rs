@@ -171,7 +171,7 @@ components:
     assert_eq!(fallback.group.as_deref(), Some("misc"));
     assert_eq!(fallback.operation.as_deref(), Some("get_fallback"));
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let quotes_projection = catalog
         .projections
         .iter()
@@ -236,7 +236,7 @@ components:
     assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
     assert_eq!(operation.output.row_path, vec!["data".to_string()]);
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -304,7 +304,7 @@ components:
     assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
     assert_eq!(operation.output.row_path, vec!["repositories".to_string()]);
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     assert_eq!(projection.name, "repository");
     assert!(matches!(
@@ -514,7 +514,7 @@ components:
         operation.diagnostics
     );
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let projection = catalog
         .projections
         .iter()

@@ -1170,6 +1170,7 @@ operation_overrides:
             data_type: ManifestDataType::Utf8,
             default_value: None,
             description: String::new(),
+            lookup_key: false,
         }
     }
 

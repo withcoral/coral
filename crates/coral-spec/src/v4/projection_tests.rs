@@ -29,7 +29,7 @@ surfaces:
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("one surface");
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let published = catalog
         .projections
         .iter()
@@ -39,6 +39,129 @@ surfaces:
     assert!(published.contains(&"issue"), "{published:?}");
     assert!(published.contains(&"search_issues"), "{published:?}");
     assert!(published.contains(&"get_issues"), "{published:?}");
+}
+
+fn items_api_catalog(lookup_keys: Option<(bool, &[&str])>) -> ProjectionCatalog {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: items_api
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let spec = r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: list_items
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+        - {name: order_by, in: query, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}, state: {type: string}}}}}}}}
+  /projects/{project_id}/items:
+    get:
+      operationId: list_project_items
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+";
+    let ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
+    let lookup_keys = lookup_keys
+        .map(|(enabled, exclude)| {
+            BTreeMap::from([(
+                "rest".to_string(),
+                LookupKeysMetadata {
+                    enabled,
+                    exclude: exclude.iter().map(ToString::to_string).collect(),
+                },
+            )])
+        })
+        .unwrap_or_default();
+    generate_projection_catalog(v4, std::slice::from_ref(&ir), &lookup_keys).expect("catalog")
+}
+
+fn exposure(catalog: &ProjectionCatalog, operation_id: &str, input_name: &str) -> SqlInputExposure {
+    catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == operation_id)
+        .expect("projection")
+        .inputs
+        .iter()
+        .find(|input| input.name == input_name)
+        .expect("input")
+        .sql_exposure
+}
+
+#[test]
+fn lookup_key_exclusions_control_joinability_not_exposure() {
+    let filter_lookup_key = |catalog: &ProjectionCatalog, filter_name: &str| {
+        let list_items = catalog
+            .projections
+            .iter()
+            .find(|projection| projection.operation_id == "list_items")
+            .expect("projection");
+        projection_filter_specs(list_items)
+            .iter()
+            .find(|spec| spec.name == filter_name)
+            .expect("filter spec")
+            .lookup_key
+    };
+
+    let catalog = items_api_catalog(Some((true, &["order_by", "project_id"])));
+
+    // An excluded parameter keeps its exposure and pushdown; it only loses
+    // the dependent-join completeness flag.
+    assert_eq!(
+        exposure(&catalog, "list_items", "order_by"),
+        SqlInputExposure::Filter
+    );
+    assert!(!filter_lookup_key(&catalog, "order_by"));
+    assert_eq!(
+        exposure(&catalog, "list_items", "state"),
+        SqlInputExposure::Filter
+    );
+    assert!(filter_lookup_key(&catalog, "state"));
+
+    // Function arguments never carry the flag, excluded or not.
+    let project_items = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_project_items")
+        .expect("projection");
+    assert_eq!(
+        exposure(&catalog, "list_project_items", "project_id"),
+        SqlInputExposure::FunctionArg
+    );
+    assert!(project_items.inputs.iter().all(|input| !input.lookup_key));
+
+    // Disabling lookup keys withholds the flag surface-wide without touching
+    // exposure.
+    let catalog = items_api_catalog(Some((false, &[])));
+    assert_eq!(
+        exposure(&catalog, "list_items", "state"),
+        SqlInputExposure::Filter
+    );
+    assert!(!filter_lookup_key(&catalog, "state"));
+    assert!(!filter_lookup_key(&catalog, "order_by"));
+
+    // Absent metadata makes no completeness claims: without a lookup_keys
+    // entry for the surface, no filter may anchor a dependent join.
+    let catalog = items_api_catalog(None);
+    assert_eq!(
+        exposure(&catalog, "list_items", "state"),
+        SqlInputExposure::Filter
+    );
+    assert!(!filter_lookup_key(&catalog, "state"));
+    assert!(!filter_lookup_key(&catalog, "order_by"));
 }
 
 #[test]
@@ -87,7 +210,7 @@ paths:
     )
     .expect("import");
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let column_types = catalog
         .projections
         .iter()
@@ -263,7 +386,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let names = catalog
         .projections
         .iter()
@@ -313,7 +436,8 @@ surfaces:
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("one surface");
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
+        .expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -442,7 +566,8 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
+        .expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -531,7 +656,8 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
+        .expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -619,7 +745,8 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
+        .expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -734,7 +861,8 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
+        .expect("catalog");
     let list_projection = catalog
         .projections
         .iter()
@@ -905,7 +1033,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let names_by_operation = catalog
         .projections
         .iter()
@@ -1121,7 +1249,7 @@ paths:
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("surface");
     let ir = import_openapi_surface(v4, surface, openapi.as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let sql_name_by_wire = projection
         .inputs
@@ -1152,7 +1280,8 @@ fn different_surface_namespaces_keep_colliding_projection_names() {
     let mcp_ir =
         import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
 
-    let catalog = generate_projection_catalog(v4, &[rest_ir, mcp_ir]).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &[rest_ir, mcp_ir], &BTreeMap::new()).expect("catalog");
     let rest_projection = catalog
         .projections
         .iter()
@@ -1193,7 +1322,7 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
     let mcp_ir =
         import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
 
-    let catalog = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -1273,7 +1402,8 @@ fn generated_mcp_projection_keeps_pagination_cursor_internal() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projections =
+        generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1338,7 +1468,8 @@ fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projections =
+        generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1393,7 +1524,8 @@ fn generated_mcp_projection_snake_cases_camel_input_names() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projections =
+        generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1438,7 +1570,8 @@ fn same_type_surface_namespaces_keep_colliding_projection_names() {
     let secondary_ir = import_openapi_surface(v4, secondary_surface, rest_search_openapi())
         .expect("secondary rest import");
 
-    let catalog = generate_projection_catalog(v4, &[primary_ir, secondary_ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[primary_ir, secondary_ir], &BTreeMap::new())
+        .expect("catalog");
     let primary_projection = catalog
         .projections
         .iter()
