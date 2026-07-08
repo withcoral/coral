@@ -1668,7 +1668,6 @@ mod tests {
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
-    use crate::search::observed::{SearchObservationHandle, SqliteObservedValuesStore};
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
@@ -2470,34 +2469,6 @@ surfaces:
         .expect("stored material check");
 
         assert!(needs_stored);
-    }
-
-    #[test]
-    fn observed_cleanup_advances_source_epoch_when_sqlite_file_is_absent() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let search_observations = SearchObservationHandle::new(layout.clone());
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone())
-                .with_search_observation_handle(search_observations.clone());
-        let workspace_name = default_workspace();
-        let source_name = SourceName::parse("github").expect("source name");
-
-        assert!(!layout.search_sqlite_file(&workspace_name).exists());
-        manager
-            .clear_observed_values_for_source_lifecycle_best_effort(&workspace_name, &source_name);
-
-        assert!(layout.search_sqlite_file(&workspace_name).exists());
-        let epoch = SqliteObservedValuesStore::new(layout)
-            .capture_epoch(&workspace_name, source_name.as_str())
-            .expect("observed-values epoch");
-        assert_eq!(epoch.source_generation, 1);
-        search_observations.shutdown().expect("shutdown writer");
     }
 
     #[test]

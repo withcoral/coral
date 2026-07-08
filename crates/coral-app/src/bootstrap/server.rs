@@ -427,7 +427,6 @@ fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseCo
 pub struct RunningServer {
     endpoint_uri: String,
     local_trace_store_dir: Option<PathBuf>,
-    search_observations: Mutex<Option<SearchObservationHandle>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
@@ -474,28 +473,8 @@ impl RunningServer {
         }
 
         let task = self.task.lock().expect("task mutex poisoned").take();
-        let task_result = match task {
-            Some(task) => match task.await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(AppError::from(error)),
-                Err(error) => Err(AppError::from(error)),
-            },
-            None => Ok(()),
-        };
-        let search_observations_result = self.shutdown_search_observations().await;
-        task_result?;
-        search_observations_result?;
-        Ok(())
-    }
-
-    async fn shutdown_search_observations(&self) -> Result<(), AppError> {
-        let search_observations = self
-            .search_observations
-            .lock()
-            .expect("search observation mutex poisoned")
-            .take();
-        if let Some(search_observations) = search_observations {
-            tokio::task::spawn_blocking(move || search_observations.shutdown()).await??;
+        if let Some(task) = task {
+            task.await??;
         }
         Ok(())
     }
@@ -553,18 +532,24 @@ async fn start_server(
         feedback,
         task,
     } = dependencies;
-    let (source, query) = match &search_observations {
-        Some(search_observations) => (
-            source.with_search_observation_handle(search_observations.clone()),
-            query.with_search_observation_handle(search_observations.clone()),
-        ),
-        None => (source, query),
+    let observed_values_search_enabled = search_observations.is_some();
+    let (query, source_service) = match search_observations {
+        Some(search_observations) => {
+            let query = query.with_search_observation_handle(search_observations.clone());
+            let source_service = SourceService::new(source, query.clone(), workspace.clone())
+                .with_search_observation_handle(search_observations);
+            (query, source_service)
+        }
+        None => {
+            let source_service = SourceService::new(source, query.clone(), workspace.clone());
+            (query, source_service)
+        }
     };
-    let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
     let function_service = FunctionService::new(query.clone());
     let query_service = QueryService::new(query);
+    let shutdown_search = search.clone();
     let search_service = SearchService::new(search);
     let feedback_service = FeedbackService::new(feedback);
     let task_service = TaskService::new(task);
@@ -605,16 +590,26 @@ async fn start_server(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let task = match mode {
-        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
-        ServerMode::EmbeddedUi { assets, .. } => {
-            start_grpc_web_server(listener, shutdown_rx, routes, assets)
-        }
+        ServerMode::NativeGrpc => start_grpc_server(
+            listener,
+            shutdown_rx,
+            routes,
+            shutdown_search,
+            observed_values_search_enabled,
+        ),
+        ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
+            listener,
+            shutdown_rx,
+            routes,
+            assets,
+            shutdown_search,
+            observed_values_search_enabled,
+        ),
     };
 
     Ok(RunningServer {
         endpoint_uri,
         local_trace_store_dir,
-        search_observations: Mutex::new(search_observations),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })
@@ -624,15 +619,21 @@ fn start_grpc_server(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
+    search: SearchManager,
+    observed_values_search_enabled: bool,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     tokio::spawn(async move {
-        Server::builder()
+        let result = Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(routes)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await
+            .await;
+        if observed_values_search_enabled {
+            drain_search_before_shutdown(search).await;
+        }
+        result
     })
 }
 
@@ -641,6 +642,8 @@ fn start_grpc_web_server(
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
     static_assets: Arc<dyn StaticAssetsProvider>,
+    search: SearchManager,
+    observed_values_search_enabled: bool,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     let grpc = routes
         .into_axum_router()
@@ -654,15 +657,28 @@ fn start_grpc_web_server(
     let combined: Routes = app.into();
 
     tokio::spawn(async move {
-        Server::builder()
+        let result = Server::builder()
             .accept_http1(true)
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(combined)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await
+            .await;
+        if observed_values_search_enabled {
+            drain_search_before_shutdown(search).await;
+        }
+        result
     })
+}
+
+async fn drain_search_before_shutdown(search: SearchManager) {
+    if let Err(error) = search.drain_before_shutdown().await {
+        tracing::debug!(
+            error = ?error,
+            "failed to prepare search state before shutdown"
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -816,7 +832,7 @@ mod tests {
     use std::borrow::Cow;
     use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
@@ -835,17 +851,17 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
-        StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        ServerBuilder, ServerDependencies, ServerMode, StaticAsset, StaticAssetsProvider,
+        TraceServerComponents, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
-    use crate::bootstrap::AppError;
     use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
-    use crate::search::observed::SearchObservationHandle;
+    use crate::search::observed::{
+        ObservedValuesQueueJob, ObservedValuesSurfaceKind, SearchObservationHandle,
+        SqliteObservedValuesStore,
+    };
     use crate::sources::manager::SourceManager;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
@@ -877,33 +893,6 @@ enabled = false
         .expect("write telemetry config");
     }
 
-    fn configure_observed_values_search(config_dir: &Path, enabled: bool) {
-        std::fs::create_dir_all(config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            format!(
-                r"
-version = 1
-
-[features]
-observed_values_search = {enabled}
-
-[trace_history]
-enabled = false
-"
-            ),
-        )
-        .expect("write feature config");
-    }
-
-    fn has_search_observation_handle(server: &RunningServer) -> bool {
-        server
-            .search_observations
-            .lock()
-            .expect("search observation mutex")
-            .is_some()
-    }
-
     #[derive(Debug)]
     struct RejectingUserPrincipalProvider;
 
@@ -932,103 +921,6 @@ enabled = false
             .await
             .expect("run state migrations");
         Arc::new(db)
-    }
-
-    #[tokio::test]
-    async fn shutdown_attempts_observed_values_shutdown_after_server_task_error() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let search_observations = SearchObservationHandle::new(layout);
-        let task = tokio::spawn(async {
-            let should_panic = true;
-            assert!(!should_panic, "server task panicked");
-            Ok::<(), tonic::transport::Error>(())
-        });
-        let server = RunningServer {
-            endpoint_uri: "http://127.0.0.1:0".to_string(),
-            local_trace_store_dir: None,
-            search_observations: Mutex::new(Some(search_observations)),
-            shutdown_tx: Mutex::new(None),
-            task: Mutex::new(Some(task)),
-        };
-
-        let result = server.shutdown_inner().await;
-
-        assert!(matches!(result, Err(AppError::TaskJoin(_))));
-        assert!(
-            server
-                .search_observations
-                .lock()
-                .expect("search observation mutex")
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn server_builder_leaves_observation_handle_detached_by_default() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-
-        assert!(!has_search_observation_handle(&server));
-        server.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn server_builder_attaches_observation_handle_when_config_enabled() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_observed_values_search(&config_dir, true);
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-
-        assert!(has_search_observation_handle(&server));
-        server.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn server_builder_process_overrides_control_observation_handle() {
-        let temp = TempDir::new().expect("temp dir");
-        let disabled_config_dir = temp.path().join("disabled-config");
-        configure_observed_values_search(&disabled_config_dir, false);
-        let mut enable_override = FeatureOverrides::default();
-        enable_override.set(Feature::ObservedValuesSearch, true);
-
-        let enabled_server = ServerBuilder::new()
-            .with_config_dir(disabled_config_dir)
-            .with_feature_overrides(enable_override)
-            .start()
-            .await
-            .expect("start process-enabled server");
-
-        assert!(has_search_observation_handle(&enabled_server));
-        enabled_server.shutdown().await.expect("shutdown");
-
-        let enabled_config_dir = temp.path().join("enabled-config");
-        configure_observed_values_search(&enabled_config_dir, true);
-        let mut disable_override = FeatureOverrides::default();
-        disable_override.set(Feature::ObservedValuesSearch, false);
-
-        let disabled_server = ServerBuilder::new()
-            .with_config_dir(enabled_config_dir)
-            .with_feature_overrides(disable_override)
-            .start()
-            .await
-            .expect("start process-disabled server");
-
-        assert!(!has_search_observation_handle(&disabled_server));
-        disabled_server.shutdown().await.expect("shutdown");
     }
 
     #[tokio::test]
@@ -1148,6 +1040,54 @@ backend = "unsupported"
             "task events should contain end status, got: {tasks}"
         );
         server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_observed_values_queue() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &ObservedValuesQueueJob {
+                    owner_source_name: "github".to_string(),
+                    source_name: "github".to_string(),
+                    source_scope_id: "scope".to_string(),
+                    surface_kind: ObservedValuesSurfaceKind::Table,
+                    surface_name: "issues".to_string(),
+                    payload_json: r#"{"values":[{"column_name":"title","display_value":"Payment outage","search_text":"payment outage","value_key":"payment-outage"}]}"#
+                        .to_string(),
+                },
+                generation,
+            )
+            .expect("enqueue observed value");
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start server");
+        server.shutdown().await.expect("shutdown");
+
+        let hits = store
+            .search(&workspace, &["payment".to_string()], 10)
+            .expect("search observed values");
+        assert_eq!(hits.hits.len(), 1);
+        assert_eq!(hits.hits[0].display_value, "Payment outage");
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("pending queue depth"),
+            0
+        );
     }
 
     #[tokio::test]

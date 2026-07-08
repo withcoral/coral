@@ -31,6 +31,14 @@ impl ObservedValuesSurfaceKind {
             Self::Function => "function",
         }
     }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "table" => Some(Self::Table),
+            "function" => Some(Self::Function),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

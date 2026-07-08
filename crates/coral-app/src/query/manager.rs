@@ -183,7 +183,6 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
-                        SourceObservationMode::Disabled,
                     )
                     .await?;
                 Ok(runtime.list_tables(schema_filter, table_filter))
@@ -217,7 +216,6 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
-                        SourceObservationMode::Disabled,
                     )
                     .await?;
                 Ok(runtime.list_catalog(schema_filter))
@@ -262,7 +260,6 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Disabled,
                     )
                     .await?;
                 Ok(runtime.describe_table(schema_name, table_name))
@@ -295,7 +292,6 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Enabled,
                     )
                     .await?;
                 runtime
@@ -331,7 +327,6 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Disabled,
                     )
                     .await?;
                 runtime
@@ -372,7 +367,7 @@ impl QueryManager {
             (source, loaded_source, version, config)
         };
         let runtime = self
-            .runtime_config_without_source_observations(
+            .runtime_config(
                 workspace_name,
                 std::slice::from_ref(&loaded_source),
                 &config,
@@ -518,22 +513,6 @@ impl QueryManager {
             selected_sources,
             config,
             CredentialResolutionMode::Refreshing,
-            SourceObservationMode::Enabled,
-        )
-    }
-
-    fn runtime_config_without_source_observations(
-        &self,
-        workspace_name: &WorkspaceName,
-        selected_sources: &[LoadedQuerySource],
-        config: &AppConfig,
-    ) -> Result<QueryRuntimeConfig, AppError> {
-        self.runtime_config_with_credential_mode(
-            workspace_name,
-            selected_sources,
-            config,
-            CredentialResolutionMode::Refreshing,
-            SourceObservationMode::Disabled,
         )
     }
 
@@ -543,14 +522,11 @@ impl QueryManager {
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
         credential_resolution_mode: CredentialResolutionMode,
-        source_observation_mode: SourceObservationMode,
     ) -> Result<QueryRuntimeConfig, AppError> {
         let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, &query_sources);
-        if matches!(source_observation_mode, SourceObservationMode::Enabled)
-            && let Some(search_observations) = &self.search_observations
-        {
+        if let Some(search_observations) = &self.search_observations {
             let observation_sources = selected_sources
                 .iter()
                 .map(|source| {
@@ -754,7 +730,6 @@ impl QueryManager {
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
         credential_resolution_mode: CredentialResolutionMode,
-        source_observation_mode: SourceObservationMode,
     ) -> Result<PreparedQueryRuntime, QueryManagerError> {
         let runtime_config = self
             .runtime_config_with_credential_mode(
@@ -762,7 +737,6 @@ impl QueryManager {
                 selected_sources,
                 config,
                 credential_resolution_mode,
-                source_observation_mode,
             )
             .map_err(QueryManagerError::App)?;
         let query_sources = query_sources_from_loaded(selected_sources);
@@ -795,12 +769,6 @@ enum QueryOperation {
     ListTables,
     ListCatalog,
     DescribeTable,
-}
-
-#[derive(Clone, Copy)]
-enum SourceObservationMode {
-    Enabled,
-    Disabled,
 }
 
 impl QueryOperation {
@@ -2689,40 +2657,5 @@ tables:
                 .as_deref(),
             Some("stored-token")
         );
-    }
-
-    fn observed_values_loaded_source() -> LoadedQuerySource {
-        let source_spec = parse_source_manifest_yaml(
-            r"
-name: github
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: https://api.github.com
-tables:
-  - name: issues
-    description: Issues
-    request:
-      path: /issues
-    columns:
-      - name: title
-        type: Utf8
-",
-        )
-        .expect("parse source manifest");
-        LoadedQuerySource {
-            source: InstalledSource {
-                name: SourceName::parse("github").expect("source name"),
-                version: None,
-                variables: BTreeMap::new(),
-                secrets: Vec::new(),
-                credential_storage: None,
-                credential_revision: uuid::Uuid::default(),
-                origin: SourceOrigin::Bundled,
-            },
-            query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
-            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
-            credential_material: BTreeMap::new(),
-        }
     }
 }
