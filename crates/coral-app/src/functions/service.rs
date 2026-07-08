@@ -13,7 +13,10 @@ use crate::bootstrap::app_status;
 use crate::functions::manager::{FunctionListing, FunctionManager};
 use crate::functions::model::FunctionName;
 use crate::query::manager::QueryManager;
-use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_from_proto};
+use crate::transport::{
+    grpc_span, instrument_grpc, query_status, workspace_name_from_proto, workspace_to_proto,
+};
+use crate::workspaces::WorkspaceName;
 
 #[derive(Clone)]
 pub(crate) struct FunctionService {
@@ -70,7 +73,7 @@ impl FunctionServiceApi for FunctionService {
                 .await
                 .map_err(query_status)?
                 .into_iter()
-                .map(function_listing_to_proto)
+                .map(|listing| function_listing_to_proto(&workspace_name, listing))
                 .collect();
             Ok(Response::new(ListFunctionsResponse { functions }))
         })
@@ -96,12 +99,16 @@ impl FunctionServiceApi for FunctionService {
     }
 }
 
-fn function_listing_to_proto(listing: FunctionListing) -> Function {
-    runtime_function_to_proto(listing.definition)
+fn function_listing_to_proto(workspace_name: &WorkspaceName, listing: FunctionListing) -> Function {
+    runtime_function_to_proto(workspace_name, listing.definition)
 }
 
-fn runtime_function_to_proto(function: UdfRuntimeDefinition) -> Function {
+fn runtime_function_to_proto(
+    workspace_name: &WorkspaceName,
+    function: UdfRuntimeDefinition,
+) -> Function {
     Function {
+        workspace: Some(workspace_to_proto(workspace_name)),
         name: function.name,
         description: function.description,
         arguments: function
@@ -110,7 +117,6 @@ fn runtime_function_to_proto(function: UdfRuntimeDefinition) -> Function {
             .map(|argument| FunctionArgument {
                 name: argument.name,
                 data_type: argument.data_type.as_manifest_str().to_string(),
-                description: String::new(),
             })
             .collect(),
         publish: Some(function_publish_to_proto(function.publish)),
@@ -121,7 +127,6 @@ fn runtime_function_to_proto(function: UdfRuntimeDefinition) -> Function {
                 name: column.name,
                 data_type: column.data_type.to_string(),
                 nullable: column.nullable,
-                description: String::new(),
             })
             .collect(),
     }
