@@ -109,6 +109,7 @@ enum V4InputSpecSchema {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hint: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(required)]
         credential: Option<V4CredentialSpecSchema>,
     },
 }
@@ -154,16 +155,18 @@ enum V4OAuthCredentialMethodSchema {
 struct V4AuthorizationCodeOAuthCredentialMethodSchema {
     flow: V4AuthorizationCodeOAuthFlowSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1))]
+    #[schemars(required, length(min = 1))]
     resource: Option<String>,
     #[serde(rename = "redirect_uri")]
     #[schemars(length(min = 1))]
     redirect: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
     redirect_uri_port_mode: Option<ManifestOAuthRedirectUriPortMode>,
     endpoints: V4AuthorizationCodeOAuthEndpointsSchema,
     client: V4OAuthClientSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
     scopes: Option<ManifestOAuthScopesSpec>,
 }
 
@@ -172,11 +175,12 @@ struct V4AuthorizationCodeOAuthCredentialMethodSchema {
 struct V4DeviceCodeOAuthCredentialMethodSchema {
     flow: V4DeviceCodeOAuthFlowSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1))]
+    #[schemars(required, length(min = 1))]
     resource: Option<String>,
     endpoints: V4DeviceCodeOAuthEndpointsSchema,
     client: V4DeviceCodeOAuthClientSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
     scopes: Option<ManifestOAuthScopesSpec>,
 }
 
@@ -620,6 +624,80 @@ surfaces:
             "generated schema should reject unknown OAuth fields"
         );
         parse_source_manifest_yaml(raw).expect_err("parser should reject unknown OAuth fields");
+    }
+
+    #[test]
+    fn generated_schema_rejects_explicit_null_oauth_optionals_and_parser_agrees() {
+        let credential_null = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    inputs:
+      API_TOKEN:
+        kind: secret
+        credential: null
+";
+        let oauth_manifest = |oauth_extra: &str, registration_extra: &str| {
+            format!(
+                r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    inputs:
+      API_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:0/oauth/callback
+{oauth_extra}                endpoints:
+                  authorization_url: https://login.example.com/oauth/authorize
+                  token_url: https://login.example.com/oauth/token
+                client:
+                  dynamic_registration:
+                    registration_url: https://login.example.com/oauth/register
+{registration_extra}"
+            )
+        };
+        let invalid = [
+            ("credential", credential_null.to_string()),
+            (
+                "resource",
+                oauth_manifest("                resource: null\n", ""),
+            ),
+            (
+                "redirect_uri_port_mode",
+                oauth_manifest("                redirect_uri_port_mode: null\n", ""),
+            ),
+            (
+                "scopes",
+                oauth_manifest("                scopes: null\n", ""),
+            ),
+            (
+                "client_name",
+                oauth_manifest("", "                    client_name: null\n"),
+            ),
+        ];
+
+        let validator = validator();
+        for (field, raw) in invalid {
+            assert!(
+                !validator.is_valid(&manifest_json(&raw)),
+                "generated schema should reject explicit null for {field}"
+            );
+            parse_source_manifest_yaml(&raw)
+                .expect_err("parser should reject explicit null for OAuth optional field");
+        }
     }
 
     #[test]

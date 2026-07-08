@@ -207,13 +207,19 @@
               ]
             },
             "credential": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/V4CredentialSpecSchema"
-                },
-                {
-                  "type": "null"
+              "type": "object",
+              "properties": {
+                "methods": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/V4CredentialMethodSchema"
+                  },
+                  "minItems": 1
                 }
+              },
+              "additionalProperties": false,
+              "required": [
+                "methods"
               ]
             },
             "kind": {
@@ -226,22 +232,6 @@
             "kind"
           ]
         }
-      ]
-    },
-    "V4CredentialSpecSchema": {
-      "type": "object",
-      "properties": {
-        "methods": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/V4CredentialMethodSchema"
-          },
-          "minItems": 1
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "methods"
       ]
     },
     "V4CredentialMethodSchema": {
@@ -331,10 +321,7 @@
           "$ref": "#/$defs/V4AuthorizationCodeOAuthFlowSchema"
         },
         "resource": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "minLength": 1
         },
         "redirect_uri": {
@@ -342,12 +329,17 @@
           "minLength": 1
         },
         "redirect_uri_port_mode": {
-          "anyOf": [
+          "description": "Supported loopback redirect URI port binding modes.",
+          "oneOf": [
             {
-              "$ref": "#/$defs/ManifestOAuthRedirectUriPortMode"
+              "description": "Bind the exact port authored in `redirect_uri`.",
+              "type": "string",
+              "const": "fixed"
             },
             {
-              "type": "null"
+              "description": "Bind a random free port and use it in OAuth authorization and token exchange.",
+              "type": "string",
+              "const": "random"
             }
           ]
         },
@@ -358,13 +350,17 @@
           "$ref": "#/$defs/V4OAuthClientSchema"
         },
         "scopes": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ManifestOAuthScopesSpec"
-            },
-            {
-              "type": "null"
+          "description": "OAuth scope parameter configuration.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "description": "The `scope` parameter value definition.",
+              "$ref": "#/$defs/ManifestOAuthScopeSpec"
             }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope"
           ]
         }
       },
@@ -410,21 +406,6 @@
           "description": "Do not include PKCE parameters.",
           "type": "string",
           "const": "disabled"
-        }
-      ]
-    },
-    "ManifestOAuthRedirectUriPortMode": {
-      "description": "Supported loopback redirect URI port binding modes.",
-      "oneOf": [
-        {
-          "description": "Bind the exact port authored in `redirect_uri`.",
-          "type": "string",
-          "const": "fixed"
-        },
-        {
-          "description": "Bind a random free port and use it in OAuth authorization and token exchange.",
-          "type": "string",
-          "const": "random"
         }
       ]
     },
@@ -618,10 +599,7 @@
         },
         "client_name": {
           "description": "Optional client display name sent during registration.",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "minLength": 1
         },
         "token_endpoint_auth_method": {
@@ -696,20 +674,6 @@
         "dynamic_registration"
       ]
     },
-    "ManifestOAuthScopesSpec": {
-      "description": "OAuth scope parameter configuration.",
-      "type": "object",
-      "properties": {
-        "scope": {
-          "description": "The `scope` parameter value definition.",
-          "$ref": "#/$defs/ManifestOAuthScopeSpec"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "scope"
-      ]
-    },
     "ManifestOAuthScopeSpec": {
       "description": "OAuth scope parameter values and delimiter.",
       "type": "object",
@@ -756,10 +720,7 @@
           "$ref": "#/$defs/V4DeviceCodeOAuthFlowSchema"
         },
         "resource": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "minLength": 1
         },
         "endpoints": {
@@ -769,13 +730,17 @@
           "$ref": "#/$defs/V4DeviceCodeOAuthClientSchema"
         },
         "scopes": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ManifestOAuthScopesSpec"
-            },
-            {
-              "type": "null"
+          "description": "OAuth scope parameter configuration.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "description": "The `scope` parameter value definition.",
+              "$ref": "#/$defs/ManifestOAuthScopeSpec"
             }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope"
           ]
         }
       },

@@ -361,7 +361,7 @@ pub struct ManifestOAuthDynamicClientRegistrationSpec {
     pub registration_url: String,
     /// Optional client display name sent during registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1))]
+    #[schemars(required, length(min = 1))]
     pub client_name: Option<String>,
     /// Requested token endpoint authentication method.
     #[serde(default)]

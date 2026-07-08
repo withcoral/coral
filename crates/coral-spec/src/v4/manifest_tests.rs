@@ -468,6 +468,11 @@ surfaces:
     };
     assert_eq!(oauth_method.kind, ManifestCredentialMethodKind::OAuth);
     assert_eq!(oauth_method.label.as_deref(), Some("Connect with Demo"));
+    assert_eq!(oauth_method.description.as_deref(), Some("Use OAuth."));
+    assert_eq!(
+        oauth_method.hint.as_deref(),
+        Some("Authorize in your browser.")
+    );
     assert_eq!(
         source_config_method.kind,
         ManifestCredentialMethodKind::SourceConfig
