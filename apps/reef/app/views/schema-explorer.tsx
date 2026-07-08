@@ -392,7 +392,7 @@ export function ColumnsTable({ columns }: { columns: ColumnDef[] }) {
   }
 
   return (
-    <Table.Wrapper>
+    <Table.Wrapper variant="compact">
       <Table.Root>
         <Table.Head>
           <Table.Row>

@@ -2,7 +2,7 @@ import classNames from 'classnames'
 
 import * as styles from './table.css'
 
-type TableStyle = 'compact' | 'default'
+type TableVariant = 'compact' | 'default'
 
 interface TableProps {
   children: React.ReactNode
@@ -12,7 +12,7 @@ interface TableProps {
 interface WrapperProps {
   children: React.ReactNode
   className?: string
-  style?: TableStyle
+  variant?: TableVariant
 }
 
 interface TableHeadProps {
@@ -45,7 +45,7 @@ interface TableCellProps {
   title?: string
 }
 
-function Wrapper({ children, className, style: tableStyle = 'default' }: WrapperProps) {
+function Wrapper({ children, className, variant: tableStyle = 'default' }: WrapperProps) {
   return <div className={classNames(styles.wrapper({ tableStyle }), className)}>{children}</div>
 }
 
