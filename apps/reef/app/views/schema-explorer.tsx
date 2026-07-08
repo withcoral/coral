@@ -356,7 +356,7 @@ export function TableDetailLayout({
 export function ColumnsPending() {
   return (
     <div className={styles.loadingState}>
-      <Icon className={styles.spinAnimation} color="secondary" name="Loader" size="18" />
+      <Icon color="secondary" name="Loader" size="18" />
       <Typography.BodySmall variant="tertiary">Loading columns</Typography.BodySmall>
     </div>
   )
@@ -385,7 +385,7 @@ export function ColumnsTable({ columns }: { columns: ColumnDef[] }) {
   }
 
   return (
-    <Table.Wrapper variant="compact">
+    <Table.Wrapper>
       <Table.Root>
         <Table.Head>
           <Table.Row>

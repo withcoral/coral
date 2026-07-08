@@ -1,9 +1,8 @@
 import { style } from '@vanilla-extract/css'
 
-import { breakpoints } from '@/styles/theme'
+import { pulse } from '@/wax/animations/pulse.css'
+import { breakpoints } from '@/styles/theme.css'
 import { animation, theme } from '@/wax/theme/theme.css'
-
-export { spinAnimation } from '@/wax/animations/spin.css'
 
 export const root = style({
   display: 'flex',
@@ -272,6 +271,7 @@ export const requiredStar = style({
 })
 
 export const loadingState = style({
+  ...pulse,
   alignItems: 'center',
   display: 'flex',
   gap: 8,

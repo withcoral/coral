@@ -69,13 +69,6 @@ export async function fetchSchemaFromCoral(): Promise<SchemaResponse> {
   }
 }
 
-export async function fetchTableColumnsFromCoral(
-  schemaName: string,
-  tableName: string,
-): Promise<ColumnDef[]> {
-  return listColumnsForTable(schemaName, tableName)
-}
-
 async function listTables(): Promise<TableSummary[]> {
   const catalogClient = await getCatalogClient()
   const response = await catalogClient.listCatalog(
@@ -88,7 +81,10 @@ async function listTables(): Promise<TableSummary[]> {
   return response.items.flatMap((item) => (item.item.case === 'table' ? [item.item.value] : []))
 }
 
-async function listColumnsForTable(schemaName: string, tableName: string): Promise<ColumnDef[]> {
+export async function fetchTableColumnsFromCoral(
+  schemaName: string,
+  tableName: string,
+): Promise<ColumnDef[]> {
   const firstPage = await listColumnsPage(schemaName, tableName, 0)
   const columns = columnsFromResponse(firstPage)
   const pagination = firstPage.pagination
