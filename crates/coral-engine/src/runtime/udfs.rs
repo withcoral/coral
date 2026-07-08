@@ -41,7 +41,6 @@ pub(crate) async fn infer_udf_signature(
                 .unwrap_or(&parameter.name)
                 .to_string(),
             data_type: parameter.data_type,
-            description: String::new(),
         })
         .collect::<Vec<_>>();
     arguments.sort_by(|left, right| left.name.cmp(&right.name));
@@ -115,7 +114,7 @@ fn udf_argument_value(
             udf.name, argument.name
         )));
     };
-    UdfParameterBinding::new(argument.data_type)
+    UdfParameterTypeBinding::new(argument.data_type)
         .literal_value(value)
         .ok_or_else(|| {
             DataFusionError::Plan(format!(
@@ -224,7 +223,7 @@ impl<'a> UdfArgumentBinding<'a> {
         argument: &UdfRuntimeArgument,
         params: &mut QueryParameters,
     ) -> DataFusionResult<()> {
-        let binding = UdfParameterBinding::new(argument.data_type);
+        let binding = UdfParameterTypeBinding::new(argument.data_type);
         match params.get(&argument.name) {
             Some(value) if !binding.accepts_value(value) => Err(DataFusionError::Plan(format!(
                 "udf '{}' argument '{}' expected {}, got {}",
@@ -242,11 +241,11 @@ impl<'a> UdfArgumentBinding<'a> {
     }
 }
 
-struct UdfParameterBinding {
+struct UdfParameterTypeBinding {
     data_type: ManifestDataType,
 }
 
-impl UdfParameterBinding {
+impl UdfParameterTypeBinding {
     fn new(data_type: ManifestDataType) -> Self {
         Self { data_type }
     }
@@ -337,7 +336,6 @@ mod tests {
         UdfRuntimeArgument {
             name: name.to_string(),
             data_type,
-            description: String::new(),
         }
     }
 

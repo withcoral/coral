@@ -53,8 +53,6 @@ pub struct UdfRuntimeArgument {
     pub name: String,
     /// Argument type in manifest spelling.
     pub data_type: ManifestDataType,
-    /// Optional user-facing description.
-    pub description: String,
 }
 
 /// One column returned by a UDF table function.
