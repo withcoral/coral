@@ -8,7 +8,11 @@ use serde_json::{Value, json};
 
 use crate::backends::http::RateLimitSpec;
 use crate::backends::mcp::McpServerSpec;
-use crate::{AuthSpec, HeaderSpec};
+use crate::{
+    AuthSpec, HeaderSpec, ManifestOAuthClientSecretSpec,
+    ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthPkceMode,
+    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopesSpec,
+};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -156,11 +160,11 @@ struct V4AuthorizationCodeOAuthCredentialMethodSchema {
     #[schemars(length(min = 1))]
     redirect: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    redirect_uri_port_mode: Option<V4OAuthRedirectUriPortModeSchema>,
+    redirect_uri_port_mode: Option<ManifestOAuthRedirectUriPortMode>,
     endpoints: V4AuthorizationCodeOAuthEndpointsSchema,
     client: V4OAuthClientSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    scopes: Option<V4OAuthScopesSchema>,
+    scopes: Option<ManifestOAuthScopesSpec>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -173,7 +177,7 @@ struct V4DeviceCodeOAuthCredentialMethodSchema {
     endpoints: V4DeviceCodeOAuthEndpointsSchema,
     client: V4DeviceCodeOAuthClientSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    scopes: Option<V4OAuthScopesSchema>,
+    scopes: Option<ManifestOAuthScopesSpec>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -181,27 +185,13 @@ struct V4DeviceCodeOAuthCredentialMethodSchema {
 struct V4AuthorizationCodeOAuthFlowSchema {
     #[serde(rename = "type")]
     flow_type: V4AuthorizationCodeOAuthFlowTypeSchema,
-    pkce: V4OAuthPkceModeSchema,
+    pkce: ManifestOAuthPkceMode,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum V4AuthorizationCodeOAuthFlowTypeSchema {
     AuthorizationCode,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum V4OAuthPkceModeSchema {
-    Required,
-    Disabled,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum V4OAuthRedirectUriPortModeSchema {
-    Fixed,
-    Random,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -275,28 +265,28 @@ struct V4OAuthPublicClientSchema {
 #[serde(deny_unknown_fields)]
 struct V4OAuthConfidentialClientSchema {
     id: V4OAuthClientIdWithInputSchema,
-    secret: V4OAuthClientSecretSchema,
+    secret: ManifestOAuthClientSecretSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4OAuthDynamicClientSchema {
-    dynamic_registration: V4OAuthDynamicClientRegistrationSchema,
+    dynamic_registration: ManifestOAuthDynamicClientRegistrationSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4OAuthPublicDynamicClientSchema {
     id: V4OAuthClientIdSchema,
-    dynamic_registration: V4OAuthDynamicClientRegistrationSchema,
+    dynamic_registration: ManifestOAuthDynamicClientRegistrationSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4OAuthConfidentialDynamicClientSchema {
     id: V4OAuthClientIdWithInputSchema,
-    secret: V4OAuthClientSecretSchema,
-    dynamic_registration: V4OAuthDynamicClientRegistrationSchema,
+    secret: ManifestOAuthClientSecretSpec,
+    dynamic_registration: ManifestOAuthDynamicClientRegistrationSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -335,64 +325,6 @@ struct V4OAuthClientIdDefaultSchema {
 struct V4OAuthClientIdInputSchema {
     #[schemars(length(min = 1))]
     input: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct V4OAuthClientSecretSchema {
-    #[schemars(length(min = 1))]
-    input: String,
-    transport: V4OAuthClientSecretTransportSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum V4OAuthClientSecretTransportSchema {
-    BasicAuth,
-    RequestBody,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct V4OAuthDynamicClientRegistrationSchema {
-    #[schemars(length(min = 1))]
-    registration_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1))]
-    client_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    token_endpoint_auth_method: Option<V4OAuthDynamicClientRegistrationAuthMethodSchema>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    request_refresh_token_grant: Option<bool>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum V4OAuthDynamicClientRegistrationAuthMethodSchema {
-    None,
-    ClientSecretBasic,
-    ClientSecretPost,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct V4OAuthScopesSchema {
-    scope: V4OAuthScopeSchema,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct V4OAuthScopeSchema {
-    delimiter: V4OAuthScopeDelimiterSchema,
-    #[schemars(length(min = 1), inner(length(min = 1)))]
-    values: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum V4OAuthScopeDelimiterSchema {
-    Space,
-    Comma,
 }
 
 /// Generate the JSON Schema for authored DSL v4 source manifests.

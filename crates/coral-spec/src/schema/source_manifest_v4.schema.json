@@ -344,7 +344,7 @@
         "redirect_uri_port_mode": {
           "anyOf": [
             {
-              "$ref": "#/$defs/V4OAuthRedirectUriPortModeSchema"
+              "$ref": "#/$defs/ManifestOAuthRedirectUriPortMode"
             },
             {
               "type": "null"
@@ -360,7 +360,7 @@
         "scopes": {
           "anyOf": [
             {
-              "$ref": "#/$defs/V4OAuthScopesSchema"
+              "$ref": "#/$defs/ManifestOAuthScopesSpec"
             },
             {
               "type": "null"
@@ -383,7 +383,7 @@
           "$ref": "#/$defs/V4AuthorizationCodeOAuthFlowTypeSchema"
         },
         "pkce": {
-          "$ref": "#/$defs/V4OAuthPkceModeSchema"
+          "$ref": "#/$defs/ManifestOAuthPkceMode"
         }
       },
       "additionalProperties": false,
@@ -398,18 +398,34 @@
         "authorization_code"
       ]
     },
-    "V4OAuthPkceModeSchema": {
-      "type": "string",
-      "enum": [
-        "required",
-        "disabled"
+    "ManifestOAuthPkceMode": {
+      "description": "Supported PKCE modes for OAuth credential retrieval.",
+      "oneOf": [
+        {
+          "description": "Require a generated code verifier and S256 challenge.",
+          "type": "string",
+          "const": "required"
+        },
+        {
+          "description": "Do not include PKCE parameters.",
+          "type": "string",
+          "const": "disabled"
+        }
       ]
     },
-    "V4OAuthRedirectUriPortModeSchema": {
-      "type": "string",
-      "enum": [
-        "fixed",
-        "random"
+    "ManifestOAuthRedirectUriPortMode": {
+      "description": "Supported loopback redirect URI port binding modes.",
+      "oneOf": [
+        {
+          "description": "Bind the exact port authored in `redirect_uri`.",
+          "type": "string",
+          "const": "fixed"
+        },
+        {
+          "description": "Bind a random free port and use it in OAuth authorization and token exchange.",
+          "type": "string",
+          "const": "random"
+        }
       ]
     },
     "V4AuthorizationCodeOAuthEndpointsSchema": {
@@ -525,7 +541,7 @@
           "$ref": "#/$defs/V4OAuthClientIdWithInputSchema"
         },
         "secret": {
-          "$ref": "#/$defs/V4OAuthClientSecretSchema"
+          "$ref": "#/$defs/ManifestOAuthClientSecretSpec"
         }
       },
       "additionalProperties": false,
@@ -544,15 +560,18 @@
         }
       ]
     },
-    "V4OAuthClientSecretSchema": {
+    "ManifestOAuthClientSecretSpec": {
+      "description": "OAuth client secret retrieval configuration.",
       "type": "object",
       "properties": {
         "input": {
+          "description": "Credential-retrieval input key for the client secret.",
           "type": "string",
           "minLength": 1
         },
         "transport": {
-          "$ref": "#/$defs/V4OAuthClientSecretTransportSchema"
+          "description": "How Coral sends the client secret to the token endpoint.",
+          "$ref": "#/$defs/ManifestOAuthClientSecretTransport"
         }
       },
       "additionalProperties": false,
@@ -561,18 +580,26 @@
         "transport"
       ]
     },
-    "V4OAuthClientSecretTransportSchema": {
-      "type": "string",
-      "enum": [
-        "basic_auth",
-        "request_body"
+    "ManifestOAuthClientSecretTransport": {
+      "description": "Supported confidential-client secret transport modes.",
+      "oneOf": [
+        {
+          "description": "Send `Authorization: Basic base64(client_id:client_secret)`.",
+          "type": "string",
+          "const": "basic_auth"
+        },
+        {
+          "description": "Send `client_secret` in the token request body.",
+          "type": "string",
+          "const": "request_body"
+        }
       ]
     },
     "V4OAuthDynamicClientSchema": {
       "type": "object",
       "properties": {
         "dynamic_registration": {
-          "$ref": "#/$defs/V4OAuthDynamicClientRegistrationSchema"
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationSpec"
         }
       },
       "additionalProperties": false,
@@ -580,14 +607,17 @@
         "dynamic_registration"
       ]
     },
-    "V4OAuthDynamicClientRegistrationSchema": {
+    "ManifestOAuthDynamicClientRegistrationSpec": {
+      "description": "OAuth 2.0 Dynamic Client Registration configuration.",
       "type": "object",
       "properties": {
         "registration_url": {
+          "description": "OAuth client registration endpoint URL template.",
           "type": "string",
           "minLength": 1
         },
         "client_name": {
+          "description": "Optional client display name sent during registration.",
           "type": [
             "string",
             "null"
@@ -595,20 +625,14 @@
           "minLength": 1
         },
         "token_endpoint_auth_method": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/V4OAuthDynamicClientRegistrationAuthMethodSchema"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "description": "Requested token endpoint authentication method.",
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationAuthMethod",
+          "default": "none"
         },
         "request_refresh_token_grant": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "description": "Whether Coral requests the `refresh_token` grant type during registration.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false,
@@ -616,12 +640,24 @@
         "registration_url"
       ]
     },
-    "V4OAuthDynamicClientRegistrationAuthMethodSchema": {
-      "type": "string",
-      "enum": [
-        "none",
-        "client_secret_basic",
-        "client_secret_post"
+    "ManifestOAuthDynamicClientRegistrationAuthMethod": {
+      "description": "Supported DCR token endpoint authentication method requests.",
+      "oneOf": [
+        {
+          "description": "Public client; no client authentication at the token endpoint.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Confidential client using HTTP Basic authentication at the token endpoint.",
+          "type": "string",
+          "const": "client_secret_basic"
+        },
+        {
+          "description": "Confidential client sending the client secret in the token request body.",
+          "type": "string",
+          "const": "client_secret_post"
+        }
       ]
     },
     "V4OAuthPublicDynamicClientSchema": {
@@ -631,7 +667,7 @@
           "$ref": "#/$defs/V4OAuthClientIdSchema"
         },
         "dynamic_registration": {
-          "$ref": "#/$defs/V4OAuthDynamicClientRegistrationSchema"
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationSpec"
         }
       },
       "additionalProperties": false,
@@ -647,10 +683,10 @@
           "$ref": "#/$defs/V4OAuthClientIdWithInputSchema"
         },
         "secret": {
-          "$ref": "#/$defs/V4OAuthClientSecretSchema"
+          "$ref": "#/$defs/ManifestOAuthClientSecretSpec"
         },
         "dynamic_registration": {
-          "$ref": "#/$defs/V4OAuthDynamicClientRegistrationSchema"
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationSpec"
         }
       },
       "additionalProperties": false,
@@ -660,11 +696,13 @@
         "dynamic_registration"
       ]
     },
-    "V4OAuthScopesSchema": {
+    "ManifestOAuthScopesSpec": {
+      "description": "OAuth scope parameter configuration.",
       "type": "object",
       "properties": {
         "scope": {
-          "$ref": "#/$defs/V4OAuthScopeSchema"
+          "description": "The `scope` parameter value definition.",
+          "$ref": "#/$defs/ManifestOAuthScopeSpec"
         }
       },
       "additionalProperties": false,
@@ -672,13 +710,16 @@
         "scope"
       ]
     },
-    "V4OAuthScopeSchema": {
+    "ManifestOAuthScopeSpec": {
+      "description": "OAuth scope parameter values and delimiter.",
       "type": "object",
       "properties": {
         "delimiter": {
-          "$ref": "#/$defs/V4OAuthScopeDelimiterSchema"
+          "description": "Delimiter used to join scope values.",
+          "$ref": "#/$defs/ManifestOAuthScopeDelimiter"
         },
         "values": {
+          "description": "Authored scope values.",
           "type": "array",
           "items": {
             "type": "string",
@@ -693,11 +734,19 @@
         "values"
       ]
     },
-    "V4OAuthScopeDelimiterSchema": {
-      "type": "string",
-      "enum": [
-        "space",
-        "comma"
+    "ManifestOAuthScopeDelimiter": {
+      "description": "Supported OAuth scope delimiters.",
+      "oneOf": [
+        {
+          "description": "Join scope values with a single space.",
+          "type": "string",
+          "const": "space"
+        },
+        {
+          "description": "Join scope values with a comma.",
+          "type": "string",
+          "const": "comma"
+        }
       ]
     },
     "V4DeviceCodeOAuthCredentialMethodSchema": {
@@ -722,7 +771,7 @@
         "scopes": {
           "anyOf": [
             {
-              "$ref": "#/$defs/V4OAuthScopesSchema"
+              "$ref": "#/$defs/ManifestOAuthScopesSpec"
             },
             {
               "type": "null"
