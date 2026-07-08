@@ -24,7 +24,8 @@ use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
+    TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -449,9 +450,10 @@ async fn start_server(
     let feedback_service = FeedbackService::new(feedback);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
-        .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
-            source_service,
-        )))
+        .add_service(GrpcMethodAnnotatedService::new(
+            SourceServiceServer::new(source_service)
+                .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
+        ))
         .add_service(GrpcMethodAnnotatedService::new(
             WorkspaceServiceServer::new(workspace_service),
         ))

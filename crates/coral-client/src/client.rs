@@ -10,7 +10,7 @@ use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    SEARCH_RESPONSE_MAX_MESSAGE_SIZE,
+    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
@@ -88,7 +88,8 @@ impl AppClient {
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
         let channel = endpoint.connect().await?;
-        let source_client = SourceClient::new(grpc_service(channel.clone(), &grpc_endpoint));
+        let source_client = SourceClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE);
         let workspace_client = WorkspaceClient::new(grpc_service(channel.clone(), &grpc_endpoint));
         let catalog_client = CatalogClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);

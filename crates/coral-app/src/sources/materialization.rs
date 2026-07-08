@@ -32,7 +32,7 @@ use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 
 const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024 * 1024;
 const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
 pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";

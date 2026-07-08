@@ -55,6 +55,12 @@ pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 /// responses larger than tonic's 4 MB default.
 pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
 
+/// Maximum gRPC message size for `SourceService` *responses*, in bytes.
+///
+/// Source validation returns source metadata plus all exposed tables. Generated
+/// DSL v4 sources from large OpenAPI documents can exceed tonic's 4 MB default.
+pub const SOURCE_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `SearchService` *responses*, in bytes.
 ///
 /// Universal Search returns bounded metadata hints, but it may include table,
