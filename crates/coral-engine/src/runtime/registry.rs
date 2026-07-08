@@ -12,7 +12,9 @@ use crate::backends::{
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
-use crate::runtime::registration_cache::{CacheLookup, RegistrationCache};
+use crate::runtime::registration_cache::{
+    CacheLookup, RegistrationCache, RegistrationRefreshClaim,
+};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
@@ -128,7 +130,7 @@ async fn register_sources_inner(
                 let compiled_source = selected_source.compiled;
                 let source_name = compiled_source.source_name().to_string();
 
-                match register_source(
+                let registration = match register_source(
                     ctx,
                     &registration_context,
                     &mut seen_schemas,
@@ -138,16 +140,51 @@ async fn register_sources_inner(
                 )
                 .await
                 {
-                    Ok(registration) => {
-                        register_backend_registration(
-                            ctx,
-                            catalog.as_ref(),
+                    Ok(SourceRegistrationAttempt::Ready(registration)) => registration,
+                    Ok(SourceRegistrationAttempt::StaleRefreshFailed {
+                        registration,
+                        error,
+                        claim,
+                    }) => {
+                        let core_error = datafusion_to_core(&error, &[]);
+                        let failure_policy = handle_source_registration_failure(
                             source_decorators,
                             query_source,
-                            &source_name,
-                            registration,
-                            &mut result,
-                        )?;
+                            &core_error,
+                        );
+                        if let Some(cache) = registration_cache {
+                            cache.refresh_failed(&claim, matches!(&failure_policy, Ok(false)));
+                        }
+                        if failure_policy? {
+                            return Err(core_error);
+                        }
+                        tracing::warn!(
+                            source = %source_name,
+                            detail = %error,
+                            "source registration refresh failed; keeping stale cached registration"
+                        );
+                        if let Err(error) =
+                            claim_registration_schemas(&registration, &mut seen_schemas).and_then(
+                                |()| claim_registration_catalogs(&registration, &mut seen_catalogs),
+                            )
+                        {
+                            let core_error = datafusion_to_core(&error, &[]);
+                            if handle_source_registration_failure(
+                                source_decorators,
+                                query_source,
+                                &core_error,
+                            )? {
+                                return Err(core_error);
+                            }
+                            push_source_failure(
+                                &mut result,
+                                &source_name,
+                                compiled_source.schema_name(),
+                                core_error.to_string(),
+                            );
+                            continue;
+                        }
+                        registration
                     }
                     Err(error) => {
                         let core_error = datafusion_to_core(&error, &[]);
@@ -164,8 +201,18 @@ async fn register_sources_inner(
                             compiled_source.schema_name(),
                             core_error.to_string(),
                         );
+                        continue;
                     }
-                }
+                };
+                register_backend_registration(
+                    ctx,
+                    catalog.as_ref(),
+                    source_decorators,
+                    query_source,
+                    &source_name,
+                    registration,
+                    &mut result,
+                )?;
             }
             SourceRegistrationCandidate::CompileFailed { source, error } => {
                 if handle_source_registration_failure(source_decorators, &source, &error)? {
@@ -225,6 +272,15 @@ pub(crate) fn register_sources_blocking(
     ))
 }
 
+enum SourceRegistrationAttempt {
+    Ready(BackendRegistration),
+    StaleRefreshFailed {
+        registration: BackendRegistration,
+        error: DataFusionError,
+        claim: RegistrationRefreshClaim,
+    },
+}
+
 async fn register_source(
     ctx: &SessionContext,
     registration_context: &BackendRegistrationContext,
@@ -232,7 +288,7 @@ async fn register_source(
     seen_catalogs: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
     registration_cache: Option<&RegistrationCache>,
-) -> DataFusionResult<BackendRegistration> {
+) -> DataFusionResult<SourceRegistrationAttempt> {
     source.validate_runtime_capabilities()?;
 
     let fingerprint = source.registration_fingerprint();
@@ -248,7 +304,7 @@ async fn register_source(
             );
             claim_registration_schemas(&registration, seen_schemas)?;
             claim_registration_catalogs(&registration, seen_catalogs)?;
-            return Ok(registration);
+            return Ok(SourceRegistrationAttempt::Ready(registration));
         }
         Some(CacheLookup::Refreshing(registration)) => {
             tracing::debug!(
@@ -257,7 +313,7 @@ async fn register_source(
             );
             claim_registration_schemas(&registration, seen_schemas)?;
             claim_registration_catalogs(&registration, seen_catalogs)?;
-            return Ok(registration);
+            return Ok(SourceRegistrationAttempt::Ready(registration));
         }
         Some(CacheLookup::Stale {
             registration,
@@ -277,17 +333,11 @@ async fn register_source(
             let Some((registration, claim)) = stale else {
                 return Err(error);
             };
-            tracing::warn!(
-                source = %source.source_name(),
-                detail = %error,
-                "source registration refresh failed; keeping stale cached registration"
-            );
-            if let Some(cache) = registration_cache {
-                cache.refresh_failed(&claim);
-            }
-            claim_registration_schemas(&registration, seen_schemas)?;
-            claim_registration_catalogs(&registration, seen_catalogs)?;
-            return Ok(registration);
+            return Ok(SourceRegistrationAttempt::StaleRefreshFailed {
+                registration,
+                error,
+                claim,
+            });
         }
     };
     claim_registration_schemas(&registration, seen_schemas)?;
@@ -296,7 +346,7 @@ async fn register_source(
         cache.store(source.source_name(), fingerprint, &registration);
     }
 
-    Ok(registration)
+    Ok(SourceRegistrationAttempt::Ready(registration))
 }
 
 fn claim_registration_schemas(
@@ -535,7 +585,10 @@ mod tests {
         CompiledBackendSource, RegisteredSource,
     };
     use crate::runtime::registration_cache::RegistrationCache;
-    use crate::{CoreError, QuerySource, RuntimeSourcePackage, SourceDecorator};
+    use crate::{
+        CoreError, QuerySource, RuntimeSourcePackage, SourceDecorator, SourceFailurePolicy,
+        SourceTables,
+    };
 
     use super::{
         CompiledQuerySource, SourceRegistrationCandidate, check_reserved_schema, register_sources,
@@ -590,6 +643,33 @@ mod tests {
                 }],
                 catalogs: Vec::new(),
             })
+        }
+    }
+
+    struct AbortOnFailureDecorator {
+        failures: Arc<AtomicUsize>,
+    }
+
+    impl SourceDecorator for AbortOnFailureDecorator {
+        fn name(&self) -> &'static str {
+            "abort_on_failure"
+        }
+
+        fn decorate_source(
+            &mut self,
+            _source: &QuerySource,
+            tables: SourceTables,
+        ) -> Result<SourceTables, crate::SourceDecoratorError> {
+            Ok(tables)
+        }
+
+        fn source_failed(
+            &mut self,
+            _source: &QuerySource,
+            _error: &CoreError,
+        ) -> Result<SourceFailurePolicy, crate::SourceDecoratorError> {
+            self.failures.fetch_add(1, Ordering::SeqCst);
+            Ok(SourceFailurePolicy::Abort)
         }
     }
 
@@ -805,6 +885,71 @@ mod tests {
         assert_eq!(result.active_sources.len(), 1);
         assert!(result.failures.is_empty());
         assert_eq!(registrations.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_honors_abort_source_failure_policy() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let cache = RegistrationCache::with_ttl(std::time::Duration::ZERO);
+
+        register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+
+        fail.store(true, Ordering::SeqCst);
+        let failures = Arc::new(AtomicUsize::new(0));
+        let mut source_decorators: Vec<Box<dyn SourceDecorator>> =
+            vec![Box::new(AbortOnFailureDecorator {
+                failures: Arc::clone(&failures),
+            })];
+
+        let error = register_sources(
+            &SessionContext::new(),
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            source_decorators.as_mut_slice(),
+            Some(&cache),
+        )
+        .await
+        .expect_err("aborting source failure policy should fail runtime registration");
+
+        assert!(
+            error.to_string().contains("simulated registration failure"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+
+        let result = register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(result.active_sources.len(), 1);
+        assert!(result.failures.is_empty());
+        assert_eq!(
+            registrations.load(Ordering::SeqCst),
+            3,
+            "abort should clear the refresh claim without deferring the next retry"
+        );
     }
 
     #[tokio::test]

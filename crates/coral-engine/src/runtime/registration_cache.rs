@@ -167,13 +167,14 @@ impl RegistrationCache {
         );
     }
 
-    /// Restarts the time-to-live after a claimed refresh fails.
+    /// Finishes a claimed refresh attempt that failed.
     ///
     /// Used after a failed refresh so a stale entry keeps serving queries and
     /// the refresh retries once per time-to-live window instead of on every
-    /// runtime build. The claim check prevents an old failed refresh from
-    /// touching a newer entry that was stored while the refresh was in flight.
-    pub(crate) fn refresh_failed(&self, claim: &RegistrationRefreshClaim) {
+    /// runtime build when the caller chooses to defer retry. The claim check
+    /// prevents an old failed refresh from touching a newer entry that was
+    /// stored while the refresh was in flight.
+    pub(crate) fn refresh_failed(&self, claim: &RegistrationRefreshClaim, defer_retry: bool) {
         let mut entries = self.entries();
         let Some(entry) = entries.get_mut(&claim.source_name) else {
             return;
@@ -187,11 +188,15 @@ impl RegistrationCache {
         ) {
             return;
         }
-        entry.refreshed_at = Instant::now();
+        if defer_retry {
+            entry.refreshed_at = Instant::now();
+        }
         entry.refresh_status = RefreshStatus::Idle;
         #[cfg(test)]
         {
-            entry.force_stale = false;
+            if defer_retry {
+                entry.force_stale = false;
+            }
         }
     }
 
@@ -248,7 +253,7 @@ mod tests {
 
         cache.store("fake", "v2", &registration);
         cache.force_stale("fake");
-        cache.refresh_failed(&claim);
+        cache.refresh_failed(&claim, true);
 
         assert!(
             matches!(cache.lookup("fake", "v2"), Some(CacheLookup::Stale { .. })),
