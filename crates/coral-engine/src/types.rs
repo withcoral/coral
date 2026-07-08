@@ -49,7 +49,7 @@ pub(crate) fn arrow_parameter_type(data_type: ManifestDataType) -> DataType {
     }
 }
 
-/// Returns whether a manifest type binds through DataFusion SQL parameters as
+/// Returns whether a manifest type binds through `DataFusion` SQL parameters as
 /// one of the string-shaped Arrow values.
 pub(crate) fn parameter_binding_is_string_shaped(data_type: ManifestDataType) -> bool {
     is_string_family(&arrow_parameter_type(data_type))
