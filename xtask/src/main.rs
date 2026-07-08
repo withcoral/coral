@@ -1,6 +1,6 @@
 //! Developer tooling for Coral repository automation.
 //!
-//! This binary exposes two subcommands that share workspace conventions but
+//! This binary exposes subcommands that share workspace conventions but
 //! serve different workflows:
 //!   - `generate-docs` regenerates the generator-owned Mintlify pages and
 //!     nav from source manifests plus `CHANGELOG.md`.
@@ -8,6 +8,8 @@
 //!     (the regression gate for the SOURCE-465 manifest cleanup).
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
+//!   - `export-openapi` converts v3 HTTP source manifests into OpenAPI
+//!     documents for the DSL v4 migration.
 //!   - `perf-check` runs command-level performance regression checks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
@@ -28,6 +30,7 @@ use clap::{Parser, Subcommand};
 mod detect;
 mod docs;
 mod env;
+mod openapi;
 mod perf;
 mod release;
 mod schemas;
@@ -52,6 +55,8 @@ enum Command {
     DetectTruncations(DetectArgs),
     /// Export installable skills from plugins/coral/skills.
     ExportSkills(ExportSkillsArgs),
+    /// Convert v3 HTTP source manifests to OpenAPI 3.0 documents.
+    ExportOpenapi(openapi::Args),
     /// Run command-level performance regression checks.
     PerfCheck(perf::Args),
     /// Regenerate checked-in generated JSON schemas.
@@ -104,6 +109,7 @@ fn run(command: &Command) -> Result<bool> {
             detect::run(&paths, args.verbose)
         }
         Command::ExportSkills(args) => skills::export(&args.dest),
+        Command::ExportOpenapi(args) => openapi::run(args),
         Command::PerfCheck(args) => perf::run(args),
         Command::GenerateSchemas(args) => schemas::run(args),
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),

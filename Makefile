@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check openapi-export
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -94,3 +94,13 @@ schema-generate:
 
 schema-check:
 	cargo run --locked -p xtask -- generate-schemas --check
+
+# ----------------------------------------------------------------------------
+# OpenAPI export (DSL v4 migration)
+# ----------------------------------------------------------------------------
+# Converts v3 HTTP source manifests into OpenAPI 3.0 documents.
+#
+#   make openapi-export    # write target/openapi/<source>.openapi.yaml
+
+openapi-export:
+	cargo run --locked -p xtask -- export-openapi
