@@ -49,6 +49,12 @@ pub(crate) fn arrow_parameter_type(data_type: ManifestDataType) -> DataType {
     }
 }
 
+/// Returns whether a manifest type binds through DataFusion SQL parameters as
+/// one of the string-shaped Arrow values.
+pub(crate) fn parameter_binding_is_string_shaped(data_type: ManifestDataType) -> bool {
+    is_string_family(&arrow_parameter_type(data_type))
+}
+
 /// Resolves a DataFusion/Arrow inferred parameter type into Coral manifest
 /// spelling when the type can be expressed in function metadata.
 pub(crate) fn manifest_data_type_for_arrow(data_type: &DataType) -> Option<ManifestDataType> {
@@ -162,5 +168,29 @@ mod tests {
             manifest_data_type_for_arrow(&DataType::Utf8View),
             Some(ManifestDataType::Utf8)
         );
+    }
+
+    #[test]
+    fn string_shaped_parameter_binding_follows_parameter_lowering() {
+        for data_type in ALL {
+            assert_eq!(
+                parameter_binding_is_string_shaped(data_type),
+                is_string_family(&arrow_parameter_type(data_type)),
+                "{data_type} should follow its parameter lowering"
+            );
+        }
+
+        assert!(parameter_binding_is_string_shaped(ManifestDataType::Utf8));
+        assert!(parameter_binding_is_string_shaped(ManifestDataType::Json));
+        assert!(parameter_binding_is_string_shaped(
+            ManifestDataType::Timestamp
+        ));
+        assert!(!parameter_binding_is_string_shaped(ManifestDataType::Int64));
+        assert!(!parameter_binding_is_string_shaped(
+            ManifestDataType::Float64
+        ));
+        assert!(!parameter_binding_is_string_shaped(
+            ManifestDataType::Boolean
+        ));
     }
 }

@@ -11,6 +11,7 @@ use datafusion::logical_expr::Expr;
 
 use crate::runtime::parameter_inference;
 use crate::runtime::query::{QueryRuntimeAdapter, query_parameter_scalar_value};
+use crate::types::parameter_binding_is_string_shaped;
 use crate::{
     CoreError, QueryParameterValue, QueryParameters, UdfRuntimeArgument, UdfRuntimeDefinition,
     UdfRuntimeImplementation, UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
@@ -133,13 +134,13 @@ fn literal_query_parameter_value(
     }
 
     match value {
-        ScalarValue::Utf8(Some(value)) if data_type.binds_as_string() => {
+        ScalarValue::Utf8(Some(value)) if parameter_binding_is_string_shaped(data_type) => {
             Some(QueryParameterValue::string(value.clone()))
         }
-        ScalarValue::LargeUtf8(Some(value)) if data_type.binds_as_string() => {
+        ScalarValue::LargeUtf8(Some(value)) if parameter_binding_is_string_shaped(data_type) => {
             Some(QueryParameterValue::string(value.clone()))
         }
-        ScalarValue::Utf8View(Some(value)) if data_type.binds_as_string() => {
+        ScalarValue::Utf8View(Some(value)) if parameter_binding_is_string_shaped(data_type) => {
             Some(QueryParameterValue::string((*value).clone()))
         }
         ScalarValue::Int64(Some(value)) if data_type == ManifestDataType::Int64 => {
@@ -273,7 +274,7 @@ fn query_parameter_value_name(value: &QueryParameterValue) -> &'static str {
 }
 
 fn typed_null_value(data_type: ManifestDataType) -> QueryParameterValue {
-    if data_type.binds_as_string() {
+    if parameter_binding_is_string_shaped(data_type) {
         return QueryParameterValue::null_string();
     }
 
@@ -286,13 +287,16 @@ fn typed_null_value(data_type: ManifestDataType) -> QueryParameterValue {
 }
 
 fn argument_accepts_value(data_type: ManifestDataType, value: &QueryParameterValue) -> bool {
-    match (data_type, value) {
-        (data_type, QueryParameterValue::String(_)) if data_type.binds_as_string() => true,
-        (ManifestDataType::Int64, QueryParameterValue::Integer(_))
-        | (ManifestDataType::Float64, QueryParameterValue::Float(_))
-        | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_)) => true,
-        _ => false,
+    if matches!(value, QueryParameterValue::String(_)) {
+        return parameter_binding_is_string_shaped(data_type);
     }
+
+    matches!(
+        (data_type, value),
+        (ManifestDataType::Int64, QueryParameterValue::Integer(_))
+            | (ManifestDataType::Float64, QueryParameterValue::Float(_))
+            | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_))
+    )
 }
 
 fn scalar_value_name(value: &ScalarValue) -> &'static str {
