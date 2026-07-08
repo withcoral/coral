@@ -141,11 +141,11 @@ mod tests {
 
     fn function_sql(name: &str) -> String {
         format!(
-            r"---
+            r"/*
 name: {name}
 schema: functions
 description: Test function {name}
----
+*/
 
 select 1 as id
 "
