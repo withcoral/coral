@@ -1,5 +1,8 @@
 //! Bounded observed-values writer lifecycle and durable queue handoff.
 
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+
 use serde::Serialize;
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TrySendError};
 
@@ -14,7 +17,13 @@ const OBSERVED_VALUES_WRITE_QUEUE_CAPACITY: usize = 128;
 
 #[derive(Debug, Clone)]
 pub(super) struct ObservedValuesWriter {
-    sender: Sender<ObservedValuesWrite>,
+    shared: Arc<ObservedValuesWriterShared>,
+}
+
+#[derive(Debug)]
+struct ObservedValuesWriterShared {
+    sender: Mutex<Option<Sender<ObservedValuesWrite>>>,
+    join_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug)]
@@ -35,41 +44,94 @@ pub(super) enum ObservedValuesTryReserveError {
     Disconnected,
 }
 
-pub(super) struct ObservedValuesWritePermit<'a> {
-    permit: mpsc::Permit<'a, ObservedValuesWrite>,
+pub(super) struct ObservedValuesWritePermit {
+    permit: mpsc::OwnedPermit<ObservedValuesWrite>,
 }
 
-impl ObservedValuesWritePermit<'_> {
+impl ObservedValuesWritePermit {
     pub(super) fn send(self, write: ObservedValuesWrite) {
         self.permit.send(write);
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum ObservedValuesWriterShutdownError {
+    MutexPoisoned,
+    Panicked,
+}
+
+impl std::fmt::Display for ObservedValuesWriterShutdownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MutexPoisoned => f.write_str("writer mutex poisoned"),
+            Self::Panicked => f.write_str("writer thread panicked"),
+        }
     }
 }
 
 impl ObservedValuesWriter {
     pub(super) fn start(store: SqliteObservedValuesStore) -> Self {
         let (sender, receiver) = mpsc::channel(OBSERVED_VALUES_WRITE_QUEUE_CAPACITY);
-        if let Err(error) = std::thread::Builder::new()
+        let join_handle = match std::thread::Builder::new()
             .name("coral-observed-values-writer".to_string())
             .spawn(move || run_observed_values_writer(&store, receiver))
         {
-            tracing::warn!(
-                error = %error,
-                "failed to start observed-values background writer"
-            );
+            Ok(join_handle) => Some(join_handle),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to start observed-values background writer"
+                );
+                None
+            }
+        };
+        Self {
+            shared: Arc::new(ObservedValuesWriterShared {
+                sender: Mutex::new(Some(sender)),
+                join_handle: Mutex::new(join_handle),
+            }),
         }
-        Self { sender }
     }
 
     pub(super) fn try_reserve(
         &self,
-    ) -> Result<ObservedValuesWritePermit<'_>, ObservedValuesTryReserveError> {
-        self.sender
-            .try_reserve()
+    ) -> Result<ObservedValuesWritePermit, ObservedValuesTryReserveError> {
+        let Ok(sender) = self.shared.sender.lock() else {
+            return Err(ObservedValuesTryReserveError::Disconnected);
+        };
+        let Some(sender) = sender.as_ref() else {
+            return Err(ObservedValuesTryReserveError::Disconnected);
+        };
+        sender
+            .clone()
+            .try_reserve_owned()
             .map(|permit| ObservedValuesWritePermit { permit })
             .map_err(|error| match error {
-                TrySendError::Full(()) => ObservedValuesTryReserveError::Full,
-                TrySendError::Closed(()) => ObservedValuesTryReserveError::Disconnected,
+                TrySendError::Full(_) => ObservedValuesTryReserveError::Full,
+                TrySendError::Closed(_) => ObservedValuesTryReserveError::Disconnected,
             })
+    }
+
+    pub(super) fn shutdown(&self) -> Result<(), ObservedValuesWriterShutdownError> {
+        let mut sender = self
+            .shared
+            .sender
+            .lock()
+            .map_err(|_poisoned| ObservedValuesWriterShutdownError::MutexPoisoned)?;
+        drop(sender.take());
+        drop(sender);
+        let join_handle = self
+            .shared
+            .join_handle
+            .lock()
+            .map_err(|_poisoned| ObservedValuesWriterShutdownError::MutexPoisoned)?
+            .take();
+        if let Some(join_handle) = join_handle {
+            join_handle
+                .join()
+                .map_err(|_panic_payload| ObservedValuesWriterShutdownError::Panicked)?;
+        }
+        Ok(())
     }
 }
 
@@ -161,14 +223,24 @@ fn payload_json_for_values(values: &[ObservedValueCandidate]) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{ObservedValuesTryReserveError, ObservedValuesWrite, ObservedValuesWriter};
+    use std::sync::{Arc, Mutex};
+
+    use super::{
+        ObservedValuesTryReserveError, ObservedValuesWrite, ObservedValuesWriter,
+        ObservedValuesWriterShared,
+    };
     use crate::search::observed::sqlite_queue::{ObservedValuesEpoch, ObservedValuesSurfaceKind};
     use crate::workspaces::WorkspaceName;
 
     #[test]
     fn writer_capacity_is_reserved_before_a_write_is_built() {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        let writer = ObservedValuesWriter { sender };
+        let writer = ObservedValuesWriter {
+            shared: Arc::new(ObservedValuesWriterShared {
+                sender: Mutex::new(Some(sender)),
+                join_handle: Mutex::new(None),
+            }),
+        };
 
         let permit = writer.try_reserve().expect("first reservation");
         assert!(matches!(

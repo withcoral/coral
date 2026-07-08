@@ -102,6 +102,14 @@ impl SearchObservationHandle {
             .clear_source_and_advance_epoch(workspace_name, source_name)
             .map_err(|error| observed_values_store_error(&error))
     }
+
+    pub(crate) fn shutdown(&self) -> Result<(), AppError> {
+        self.writer.shutdown().map_err(|error| {
+            AppError::Unavailable(format!(
+                "observed-values background writer failed during shutdown: {error}"
+            ))
+        })
+    }
 }
 
 fn observed_values_store_error(error: &SqliteSearchError) -> AppError {
@@ -445,6 +453,42 @@ mod tests {
                 .expect("queue count"),
             0
         );
+    }
+
+    #[test]
+    fn shutdown_drains_observed_values_writer_queue() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let handle = SearchObservationHandle::new(layout.clone());
+        let source = secret_input_query_source();
+        let extensions = handle.extensions_for(&workspace, &[source]);
+        let publisher = extensions
+            .source_observation_publishers
+            .first()
+            .expect("publisher");
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["Grace"]))],
+        )
+        .expect("batch");
+
+        publisher.publish_source_scan(SourceScanObservation {
+            source_name: "github",
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "issues",
+            batch: &batch,
+        });
+        handle.shutdown().expect("shutdown drains writer");
+
+        let store = SqliteObservedValuesStore::new(layout);
+        let payloads = store
+            .queue_payloads(&workspace)
+            .expect("queued observed-values payloads");
+        assert_eq!(payloads.len(), 1);
+        let payload = payloads.first().expect("one payload");
+        assert!(payload.contains("Grace"));
     }
 
     #[test]

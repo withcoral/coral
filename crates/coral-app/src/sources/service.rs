@@ -36,7 +36,6 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
-use crate::search::observed::SearchObservationHandle;
 use crate::sources::SourceName;
 use crate::sources::manager::{
     CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
@@ -60,7 +59,6 @@ pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
     workspaces: WorkspaceManager,
-    search_observations: Option<SearchObservationHandle>,
 }
 
 impl SourceService {
@@ -73,16 +71,7 @@ impl SourceService {
             sources: source_manager,
             queries: query_manager,
             workspaces: workspace_manager,
-            search_observations: None,
         }
-    }
-
-    pub(crate) fn with_search_observation_handle(
-        mut self,
-        search_observations: SearchObservationHandle,
-    ) -> Self {
-        self.search_observations = Some(search_observations);
-        self
     }
 }
 
@@ -186,13 +175,11 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
-        let search_observations = self.search_observations.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             require_workspace(&workspaces, &workspace_name).await?;
             let operation_workspace_name = workspace_name.clone();
-            let observation_workspace_name = workspace_name.clone();
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
@@ -203,12 +190,6 @@ impl SourceServiceApi for SourceService {
                 sources.create_bundled_source(&operation_workspace_name, &command)
             })
             .await?;
-            clear_source_observations(
-                search_observations,
-                observation_workspace_name,
-                installed.name.as_str().to_string(),
-            )
-            .await;
             Ok(Response::new(CreateBundledSourceResponse {
                 source: Some(installed_source_to_proto(
                     &response_workspace_name,
@@ -226,13 +207,11 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
-        let search_observations = self.search_observations.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             require_workspace(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
-            let observation_workspace_name = workspace_name.clone();
             let command = CreateBundledSourceWithOAuthCommand {
                 name: SourceName::parse(&request.name).map_err(app_status)?,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
@@ -246,21 +225,14 @@ impl SourceServiceApi for SourceService {
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
-                        let installed = sources
+                        sources
                             .create_bundled_source_with_oauth(
                                 &workspace_name,
                                 command,
                                 event_sender,
                             )
                             .await
-                            .map_err(app_status)?;
-                        clear_source_observations(
-                            search_observations,
-                            observation_workspace_name,
-                            installed.name.as_str().to_string(),
-                        )
-                        .await;
-                        Ok(installed)
+                            .map_err(app_status)
                     })
                 });
             Ok(Response::new(Box::pin(stream.map(|response| {
@@ -278,7 +250,6 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
-        let search_observations = self.search_observations.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -286,7 +257,6 @@ impl SourceServiceApi for SourceService {
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
                 let operation_workspace_name = workspace_name.clone();
-                let observation_workspace_name = workspace_name.clone();
                 let command = ImportSourceCommand {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
@@ -295,12 +265,6 @@ impl SourceServiceApi for SourceService {
                     sources.import_source(&operation_workspace_name, &command)
                 })
                 .await?;
-                clear_source_observations(
-                    search_observations,
-                    observation_workspace_name,
-                    installed.name.as_str().to_string(),
-                )
-                .await;
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
                         installed_source_to_proto(&response_workspace_name, installed),
@@ -320,21 +284,13 @@ impl SourceServiceApi for SourceService {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(app_status)?,
             };
-            let observation_workspace_name = workspace_name.clone();
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
-                        let installed = sources
+                        sources
                             .import_source_with_credentials(&workspace_name, command, event_sender)
                             .await
-                            .map_err(app_status)?;
-                        clear_source_observations(
-                            search_observations,
-                            observation_workspace_name,
-                            installed.name.as_str().to_string(),
-                        )
-                        .await;
-                        Ok(installed)
+                            .map_err(app_status)
                     })
                 });
             Ok(Response::new(stream))
@@ -349,25 +305,16 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
-        let search_observations = self.search_observations.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let source_name_text = source_name.as_str().to_string();
             let operation_workspace_name = workspace_name.clone();
-            let observation_workspace_name = workspace_name.clone();
             run_blocking_source_operation(move || {
                 sources.delete_source(&operation_workspace_name, &source_name)
             })
             .await?;
-            clear_source_observations(
-                search_observations,
-                observation_workspace_name,
-                source_name_text,
-            )
-            .await;
             Ok(Response::new(DeleteSourceResponse {}))
         })
         .await
@@ -427,31 +374,6 @@ where
         .await
         .map_err(|error| Status::internal(format!("source operation task failed: {error}")))?
         .map_err(app_status)
-}
-
-async fn clear_source_observations(
-    search_observations: Option<SearchObservationHandle>,
-    workspace_name: WorkspaceName,
-    source_name: String,
-) {
-    let Some(search_observations) = search_observations else {
-        return;
-    };
-
-    let workspace_label = workspace_name.as_str().to_string();
-    let source_label = source_name.clone();
-    if let Err(error) = run_blocking_source_operation(move || {
-        search_observations.clear_source(&workspace_name, &source_name)
-    })
-    .await
-    {
-        tracing::debug!(
-            workspace = %workspace_label,
-            source = %source_label,
-            error = %error,
-            "failed to clear observed-values state after source lifecycle operation"
-        );
-    }
 }
 
 fn import_source_response_stream<F, Fut>(
