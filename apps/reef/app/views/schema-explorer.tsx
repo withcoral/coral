@@ -11,7 +11,6 @@ import { TextInput } from '@/wax/components/inputs/text'
 import { Pill } from '@/wax/components/pill'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Skeleton } from '@/wax/components/skeleton'
-import { Table } from '@/wax/components/table'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
@@ -383,42 +382,40 @@ export function ColumnsTable({ columns }: { columns: ColumnDef[] }) {
   }
 
   return (
-    <Table.Wrapper variant="compact">
-      <Table.Root>
-        <Table.Head>
-          <Table.Row>
-            <Table.HeaderCell>Name</Table.HeaderCell>
-            <Table.HeaderCell>Type</Table.HeaderCell>
-            <Table.HeaderCell>Description</Table.HeaderCell>
-          </Table.Row>
-        </Table.Head>
-        <Table.Body>
-          {columns.map((column) => (
-            <Table.Row
-              className={classNames({ [styles.virtualRow]: column.virtual })}
-              key={column.name}
-            >
-              <Table.Cell>
-                {column.name}
-                {column.filterable ? (
-                  <Tooltip
-                    content="Required filter: queries for this table must include a filter on this field."
-                    side="top"
-                  >
-                    <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
-                      *
-                    </span>
-                  </Tooltip>
-                ) : null}
-              </Table.Cell>
-              <Table.Cell>{column.type}</Table.Cell>
-              <Table.Cell className={styles.cellTruncate} mono={false}>
-                {column.description ?? '-'}
-              </Table.Cell>
-            </Table.Row>
-          ))}
-        </Table.Body>
-      </Table.Root>
-    </Table.Wrapper>
+    <table className={styles.dataGrid}>
+      <thead className={styles.dataGridHead}>
+        <tr>
+          <th className={styles.dataGridHeadCell}>name</th>
+          <th className={styles.dataGridHeadCell}>type</th>
+          <th className={styles.dataGridHeadCell}>nullable</th>
+          <th className={styles.dataGridHeadCell}>description</th>
+        </tr>
+      </thead>
+      <tbody>
+        {columns.map((column) => (
+          <tr
+            className={classNames(styles.dataGridRow, { [styles.virtualRow]: column.virtual })}
+            key={column.name}
+          >
+            <td className={styles.dataGridCellMono}>
+              {column.name}
+              {column.filterable ? (
+                <Tooltip
+                  content="Required filter: queries for this table must include a filter on this field."
+                  side="top"
+                >
+                  <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
+                    *
+                  </span>
+                </Tooltip>
+              ) : null}
+            </td>
+            <td className={styles.dataGridCellMono}>{column.type}</td>
+            <td className={styles.dataGridCellMono}>{column.nullable ? 'yes' : 'no'}</td>
+            <td className={styles.dataGridCellText}>{column.description ?? '-'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
 }
