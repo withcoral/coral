@@ -115,15 +115,17 @@ fn udf_argument_value(
             udf.name, argument.name
         )));
     };
-    literal_query_parameter_value(value, argument.data_type).ok_or_else(|| {
-        DataFusionError::Plan(format!(
-            "udf '{}' argument '{}' expected {}, got {}",
-            udf.name,
-            argument.name,
-            argument.data_type.as_manifest_str(),
-            scalar_value_name(value)
-        ))
-    })
+    UdfParameterBinding::new(argument.data_type)
+        .literal_value(value)
+        .ok_or_else(|| {
+            DataFusionError::Plan(format!(
+                "udf '{}' argument '{}' expected {}, got {}",
+                udf.name,
+                argument.name,
+                argument.data_type.as_manifest_str(),
+                scalar_literal_kind(value)
+            ))
+        })
 }
 
 fn unalias(mut expr: &Expr) -> &Expr {
@@ -131,37 +133,6 @@ fn unalias(mut expr: &Expr) -> &Expr {
         expr = &alias.expr;
     }
     expr
-}
-
-fn literal_query_parameter_value(
-    value: &ScalarValue,
-    data_type: ManifestDataType,
-) -> Option<QueryParameterValue> {
-    if value.is_null() {
-        return Some(typed_null_value(data_type));
-    }
-
-    match value {
-        ScalarValue::Utf8(Some(value)) if parameter_binding_is_string_shaped(data_type) => {
-            Some(QueryParameterValue::string(value.clone()))
-        }
-        ScalarValue::LargeUtf8(Some(value)) if parameter_binding_is_string_shaped(data_type) => {
-            Some(QueryParameterValue::string(value.clone()))
-        }
-        ScalarValue::Utf8View(Some(value)) if parameter_binding_is_string_shaped(data_type) => {
-            Some(QueryParameterValue::string((*value).clone()))
-        }
-        ScalarValue::Int64(Some(value)) if data_type == ManifestDataType::Int64 => {
-            Some(QueryParameterValue::integer(*value))
-        }
-        ScalarValue::Float64(Some(value)) if data_type == ManifestDataType::Float64 => {
-            Some(QueryParameterValue::float(*value))
-        }
-        ScalarValue::Boolean(Some(value)) if data_type == ManifestDataType::Boolean => {
-            Some(QueryParameterValue::boolean(*value))
-        }
-        _ => None,
-    }
 }
 
 #[expect(
@@ -253,16 +224,15 @@ impl<'a> UdfArgumentBinding<'a> {
         argument: &UdfRuntimeArgument,
         params: &mut QueryParameters,
     ) -> DataFusionResult<()> {
+        let binding = UdfParameterBinding::new(argument.data_type);
         match params.get(&argument.name) {
-            Some(value) if !argument_accepts_value(argument.data_type, value) => {
-                Err(DataFusionError::Plan(format!(
-                    "udf '{}' argument '{}' expected {}, got {}",
-                    self.udf.name,
-                    argument.name,
-                    argument.data_type.as_manifest_str(),
-                    query_parameter_value_name(value)
-                )))
-            }
+            Some(value) if !binding.accepts_value(value) => Err(DataFusionError::Plan(format!(
+                "udf '{}' argument '{}' expected {}, got {}",
+                self.udf.name,
+                argument.name,
+                argument.data_type.as_manifest_str(),
+                query_parameter_value_kind(value)
+            ))),
             Some(_) => Ok(()),
             None => Err(DataFusionError::Plan(format!(
                 "udf '{}' is missing argument '{}'",
@@ -272,7 +242,75 @@ impl<'a> UdfArgumentBinding<'a> {
     }
 }
 
-fn query_parameter_value_name(value: &QueryParameterValue) -> &'static str {
+struct UdfParameterBinding {
+    data_type: ManifestDataType,
+}
+
+impl UdfParameterBinding {
+    fn new(data_type: ManifestDataType) -> Self {
+        Self { data_type }
+    }
+
+    fn literal_value(&self, value: &ScalarValue) -> Option<QueryParameterValue> {
+        if value.is_null() {
+            return Some(self.typed_null());
+        }
+
+        match value {
+            ScalarValue::Utf8(Some(value)) if self.is_string_shaped() => {
+                Some(QueryParameterValue::string(value.clone()))
+            }
+            ScalarValue::LargeUtf8(Some(value)) if self.is_string_shaped() => {
+                Some(QueryParameterValue::string(value.clone()))
+            }
+            ScalarValue::Utf8View(Some(value)) if self.is_string_shaped() => {
+                Some(QueryParameterValue::string((*value).clone()))
+            }
+            ScalarValue::Int64(Some(value)) if self.data_type == ManifestDataType::Int64 => {
+                Some(QueryParameterValue::integer(*value))
+            }
+            ScalarValue::Float64(Some(value)) if self.data_type == ManifestDataType::Float64 => {
+                Some(QueryParameterValue::float(*value))
+            }
+            ScalarValue::Boolean(Some(value)) if self.data_type == ManifestDataType::Boolean => {
+                Some(QueryParameterValue::boolean(*value))
+            }
+            _ => None,
+        }
+    }
+
+    fn accepts_value(&self, value: &QueryParameterValue) -> bool {
+        if matches!(value, QueryParameterValue::String(_)) {
+            return self.is_string_shaped();
+        }
+
+        matches!(
+            (self.data_type, value),
+            (ManifestDataType::Int64, QueryParameterValue::Integer(_))
+                | (ManifestDataType::Float64, QueryParameterValue::Float(_))
+                | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_))
+        )
+    }
+
+    fn typed_null(&self) -> QueryParameterValue {
+        if self.is_string_shaped() {
+            return QueryParameterValue::null_string();
+        }
+
+        match self.data_type {
+            ManifestDataType::Int64 => QueryParameterValue::null_integer(),
+            ManifestDataType::Float64 => QueryParameterValue::null_float(),
+            ManifestDataType::Boolean => QueryParameterValue::null_boolean(),
+            _ => unreachable!("string-binding manifest types returned above"),
+        }
+    }
+
+    fn is_string_shaped(&self) -> bool {
+        parameter_binding_is_string_shaped(self.data_type)
+    }
+}
+
+fn query_parameter_value_kind(value: &QueryParameterValue) -> &'static str {
     match value {
         QueryParameterValue::String(_) => "string",
         QueryParameterValue::Integer(_) => "integer",
@@ -281,33 +319,7 @@ fn query_parameter_value_name(value: &QueryParameterValue) -> &'static str {
     }
 }
 
-fn typed_null_value(data_type: ManifestDataType) -> QueryParameterValue {
-    if parameter_binding_is_string_shaped(data_type) {
-        return QueryParameterValue::null_string();
-    }
-
-    match data_type {
-        ManifestDataType::Int64 => QueryParameterValue::null_integer(),
-        ManifestDataType::Float64 => QueryParameterValue::null_float(),
-        ManifestDataType::Boolean => QueryParameterValue::null_boolean(),
-        _ => unreachable!("string-binding manifest types returned above"),
-    }
-}
-
-fn argument_accepts_value(data_type: ManifestDataType, value: &QueryParameterValue) -> bool {
-    if matches!(value, QueryParameterValue::String(_)) {
-        return parameter_binding_is_string_shaped(data_type);
-    }
-
-    matches!(
-        (data_type, value),
-        (ManifestDataType::Int64, QueryParameterValue::Integer(_))
-            | (ManifestDataType::Float64, QueryParameterValue::Float(_))
-            | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_))
-    )
-}
-
-fn scalar_value_name(value: &ScalarValue) -> &'static str {
+fn scalar_literal_kind(value: &ScalarValue) -> &'static str {
     match value {
         ScalarValue::Utf8(_) | ScalarValue::LargeUtf8(_) | ScalarValue::Utf8View(_) => "string",
         ScalarValue::Int64(_) => "integer",
