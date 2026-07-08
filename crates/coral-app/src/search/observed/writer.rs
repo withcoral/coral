@@ -1,6 +1,8 @@
 //! Bounded observed-values writer lifecycle and durable queue handoff.
 
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use serde::Serialize;
 
@@ -15,7 +17,13 @@ const OBSERVED_VALUES_WRITE_QUEUE_CAPACITY: usize = 128;
 
 #[derive(Debug, Clone)]
 pub(super) struct ObservedValuesWriter {
-    sender: SyncSender<ObservedValuesWrite>,
+    shared: Arc<ObservedValuesWriterShared>,
+}
+
+#[derive(Debug)]
+struct ObservedValuesWriterShared {
+    sender: Mutex<Option<SyncSender<ObservedValuesWrite>>>,
+    join_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug)]
@@ -36,29 +44,81 @@ pub(super) enum ObservedValuesTryEnqueueError {
     Disconnected,
 }
 
+#[derive(Debug)]
+pub(super) enum ObservedValuesWriterShutdownError {
+    MutexPoisoned,
+    Panicked,
+}
+
+impl std::fmt::Display for ObservedValuesWriterShutdownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MutexPoisoned => f.write_str("writer mutex poisoned"),
+            Self::Panicked => f.write_str("writer thread panicked"),
+        }
+    }
+}
+
 impl ObservedValuesWriter {
     pub(super) fn start(store: SqliteObservedValuesStore) -> Self {
         let (sender, receiver) = sync_channel(OBSERVED_VALUES_WRITE_QUEUE_CAPACITY);
-        if let Err(error) = std::thread::Builder::new()
+        let join_handle = match std::thread::Builder::new()
             .name("coral-observed-values-writer".to_string())
             .spawn(move || run_observed_values_writer(&store, receiver))
         {
-            tracing::warn!(
-                error = %error,
-                "failed to start observed-values background writer"
-            );
+            Ok(join_handle) => Some(join_handle),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to start observed-values background writer"
+                );
+                None
+            }
+        };
+        Self {
+            shared: Arc::new(ObservedValuesWriterShared {
+                sender: Mutex::new(Some(sender)),
+                join_handle: Mutex::new(join_handle),
+            }),
         }
-        Self { sender }
     }
 
     pub(super) fn try_enqueue(
         &self,
         write: ObservedValuesWrite,
     ) -> Result<(), ObservedValuesTryEnqueueError> {
-        self.sender.try_send(write).map_err(|error| match error {
+        let Ok(sender) = self.shared.sender.lock() else {
+            return Err(ObservedValuesTryEnqueueError::Disconnected);
+        };
+        let Some(sender) = sender.as_ref() else {
+            return Err(ObservedValuesTryEnqueueError::Disconnected);
+        };
+        sender.try_send(write).map_err(|error| match error {
             TrySendError::Full(_) => ObservedValuesTryEnqueueError::Full,
             TrySendError::Disconnected(_) => ObservedValuesTryEnqueueError::Disconnected,
         })
+    }
+
+    pub(super) fn shutdown(&self) -> Result<(), ObservedValuesWriterShutdownError> {
+        let mut sender = self
+            .shared
+            .sender
+            .lock()
+            .map_err(|_poisoned| ObservedValuesWriterShutdownError::MutexPoisoned)?;
+        drop(sender.take());
+        drop(sender);
+        let join_handle = self
+            .shared
+            .join_handle
+            .lock()
+            .map_err(|_poisoned| ObservedValuesWriterShutdownError::MutexPoisoned)?
+            .take();
+        if let Some(join_handle) = join_handle {
+            join_handle
+                .join()
+                .map_err(|_panic_payload| ObservedValuesWriterShutdownError::Panicked)?;
+        }
+        Ok(())
     }
 }
 
