@@ -110,7 +110,7 @@ fn runtime_function_to_proto(function: UdfRuntimeDefinition) -> Function {
             .map(|argument| FunctionArgument {
                 name: argument.name,
                 data_type: argument.data_type.as_manifest_str().to_string(),
-                description: argument.description,
+                description: String::new(),
             })
             .collect(),
         publish: Some(function_publish_to_proto(function.publish)),
