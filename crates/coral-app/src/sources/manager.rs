@@ -91,6 +91,9 @@ pub(crate) enum ImportSourceWithCredentialsEvent {
         verification_uri: Option<String>,
         verification_uri_complete: Option<String>,
     },
+    CallbackReceived {
+        input_key: String,
+    },
     OAuthCompleted {
         input_key: String,
         metadata: BTreeMap<String, String>,
@@ -1039,9 +1042,11 @@ impl SourceManager {
                 .collect();
             let authorization_input_key = input_key.clone();
             let authorization_events = events.clone();
+            let callback_input_key = input_key.clone();
+            let callback_events = events.clone();
             let material = self
                 .oauth_credential_service
-                .authorize(
+                .authorize_with_callback(
                     StartOAuthCredentialRequest {
                         input_key: &input_key,
                         oauth: config.oauth,
@@ -1064,6 +1069,18 @@ impl SourceManager {
                                 .await
                         }
                     },
+                    move || {
+                        let events = callback_events;
+                        async move {
+                            events
+                                .send(ImportSourceWithCredentialsEvent::CallbackReceived {
+                                    input_key: callback_input_key,
+                                })
+                                .await?;
+                            tokio::task::yield_now().await;
+                            Ok(())
+                        }
+                    },
                 )
                 .await?;
             events
@@ -1072,6 +1089,9 @@ impl SourceManager {
                     metadata: material.safe_metadata.clone(),
                 })
                 .await?;
+            // Let the streaming response flush the OAuth completion event before
+            // this task continues into synchronous source installation work.
+            tokio::task::yield_now().await;
             materials.push(material);
         }
         Ok(materials)

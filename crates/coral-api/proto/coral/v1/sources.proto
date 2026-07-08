@@ -346,6 +346,8 @@ message CreateBundledSourceWithOAuthResponse {
     OAuthCredentialAuthorization oauth_authorization = 2;
     // OAuth credential retrieval completed.
     OAuthCredentialCompleted oauth_completed = 3;
+    // Authorization-code callback was received and token exchange is starting.
+    OAuthCredentialCallbackReceived oauth_callback_received = 4;
   }
 }
 
@@ -373,6 +375,8 @@ message ImportSourceResponse {
     OAuthCredentialAuthorization oauth_authorization = 2;
     // OAuth credential retrieval completed.
     OAuthCredentialCompleted oauth_completed = 3;
+    // Authorization-code callback was received and token exchange is starting.
+    OAuthCredentialCallbackReceived oauth_callback_received = 4;
   }
 }
 
@@ -419,6 +423,12 @@ message OAuthCredentialAuthorization {
   string verification_uri = 5;
   // Device-flow provider verification URL with the user code embedded, when provided.
   string verification_uri_complete = 6;
+}
+
+// OAuth authorization-code callback received by Coral.
+message OAuthCredentialCallbackReceived {
+  // Secret input key being retrieved.
+  string input_key = 1;
 }
 
 // Safe completion metadata emitted after OAuth credential retrieval.

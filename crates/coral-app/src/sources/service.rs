@@ -11,13 +11,13 @@ use coral_api::v1::{
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
     ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
-    OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
-    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
-    OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
-    OAuthDynamicClientRegistration, OauthCredentialClientSecretTransport, OauthCredentialFlowType,
-    OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
-    OauthDynamicClientRegistrationAuthMethod, Source, SourceConfigCredentialMethod,
-    SourceCredential, SourceCredentialMethod,
+    OAuthCredentialCallbackReceived, OAuthCredentialClient, OAuthCredentialClientId,
+    OAuthCredentialClientSecret, OAuthCredentialCompleted, OAuthCredentialEndpoints,
+    OAuthCredentialInput, OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope,
+    OAuthCredentialScopes, OAuthDynamicClientRegistration, OauthCredentialClientSecretTransport,
+    OauthCredentialFlowType, OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode,
+    OauthCredentialScopeDelimiter, OauthDynamicClientRegistrationAuthMethod, Source,
+    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
     SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
     SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
@@ -489,6 +489,11 @@ fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> Impo
             verification_uri: verification_uri.unwrap_or_default(),
             verification_uri_complete: verification_uri_complete.unwrap_or_default(),
         }),
+        ImportSourceWithCredentialsEvent::CallbackReceived { input_key } => {
+            import_source_response::Event::OauthCallbackReceived(OAuthCredentialCallbackReceived {
+                input_key,
+            })
+        }
         ImportSourceWithCredentialsEvent::OAuthCompleted {
             input_key,
             metadata,
@@ -512,6 +517,9 @@ fn create_bundled_source_with_o_auth_response_from_import_response(
         }
         import_source_response::Event::OauthAuthorization(authorization) => {
             create_bundled_source_with_o_auth_response::Event::OauthAuthorization(authorization)
+        }
+        import_source_response::Event::OauthCallbackReceived(callback) => {
+            create_bundled_source_with_o_auth_response::Event::OauthCallbackReceived(callback)
         }
         import_source_response::Event::OauthCompleted(completed) => {
             create_bundled_source_with_o_auth_response::Event::OauthCompleted(completed)

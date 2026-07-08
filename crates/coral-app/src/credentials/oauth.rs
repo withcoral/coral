@@ -255,7 +255,8 @@ impl OAuthCredentialService {
         }
     }
 
-    pub(crate) async fn authorize<F, Fut>(
+    #[cfg(test)]
+    async fn authorize<F, Fut>(
         &self,
         request: StartOAuthCredentialRequest<'_>,
         on_authorization: F,
@@ -263,6 +264,22 @@ impl OAuthCredentialService {
     where
         F: FnOnce(OAuthAuthorization) -> Fut,
         Fut: Future<Output = Result<(), AppError>>,
+    {
+        self.authorize_with_callback(request, on_authorization, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn authorize_with_callback<F, Fut, C, CallbackFut>(
+        &self,
+        request: StartOAuthCredentialRequest<'_>,
+        on_authorization: F,
+        on_callback_received: C,
+    ) -> Result<OAuthCredentialMaterial, AppError>
+    where
+        F: FnOnce(OAuthAuthorization) -> Fut,
+        Fut: Future<Output = Result<(), AppError>>,
+        C: FnOnce() -> CallbackFut,
+        CallbackFut: Future<Output = Result<(), AppError>>,
     {
         let oauth = request.oauth.clone();
         let endpoints = oauth_endpoint_urls(&oauth, request.source_inputs)?;
@@ -281,6 +298,7 @@ impl OAuthCredentialService {
                         resource,
                     },
                     on_authorization,
+                    on_callback_received,
                 )
                 .await
             }
@@ -301,14 +319,17 @@ impl OAuthCredentialService {
         }
     }
 
-    async fn authorize_authorization_code<F, Fut>(
+    async fn authorize_authorization_code<F, Fut, C, CallbackFut>(
         &self,
         request: OAuthAuthorizationRequest<'_>,
         on_authorization: F,
+        on_callback_received: C,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
         F: FnOnce(OAuthAuthorization) -> Fut,
         Fut: Future<Output = Result<(), AppError>>,
+        C: FnOnce() -> CallbackFut,
+        CallbackFut: Future<Output = Result<(), AppError>>,
     {
         let OAuthAuthorizationRequest {
             input_key,
@@ -363,7 +384,8 @@ impl OAuthCredentialService {
             verification_uri_complete: None,
         })
         .await?;
-        self.run_authorization_code_session(session).await
+        self.run_authorization_code_session(session, on_callback_received)
+            .await
     }
 
     pub(crate) fn validate_credential_inputs(
@@ -489,14 +511,20 @@ impl OAuthCredentialService {
         self.run_device_code_session(session).await
     }
 
-    async fn run_authorization_code_session(
+    async fn run_authorization_code_session<C, CallbackFut>(
         &self,
         session: AuthorizationCodeSessionConfig,
-    ) -> Result<OAuthCredentialMaterial, AppError> {
+        on_callback_received: C,
+    ) -> Result<OAuthCredentialMaterial, AppError>
+    where
+        C: FnOnce() -> CallbackFut,
+        CallbackFut: Future<Output = Result<(), AppError>>,
+    {
         let deadline = tokio::time::Instant::from_std(session.expires_at);
         let callback = tokio::time::timeout_at(deadline, receive_callback(&session))
             .await
             .map_err(|_elapsed| expired_session_error(&session.common.input_key))??;
+        on_callback_received().await?;
         let token = tokio::time::timeout_at(
             deadline,
             exchange_authorization_code(&self.http, &session, &callback.code),
@@ -1049,7 +1077,9 @@ async fn handle_callback_connection(
     };
     match parse_callback_request(&request, expected_path, expected_state) {
         Ok(CallbackRequestResult::Callback(callback)) => {
-            let page = callback_page("OAuth complete. You can return to Coral.");
+            let page = callback_page(
+                "Authorization received. Coral is finishing sign-in in your terminal.",
+            );
             write_callback_response(stream, "200 OK", &page).await?;
             Ok(CallbackConnectionResult::Callback(callback))
         }
