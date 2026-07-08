@@ -350,7 +350,7 @@ jobs:
           CSC_LINK: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
           CSC_NAME: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
-          APPLE_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
@@ -363,6 +363,14 @@ jobs:
             echo "APPLE_TEAM_ID must be set as a release environment variable or be present in APPLE_CODESIGN_IDENTITY." >&2
             exit 1
           fi
+
+          # electron-builder's notarization (@electron/notarize) expects
+          # APPLE_API_KEY to be a *path* to the App Store Connect .p8 key, not
+          # its contents — decode the base64 secret to a file first.
+          APPLE_API_KEY="$RUNNER_TEMP/app-store-connect-api-key.p8"
+          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8_BASE64" | base64 --decode > "$APPLE_API_KEY"
+          test -s "$APPLE_API_KEY"
+          export APPLE_API_KEY
 
           npm run package:mac --prefix apps/desktop
 
