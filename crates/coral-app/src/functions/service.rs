@@ -121,7 +121,7 @@ fn runtime_function_to_proto(function: UdfRuntimeDefinition) -> Function {
                 name: column.name,
                 data_type: column.data_type.to_string(),
                 nullable: column.nullable,
-                description: column.description,
+                description: String::new(),
             })
             .collect(),
     }
