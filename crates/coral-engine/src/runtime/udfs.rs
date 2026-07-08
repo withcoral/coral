@@ -3,21 +3,16 @@
 use crate::runtime::parameter_inference;
 use crate::runtime::query::QueryRuntimeAdapter;
 use crate::{
-    CoreError, UdfRuntimeArgument, UdfRuntimeImplementation, UdfRuntimeResultColumn,
-    UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    CoreError, UdfRuntimeArgument, UdfRuntimeResultColumn, UdfRuntimeSignature,
+    UdfRuntimeSqlDefinition,
 };
 use arrow::datatypes::Schema;
-
-pub(crate) fn udf_sql(udf: &UdfRuntimeSqlDefinition) -> &str {
-    let UdfRuntimeImplementation::CoralSql { query } = &udf.implementation;
-    query
-}
 
 pub(crate) async fn infer_udf_signature(
     query_runtime: &QueryRuntimeAdapter,
     udf: &UdfRuntimeSqlDefinition,
 ) -> Result<UdfRuntimeSignature, CoreError> {
-    let planned = query_runtime.plan_sql(udf_sql(udf)).await?;
+    let planned = query_runtime.plan_sql(udf.sql()).await?;
     let mut arguments = parameter_inference::infer_parameters(&planned.plan)
         .map_err(|error| CoreError::InvalidInput(format!("udf '{}': {error}", udf.name)))?
         .into_iter()

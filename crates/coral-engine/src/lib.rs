@@ -197,7 +197,7 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         udf: UdfRuntimeSqlDefinition,
     ) -> Result<UdfRuntimeSignature, CoreError> {
-        if runtime::udfs::udf_sql(&udf).trim().is_empty() {
+        if udf.sql().trim().is_empty() {
             return Err(CoreError::InvalidInput(format!(
                 "udf '{}' SQL body cannot be empty",
                 udf.name

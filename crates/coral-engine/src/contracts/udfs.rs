@@ -24,6 +24,15 @@ pub struct UdfRuntimeSqlDefinition {
     pub implementation: UdfRuntimeImplementation,
 }
 
+impl UdfRuntimeSqlDefinition {
+    /// Returns the SQL body for this definition.
+    #[must_use]
+    pub fn sql(&self) -> &str {
+        let UdfRuntimeImplementation::CoralSql { query } = &self.implementation;
+        query
+    }
+}
+
 /// One validated UDF made available to the query runtime.
 #[derive(Debug, Clone)]
 pub struct UdfRuntimeDefinition {
