@@ -82,7 +82,7 @@ struct RegisteredRuntime {
     failures: Vec<SourceRegistrationFailure>,
 }
 
-struct RegisteredRuntimeBuild<'a> {
+struct RuntimeBuildInputs<'a> {
     sources: &'a [QuerySource],
     runtime_context: &'a QueryRuntimeContext,
     request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
@@ -139,7 +139,7 @@ async fn build_runtime_inner(
         })
     });
 
-    let primary = build_registered_runtime(RegisteredRuntimeBuild {
+    let primary = build_registered_runtime(RuntimeBuildInputs {
         sources,
         runtime_context: &runtime_context,
         request_authenticators: &request_authenticators,
@@ -164,7 +164,7 @@ async fn build_runtime_inner(
 }
 
 async fn build_registered_runtime(
-    config: RegisteredRuntimeBuild<'_>,
+    config: RuntimeBuildInputs<'_>,
 ) -> Result<RegisteredRuntime, CoreError> {
     let ctx = build_session_context(config.dependent_join, config.memory)?;
     let registration = register_runtime_sources(
@@ -186,34 +186,7 @@ async fn build_registered_runtime(
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    let has_source_functions = !source_functions.is_empty();
-    let has_udfs = !config.udfs.is_empty();
-    if has_source_functions {
-        if has_udfs {
-            // UDF expansion can reveal source-function calls inside the UDF body.
-            // Install the source relation planner first, then install the source
-            // analyzer after the UDF analyzer so both parked node types resolve
-            // in one planning pass.
-            source_functions
-                .install_relation_planner(&ctx)
-                .map_err(|err| datafusion_to_core(&err, &tables))?;
-        } else {
-            source_functions
-                .install(&ctx)
-                .map_err(|err| datafusion_to_core(&err, &tables))?;
-        }
-    }
-    if has_udfs {
-        let udf_calls = Box::pin(UdfCallRegistry::new(&ctx, config.udfs))
-            .await
-            .map_err(|err| datafusion_to_core(&err, &tables))?;
-        udf_calls
-            .install(&ctx)
-            .map_err(|err| datafusion_to_core(&err, &tables))?;
-    }
-    if has_source_functions && has_udfs {
-        SourceFunctionRegistry::install_analyzer(&ctx);
-    }
+    install_table_function_call_planners(&ctx, source_functions, config.udfs, &tables).await?;
     for failure in &registration.failures {
         tracing::warn!(
             source = %failure.schema_name,
@@ -228,6 +201,44 @@ async fn build_registered_runtime(
         table_functions,
         failures: registration.failures,
     })
+}
+
+async fn install_table_function_call_planners(
+    ctx: &SessionContext,
+    source_functions: SourceFunctionRegistry,
+    udfs: &[UdfRuntimeDefinition],
+    tables: &[TableInfo],
+) -> Result<(), CoreError> {
+    match (!source_functions.is_empty(), !udfs.is_empty()) {
+        (false, false) => Ok(()),
+        (true, false) => source_functions
+            .install(ctx)
+            .map_err(|err| datafusion_to_core(&err, tables)),
+        (false, true) => install_udf_call_planner(ctx, udfs, tables).await,
+        (true, true) => {
+            // UDF expansion can reveal source-function calls inside the UDF body.
+            // Install source planning first, then run the source analyzer after UDF expansion.
+            source_functions
+                .install_relation_planner(ctx)
+                .map_err(|err| datafusion_to_core(&err, tables))?;
+            install_udf_call_planner(ctx, udfs, tables).await?;
+            SourceFunctionRegistry::install_analyzer(ctx);
+            Ok(())
+        }
+    }
+}
+
+async fn install_udf_call_planner(
+    ctx: &SessionContext,
+    udfs: &[UdfRuntimeDefinition],
+    tables: &[TableInfo],
+) -> Result<(), CoreError> {
+    let udf_calls = Box::pin(UdfCallRegistry::new(ctx, udfs))
+        .await
+        .map_err(|err| datafusion_to_core(&err, tables))?;
+    udf_calls
+        .install(ctx)
+        .map_err(|err| datafusion_to_core(&err, tables))
 }
 
 fn build_session_context(
@@ -835,7 +846,7 @@ impl FallbackRuntimeConfig {
     async fn build_without_dependent_join(&self) -> Result<RegisteredRuntime, CoreError> {
         let mut source_decorators = Vec::new();
         let dependent_join = self.dependent_join.without_rewrites();
-        build_registered_runtime(RegisteredRuntimeBuild {
+        build_registered_runtime(RuntimeBuildInputs {
             sources: &self.sources,
             runtime_context: &self.runtime_context,
             request_authenticators: &self.request_authenticators,
