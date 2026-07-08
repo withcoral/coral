@@ -80,7 +80,7 @@ enum Command {
     Sql(SqlArgs),
     /// Find relevant Coral tables, functions, columns, and filters
     Search(SearchArgs),
-    /// Manage app-owned local search indexes
+    /// Manage Coral's local search indexes
     SearchIndex(SearchIndexArgs),
     /// Manage data sources
     Source(SourceArgs),
@@ -157,7 +157,7 @@ struct SearchArgs {
 }
 
 #[derive(Debug, Args)]
-/// Manage app-owned local search indexes
+/// Manage Coral's local search indexes
 struct SearchIndexArgs {
     #[command(subcommand)]
     command: SearchIndexCommand,
@@ -167,7 +167,13 @@ struct SearchIndexArgs {
 enum SearchIndexCommand {
     /// Rebuild an app-owned local search index
     Rebuild(SearchRebuildArgs),
-    /// Clear app-owned local search data
+    /// Clear Coral's local search data for one workspace.
+    ///
+    /// This command is destructive, so it requires `--yes` and the global
+    /// `--workspace` flag. Use `--workspace NAME` to clear `NAME`. Use bare
+    /// `--workspace` to clear the workspace Coral would otherwise select:
+    /// `CORAL_WORKSPACE` when set, otherwise `default`. The global flag may appear
+    /// after `clear`.
     Clear(SearchClearArgs),
 }
 
