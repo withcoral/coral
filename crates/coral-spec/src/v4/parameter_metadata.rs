@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::v4::ir::{HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, SemanticIr};
 use crate::v4::projections::pagination_query_param_names;
@@ -14,8 +14,42 @@ use crate::{ManifestError, PaginationSpec, Result};
 pub struct ParameterMetadataOverrides {
     #[serde(default)]
     pub pagination: Vec<NamedPaginationOverride>,
+    pub lookup_keys: Option<LookupKeysMetadata>,
     #[serde(default)]
     pub operation_overrides: BTreeMap<String, OperationParameterMetadataOverride>,
+}
+
+/// Surface-scoped lookup key joinability: which filter parameters dependent
+/// joins may bind to. `exclude` names wire parameters (as written in the API
+/// description) that are not complete exact lookups; they stay pushdown
+/// filters but never carry `lookup_key: true`. `enabled: false` withholds the
+/// flag from every filter of the surface. Exclusion never changes SQL
+/// exposure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LookupKeysMetadata {
+    pub enabled: bool,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// Shape of the generated `parameter_metadata.yaml` artifact written next to
+/// the other materialized surface assets. Mirrors the override file so users
+/// can copy it into `overrides/` and edit.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedParameterMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lookup_keys: Option<LookupKeysMetadata>,
+}
+
+impl Default for LookupKeysMetadata {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            exclude: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +86,46 @@ pub fn parse_parameter_metadata_overrides_yaml(raw: &str) -> Result<ParameterMet
         serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
     overrides.validate_shape()?;
     Ok(overrides)
+}
+
+/// Parses the generated `parameter_metadata.yaml` artifact with the same
+/// shape validation as the override file, so a hand-edited generated file
+/// fails as loudly as an invalid override.
+pub fn parse_generated_parameter_metadata_yaml(raw: &str) -> Result<GeneratedParameterMetadata> {
+    let metadata: GeneratedParameterMetadata =
+        serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    if let Some(lookup_keys) = &metadata.lookup_keys {
+        validate_lookup_keys_shape(lookup_keys)?;
+    }
+    Ok(metadata)
+}
+
+/// Checks every exclude entry against the surface's REST input names. A typo
+/// here is not a harmless no-op: the misspelled parameter silently keeps
+/// `lookup_key` and stays joinable, which is exactly what the exclusion tried
+/// to withhold. Non-filter inputs (path parameters, function arguments) are
+/// accepted: derivation treats excluding them as a legal no-op, and the two
+/// layers must agree on the name domain.
+pub fn validate_lookup_keys_for_surface(
+    lookup_keys: &LookupKeysMetadata,
+    ir: &SemanticIr,
+) -> Result<()> {
+    let input_names = ir
+        .operations
+        .iter()
+        .filter(|operation| matches!(operation.execution, IrExecutionAttachment::Rest(_)))
+        .flat_map(|operation| &operation.inputs)
+        .map(|input| input.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for excluded in &lookup_keys.exclude {
+        if !input_names.contains(excluded.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "{} parameter_metadata lookup_keys excludes unknown parameter '{excluded}'",
+                ir.surface_id
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn apply_parameter_metadata_overrides(
@@ -152,8 +226,37 @@ pub fn sync_projection_pagination_inputs<'a>(
     }
 }
 
+fn validate_lookup_keys_shape(lookup_keys: &LookupKeysMetadata) -> Result<()> {
+    let mut excluded = BTreeSet::new();
+    for value in &lookup_keys.exclude {
+        if value.trim().is_empty() {
+            return Err(ManifestError::validation(
+                "parameter metadata lookup_keys has an empty exclude value",
+            ));
+        }
+        // A padded value passes the emptiness check but can never match a
+        // wire name in the downstream exact-equality comparison, silently
+        // disabling the exclusion.
+        if value != value.trim() {
+            return Err(ManifestError::validation(format!(
+                "parameter metadata lookup_keys exclude value '{value}' has leading or trailing whitespace"
+            )));
+        }
+        if !excluded.insert(value.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "parameter metadata lookup_keys exclude value '{value}' is repeated"
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl ParameterMetadataOverrides {
     fn validate_shape(&self) -> Result<()> {
+        if let Some(lookup_keys) = &self.lookup_keys {
+            validate_lookup_keys_shape(lookup_keys)?;
+        }
+
         let mut names = BTreeSet::new();
         for strategy in &self.pagination {
             if strategy.name.trim().is_empty() {
@@ -173,6 +276,10 @@ impl ParameterMetadataOverrides {
     }
 
     fn validate_for_surface(&self, ir: &SemanticIr) -> Result<()> {
+        if let Some(lookup_keys) = &self.lookup_keys {
+            validate_lookup_keys_for_surface(lookup_keys, ir)?;
+        }
+
         for strategy in &self.pagination {
             strategy.pagination.validated(
                 &ir.source_name,
@@ -728,6 +835,133 @@ pagination:
     }
 
     #[test]
+    fn lookup_keys_block_parses_and_validates() {
+        let overrides = parse_parameter_metadata_overrides_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [order_by, sort, fields]
+",
+        )
+        .expect("parse overrides");
+        let lookup_keys = overrides.lookup_keys.expect("lookup keys block");
+        assert!(lookup_keys.enabled);
+        assert_eq!(lookup_keys.exclude, ["order_by", "sort", "fields"]);
+
+        let absent = parse_parameter_metadata_overrides_yaml("{}").expect("parse overrides");
+        assert!(absent.lookup_keys.is_none());
+        let defaults = super::LookupKeysMetadata::default();
+        assert!(defaults.enabled);
+        assert!(defaults.exclude.is_empty());
+
+        let missing_enabled = parse_parameter_metadata_overrides_yaml(
+            r"
+lookup_keys:
+  exclude: [order_by]
+",
+        )
+        .expect_err("missing enabled should fail");
+        assert!(missing_enabled.to_string().contains("enabled"));
+
+        let empty_value = parse_parameter_metadata_overrides_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: ['  ']
+",
+        )
+        .expect_err("blank exclude value should fail");
+        assert!(empty_value.to_string().contains("empty exclude value"));
+
+        let repeated_value = parse_parameter_metadata_overrides_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [sort, sort]
+",
+        )
+        .expect_err("repeated exclude value should fail");
+        assert!(repeated_value.to_string().contains("'sort' is repeated"));
+
+        let padded_value = parse_parameter_metadata_overrides_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [' sort']
+",
+        )
+        .expect_err("padded exclude value should fail");
+        assert!(padded_value.to_string().contains("whitespace"));
+
+        // The generated artifact goes through the same shape validation.
+        let generated = super::parse_generated_parameter_metadata_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [sort]
+",
+        )
+        .expect("parse generated metadata");
+        assert_eq!(
+            generated.lookup_keys.expect("lookup keys").exclude,
+            ["sort"]
+        );
+        let invalid_generated = super::parse_generated_parameter_metadata_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [sort, sort]
+",
+        )
+        .expect_err("repeated generated exclude value should fail");
+        assert!(invalid_generated.to_string().contains("'sort' is repeated"));
+    }
+
+    #[test]
+    fn rejects_unknown_lookup_key_exclude_target() {
+        let mut ir = semantic_ir(vec![rest_operation(
+            "widgets_list",
+            "/widgets",
+            vec![query_input("sort"), query_input("state")],
+            PaginationSpec::default(),
+        )]);
+        let overrides = parse_parameter_metadata_overrides_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [sortt]
+",
+        )
+        .expect("parse overrides");
+
+        let error = apply_parameter_metadata_overrides(&mut ir, &overrides)
+            .expect_err("unknown exclude target should fail");
+        assert!(
+            error.to_string().contains("unknown parameter 'sortt'"),
+            "{error}"
+        );
+
+        // Non-filter inputs are legal excludes: derivation treats them as
+        // no-ops, so validation must accept the same name domain.
+        let mut ir = semantic_ir(vec![rest_operation(
+            "widgets_get",
+            "/widgets/{widget_id}",
+            vec![path_input("widget_id"), query_input("sort")],
+            PaginationSpec::default(),
+        )]);
+        let overrides = parse_parameter_metadata_overrides_yaml(
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [widget_id, sort]
+",
+        )
+        .expect("parse overrides");
+        apply_parameter_metadata_overrides(&mut ir, &overrides)
+            .expect("path parameter exclude is a legal no-op");
+    }
+
+    #[test]
     fn rejects_invalid_override_shapes() {
         let duplicate_name = parse_parameter_metadata_overrides_yaml(
             r"
@@ -870,6 +1104,17 @@ operation_overrides:
             name: name.to_string(),
             location: IrInputLocation::Query,
             required: false,
+            data_type: IrScalarType::String,
+            default_value: None,
+            description: String::new(),
+        }
+    }
+
+    fn path_input(name: &str) -> IrOperationInput {
+        IrOperationInput {
+            name: name.to_string(),
+            location: IrInputLocation::Path,
+            required: true,
             data_type: IrScalarType::String,
             default_value: None,
             description: String::new(),

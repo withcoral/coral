@@ -45,9 +45,10 @@ pub use manifest::{
 };
 pub use naming::normalize_identifier;
 pub use parameter_metadata::{
-    ParameterMetadataOverrides, ProjectionPaginationInputSyncMode,
-    apply_parameter_metadata_overrides, parse_parameter_metadata_overrides_yaml,
-    sync_projection_pagination_inputs,
+    GeneratedParameterMetadata, LookupKeysMetadata, ParameterMetadataOverrides,
+    ProjectionPaginationInputSyncMode, apply_parameter_metadata_overrides,
+    parse_generated_parameter_metadata_yaml, parse_parameter_metadata_overrides_yaml,
+    sync_projection_pagination_inputs, validate_lookup_keys_for_surface,
 };
 pub use projections::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
