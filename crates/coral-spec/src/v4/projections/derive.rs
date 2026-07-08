@@ -23,6 +23,8 @@ use super::names::{
 };
 use super::pagination::pagination_query_param_names;
 
+type TypeIndex<'a> = HashMap<&'a str, &'a IrType>;
+
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
     surfaces: &[SemanticIr],
@@ -39,8 +41,10 @@ pub fn generate_projection_catalog(
                     ir.surface_id, manifest.common.name
                 ))
             })?;
+        let type_by_id = type_index(ir);
         for operation in &ir.operations {
-            let projection = generate_projection(ir, namespace, operation, &mut diagnostics);
+            let projection =
+                generate_projection(ir, namespace, &type_by_id, operation, &mut diagnostics);
             projections.push(projection);
         }
         diagnostics.extend(ir.diagnostics.clone());
@@ -62,6 +66,7 @@ pub fn generate_projection_catalog(
 fn generate_projection(
     ir: &SemanticIr,
     namespace: &str,
+    type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Projection {
@@ -120,7 +125,7 @@ fn generate_projection(
             }
         })
         .collect::<Vec<_>>();
-    let columns = projection_columns(ir, operation);
+    let columns = projection_columns(type_by_id, operation);
     let name = generated_projection_name(operation, is_search);
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
@@ -292,7 +297,14 @@ fn projection_input_name(
     name
 }
 
-fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
+fn type_index(ir: &SemanticIr) -> TypeIndex<'_> {
+    ir.types.iter().map(|ty| (ty.id.as_str(), ty)).collect()
+}
+
+fn projection_columns(
+    type_by_id: &TypeIndex<'_>,
+    operation: &IrOperation,
+) -> Vec<ProjectionColumn> {
     if matches!(&operation.execution, IrExecutionAttachment::Mcp(_)) {
         // MCP output schemas drive row cardinality and response extraction, but
         // SQL columns stay opaque until Coral has stable per-tool payload
@@ -314,11 +326,6 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
             },
         ];
     }
-    let type_by_id = ir
-        .types
-        .iter()
-        .map(|ty| (ty.id.as_str(), ty))
-        .collect::<HashMap<_, _>>();
     let Some(row_type) = type_by_id.get(operation.output.type_ref.as_str()) else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
