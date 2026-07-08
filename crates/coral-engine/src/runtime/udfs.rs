@@ -108,6 +108,7 @@ fn udf_argument_value(
     argument: &UdfRuntimeArgument,
     expr: &Expr,
 ) -> DataFusionResult<QueryParameterValue> {
+    let expr = unalias(expr);
     let Expr::Literal(value, _) = expr else {
         return Err(DataFusionError::Plan(format!(
             "udf '{}' argument '{}' must be a literal after parameter binding",
@@ -123,6 +124,13 @@ fn udf_argument_value(
             scalar_value_name(value)
         ))
     })
+}
+
+fn unalias(mut expr: &Expr) -> &Expr {
+    while let Expr::Alias(alias) = expr {
+        expr = &alias.expr;
+    }
+    expr
 }
 
 fn literal_query_parameter_value(
@@ -397,6 +405,7 @@ mod tests {
         let exprs = [
             Expr::Literal(ScalarValue::Utf8(Some("Bradley-Butcher".into())), None),
             Expr::Literal(ScalarValue::Utf8View(Some("Bradley-Butcher".into())), None),
+            Expr::Literal(ScalarValue::Utf8(Some("Bradley-Butcher".into())), None).alias("author"),
         ];
 
         for expr in exprs {
