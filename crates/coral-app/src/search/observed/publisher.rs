@@ -46,22 +46,24 @@ impl SearchObservationHandle {
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
     ) -> EngineExtensions {
+        let epochs = match self.store.capture_epochs_for_sources(
+            workspace_name,
+            selected_sources.iter().map(QuerySource::source_name),
+        ) {
+            Ok(epochs) => epochs,
+            Err(error) => {
+                tracing::debug!(
+                    workspace = %workspace_name.as_str(),
+                    error = %error,
+                    "skipping observed-values publishers"
+                );
+                return EngineExtensions::default();
+            }
+        };
         let mut scopes = HashMap::new();
         for source in selected_sources {
-            let epoch = match self
-                .store
-                .capture_epoch(workspace_name, source.source_name())
-            {
-                Ok(epoch) => epoch,
-                Err(error) => {
-                    tracing::debug!(
-                        workspace = %workspace_name.as_str(),
-                        source = %source.source_name(),
-                        error = %error,
-                        "skipping observed-values publisher for source"
-                    );
-                    continue;
-                }
+            let Some(epoch) = epochs.get(source.source_name()).copied() else {
+                continue;
             };
             for scope in source_surface_scopes(source, SourceScopeSeed::PRE_ACTIVATION) {
                 scopes.insert(scope.key(), RegisteredSurface { scope, epoch });

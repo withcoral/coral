@@ -443,16 +443,28 @@ impl RunningServer {
         }
 
         let task = self.task.lock().expect("task mutex poisoned").take();
-        if let Some(task) = task {
-            task.await??;
-        }
-        if let Some(search_observations) = self
+        let task_result = match task {
+            Some(task) => match task.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(AppError::from(error)),
+                Err(error) => Err(AppError::from(error)),
+            },
+            None => Ok(()),
+        };
+        let search_observations_result = self.shutdown_search_observations().await;
+        task_result?;
+        search_observations_result?;
+        Ok(())
+    }
+
+    async fn shutdown_search_observations(&self) -> Result<(), AppError> {
+        let search_observations = self
             .search_observations
             .lock()
             .expect("search observation mutex poisoned")
-            .take()
-        {
-            search_observations.shutdown()?;
+            .take();
+        if let Some(search_observations) = search_observations {
+            tokio::task::spawn_blocking(move || search_observations.shutdown()).await??;
         }
         Ok(())
     }
@@ -766,7 +778,7 @@ mod tests {
     use std::borrow::Cow;
     use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
@@ -785,9 +797,11 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        ServerBuilder, ServerManagers, ServerMode, StaticAsset, StaticAssetsProvider,
-        TraceServerComponents, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
+        RunningServer, ServerBuilder, ServerManagers, ServerMode, StaticAsset,
+        StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
+        is_native_grpc_content_type, start_server,
     };
+    use crate::bootstrap::AppError;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
@@ -852,6 +866,37 @@ enabled = false
             .await
             .expect("run state migrations");
         Arc::new(db)
+    }
+
+    #[tokio::test]
+    async fn shutdown_attempts_observed_values_shutdown_after_server_task_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let search_observations = SearchObservationHandle::new(layout);
+        let task = tokio::spawn(async {
+            let should_panic = true;
+            assert!(!should_panic, "server task panicked");
+            Ok::<(), tonic::transport::Error>(())
+        });
+        let server = RunningServer {
+            endpoint_uri: "http://127.0.0.1:0".to_string(),
+            local_trace_store_dir: None,
+            search_observations: Mutex::new(Some(search_observations)),
+            shutdown_tx: Mutex::new(None),
+            task: Mutex::new(Some(task)),
+        };
+
+        let result = server.shutdown_inner().await;
+
+        assert!(matches!(result, Err(AppError::TaskJoin(_))));
+        assert!(
+            server
+                .search_observations
+                .lock()
+                .expect("search observation mutex")
+                .is_none()
+        );
     }
 
     #[tokio::test]

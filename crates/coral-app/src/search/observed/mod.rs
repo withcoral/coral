@@ -9,3 +9,5 @@ mod sqlite_store;
 mod writer;
 
 pub(crate) use publisher::SearchObservationHandle;
+#[cfg(test)]
+pub(crate) use sqlite_store::SqliteObservedValuesStore;

@@ -1,5 +1,7 @@
 //! `SQLite` observed-values queue and governance operations.
 
+use std::collections::BTreeMap;
+
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::sqlite_queue::{
@@ -24,14 +26,34 @@ impl SqliteObservedValuesStore {
         Self { layout }
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_epoch(
         &self,
         workspace_name: &WorkspaceName,
         owner_source_name: &str,
     ) -> Result<ObservedValuesEpoch, SqliteSearchError> {
+        let mut epochs = self.capture_epochs_for_sources(workspace_name, [owner_source_name])?;
+        let Some(epoch) = epochs.remove(owner_source_name) else {
+            return Ok(ObservedValuesEpoch::ZERO);
+        };
+        Ok(epoch)
+    }
+
+    pub(crate) fn capture_epochs_for_sources<'a>(
+        &self,
+        workspace_name: &WorkspaceName,
+        owner_source_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<BTreeMap<String, ObservedValuesEpoch>, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
-        read_epoch(&connection, workspace_name, owner_source_name)
+        let mut epochs = BTreeMap::new();
+        for owner_source_name in owner_source_names {
+            epochs.insert(
+                owner_source_name.to_string(),
+                read_epoch(&connection, workspace_name, owner_source_name)?,
+            );
+        }
+        Ok(epochs)
     }
 
     pub(crate) fn enqueue_if_current(
@@ -619,6 +641,48 @@ mod tests {
             }
             Err(error) => SqliteSearchError::from(error).is_lock_contention(),
         }
+    }
+
+    #[test]
+    fn capture_epochs_for_sources_reads_all_sources_with_one_store_open() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+
+        store
+            .clear_source_and_advance_epoch(&workspace, "github")
+            .expect("clear github");
+        store
+            .clear_source_and_advance_epoch(&workspace, "slack")
+            .expect("clear slack");
+        store
+            .clear_source_and_advance_epoch(&workspace, "slack")
+            .expect("clear slack again");
+
+        let epochs = store
+            .capture_epochs_for_sources(&workspace, ["github", "slack", "notion"])
+            .expect("epochs");
+
+        assert_eq!(
+            epochs
+                .get("github")
+                .expect("github epoch")
+                .source_generation,
+            1
+        );
+        assert_eq!(
+            epochs.get("slack").expect("slack epoch").source_generation,
+            2
+        );
+        assert_eq!(
+            epochs
+                .get("notion")
+                .expect("notion epoch")
+                .source_generation,
+            0
+        );
     }
 
     #[test]

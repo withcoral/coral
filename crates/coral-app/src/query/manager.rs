@@ -358,7 +358,7 @@ impl QueryManager {
             (source, loaded_source, version, config)
         };
         let runtime = self
-            .runtime_config(
+            .runtime_config_without_source_observations(
                 workspace_name,
                 std::slice::from_ref(&loaded_source),
                 &config,
