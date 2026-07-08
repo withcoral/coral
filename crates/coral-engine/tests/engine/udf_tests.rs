@@ -495,7 +495,10 @@ async fn infer_udf_signature_uses_column_comparison_for_argument_type() {
 async fn infer_udf_signature_accepts_declared_float_with_integer_planner_evidence() {
     let temp = tempfile::tempdir().expect("temp dir");
     write_jsonl_file(temp.path(), "events.jsonl", &[json!({"id": 1})]);
-    let search = build_source(search_function_manifest("numeric_claim_search"));
+    let search = build_source(search_function_manifest(
+        "numeric_claim_search",
+        "https://example.test",
+    ));
     let events = build_source(events_manifest("numeric_claim_events", temp.path()));
 
     let signature = CoralQuery::infer_udf_signature(
