@@ -83,7 +83,7 @@ pub(crate) struct SourceOAuthCredentialRetrieval {
 }
 
 pub(crate) enum ImportSourceWithCredentialsEvent {
-    OAuthAuthorization {
+    Authorization {
         input_key: String,
         authorization_url: String,
         expires_in_seconds: u64,
@@ -94,7 +94,7 @@ pub(crate) enum ImportSourceWithCredentialsEvent {
     CallbackReceived {
         input_key: String,
     },
-    OAuthCompleted {
+    Completed {
         input_key: String,
         metadata: BTreeMap<String, String>,
     },
@@ -1057,7 +1057,7 @@ impl SourceManager {
                         let events = authorization_events;
                         async move {
                             events
-                                .send(ImportSourceWithCredentialsEvent::OAuthAuthorization {
+                                .send(ImportSourceWithCredentialsEvent::Authorization {
                                     input_key: authorization_input_key,
                                     authorization_url: authorization.authorization_url,
                                     expires_in_seconds: authorization.expires_in_seconds,
@@ -1084,7 +1084,7 @@ impl SourceManager {
                 )
                 .await?;
             events
-                .send(ImportSourceWithCredentialsEvent::OAuthCompleted {
+                .send(ImportSourceWithCredentialsEvent::Completed {
                     input_key: material.input_key.clone(),
                     metadata: material.safe_metadata.clone(),
                 })
@@ -3591,7 +3591,7 @@ surfaces:
             .await
             .expect("authorization event")
             .into_event();
-        let ImportSourceWithCredentialsEvent::OAuthAuthorization {
+        let ImportSourceWithCredentialsEvent::Authorization {
             input_key,
             authorization_url,
             ..
@@ -3607,9 +3607,19 @@ surfaces:
         let event = event_rx
             .recv()
             .await
+            .expect("callback received event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::CallbackReceived { input_key } = event else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
+
+        let event = event_rx
+            .recv()
+            .await
             .expect("completion event")
             .into_event();
-        let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
+        let ImportSourceWithCredentialsEvent::Completed { input_key, .. } = event else {
             panic!("unexpected import event");
         };
         assert_eq!(input_key, "API_TOKEN");

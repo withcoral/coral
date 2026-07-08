@@ -474,7 +474,7 @@ fn source_secret_from_proto(secret: SourceSecret) -> SourceBinding {
 
 fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> ImportSourceResponse {
     let event = match event {
-        ImportSourceWithCredentialsEvent::OAuthAuthorization {
+        ImportSourceWithCredentialsEvent::Authorization {
             input_key,
             authorization_url,
             expires_in_seconds,
@@ -494,7 +494,7 @@ fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> Impo
                 input_key,
             })
         }
-        ImportSourceWithCredentialsEvent::OAuthCompleted {
+        ImportSourceWithCredentialsEvent::Completed {
             input_key,
             metadata,
         } => import_source_response::Event::OauthCompleted(OAuthCredentialCompleted {
