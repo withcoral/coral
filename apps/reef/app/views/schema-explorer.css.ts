@@ -84,12 +84,19 @@ export const skeletonChildren = style({
   marginInlineStart: 18,
 })
 
-// Tree rows render as bare wax buttons (Button.Container variant="bare"); only
-// the layout differs from the button default: left-aligned with an icon/label gap.
+// Tree rows render as bare wax buttons (Button.Container variant="bare"); the
+// layout differs from the button default (left-aligned, icon/label gap), and the
+// bare variant has no hover background, so add the tree hover here. `:not(:disabled)`
+// bumps specificity above the button's own `:hover` rule so this reliably wins.
 export const treeRow = style({
   borderRadius: 4,
   gap: 6,
   justifyContent: 'flex-start',
+  selectors: {
+    '&:hover:not(:disabled)': {
+      background: theme.surface.onMainContentSubtle,
+    },
+  },
 })
 
 export const connectorName = style({

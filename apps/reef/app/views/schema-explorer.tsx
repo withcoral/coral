@@ -143,9 +143,10 @@ export function SchemaExplorer({ schema }: { schema: Promise<SchemaResponse> }) 
 function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
   const activeTable = useParams()
   const [search, setSearch] = useState('')
-  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(
-    () => new Set(schema.connectors.map((connector) => connector.name)),
-  )
+  // Collapsed by default so the initial render is one row per schema, not one per
+  // table — expanding every schema up front renders hundreds of rows and makes the
+  // first paint sluggish. A search expands matching schemas (see `expanded` below).
+  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(() => new Set())
 
   const normalizedSearch = search.trim().toLowerCase()
   const filteredSchemas = useMemo(
@@ -212,7 +213,8 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
               ) : (
                 <div className={styles.treeList}>
                   {filteredSchemas.map((connector) => {
-                    const expanded = expandedSchemas.has(connector.name)
+                    // A search forces matching schemas open so results are visible.
+                    const expanded = normalizedSearch !== '' || expandedSchemas.has(connector.name)
                     const connectorChildrenId = `schema-${connector.name}-tables`
                     const visibleTables = visibleTablesForSchema(connector, normalizedSearch)
                     return (
