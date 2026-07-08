@@ -43,12 +43,26 @@ pub struct GeneratedParameterMetadata {
     pub lookup_keys: Option<LookupKeysMetadata>,
 }
 
+/// A surface without lookup key metadata keeps every filter joinable: the
+/// projection generator version gates artifacts, so v8 materializations
+/// always carry generated metadata and this default only covers transitional
+/// states. Both the derivation and sync fallbacks use it, so the two paths
+/// cannot disagree about absent metadata.
 impl Default for LookupKeysMetadata {
     fn default() -> Self {
         Self {
             enabled: true,
             exclude: Vec::new(),
         }
+    }
+}
+
+impl LookupKeysMetadata {
+    /// Shared joinability predicate for write-time derivation and load-time
+    /// sync, so the two paths cannot drift. `wire_name` is the parameter
+    /// name as written in the API description.
+    pub(crate) fn permits_lookup_key(&self, wire_name: &str) -> bool {
+        self.enabled && !self.exclude.iter().any(|excluded| excluded == wire_name)
     }
 }
 
@@ -178,7 +192,9 @@ pub fn sync_projection_pagination_inputs<'a>(
     surfaces: impl IntoIterator<Item = &'a SemanticIr>,
     projections: &mut ProjectionCatalog,
     mode: ProjectionPaginationInputSyncMode,
+    lookup_keys_by_surface: &BTreeMap<String, LookupKeysMetadata>,
 ) {
+    let absent_lookup_keys = LookupKeysMetadata::default();
     let pagination_by_operation = surfaces
         .into_iter()
         .flat_map(|surface| {
@@ -205,6 +221,9 @@ pub fn sync_projection_pagination_inputs<'a>(
             ProjectionKind::Table => SqlInputExposure::Filter,
             ProjectionKind::TableFunction { .. } => SqlInputExposure::FunctionArg,
         };
+        let lookup_keys = lookup_keys_by_surface
+            .get(projection.surface_id.as_str())
+            .unwrap_or(&absent_lookup_keys);
         for input in &mut projection.inputs {
             match mode {
                 ProjectionPaginationInputSyncMode::RecomputeRestInputExposure => {
@@ -222,6 +241,8 @@ pub fn sync_projection_pagination_inputs<'a>(
                     }
                 }
             }
+            input.lookup_key = input.sql_exposure == SqlInputExposure::Filter
+                && lookup_keys.permits_lookup_key(&input.wire_name);
         }
     }
 }
@@ -563,8 +584,10 @@ mod tests {
     use crate::v4::{OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
     use crate::{ManifestDataType, PaginationMode, PaginationSpec, ResponseSpec};
 
+    use std::collections::BTreeMap;
+
     use super::{
-        ProjectionPaginationInputSyncMode, apply_parameter_metadata_overrides,
+        LookupKeysMetadata, ProjectionPaginationInputSyncMode, apply_parameter_metadata_overrides,
         parse_parameter_metadata_overrides_yaml, path_pattern_matches,
         sync_projection_pagination_inputs,
     };
@@ -763,6 +786,7 @@ pagination:
             std::slice::from_ref(&ir),
             &mut projections,
             ProjectionPaginationInputSyncMode::RecomputeRestInputExposure,
+            &BTreeMap::new(),
         );
 
         assert_eq!(
@@ -790,6 +814,7 @@ pagination:
             std::slice::from_ref(&ir),
             &mut overridden_projections,
             ProjectionPaginationInputSyncMode::PreserveExistingExposure,
+            &BTreeMap::new(),
         );
 
         assert_eq!(
@@ -800,6 +825,53 @@ pagination:
             projection_input_exposure(&overridden_projections, "debug"),
             SqlInputExposure::Internal
         );
+    }
+
+    #[test]
+    fn sync_projection_inputs_applies_lookup_key_exclusions() {
+        let ir = semantic_ir(vec![rest_operation(
+            "widgets_list",
+            "/widgets",
+            vec![query_input("state"), query_input("order_by")],
+            PaginationSpec::default(),
+        )]);
+        let lookup_keys = BTreeMap::from([(
+            "rest".to_string(),
+            LookupKeysMetadata {
+                enabled: true,
+                exclude: vec!["order_by".to_string()],
+            },
+        )]);
+
+        for mode in [
+            ProjectionPaginationInputSyncMode::RecomputeRestInputExposure,
+            ProjectionPaginationInputSyncMode::PreserveExistingExposure,
+        ] {
+            let mut projections = projection_catalog(vec![
+                projection_input("state", "state", SqlInputExposure::Filter),
+                projection_input("order_by", "order_by", SqlInputExposure::Filter),
+            ]);
+            sync_projection_pagination_inputs(
+                std::slice::from_ref(&ir),
+                &mut projections,
+                mode,
+                &lookup_keys,
+            );
+            // Exclusion never demotes exposure; it only withholds joinability.
+            assert_eq!(
+                projection_input_exposure(&projections, "order_by"),
+                SqlInputExposure::Filter,
+                "{mode:?}"
+            );
+            assert!(
+                projection_input_lookup_key(&projections, "state"),
+                "{mode:?}"
+            );
+            assert!(
+                !projection_input_lookup_key(&projections, "order_by"),
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]
@@ -1186,6 +1258,18 @@ operation_overrides:
             .iter()
             .find(|input| input.name == input_name)
             .map(|input| input.sql_exposure)
+            .expect("projection input")
+    }
+
+    fn projection_input_lookup_key(catalog: &ProjectionCatalog, input_name: &str) -> bool {
+        catalog
+            .projections
+            .first()
+            .expect("projection")
+            .inputs
+            .iter()
+            .find(|input| input.name == input_name)
+            .map(|input| input.lookup_key)
             .expect("projection input")
     }
 }

@@ -6,14 +6,16 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use coral_spec::v4::{
-    Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
-    MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, ProjectionPaginationInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr,
-    SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
+    Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, GeneratedParameterMetadata,
+    LookupKeysMetadata, MCP_IMPORTER_VERSION, MaterializedSurface, McpToolCatalog,
+    OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION, ProjectionCatalog,
+    ProjectionPaginationInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
+    V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
     apply_parameter_metadata_overrides, generate_projection_catalog, import_mcp_surface,
-    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
-    openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
-    sync_projection_pagination_inputs, validate_materialized_source,
+    import_openapi_surface, infer_lookup_keys, normalize_mcp_tool_catalog,
+    normalize_source_document, openapi_document_metadata, parse_generated_parameter_metadata_yaml,
+    parse_parameter_metadata_overrides_yaml, sync_projection_pagination_inputs,
+    validate_lookup_keys_for_surface, validate_materialized_source,
     validate_openapi_base_url_template,
 };
 use coral_spec::{
@@ -187,6 +189,7 @@ pub(crate) fn load_v4_materialization(
     let diagnostics: Vec<Diagnostic> =
         read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
     let mut surfaces = Vec::new();
+    let mut lookup_keys_by_surface = BTreeMap::new();
     for fingerprint_surface in &fingerprint.surfaces {
         let surface = manifest
             .surface(&fingerprint_surface.surface_id)
@@ -208,13 +211,17 @@ pub(crate) fn load_v4_materialization(
         require_file(source_name, &semantic_ir_path)?;
         let mut semantic_ir: SemanticIr =
             read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
-        apply_parameter_metadata_override_file(
+        let generated_lookup_keys = read_generated_lookup_keys(&surface_dir, &semantic_ir)?;
+        let override_lookup_keys = apply_parameter_metadata_override_file(
             layout,
             workspace_name,
             source_name,
             &surface.id,
             &mut semantic_ir,
         )?;
+        if let Some(lookup_keys) = override_lookup_keys.or(generated_lookup_keys) {
+            lookup_keys_by_surface.insert(surface.id.clone(), lookup_keys);
+        }
         surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir,
@@ -235,6 +242,7 @@ pub(crate) fn load_v4_materialization(
         surfaces.iter().map(|surface| &surface.semantic_ir),
         &mut projections,
         projection_sync_mode,
+        &lookup_keys_by_surface,
     );
     let materialized = V4MaterializedSource {
         fingerprint,
@@ -437,16 +445,50 @@ fn read_raw_source_document_artifact(
     })
 }
 
+fn read_generated_lookup_keys(
+    surface_dir: &Path,
+    semantic_ir: &SemanticIr,
+) -> Result<Option<LookupKeysMetadata>, AppError> {
+    let path = surface_dir.join(PARAMETER_METADATA_OVERRIDE_FILENAME);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to read DSL v4 parameter metadata '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let metadata = parse_generated_parameter_metadata_yaml(&raw).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to parse DSL v4 parameter metadata '{}': {error}",
+            path.display()
+        ))
+    })?;
+    // Materialization writes this file and the semantic IR together, so they
+    // can only disagree after a hand-edit; a typo'd exclude must fail as
+    // loudly here as it does in the override path.
+    if let Some(lookup_keys) = &metadata.lookup_keys {
+        validate_lookup_keys_for_surface(lookup_keys, semantic_ir).map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "failed to validate DSL v4 parameter metadata '{}': {error}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(metadata.lookup_keys)
+}
+
 fn apply_parameter_metadata_override_file(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     surface_id: &str,
     semantic_ir: &mut SemanticIr,
-) -> Result<(), AppError> {
+) -> Result<Option<LookupKeysMetadata>, AppError> {
     let path = layout.v4_parameter_metadata_override_file(workspace_name, source_name, surface_id);
     if !path.exists() {
-        return Ok(());
+        return Ok(None);
     }
 
     let raw = std::fs::read_to_string(&path).map_err(|error| {
@@ -466,7 +508,8 @@ fn apply_parameter_metadata_override_file(
             "failed to apply DSL v4 parameter metadata override '{}': {error}",
             path.display()
         ))
-    })
+    })?;
+    Ok(overrides.lookup_keys)
 }
 
 fn validate_loaded_materialization(
@@ -658,6 +701,7 @@ fn write_materialization(
     let mut materialized_surfaces = Vec::new();
     let mut semantic_irs = Vec::new();
     let mut fingerprint_surfaces = Vec::new();
+    let mut lookup_keys_by_surface = BTreeMap::new();
     let mut diagnostics = Vec::new();
     let mut first_surface_error = None;
     for surface in &manifest.surfaces {
@@ -683,19 +727,9 @@ fn write_materialization(
             }
         };
         let surface_dir = temp_dir.join("surfaces").join(&surface.id);
-        fs::ensure_private_dir(&surface_dir)?;
-        std::fs::write(
-            surface_dir.join("source-document.raw"),
-            &materialized_surface.raw_document,
-        )?;
-        std::fs::write(
-            surface_dir.join("source-document.yaml"),
-            &materialized_surface.normalized_document,
-        )?;
-        write_yaml(
-            &surface_dir.join("semantic-ir.yaml"),
-            &materialized_surface.semantic_ir,
-        )?;
+        if let Some(lookup_keys) = write_surface_artifacts(&surface_dir, &materialized_surface)? {
+            lookup_keys_by_surface.insert(surface.id.clone(), lookup_keys);
+        }
         materialized_surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir: materialized_surface.semantic_ir.clone(),
@@ -723,7 +757,7 @@ fn write_materialization(
             },
         )));
     }
-    let projections = generate_projection_catalog(manifest, &semantic_irs, &BTreeMap::new())
+    let projections = generate_projection_catalog(manifest, &semantic_irs, &lookup_keys_by_surface)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     diagnostics.extend(projections.diagnostics.clone());
     for ir in &semantic_irs {
@@ -761,6 +795,37 @@ struct MaterializedSurfaceBuild {
     normalized_document: Vec<u8>,
     observed_sha256: String,
     semantic_ir: SemanticIr,
+}
+
+/// Writes the per-surface materialized artifacts (source documents, semantic
+/// IR, generated parameter metadata) and returns the inferred lookup keys.
+fn write_surface_artifacts(
+    surface_dir: &Path,
+    materialized_surface: &MaterializedSurfaceBuild,
+) -> Result<Option<LookupKeysMetadata>, AppError> {
+    fs::ensure_private_dir(surface_dir)?;
+    std::fs::write(
+        surface_dir.join("source-document.raw"),
+        &materialized_surface.raw_document,
+    )?;
+    std::fs::write(
+        surface_dir.join("source-document.yaml"),
+        &materialized_surface.normalized_document,
+    )?;
+    write_yaml(
+        &surface_dir.join("semantic-ir.yaml"),
+        &materialized_surface.semantic_ir,
+    )?;
+    let Some(lookup_keys) = infer_lookup_keys(&materialized_surface.semantic_ir) else {
+        return Ok(None);
+    };
+    write_yaml(
+        &surface_dir.join(PARAMETER_METADATA_OVERRIDE_FILENAME),
+        &GeneratedParameterMetadata {
+            lookup_keys: Some(lookup_keys.clone()),
+        },
+    )?;
+    Ok(Some(lookup_keys))
 }
 
 fn materialize_surface(

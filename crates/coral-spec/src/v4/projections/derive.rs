@@ -31,12 +31,7 @@ pub fn generate_projection_catalog(
     surfaces: &[SemanticIr],
     lookup_keys_by_surface: &BTreeMap<String, LookupKeysMetadata>,
 ) -> Result<ProjectionCatalog> {
-    // A surface without lookup key metadata makes no completeness claims:
-    // no filter may anchor a dependent join until metadata says so.
-    let absent_lookup_keys = LookupKeysMetadata {
-        enabled: false,
-        exclude: Vec::new(),
-    };
+    let absent_lookup_keys = LookupKeysMetadata::default();
     let mut projections = Vec::new();
     let mut diagnostics = Vec::new();
     for ir in surfaces {
@@ -288,11 +283,7 @@ fn rest_filter_is_lookup_key(
 ) -> bool {
     rest.is_some()
         && exposure == SqlInputExposure::Filter
-        && lookup_keys.enabled
-        && !lookup_keys
-            .exclude
-            .iter()
-            .any(|excluded| excluded == &input.name)
+        && lookup_keys.permits_lookup_key(&input.name)
 }
 
 fn mcp_pagination_owns_input(
