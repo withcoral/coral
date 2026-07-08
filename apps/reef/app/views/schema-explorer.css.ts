@@ -2,7 +2,7 @@ import { style } from '@vanilla-extract/css'
 
 import { pulse } from '@/wax/animations/pulse.css'
 import { breakpoints } from '@/styles/theme.css'
-import { animation, theme } from '@/wax/theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
   display: 'flex',
@@ -123,25 +123,12 @@ export const skeletonChildren = style({
   marginInlineStart: 18,
 })
 
-export const connectorButton = style({
-  alignItems: 'center',
-  background: 'none',
-  border: 'none',
+// Tree rows render as bare wax buttons (Button.Container variant="bare"); only
+// the layout differs from the button default: left-aligned with an icon/label gap.
+export const treeRow = style({
   borderRadius: 4,
-  color: theme.content.primary,
-  cursor: 'pointer',
-  display: 'flex',
   gap: 6,
-  paddingBlock: 5,
-  paddingInline: 8,
-  textAlign: 'left',
-  transition: animation.colorTransition,
-  width: '100%',
-  selectors: {
-    '&:hover': {
-      backgroundColor: theme.surface.onMainContentSubtle,
-    },
-  },
+  justifyContent: 'flex-start',
 })
 
 export const connectorName = style({
@@ -160,32 +147,6 @@ export const connectorChildren = style({
   display: 'flex',
   flexDirection: 'column',
   marginInlineStart: 16,
-})
-
-export const tableButton = style({
-  alignItems: 'center',
-  background: 'none',
-  border: 'none',
-  borderRadius: 4,
-  color: theme.content.primary,
-  cursor: 'pointer',
-  display: 'flex',
-  gap: 6,
-  minWidth: 0,
-  paddingBlock: 4,
-  paddingInline: 8,
-  textAlign: 'left',
-  transition: animation.colorTransition,
-  width: '100%',
-  selectors: {
-    '&:hover': {
-      backgroundColor: theme.surface.onMainContentSubtle,
-    },
-  },
-})
-
-export const tableButtonSelected = style({
-  backgroundColor: theme.surface.onMainContent,
 })
 
 export const tableName = style({

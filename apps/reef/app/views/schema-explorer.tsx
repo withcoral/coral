@@ -1,10 +1,10 @@
 import classNames from 'classnames'
 import { Suspense, useMemo, useState } from 'react'
-import { Await, NavLink, Outlet, useAsyncError, useRevalidator } from 'react-router'
+import { Await, NavLink, Outlet, useAsyncError, useParams, useRevalidator } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
 import type { ColumnDef, SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
-import { IconButton } from '@/wax/components/button'
+import { Container as ButtonContainer, IconButton } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Pill } from '@/wax/components/pill'
@@ -144,6 +144,7 @@ export function SchemaExplorer({ schema }: { schema: Promise<SchemaResponse> }) 
 }
 
 function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
+  const activeTable = useParams()
   const [search, setSearch] = useState('')
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(
     () => new Set(schema.connectors.map((connector) => connector.name)),
@@ -227,12 +228,14 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
                     const visibleTables = visibleTablesForSchema(connector, normalizedSearch)
                     return (
                       <div key={connector.name}>
-                        <button
+                        <ButtonContainer
                           aria-controls={connectorChildrenId}
                           aria-expanded={expanded}
-                          className={styles.connectorButton}
+                          className={styles.treeRow}
+                          fullWidth
                           onClick={() => toggleSchema(connector.name)}
-                          type="button"
+                          size="22"
+                          variant="bare"
                         >
                           <Icon
                             color="secondary"
@@ -249,25 +252,29 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
                           >
                             {visibleTables.length}
                           </Typography.BodySmall>
-                        </button>
+                        </ButtonContainer>
 
                         {expanded ? (
                           <div className={styles.connectorChildren} id={connectorChildrenId}>
                             {visibleTables.map((table) => (
-                              <NavLink
-                                className={({ isActive }) =>
-                                  classNames(styles.tableButton, {
-                                    [styles.tableButtonSelected]: isActive,
-                                  })
+                              <ButtonContainer
+                                as={NavLink}
+                                className={styles.treeRow}
+                                fullWidth
+                                isActive={
+                                  activeTable.schemaName === connector.name &&
+                                  activeTable.tableName === table.name
                                 }
                                 key={tablePath(connector.name, table.name)}
+                                size="22"
                                 to={tablePath(connector.name, table.name)}
+                                variant="bare"
                               >
                                 <Icon color="secondary" name="Table2" size="14" />
                                 <Typography.BodyStrong as="span" className={styles.tableName}>
                                   {table.name}
                                 </Typography.BodyStrong>
-                              </NavLink>
+                              </ButtonContainer>
                             ))}
                           </div>
                         ) : null}
