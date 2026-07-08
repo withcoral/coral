@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
-export const grid = style({
+export const container = style({
   display: 'grid',
   gap: '16px',
   gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))',

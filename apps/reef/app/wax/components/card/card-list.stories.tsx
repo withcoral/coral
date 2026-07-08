@@ -3,11 +3,14 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Link, MemoryRouter } from 'react-router'
 import { fn } from 'storybook/test'
 
+import { Card } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 
-import { CardList, type CardItem, type CardListProps } from './card-list'
+type StoryCard = Pick<Card.CardProps, 'description' | 'headerPill' | 'icon' | 'title'> & {
+  id: string
+}
 
-const baseItems: CardItem[] = [
+const baseCards: StoryCard[] = [
   {
     description: 'Monitor logs, metrics, and traces across your services.',
     icon: <Icon name="Activity" size="20" />,
@@ -34,36 +37,44 @@ const baseItems: CardItem[] = [
   },
 ]
 
-// Generate `count` items by cycling the mock data, with unique ids/labels.
-function makeItems(count: number): CardItem[] {
+function makeCards(count: number): StoryCard[] {
   return Array.from({ length: count }, (_, index) => {
-    const base = baseItems[index % baseItems.length]
+    const base = baseCards[index % baseCards.length]
     return { ...base, id: `${base.id}-${index}`, title: `${base.title} ${index + 1}` }
   })
 }
 
-// `count` is a story-only control that drives how many cards CardList renders;
-// `items` is generated from it in render, so its own control is disabled.
-type StoryArgs = CardListProps & { count: number }
+type StoryArgs = React.ComponentProps<typeof Card.List> & {
+  count: number
+  onSelect?: (id: string) => void
+}
 
 const meta = {
   args: {
-    count: baseItems.length,
-    items: baseItems,
+    count: baseCards.length,
   },
   argTypes: {
     count: {
       control: { max: 100, min: 0, step: 1, type: 'range' },
     },
-    items: {
-      control: false,
-    },
   },
-  component: CardList,
+  component: Card.List,
   parameters: {
     layout: 'padded',
   },
-  render: ({ count, ...args }) => <CardList {...args} items={makeItems(count)} />,
+  render: ({ count, onSelect, ...args }) => (
+    <Card.List {...args}>
+      {makeCards(count).map(({ id, ...card }) => (
+        <Card.Item key={id}>
+          {onSelect ? (
+            <Card.Card {...card} as="button" onClick={() => onSelect(id)} />
+          ) : (
+            <Card.Card {...card} />
+          )}
+        </Card.Item>
+      ))}
+    </Card.List>
+  ),
   tags: ['autodocs'],
   title: 'Wax/CardList',
 } satisfies Meta<StoryArgs>
@@ -81,17 +92,16 @@ export const Interactive: Story = {
 
 export const AsReactRouterLinks: Story = {
   render: ({ count }) => {
-    const items = makeItems(count)
+    const cards = makeCards(count)
     return (
       <MemoryRouter>
-        <CardList
-          as={Link}
-          getCardProps={(item) => ({
-            prefetch: 'intent' as const,
-            to: `/sources/${item.id}`,
-          })}
-          items={items}
-        />
+        <Card.List>
+          {cards.map(({ id, ...card }) => (
+            <Card.Item key={id}>
+              <Card.Card {...card} as={Link} prefetch="intent" to={`/sources/${id}`} />
+            </Card.Item>
+          ))}
+        </Card.List>
       </MemoryRouter>
     )
   },

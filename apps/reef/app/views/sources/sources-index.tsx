@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Button, ScrollArea } from '@/wax/components'
-import { CardList, type CardItem } from '@/wax/components/card'
+import { Button, Card, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
@@ -242,31 +241,25 @@ function SourceCardList({
   entries: IndexEntry[]
   onPick: (entry: IndexEntry) => void
 }) {
-  const entryById = new Map(entries.map((entry) => [sourceCardId(entry), entry]))
-  const items = entries.map(toCardItem)
-
   return (
-    <CardList
-      items={items}
-      onSelect={(item) => {
-        const entry = entryById.get(item.id)
-        if (entry) onPick(entry)
-      }}
-    />
+    <Card.List>
+      {entries.map((entry) => (
+        <Card.Item key={sourceCardId(entry)}>
+          <Card.Card
+            as="button"
+            description={entry.description}
+            headerPill={sourceOriginPill(entry)}
+            icon={<ProviderLogo name={entry.name} size="small" />}
+            onClick={() => onPick(entry)}
+            title={entry.name}
+          />
+        </Card.Item>
+      ))}
+    </Card.List>
   )
 }
 
-function toCardItem(entry: IndexEntry): CardItem {
-  return {
-    description: entry.description,
-    headerPill: sourceOriginPill(entry),
-    icon: <ProviderLogo name={entry.name} size="small" />,
-    id: sourceCardId(entry),
-    title: entry.name,
-  }
-}
-
-function sourceOriginPill(entry: IndexEntry): CardItem['headerPill'] {
+function sourceOriginPill(entry: IndexEntry): Card.CardHeaderPill | undefined {
   if (entry.origin === 'bundled') return { label: 'Core' }
   if (entry.origin === 'imported') return { label: 'Imported' }
   return undefined

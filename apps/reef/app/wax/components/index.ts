@@ -1,3 +1,5 @@
+import * as Card from './card'
+
 export * as Button from './button'
 export * as Combobox from './combobox'
 export * as DatePicker from './date-picker'
@@ -8,5 +10,6 @@ export * as List from './list'
 export * as Menu from './menu'
 export * as ScrollArea from './scroll-area'
 export * as Tabs from './tabs'
+export { Card }
 export { Table } from './table'
 export { Typography, TypographyVariant } from './typography'
