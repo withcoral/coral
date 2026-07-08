@@ -40,8 +40,8 @@ export interface SchemaResponse {
 const COLUMN_PAGE_LIMIT = 200
 const COLUMN_PAGE_CONCURRENCY = 6
 
-export async function fetchSchemaFromCoral(): Promise<SchemaResponse> {
-  const tableSummaries = await listTables()
+export async function fetchSchemaFromCoral(signal?: AbortSignal): Promise<SchemaResponse> {
+  const tableSummaries = await listTables(signal)
   if (tableSummaries.length === 0) return { connectors: [] }
 
   const schemaMap = new Map<string, TableDef[]>()
@@ -69,13 +69,14 @@ export async function fetchSchemaFromCoral(): Promise<SchemaResponse> {
   }
 }
 
-async function listTables(): Promise<TableSummary[]> {
+async function listTables(signal?: AbortSignal): Promise<TableSummary[]> {
   const catalogClient = await getCatalogClient()
   const response = await catalogClient.listCatalog(
     create(ListCatalogRequestSchema, {
       kind: CatalogItemKind.TABLE,
       workspace: WORKSPACE,
     }),
+    { signal },
   )
 
   return response.items.flatMap((item) => (item.item.case === 'table' ? [item.item.value] : []))
@@ -84,8 +85,9 @@ async function listTables(): Promise<TableSummary[]> {
 export async function fetchTableColumnsFromCoral(
   schemaName: string,
   tableName: string,
+  signal?: AbortSignal,
 ): Promise<ColumnDef[]> {
-  const firstPage = await listColumnsPage(schemaName, tableName, 0)
+  const firstPage = await listColumnsPage(schemaName, tableName, 0, signal)
   const columns = columnsFromResponse(firstPage)
   const pagination = firstPage.pagination
   if (!pagination?.hasMore) return columns
@@ -95,14 +97,14 @@ export async function fetchTableColumnsFromCoral(
     const remainingPages = await mapWithConcurrency(
       pageOffsets(nextOffset, pagination.totalCount, COLUMN_PAGE_LIMIT),
       COLUMN_PAGE_CONCURRENCY,
-      (offset) => listColumnsPage(schemaName, tableName, offset),
+      (offset) => listColumnsPage(schemaName, tableName, offset, signal),
     )
     return columns.concat(remainingPages.flatMap(columnsFromResponse))
   }
 
   let offset = pagination.nextOffset
   while (offset > 0) {
-    const page = await listColumnsPage(schemaName, tableName, offset)
+    const page = await listColumnsPage(schemaName, tableName, offset, signal)
     columns.push(...columnsFromResponse(page))
     if (!page.pagination?.hasMore) break
     offset = page.pagination.nextOffset
@@ -114,6 +116,7 @@ async function listColumnsPage(
   schemaName: string,
   tableName: string,
   offset: number,
+  signal?: AbortSignal,
 ): Promise<ListColumnsResponse> {
   const catalogClient = await getCatalogClient()
   return catalogClient.listColumns(
@@ -126,6 +129,7 @@ async function listColumnsPage(
       tableName,
       workspace: WORKSPACE,
     }),
+    { signal },
   )
 }
 

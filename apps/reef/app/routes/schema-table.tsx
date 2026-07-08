@@ -13,8 +13,13 @@ import {
 import type { Route } from './+types/schema-table'
 
 // Deferred like the parent schema loader; the columns stream in under Suspense.
-export function clientLoader({ params }: Route.ClientLoaderArgs) {
-  return { columns: fetchTableColumnsFromCoral(params.schemaName, params.tableName) }
+// The abort signal matters most here: large tables fan out concurrent paginated
+// ListColumns calls, so switching tables quickly would otherwise pile up
+// orphaned in-flight requests against the sidecar.
+export function clientLoader({ params, request }: Route.ClientLoaderArgs) {
+  return {
+    columns: fetchTableColumnsFromCoral(params.schemaName, params.tableName, request.signal),
+  }
 }
 
 clientLoader.hydrate = true as const

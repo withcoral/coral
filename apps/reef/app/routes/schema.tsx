@@ -7,8 +7,10 @@ import type { Route } from './+types/schema'
 // the browser transport + desktop bridge, so this must be a clientLoader. The
 // schema promise is deferred (not awaited) so the route renders immediately and
 // the view streams it in with Suspense — SPA mode forbids a route HydrateFallback.
-export function clientLoader(_args: Route.ClientLoaderArgs) {
-  return { schema: fetchSchemaFromCoral() }
+// The route's abort signal cancels the catalog request when the navigation is
+// superseded instead of leaving it running against the sidecar.
+export function clientLoader({ request }: Route.ClientLoaderArgs) {
+  return { schema: fetchSchemaFromCoral(request.signal) }
 }
 
 clientLoader.hydrate = true as const
