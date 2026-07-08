@@ -324,9 +324,12 @@ fn detect_link_header_pagination(
     if !has_link_header && next_url_header.is_none() {
         return None;
     }
+    let page_input = find_page_input(inputs);
     Some(PaginationSpec {
         mode: PaginationMode::LinkHeader,
         page_size: detect_page_size(inputs),
+        page_param: page_input.map(|input| input.name.clone()),
+        page_start: page_input.and_then(numeric_input_default).unwrap_or(1),
         next_url_header,
         ..PaginationSpec::default()
     })
@@ -386,7 +389,7 @@ fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpe
 }
 
 fn detect_page_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
-    let page_input = find_query_input(inputs, &["page", "pagenumber", "pagenum"])?;
+    let page_input = find_page_input(inputs)?;
     let page_size = detect_page_size(inputs)?;
     Some(PaginationSpec {
         mode: PaginationMode::Page,
@@ -410,6 +413,10 @@ fn detect_page_size(inputs: &[IrOperationInput]) -> Option<PageSizeSpec> {
         ],
     )
     .map(page_size_spec)
+}
+
+fn find_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
+    find_query_input(inputs, &["page", "pagenumber", "pagenum"])
 }
 
 fn find_query_input<'a>(

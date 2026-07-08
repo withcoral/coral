@@ -40,8 +40,12 @@ pub(super) fn apply_pagination_query_pairs(
     match &pagination.mode {
         ValidatedPaginationMode::None
         | ValidatedPaginationMode::Auto
-        | ValidatedPaginationMode::CursorBody
-        | ValidatedPaginationMode::LinkHeader => {}
+        | ValidatedPaginationMode::CursorBody => {}
+        ValidatedPaginationMode::LinkHeader => {
+            if let Some(name) = &target.pagination().page_param {
+                params.push((name.clone(), state.page.to_string()));
+            }
+        }
         ValidatedPaginationMode::CursorQuery => {
             if let Some(cursor) = &state.cursor {
                 let name = target.pagination().cursor_param.clone().ok_or_else(|| {
@@ -509,6 +513,53 @@ mod tests {
         assert!(matches!(
             pagination.mode,
             ValidatedPaginationMode::Offset(_)
+        ));
+    }
+
+    #[test]
+    fn apply_pagination_query_pairs_uses_link_header_initial_page_param() {
+        let mut table = test_http_table_spec(
+            &json!([]),
+            &RequestSpec {
+                method: HttpMethod::GET,
+                path: ParsedTemplate::parse("/items").expect("template"),
+                query: vec![],
+                body: BodySpec::default(),
+                headers: vec![],
+            },
+        );
+        table.pagination = PaginationSpec {
+            mode: PaginationMode::LinkHeader,
+            page_size: Some(coral_spec::PageSizeSpec {
+                default: 25,
+                max: 100,
+                query_param: Some("per_page".to_string()),
+                body_path: vec![],
+            }),
+            page_param: Some("page".to_string()),
+            page_start: 1,
+            ..PaginationSpec::default()
+        };
+        let pagination = table.pagination.validated("demo", "items").unwrap();
+        let mut params = Vec::new();
+        let state = PageState {
+            page: 1,
+            ..PageState::default()
+        };
+
+        let target = test_http_request_target(&table);
+        apply_pagination_query_pairs(&mut params, &target, &pagination, &state, Some(25)).unwrap();
+
+        assert_eq!(
+            params,
+            vec![
+                ("per_page".to_string(), "25".to_string()),
+                ("page".to_string(), "1".to_string()),
+            ]
+        );
+        assert!(matches!(
+            pagination.mode,
+            ValidatedPaginationMode::LinkHeader
         ));
     }
 

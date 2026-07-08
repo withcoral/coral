@@ -1235,7 +1235,8 @@ paths:
 
     let link = &rest_execution(operations.get("link_list").expect("link")).pagination;
     assert_eq!(link.mode, PaginationMode::LinkHeader);
-    assert_eq!(link.page_param, None);
+    assert_eq!(link.page_param.as_deref(), Some("page"));
+    assert_eq!(link.page_start, 1);
     assert_eq!(
         link.page_size
             .as_ref()
