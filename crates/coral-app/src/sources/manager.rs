@@ -15,7 +15,6 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
-use crate::search::observed::SearchObservationHandle;
 use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
@@ -43,7 +42,6 @@ pub(crate) struct SourceManager {
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
     lifecycle_lock: WorkspaceLifecycleLock,
-    search_observations: Option<SearchObservationHandle>,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -201,16 +199,7 @@ impl SourceManager {
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
             lifecycle_lock,
-            search_observations: None,
         }
-    }
-
-    pub(crate) fn with_search_observation_handle(
-        mut self,
-        search_observations: SearchObservationHandle,
-    ) -> Self {
-        self.search_observations = Some(search_observations);
-        self
     }
 
     pub(crate) fn list_workspace_sources(
@@ -585,7 +574,7 @@ impl SourceManager {
             self.layout.workspace_dir(workspace_name).parent(),
         );
         drop(state_lock);
-        self.clear_source_lifecycle_search_state_best_effort(workspace_name, source_name);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
         Ok(removed)
     }
 
@@ -769,34 +758,11 @@ impl SourceManager {
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
         drop(state_lock);
-        self.clear_source_lifecycle_search_state_best_effort(workspace_name, &source_name);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(
+            workspace_name,
+            &source_name,
+        );
         Ok(resolved)
-    }
-
-    fn clear_source_lifecycle_search_state_best_effort(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) {
-        self.clear_observed_values_for_source_lifecycle_best_effort(workspace_name, source_name);
-        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
-    }
-
-    fn clear_observed_values_for_source_lifecycle_best_effort(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) {
-        let Some(search_observations) = &self.search_observations else {
-            return;
-        };
-        if let Err(error) = search_observations.clear_source(workspace_name, source_name.as_str()) {
-            warn!(
-                workspace = %workspace_name,
-                source = %source_name,
-                "source lifecycle changed, but failed to clear observed-values state: {error}"
-            );
-        }
     }
 
     fn clear_catalog_projection_for_source_lifecycle_best_effort(
@@ -1646,7 +1612,6 @@ mod tests {
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
-    use crate::search::observed::{SearchObservationHandle, SqliteObservedValuesStore};
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
@@ -2448,34 +2413,6 @@ surfaces:
         .expect("stored material check");
 
         assert!(needs_stored);
-    }
-
-    #[test]
-    fn observed_cleanup_advances_source_epoch_when_sqlite_file_is_absent() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let search_observations = SearchObservationHandle::new(layout.clone());
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone())
-                .with_search_observation_handle(search_observations.clone());
-        let workspace_name = default_workspace();
-        let source_name = SourceName::parse("github").expect("source name");
-
-        assert!(!layout.search_sqlite_file(&workspace_name).exists());
-        manager
-            .clear_observed_values_for_source_lifecycle_best_effort(&workspace_name, &source_name);
-
-        assert!(layout.search_sqlite_file(&workspace_name).exists());
-        let epoch = SqliteObservedValuesStore::new(layout)
-            .capture_epoch(&workspace_name, source_name.as_str())
-            .expect("observed-values epoch");
-        assert_eq!(epoch.source_generation, 1);
-        search_observations.shutdown().expect("shutdown writer");
     }
 
     #[test]

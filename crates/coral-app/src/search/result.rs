@@ -108,6 +108,8 @@ pub(crate) enum SearchProviderState {
     Error,
 }
 
+const _: SearchProviderState = SearchProviderState::Skipped;
+
 #[derive(Debug, Clone, Default)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -137,6 +139,7 @@ impl SearchCandidate {
         match &self.payload {
             SearchPayload::CatalogMetadata(_) => 0,
             SearchPayload::ColumnHint(_) => 1,
+            SearchPayload::ObservedValue(_) => 2,
         }
     }
 }
@@ -177,6 +180,7 @@ pub(crate) struct SearchResult {
 pub(crate) enum SearchPayload {
     CatalogMetadata(CatalogMetadataResult),
     ColumnHint(ColumnHintResult),
+    ObservedValue(ObservedValueResult),
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +214,18 @@ pub(crate) struct ColumnHintResult {
     pub(crate) description: String,
     pub(crate) matched_fields: Vec<String>,
     pub(crate) field_role: SearchFieldRole,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ObservedValueResult {
+    pub(crate) value: String,
+    pub(crate) schema_name: String,
+    pub(crate) surface_name: String,
+    pub(crate) column_name: String,
+    pub(crate) surface_kind: SearchSurfaceKind,
+    pub(crate) field_path: String,
+    pub(crate) observed_count: u64,
+    pub(crate) last_observed_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
