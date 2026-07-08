@@ -1,6 +1,6 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
@@ -11,7 +11,7 @@ use coral_engine::{
     RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
     UdfRuntimeDefinition,
 };
-use coral_spec::{ManifestInputKind, ManifestInputSpec, parse_function_sql};
+use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
 use serde_json::json;
 use tracing::Instrument as _;
@@ -554,6 +554,13 @@ impl QueryManager {
         Ok(runtime)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "function lifecycle service callers land upstack in the split stack"
+        )
+    )]
     pub(crate) async fn list_functions(
         &self,
         workspace_name: &WorkspaceName,
@@ -571,10 +578,21 @@ impl QueryManager {
             .map_err(QueryManagerError::App)
     }
 
+    #[expect(
+        dead_code,
+        reason = "function lifecycle service callers land upstack in the split stack"
+    )]
     pub(crate) fn function_manager(&self) -> FunctionManager {
         self.function_manager.clone()
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "function lifecycle service callers land upstack in the split stack"
+        )
+    )]
     pub(crate) async fn validate_udf_sql(
         &self,
         workspace_name: &WorkspaceName,
@@ -593,7 +611,7 @@ impl QueryManager {
                 .load_config_unlocked()
                 .map_err(QueryManagerError::App)?;
             let loaded_sources = self
-                .load_function_validation_sources(workspace_name, &config, raw_sql)
+                .load_query_sources_from_config(workspace_name, &config)
                 .map_err(QueryManagerError::App)?;
             (loaded_sources, config)
         };
@@ -607,28 +625,6 @@ impl QueryManager {
             )
             .await
             .map_err(QueryManagerError::App)
-    }
-
-    fn load_function_validation_sources(
-        &self,
-        workspace_name: &WorkspaceName,
-        config: &AppConfig,
-        raw_sql: &str,
-    ) -> Result<Vec<LoadedQuerySource>, AppError> {
-        let workspace_sources = config.workspace_sources(workspace_name);
-        let source_names = function_validation_source_names(raw_sql, &workspace_sources)?;
-        if source_names.is_empty() {
-            return self.load_query_sources_from_config(workspace_name, config);
-        }
-
-        let mut loaded_sources = Vec::new();
-        for source in workspace_sources {
-            if source_names.contains(&source.name) {
-                let (loaded_source, _version) = self.load_query_source(workspace_name, &source)?;
-                loaded_sources.push(loaded_source);
-            }
-        }
-        Ok(loaded_sources)
     }
 
     async fn runtime_config_with_udfs(
@@ -661,46 +657,6 @@ impl QueryManager {
             .map_err(QueryManagerError::App)?;
         Ok(runtime.with_udfs(functions))
     }
-}
-
-fn function_validation_source_names(
-    raw_sql: &str,
-    installed_sources: &[InstalledSource],
-) -> Result<BTreeSet<SourceName>, AppError> {
-    let spec = parse_function_sql(raw_sql)
-        .map_err(|error| AppError::InvalidInput(format!("function validation failed: {error}")))?;
-    let query = spec.implementation().coral_sql.query.to_ascii_lowercase();
-    let mut names = installed_sources
-        .iter()
-        .filter(|source| contains_schema_reference(&query, source.name.as_str()))
-        .map(|source| source.name.clone())
-        .collect::<BTreeSet<_>>();
-
-    let schema = spec.schema();
-    if schema != "functions"
-        && let Some(source) = installed_sources
-            .iter()
-            .find(|source| source.name.as_str() == schema)
-    {
-        names.insert(source.name.clone());
-    }
-
-    Ok(names)
-}
-
-fn contains_schema_reference(query: &str, schema: &str) -> bool {
-    let needle = format!("{schema}.");
-    let bytes = query.as_bytes();
-    query.match_indices(&needle).any(|(index, _)| {
-        index == 0
-            || bytes
-                .get(index.saturating_sub(1))
-                .is_some_and(|byte| !is_sql_identifier_byte(*byte))
-    })
-}
-
-fn is_sql_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
@@ -1054,17 +1010,6 @@ mod tests {
         }
     }
 
-    fn installed_source(name: &str) -> InstalledSource {
-        InstalledSource {
-            name: SourceName::parse(name).expect("source name"),
-            version: None,
-            variables: BTreeMap::new(),
-            secrets: Vec::new(),
-            credential_storage: None,
-            origin: SourceOrigin::Bundled,
-        }
-    }
-
     #[tokio::test]
     async fn load_query_sources_fails_closed_for_missing_workspace() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
@@ -1101,37 +1046,6 @@ mod tests {
                 panic!("expected app error for missing workspace, got {error}");
             }
         }
-    }
-
-    #[test]
-    fn function_validation_source_names_uses_sql_and_publish_schemas() {
-        let sources = vec![installed_source("github"), installed_source("codex")];
-        let function = r"/*
-name: codex_validation_smoke
-schema: functions
-*/
-
-select session_file from codex.events limit 1
-";
-
-        let names = function_validation_source_names(function, &sources).expect("source names");
-
-        assert_eq!(
-            names,
-            BTreeSet::from([SourceName::parse("codex").expect("source name")])
-        );
-
-        let source_schema_function = function.replace("schema: functions", "schema: github");
-        let names = function_validation_source_names(&source_schema_function, &sources)
-            .expect("source names");
-
-        assert_eq!(
-            names,
-            BTreeSet::from([
-                SourceName::parse("codex").expect("source name"),
-                SourceName::parse("github").expect("source name"),
-            ])
-        );
     }
 
     #[tokio::test(flavor = "current_thread")]

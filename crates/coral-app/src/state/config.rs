@@ -727,13 +727,6 @@ impl ConfigStore {
     ///
     /// Callers must already hold the state lock while using function artifacts
     /// associated with the returned inventory.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "function runtime loading consumes inventory in the next stack branch"
-        )
-    )]
     pub(crate) fn list_workspace_functions_unlocked(
         &self,
         workspace_name: &WorkspaceName,

@@ -4,16 +4,17 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use coral_engine::{
-    CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
-};
-use coral_spec::{FunctionImplementationSpec, FunctionSpec, parse_function_sql};
+use coral_engine::{QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
+use coral_spec::parse_function_sql;
 
 use crate::bootstrap::AppError;
 use crate::functions::model::{FunctionName, InstalledFunction};
+use crate::functions::runtime::{infer_runtime_function, runtime_function_without_signature};
 use crate::functions::store::{FsFunctionArtifactStore, FunctionArtifactStore};
+use crate::functions::validation::{
+    SqlPublishTargets, initial_sql_publish_targets, record_sql_publish_target,
+    source_sql_publish_targets_for_schemas, unchecked_source_publish_schemas,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
 
@@ -117,11 +118,7 @@ impl FunctionManager {
             AppError::InvalidInput(format!("function validation failed: {error}"))
         })?;
         let function_name = FunctionName::parse(spec.name())?;
-        let mut sql_publish_targets = if needs_source_publish_target_check(&spec) {
-            source_sql_publish_targets(selected_sources)
-        } else {
-            HashSet::new()
-        };
+        let mut sql_publish_targets = initial_sql_publish_targets(&spec, selected_sources);
         self.record_installed_function_sql_publish_targets(
             workspace_name,
             &function_name,
@@ -293,7 +290,7 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         replacing_function: &FunctionName,
-        publish_targets: &mut HashSet<SqlPublishTarget>,
+        publish_targets: &mut SqlPublishTargets,
     ) -> Result<(), AppError> {
         let mut seen_names = HashSet::new();
         for artifact in self.load_function_artifacts(workspace_name)? {
@@ -325,170 +322,6 @@ fn skip_function(artifact: &FunctionArtifact, detail: fmt::Arguments<'_>) {
         detail = %detail,
         "skipping function during runtime publication"
     );
-}
-
-fn source_sql_publish_targets(selected_sources: &[QuerySource]) -> HashSet<SqlPublishTarget> {
-    let mut targets = HashSet::new();
-    for source in selected_sources {
-        for component in source.components() {
-            record_source_component_sql_targets(component, &mut targets);
-        }
-    }
-    targets
-}
-
-fn record_source_component_sql_targets(
-    component: &RuntimeSourceComponent,
-    targets: &mut HashSet<SqlPublishTarget>,
-) {
-    match component {
-        RuntimeSourceComponent::Http(manifest) => {
-            for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
-            }
-            for function in &manifest.functions {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, &function.name));
-            }
-        }
-        RuntimeSourceComponent::File(manifest) => {
-            for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
-            }
-        }
-        RuntimeSourceComponent::Mcp(manifest) => {
-            for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(
-                    &manifest.common.name,
-                    &table.common.name,
-                ));
-            }
-            for function in &manifest.functions {
-                targets.insert(SqlPublishTarget::new(
-                    &manifest.common.name,
-                    &function.common.name,
-                ));
-            }
-        }
-    }
-}
-
-fn source_sql_publish_targets_for_schemas(
-    selected_sources: &[QuerySource],
-    schemas: &BTreeSet<String>,
-) -> HashSet<SqlPublishTarget> {
-    let schema_sources = selected_sources
-        .iter()
-        .filter(|source| schemas.contains(source.source_name()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if schema_sources.is_empty() {
-        return HashSet::new();
-    }
-    source_sql_publish_targets(&schema_sources)
-}
-
-fn unchecked_source_publish_schemas(
-    function: &UdfRuntimeDefinition,
-    checked: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let schema = &function.publish.table_function.schema;
-    if schema != "functions" && !checked.contains(schema) {
-        BTreeSet::from([schema.clone()])
-    } else {
-        BTreeSet::new()
-    }
-}
-
-async fn infer_runtime_function(
-    selected_sources: &[QuerySource],
-    runtime_config: QueryRuntimeConfig,
-    spec: &FunctionSpec,
-) -> Result<UdfRuntimeDefinition, AppError> {
-    let mut runtime_function = runtime_function_without_signature(spec);
-    let sql_definition = runtime_sql_definition(&runtime_function);
-    let signature =
-        CoralQuery::infer_udf_signature(selected_sources, runtime_config, sql_definition)
-            .await
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("function failed runtime validation: {error}"))
-            })?;
-    runtime_function.arguments = signature.arguments;
-    runtime_function.result_columns = signature.result_columns;
-    Ok(runtime_function)
-}
-
-fn runtime_sql_definition(function: &UdfRuntimeDefinition) -> UdfRuntimeSqlDefinition {
-    UdfRuntimeSqlDefinition {
-        name: function.name.clone(),
-        implementation: function.implementation.clone(),
-    }
-}
-
-fn runtime_function_without_signature(spec: &FunctionSpec) -> UdfRuntimeDefinition {
-    UdfRuntimeDefinition {
-        name: spec.name().to_string(),
-        description: spec.description().to_string(),
-        arguments: Vec::new(),
-        implementation: runtime_implementation(spec.implementation()),
-        publish: runtime_publish(spec),
-        result_columns: Vec::new(),
-    }
-}
-
-fn runtime_implementation(spec: &FunctionImplementationSpec) -> UdfRuntimeImplementation {
-    UdfRuntimeImplementation::CoralSql {
-        query: spec.coral_sql.query.clone(),
-    }
-}
-
-fn runtime_publish(spec: &FunctionSpec) -> UdfRuntimePublish {
-    UdfRuntimePublish {
-        table_function: UdfRuntimeTableFunctionPublish {
-            schema: spec.schema().to_string(),
-            name: spec.name().to_string(),
-            description: String::new(),
-        },
-    }
-}
-
-fn needs_source_publish_target_check(spec: &FunctionSpec) -> bool {
-    spec.schema() != "functions"
-}
-
-fn record_sql_publish_target(
-    function: &UdfRuntimeDefinition,
-    publish_targets: &mut HashSet<SqlPublishTarget>,
-) -> Result<(), AppError> {
-    let target = SqlPublishTarget::new(
-        &function.publish.table_function.schema,
-        &function.publish.table_function.name,
-    );
-    if !publish_targets.insert(target.clone()) {
-        return Err(AppError::FailedPrecondition(format!(
-            "function publish target '{}' is installed more than once",
-            target.display_name()
-        )));
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct SqlPublishTarget {
-    schema: String,
-    name: String,
-}
-
-impl SqlPublishTarget {
-    fn new(schema: &str, name: &str) -> Self {
-        Self {
-            schema: schema.to_ascii_lowercase(),
-            name: name.to_ascii_lowercase(),
-        }
-    }
-
-    fn display_name(&self) -> String {
-        format!("{}.{}", self.schema, self.name)
-    }
 }
 
 #[cfg(test)]
