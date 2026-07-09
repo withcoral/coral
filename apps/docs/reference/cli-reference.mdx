@@ -92,14 +92,33 @@ up to date unless you pass `--force`.
 
 ```shellscript
 coral search-index rebuild
+coral search-index rebuild --provider observed-values
+coral search-index rebuild --provider all
 coral search-index rebuild --force
 ```
 
 #### Options
 
-| Option    | Type | Default | Description                                                    |
-| --------- | ---- | ------- | -------------------------------------------------------------- |
-| `--force` | flag | `false` | Rebuild even when the stored projection fingerprint is current |
+| Option       | Type | Default   | Description                                                   |
+| ------------ | ---- | --------- | ------------------------------------------------------------- |
+| `--provider` | enum | `catalog` | Search index provider to rebuild: `catalog`, `observed-values`, or `all` |
+| `--force`    | flag | `false`   | Rebuild even when the stored projection fingerprint is current |
+
+### `coral search-index drain`
+
+Drain pending observed-value writes into the local search projection so those
+values can be returned by search.
+
+```shellscript
+coral search-index drain
+coral search-index drain --budget-ms 2500
+```
+
+#### Options
+
+| Option        | Type    | Default | Description                                      |
+| ------------- | ------- | ------- | ------------------------------------------------ |
+| `--budget-ms` | integer | `0`     | Per-request drain budget. `0` uses the server default; values above 60000 are rejected |
 
 ### `coral search-index clear`
 
@@ -108,20 +127,20 @@ Clear Coral's local search data for one workspace.
 Clear deletes local search data, so Coral requires both `--yes` and an explicit
 `--workspace NAME`.
 
-`all` is currently the only supported scope. It clears all local search data
-for the selected workspace.
-
 ```shellscript
 coral search-index clear --scope all --workspace work --yes
+coral search-index clear --scope observed --workspace work --yes
+coral search-index clear --scope observed --source github --workspace work --yes
 ```
 
 #### Options
 
-| Option                    | Type   | Default  | Description                               |
-| ------------------------- | ------ | -------- | ----------------------------------------- |
-| `--scope <SCOPE>`         | enum   | required | Scope to clear. Supported value: `all`    |
-| global `--workspace NAME` | string | required | Workspace whose search data will be cleared |
-| `--yes`                   | flag   | required | Confirm destructive search-data deletion  |
+| Option                    | Type   | Default  | Description                                    |
+| ------------------------- | ------ | -------- | ---------------------------------------------- |
+| `--scope`                 | enum   | required | Search data scope to clear: `all` or `observed` |
+| `--source`                | string | unset    | Clear observed-value data for one source       |
+| global `--workspace NAME` | string | required | Workspace whose search data will be cleared    |
+| `--yes`                   | flag   | required | Confirm destructive search-data deletion       |
 
 ## `coral source`
 
