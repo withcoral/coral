@@ -39,7 +39,9 @@ url_env = "CORAL_DATABASE_URL"
 export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?sslmode=verify-full"
 ```
 
-Remote Postgres URLs must set `sslmode=verify-full` so Coral verifies the server identity. Loopback and local-socket Postgres URLs may omit TLS for local development.
+<Note>
+  Remote Postgres URLs must set `sslmode=verify-full` so Coral verifies the server identity. Loopback and local-socket Postgres URLs may omit TLS for local development.
+</Note>
 
 ## Workspaces
 
