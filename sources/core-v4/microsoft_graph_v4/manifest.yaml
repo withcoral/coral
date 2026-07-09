@@ -1,4 +1,4 @@
-name: microsoft_graph
+name: microsoft_graph_v4
 dsl_version: 4
 description: >-
   Preview Microsoft Graph source generated from the full v1.0 Microsoft Graph
@@ -62,3 +62,10 @@ surfaces:
         - name: Authorization
           from: template
           template: Bearer {{input.MS_GRAPH_ACCESS_TOKEN}}
+    request_headers:
+      - name: User-Agent
+        from: literal
+        value: coral-dsl-v4
+
+test_queries:
+  - SELECT displayname, userprincipalname FROM microsoft_graph_v4.me_user_me_user_getuser LIMIT 1

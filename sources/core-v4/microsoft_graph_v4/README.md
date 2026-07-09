@@ -8,7 +8,7 @@ tables and table functions.
 
 ## Status
 
-This is a preview community source. The full Microsoft Graph `OpenAPI`
+This is a preview DSL v4 source. The full Microsoft Graph `OpenAPI`
 descriptor is about 38 MB and produces a large generated catalog, so `source
 add` can take longer than curated sources.
 
@@ -31,7 +31,7 @@ are not the target path for this source.
 Use Coral's interactive OAuth flow to connect Microsoft Graph:
 
 ```bash
-coral source add --interactive --file sources/community/microsoft_graph/manifest.yaml
+coral source add --interactive --file sources/core-v4/microsoft_graph_v4/manifest.yaml
 ```
 
 During setup:
@@ -73,7 +73,7 @@ approval.
 Verify the connection:
 
 ```bash
-coral source test microsoft_graph
+coral source test microsoft_graph_v4
 ```
 
 ## Example queries
@@ -83,7 +83,7 @@ List chats visible to the signed-in user:
 ```sql
 WITH chats AS (
   SELECT unnest(json_get_array(value)) AS chat
-  FROM microsoft_graph.me_chat_me_listchats
+  FROM microsoft_graph_v4.me_chat_me_listchats
   WHERE top = 20
 )
 SELECT
@@ -101,7 +101,7 @@ List recent messages from one chat:
 ```sql
 WITH raw AS (
   SELECT unnest(json_get_array(value)) AS msg
-  FROM microsoft_graph.chats_chatmessage_chats_listmessages(
+  FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
     chat_id => '19:example@thread.v2',
     top => 50
   )
@@ -124,7 +124,7 @@ List joined Teams:
 ```sql
 WITH teams AS (
   SELECT unnest(json_get_array(value)) AS team
-  FROM microsoft_graph.me_team_me_listjoinedteams
+  FROM microsoft_graph_v4.me_team_me_listjoinedteams
 )
 SELECT
   json_get_str(team, 'id') AS id,
@@ -139,7 +139,7 @@ Inspect OneDrive/SharePoint drives visible through `/me`:
 ```sql
 WITH drives AS (
   SELECT unnest(json_get_array(value)) AS drive
-  FROM microsoft_graph.me_drive_me_listdrives
+  FROM microsoft_graph_v4.me_drive_me_listdrives
 )
 SELECT
   json_get_str(drive, 'id') AS id,
@@ -155,7 +155,7 @@ Find generated Teams/SharePoint table names:
 ```sql
 SELECT table_name, description
 FROM coral.tables
-WHERE schema_name = 'microsoft_graph'
+WHERE schema_name = 'microsoft_graph_v4'
   AND (
     table_name LIKE '%chat%'
     OR table_name LIKE '%team%'
