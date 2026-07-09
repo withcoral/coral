@@ -1,5 +1,6 @@
 //! `SQLite` observed-values projection, drainage, and retrieval.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use rusqlite::types::Type;
@@ -217,6 +218,49 @@ pub(crate) fn search_observed_values(
         });
     }
 
+    let (short_terms, fts_terms): (Vec<_>, Vec<_>) =
+        terms.iter().partition(|term| is_short_trigram_term(term));
+    let mut hits = Vec::new();
+    let mut retrieval_limited = false;
+
+    if !fts_terms.is_empty() {
+        let fts_terms = fts_terms.into_iter().cloned().collect::<Vec<_>>();
+        let mut fts_hits =
+            search_observed_values_fts(connection, workspace_name, &fts_terms, probe_limit(limit))?;
+        retrieval_limited |= truncate_probe_hits(&mut fts_hits, limit);
+        hits.extend(fts_hits);
+    }
+
+    if !short_terms.is_empty() {
+        let short_terms = short_terms
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let mut short_hits = search_observed_values_short_terms(
+            connection,
+            workspace_name,
+            &short_terms,
+            probe_limit(limit),
+        )?;
+        retrieval_limited |= truncate_probe_hits(&mut short_hits, limit);
+        hits.extend(short_hits);
+    }
+
+    deduplicate_observed_hits(&mut hits);
+    retrieval_limited |= truncate_probe_hits(&mut hits, limit);
+    Ok(ObservedValuesSearchHits {
+        hits,
+        value_count,
+        retrieval_limited,
+    })
+}
+
+fn search_observed_values_fts(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    terms: &[String],
+    limit: usize,
+) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
     let match_query = fts_match_query(terms);
     let mut statement = connection.prepare(
         "
@@ -254,17 +298,65 @@ pub(crate) fn search_observed_values(
         params![
             workspace_name.as_str(),
             match_query,
-            i64::try_from(probe_limit(limit)).unwrap_or(i64::MAX),
+            i64::try_from(limit).unwrap_or(i64::MAX),
         ],
         observed_search_hit_from_row,
     )?;
-    let mut hits = rows.collect::<Result<Vec<_>, _>>()?;
-    let retrieval_limited = truncate_probe_hits(&mut hits, limit);
-    Ok(ObservedValuesSearchHits {
-        hits,
-        value_count,
-        retrieval_limited,
-    })
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(SqliteSearchError::from)
+}
+
+fn search_observed_values_short_terms(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    terms: &[&str],
+    limit: usize,
+) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
+    let mut hits = Vec::new();
+    for term in terms {
+        let mut statement = connection.prepare(
+            "
+            SELECT
+                v.source_name,
+                v.source_scope_id,
+                v.surface_kind,
+                v.surface_name,
+                v.column_name,
+                v.value_key,
+                v.display_value,
+                v.last_observed_at,
+                v.observation_count
+            FROM observed_values v
+            WHERE v.workspace = ?1
+              AND (
+                v.search_text = ?2
+                OR v.value_key = ?2
+                OR lower(v.display_value) = ?2
+                OR v.source_name = ?2
+                OR v.surface_name = ?2
+                OR v.column_name = ?2
+                OR instr(v.search_text, ?2) > 0
+              )
+            ORDER BY v.last_observed_at DESC,
+                v.observation_count DESC,
+                v.source_name ASC,
+                v.surface_name ASC,
+                v.column_name ASC,
+                v.value_key ASC
+            LIMIT ?3
+            ",
+        )?;
+        let rows = statement.query_map(
+            params![
+                workspace_name.as_str(),
+                term,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+            ],
+            observed_search_hit_from_row,
+        )?;
+        hits.extend(rows.collect::<Result<Vec<_>, _>>()?);
+    }
+    Ok(hits)
 }
 
 fn drain_one_observed_job(
@@ -666,6 +758,24 @@ fn fts_match_query(terms: &[String]) -> String {
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+fn is_short_trigram_term(term: &str) -> bool {
+    term.chars().count() < 3
+}
+
+fn deduplicate_observed_hits(hits: &mut Vec<ObservedValuesSearchHit>) {
+    let mut seen = HashSet::new();
+    hits.retain(|hit| {
+        seen.insert((
+            hit.source_name.clone(),
+            hit.source_scope_id.clone(),
+            hit.surface_kind.as_str(),
+            hit.surface_name.clone(),
+            hit.column_name.clone(),
+            hit.value_key.clone(),
+        ))
+    });
 }
 
 fn probe_limit(limit: usize) -> usize {

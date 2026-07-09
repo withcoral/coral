@@ -387,6 +387,7 @@ fn pending_queue_job_id(
               AND surface_name = ?6
               AND workspace_generation = ?7
               AND source_generation = ?8
+              AND attempts < ?9
             ",
             params![
                 workspace_name.as_str(),
@@ -397,6 +398,7 @@ fn pending_queue_job_id(
                 &job.surface_name,
                 epoch.workspace_generation,
                 epoch.source_generation,
+                MAX_OBSERVED_QUEUE_JOB_ATTEMPTS,
             ],
             |row| row.get(0),
         )
@@ -877,6 +879,37 @@ mod tests {
     }
 
     #[test]
+    fn search_finds_short_observed_values_without_trigram_match() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("scope", "issues", "OK"),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+
+        let hits = store
+            .search(&workspace, &[String::from("ok")], 10)
+            .expect("short search observed values");
+
+        assert_eq!(hits.value_count, 1);
+        assert_eq!(hits.hits.len(), 1);
+        let hit = hits.hits.first().expect("observed hit");
+        assert_eq!(hit.display_value, "OK");
+    }
+
+    #[test]
     fn drain_queue_keeps_failed_payload_for_retry() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -967,6 +1000,26 @@ mod tests {
                 .expect("second active enqueue"),
             ObservedValuesEnqueueResult::Enqueued { .. }
         ));
+        let result = store
+            .enqueue_if_current(&workspace, &job, generation)
+            .expect("revive dead-lettered poison job");
+
+        assert_eq!(result, ObservedValuesEnqueueResult::QueueFull);
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("active queue count"),
+            2
+        );
+        let attempts = store
+            .queue_attempts_and_errors(&workspace)
+            .expect("attempts after rejected revive");
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.0 == MAX_OBSERVED_QUEUE_JOB_ATTEMPTS),
+            "dead-lettered job should not be reset when active queue is full"
+        );
     }
 
     #[test]
