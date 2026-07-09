@@ -69,7 +69,7 @@ fn rows_match_current_migrations(rows: &[(i64, Vec<u8>, bool)]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use sea_query::{Alias, Expr, ExprTrait, Func, OnConflict, Query};
+    use sea_query::{Expr, ExprTrait, Func, OnConflict, Query, SelectStatement};
     use tempfile::tempdir;
 
     use super::{MIGRATOR, rows_match_current_migrations};
@@ -77,11 +77,6 @@ mod tests {
     use crate::state::AppStateLayout;
     use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources, Workspaces};
     use crate::state::db::{CoralDb, DatabaseConfig, DbError, DbSession, ResolvedDatabaseConfig};
-
-    #[derive(Debug, sqlx::FromRow)]
-    struct CountRow {
-        count: i64,
-    }
 
     #[test]
     fn current_migration_rows_must_match_versions_checksums_and_success() {
@@ -593,17 +588,15 @@ mod tests {
     where
         S: DbSession,
     {
-        let row: CountRow = session
-            .fetch_optional(
-                Query::select()
-                    .expr_as(Func::count(Expr::val(1)), Alias::new("count"))
-                    .from(Sources::Table)
-                    .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_id))
-                    .to_owned(),
-            )
-            .await?
-            .expect("count row");
-        Ok(row.count)
+        fetch_count(
+            session,
+            Query::select()
+                .expr(Func::count(Expr::val(1)))
+                .from(Sources::Table)
+                .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_id))
+                .to_owned(),
+        )
+        .await
     }
 
     async fn source_variable_count<S>(
@@ -614,18 +607,16 @@ mod tests {
     where
         S: DbSession,
     {
-        let row: CountRow = session
-            .fetch_optional(
-                Query::select()
-                    .expr_as(Func::count(Expr::val(1)), Alias::new("count"))
-                    .from(SourceVariables::Table)
-                    .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_id))
-                    .and_where(Expr::col(SourceVariables::SourceName).eq(source_name))
-                    .to_owned(),
-            )
-            .await?
-            .expect("count row");
-        Ok(row.count)
+        fetch_count(
+            session,
+            Query::select()
+                .expr(Func::count(Expr::val(1)))
+                .from(SourceVariables::Table)
+                .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_id))
+                .and_where(Expr::col(SourceVariables::SourceName).eq(source_name))
+                .to_owned(),
+        )
+        .await
     }
 
     async fn source_secret_key_count<S>(
@@ -636,18 +627,28 @@ mod tests {
     where
         S: DbSession,
     {
-        let row: CountRow = session
-            .fetch_optional(
-                Query::select()
-                    .expr_as(Func::count(Expr::val(1)), Alias::new("count"))
-                    .from(SourceSecretKeys::Table)
-                    .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_id))
-                    .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name))
-                    .to_owned(),
-            )
+        fetch_count(
+            session,
+            Query::select()
+                .expr(Func::count(Expr::val(1)))
+                .from(SourceSecretKeys::Table)
+                .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_id))
+                .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name))
+                .to_owned(),
+        )
+        .await
+    }
+
+    async fn fetch_count<S>(session: &mut S, statement: SelectStatement) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        Ok(session
+            .fetch_all_scalars::<i64>(statement)
             .await?
-            .expect("count row");
-        Ok(row.count)
+            .into_iter()
+            .next()
+            .expect("count row"))
     }
 
     fn postgres_test_url() -> Option<String> {
