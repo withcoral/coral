@@ -791,9 +791,7 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, ResolvedDatabaseConfig, cutover_legacy_config,
-    };
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
 
     struct QueryManagerFixture {
         _temp: TempDir,
@@ -841,9 +839,9 @@ mod tests {
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        cutover_legacy_config(&db, config_store)
+        run_state_migrations(&db, config_store)
             .await
-            .expect("cut over legacy config");
+            .expect("run state migrations");
         Arc::new(db)
     }
 

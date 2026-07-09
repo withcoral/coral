@@ -54,7 +54,7 @@ use crate::search::manager::SearchManager;
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, cutover_legacy_config};
+use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
@@ -256,7 +256,7 @@ impl ServerBuilder {
         layout.ensure()?;
         let coral_db = init_database(&layout).await?;
         let config_store = ConfigStore::new(layout.clone());
-        cutover_legacy_config(&coral_db, &config_store).await?;
+        run_state_migrations(&coral_db, &config_store).await?;
         let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
@@ -744,9 +744,7 @@ mod tests {
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, ResolvedDatabaseConfig, cutover_legacy_config,
-    };
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
@@ -780,9 +778,9 @@ enabled = false
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        cutover_legacy_config(&db, config_store)
+        run_state_migrations(&db, config_store)
             .await
-            .expect("cut over legacy config");
+            .expect("run state migrations");
         Arc::new(db)
     }
 

@@ -9,23 +9,31 @@ use crate::workspaces::WorkspaceRecord;
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LegacyConfigCutoverReport {
+pub(crate) struct WorkspaceCatalogCutoverReport {
     pub(crate) workspace_count: usize,
     pub(crate) cutover_performed: bool,
 }
 
-pub(crate) async fn cutover_legacy_config(
+pub(crate) async fn run_state_migrations(
     db: &CoralDb,
     config_store: &ConfigStore,
-) -> Result<LegacyConfigCutoverReport, AppError> {
-    cutover_legacy_config_at(db, config_store, now_unix_nanos_i64()?).await
+) -> Result<(), AppError> {
+    cutover_legacy_workspace_catalog(db, config_store).await?;
+    Ok(())
 }
 
-async fn cutover_legacy_config_at(
+async fn cutover_legacy_workspace_catalog(
+    db: &CoralDb,
+    config_store: &ConfigStore,
+) -> Result<WorkspaceCatalogCutoverReport, AppError> {
+    cutover_legacy_workspace_catalog_at(db, config_store, now_unix_nanos_i64()?).await
+}
+
+async fn cutover_legacy_workspace_catalog_at(
     db: &CoralDb,
     config_store: &ConfigStore,
     now_unix_nanos: i64,
-) -> Result<LegacyConfigCutoverReport, AppError> {
+) -> Result<WorkspaceCatalogCutoverReport, AppError> {
     let _state_lock = config_store.state_lock_exclusive()?;
     let mut session = db;
     if session
@@ -33,13 +41,15 @@ async fn cutover_legacy_config_at(
         .has_completed(WORKSPACE_CATALOG_CUTOVER_ID)
         .await?
     {
-        return Ok(LegacyConfigCutoverReport {
+        return Ok(WorkspaceCatalogCutoverReport {
             workspace_count: session.workspaces().list().await?.len(),
             cutover_performed: false,
         });
     }
 
-    let workspaces = config_store.load_config_unlocked()?.workspaces();
+    let workspaces = config_store
+        .load_config_unlocked()?
+        .legacy_workspace_records();
     let workspace_count = workspaces.len();
 
     let mut tx = db.begin().await?;
@@ -51,7 +61,7 @@ async fn cutover_legacy_config_at(
         .await?;
     tx.commit().await?;
 
-    Ok(LegacyConfigCutoverReport {
+    Ok(WorkspaceCatalogCutoverReport {
         workspace_count,
         cutover_performed: true,
     })
@@ -105,8 +115,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        LegacyConfigCutoverReport, WORKSPACE_CATALOG_CUTOVER_ID, cutover_legacy_config,
-        cutover_legacy_config_at,
+        WORKSPACE_CATALOG_CUTOVER_ID, WorkspaceCatalogCutoverReport,
+        cutover_legacy_workspace_catalog, cutover_legacy_workspace_catalog_at,
     };
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
@@ -121,17 +131,17 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let analytics_workspace = WorkspaceName::parse("analytics").expect("workspace");
         config_store
-            .create_workspace(&analytics_workspace)
-            .expect("create workspace");
+            .create_legacy_workspace_entry_for_tests(&analytics_workspace)
+            .expect("create legacy workspace entry");
         let db = open_sqlite(&layout).await;
 
-        let report = cutover_legacy_config_at(&db, &config_store, 11)
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
             .await
-            .expect("cut over legacy config");
+            .expect("cut over legacy workspace catalog");
 
         assert_eq!(
             report,
-            LegacyConfigCutoverReport {
+            WorkspaceCatalogCutoverReport {
                 workspace_count: 2,
                 cutover_performed: true
             }
@@ -168,8 +178,8 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let analytics_workspace = WorkspaceName::parse("analytics").expect("workspace");
         config_store
-            .create_workspace(&analytics_workspace)
-            .expect("create workspace");
+            .create_legacy_workspace_entry_for_tests(&analytics_workspace)
+            .expect("create legacy workspace entry");
         let db = open_sqlite(&layout).await;
         let mut tx = db.begin().await.expect("begin stale seed tx");
         tx.workspaces()
@@ -178,9 +188,9 @@ mod tests {
             .expect("seed stale workspace");
         tx.commit().await.expect("commit stale seed tx");
 
-        cutover_legacy_config_at(&db, &config_store, 11)
+        cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
             .await
-            .expect("cut over legacy config");
+            .expect("cut over legacy workspace catalog");
 
         let mut session = &db;
         assert_eq!(
@@ -207,18 +217,18 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
 
-        cutover_legacy_config_at(&db, &config_store, 11)
+        cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
             .await
             .expect("initial cutover");
         std::fs::write(layout.config_file(), "[[workspaces]\n").expect("corrupt config");
 
-        let report = cutover_legacy_config(&db, &config_store)
+        let report = cutover_legacy_workspace_catalog(&db, &config_store)
             .await
             .expect("marker should skip legacy config reload");
 
         assert_eq!(
             report,
-            LegacyConfigCutoverReport {
+            WorkspaceCatalogCutoverReport {
                 workspace_count: 1,
                 cutover_performed: false
             }

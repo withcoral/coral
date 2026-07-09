@@ -145,7 +145,8 @@ impl WorkspaceManager {
             tx.workspaces().delete(workspace_name.as_str()).await?;
             let deleted = {
                 let _lifecycle_guard = self.lifecycle_lock.lock();
-                self.config_store.delete_workspace(workspace_name)
+                self.config_store
+                    .remove_workspace_config_entries(workspace_name)
             };
             let deleted = match deleted {
                 Ok(deleted) => deleted.unwrap_or_else(|| DeletedWorkspace {
@@ -158,7 +159,7 @@ impl WorkspaceManager {
                     if let Err(rollback_error) = tx.rollback().await {
                         warn!(
                             workspace = %workspace_name,
-                            "legacy config workspace delete failed, and database rollback also failed: {rollback_error}"
+                            "workspace config cleanup failed, and database rollback also failed: {rollback_error}"
                         );
                     }
                     return Err(error);

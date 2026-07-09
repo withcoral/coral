@@ -169,8 +169,8 @@ tables:
 ";
 
     config_store
-        .create_workspace(&workspace_name)
-        .expect("create workspace");
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
     install_imported_source(
         &layout,
         &config_store,
@@ -200,8 +200,8 @@ fn loader_fails_when_installed_manifest_cannot_be_read() {
     let source_name = SourceName::parse("missing").expect("source");
 
     config_store
-        .create_workspace(&workspace_name)
-        .expect("create workspace");
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
     config_store
         .upsert_source(
             &workspace_name,
@@ -236,8 +236,8 @@ fn loader_fails_when_v4_source_missing_materialization() {
     let stale_v4_source = SourceName::parse("stale_v4").expect("source");
 
     config_store
-        .create_workspace(&workspace_name)
-        .expect("create workspace");
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
     install_imported_source(
         &layout,
         &config_store,

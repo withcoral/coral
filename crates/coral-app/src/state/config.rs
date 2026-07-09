@@ -35,22 +35,8 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub(crate) fn workspaces(&self) -> Vec<WorkspaceRecord> {
+    pub(crate) fn legacy_workspace_records(&self) -> Vec<WorkspaceRecord> {
         self.workspaces.list()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_workspace(&self, workspace_name: &WorkspaceName) -> bool {
-        self.workspaces.contains(workspace_name)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn require_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
-        if self.has_workspace(workspace_name) {
-            Ok(())
-        } else {
-            Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
-        }
     }
 
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
@@ -251,11 +237,6 @@ impl WorkspaceCatalog {
             .cloned()
             .map(|name| WorkspaceRecord { name })
             .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn contains(&self, workspace_name: &WorkspaceName) -> bool {
-        self.0.contains(workspace_name)
     }
 
     pub(crate) fn insert(&mut self, workspace_name: WorkspaceName) -> bool {
@@ -519,7 +500,7 @@ impl ConfigStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn create_workspace(
+    pub(crate) fn create_legacy_workspace_entry_for_tests(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
@@ -534,7 +515,7 @@ impl ConfigStore {
         })
     }
 
-    pub(crate) fn delete_workspace(
+    pub(crate) fn remove_workspace_config_entries(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Option<DeletedWorkspace>, AppError> {
@@ -1053,33 +1034,9 @@ mod tests {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    fn assert_workspace_not_found<T>(result: Result<T, AppError>, workspace_name: &WorkspaceName) {
-        match result {
-            Err(AppError::WorkspaceNotFound(actual)) => {
-                assert_eq!(actual, workspace_name.as_str());
-            }
-            Ok(_) => panic!("expected WorkspaceNotFound for '{workspace_name}'"),
-            Err(error) => panic!("expected WorkspaceNotFound for '{workspace_name}', got {error}"),
-        }
-    }
-
     #[test]
     fn default_config_uses_canonical_version() {
         assert_eq!(AppConfig::default().version, 1);
-    }
-
-    #[test]
-    fn require_workspace_rejects_missing_workspace() {
-        let config = AppConfig::default();
-        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
-
-        config
-            .require_workspace(&default_workspace())
-            .expect("default workspace should exist");
-        assert_workspace_not_found(
-            config.require_workspace(&missing_workspace),
-            &missing_workspace,
-        );
     }
 
     #[test]
@@ -1122,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_empty_workspace_tables() {
+    fn loads_legacy_empty_workspace_tables() {
         let raw = r"
 version = 1
 
@@ -1136,7 +1093,7 @@ version = 1
         )
         .expect("config");
         let names = config
-            .workspaces()
+            .legacy_workspace_records()
             .into_iter()
             .map(|workspace| workspace.name.as_str().to_string())
             .collect::<Vec<_>>();
@@ -1233,22 +1190,22 @@ origin = "bundled"
     }
 
     #[test]
-    fn delete_workspace_returns_removed_sources() {
+    fn remove_workspace_config_entries_returns_removed_sources() {
         let temp = TempDir::new().expect("temp dir");
         let store = ConfigStore::new(test_layout(&temp));
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
 
         store
-            .create_workspace(&workspace_name)
-            .expect("create workspace");
+            .create_legacy_workspace_entry_for_tests(&workspace_name)
+            .expect("create legacy workspace entry");
         store
             .upsert_source(&workspace_name, installed_source("github"))
             .expect("upsert source");
 
         let deleted = store
-            .delete_workspace(&workspace_name)
-            .expect("delete workspace")
-            .expect("workspace should be deleted");
+            .remove_workspace_config_entries(&workspace_name)
+            .expect("remove workspace config entries")
+            .expect("workspace config should be removed");
 
         assert_eq!(deleted.workspace.name, workspace_name);
         assert_eq!(deleted.sources.len(), 1);
