@@ -9,7 +9,10 @@
 use std::fs;
 
 use coral_api::v1::ListSourcesRequest;
-use coral_client::{AppClient, default_workspace, local::ServerBuilder};
+use coral_client::{
+    AppClient, default_workspace,
+    local::{LocalServerError, ServerBuilder},
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
@@ -46,7 +49,7 @@ async fn server_lifecycle_can_repeat_within_process() {
 }
 
 #[tokio::test]
-async fn server_lifecycle_continues_when_shadow_postgres_config_lacks_url_env_value() {
+async fn server_lifecycle_rejects_postgres_config_without_url_env_value() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     let missing_url_env = format!(
@@ -63,27 +66,25 @@ async fn server_lifecycle_continues_when_shadow_postgres_config_lacks_url_env_va
     )
     .expect("write config");
 
-    let server = ServerBuilder::new()
+    let result = ServerBuilder::new()
         .with_config_dir(&config_dir)
         .start()
-        .await
-        .expect("shadow database config failure should not abort legacy-backed startup");
-    let app = AppClient::connect(server.endpoint_uri())
-        .await
-        .expect("connect client");
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(server) => {
+            server.shutdown().await.expect("shutdown unexpected server");
+            panic!("server start should fail without configured Postgres URL env var");
+        }
+    };
 
-    let sources = app
-        .source_client()
-        .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await
-        .expect("list sources")
-        .into_inner()
-        .sources;
-    assert!(sources.is_empty());
-
-    server.shutdown().await.expect("shutdown server");
+    match error {
+        LocalServerError::FailedPrecondition(detail) => assert!(
+            detail.contains(&missing_url_env),
+            "unexpected detail: {detail}"
+        ),
+        other => panic!("unexpected error: {other}"),
+    }
 }
 
 async fn assert_default_sqlite_db_is_migrated(config_dir: &std::path::Path) {

@@ -48,7 +48,7 @@ use crate::transport::{
     grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
 };
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceManager, WorkspaceName};
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio_stream::Stream;
@@ -58,13 +58,19 @@ use tokio_stream::StreamExt as _;
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
+    workspaces: WorkspaceManager,
 }
 
 impl SourceService {
-    pub(crate) fn new(source_manager: SourceManager, query_manager: QueryManager) -> Self {
+    pub(crate) fn new(
+        source_manager: SourceManager,
+        query_manager: QueryManager,
+        workspace_manager: WorkspaceManager,
+    ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
+            workspaces: workspace_manager,
         }
     }
 }
@@ -80,9 +86,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let sources = sources
                 .discover_sources(&workspace_name)
                 .map_err(app_status)?
@@ -100,9 +108,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<ListSourcesResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let sources: Vec<_> = sources
                 .list_workspace_sources(&workspace_name)
                 .map_err(app_status)?
@@ -120,9 +130,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<GetSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
                 .get_source(&workspace_name, &source_name)
@@ -140,9 +152,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
                 .get_source_info(&workspace_name, &source_name)
@@ -160,9 +174,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
@@ -189,9 +205,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             let command = CreateBundledSourceWithOAuthCommand {
                 name: SourceName::parse(&request.name).map_err(app_status)?,
@@ -230,9 +248,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
                 let command = ImportSourceCommand {
@@ -282,9 +302,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<DeleteSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             run_blocking_source_operation(move || {
                 sources.delete_source(&workspace_name, &source_name)
@@ -301,9 +323,11 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<ValidateSourceResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let result = queries
                 .validate_source(&workspace_name, &source_name)
@@ -319,6 +343,16 @@ impl SourceServiceApi for SourceService {
         })
         .await
     }
+}
+
+async fn require_workspace(
+    workspaces: &WorkspaceManager,
+    workspace_name: &WorkspaceName,
+) -> Result<(), Status> {
+    workspaces
+        .require_workspace(workspace_name)
+        .await
+        .map_err(app_status)
 }
 
 type CreateBundledSourceWithOAuthResponseStreamBox =

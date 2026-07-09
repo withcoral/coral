@@ -36,7 +36,6 @@ use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
 use tower::{Layer, Service};
-use tracing::warn;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
@@ -55,7 +54,7 @@ use crate::search::manager::SearchManager;
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, import_legacy_config};
+use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, cutover_legacy_config};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
@@ -255,6 +254,10 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
+        let coral_db = init_database(&layout).await?;
+        let config_store = ConfigStore::new(layout.clone());
+        cutover_legacy_config(&coral_db, &config_store).await?;
+        let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -271,8 +274,6 @@ impl ServerBuilder {
             .then_some(installed_trace_store)
             .flatten();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let config_store = ConfigStore::new(layout.clone());
-        run_shadow_legacy_config_import(&layout, &config_store).await;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -290,6 +291,7 @@ impl ServerBuilder {
             layout.clone(),
             active_trace_store_dir.clone(),
             workspace_lifecycle_lock,
+            Arc::clone(&coral_db),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -302,12 +304,13 @@ impl ServerBuilder {
 
         let query_manager = QueryManager::new(
             config_store.clone(),
+            workspace_manager.clone(),
             credential_manager,
             query_runtime_context,
             layout.clone(),
             self.config.engine_extensions_providers,
         );
-        let search_manager = SearchManager::new(layout, config_store);
+        let search_manager = SearchManager::new(layout, config_store, workspace_manager.clone());
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {
@@ -328,23 +331,6 @@ impl ServerBuilder {
         )
         .await
     }
-}
-
-async fn run_shadow_legacy_config_import(layout: &AppStateLayout, config_store: &ConfigStore) {
-    if let Err(error) = run_shadow_legacy_config_import_inner(layout, config_store).await {
-        warn!(
-            "workspace database shadow import failed; continuing with legacy config as the source of truth: {error}"
-        );
-    }
-}
-
-async fn run_shadow_legacy_config_import_inner(
-    layout: &AppStateLayout,
-    config_store: &ConfigStore,
-) -> Result<(), AppError> {
-    let coral_db = init_database(layout).await?;
-    import_legacy_config(&coral_db, config_store).await?;
-    Ok(())
 }
 
 async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
@@ -482,7 +468,7 @@ async fn start_server(
         search,
         feedback,
     } = managers;
-    let source_service = SourceService::new(source, query.clone());
+    let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
@@ -758,6 +744,9 @@ mod tests {
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, ResolvedDatabaseConfig, cutover_legacy_config,
+    };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
@@ -780,6 +769,21 @@ enabled = false
 ",
         )
         .expect("write telemetry config");
+    }
+
+    async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        cutover_legacy_config(&db, config_store)
+            .await
+            .expect("cut over legacy config");
+        Arc::new(db)
     }
 
     #[tokio::test]
@@ -812,7 +816,7 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn shadow_database_import_failure_does_not_abort_legacy_startup() {
+    async fn database_config_failure_aborts_startup_after_cutover() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         std::fs::create_dir_all(&config_dir).expect("create config dir");
@@ -830,13 +834,15 @@ backend = "unsupported"
         )
         .expect("write config");
 
-        let server = ServerBuilder::new()
+        let result = ServerBuilder::new()
             .with_config_dir(config_dir)
             .start()
-            .await
-            .expect("shadow database import failure should not abort startup");
+            .await;
 
-        server.shutdown().await.expect("shutdown");
+        assert!(
+            result.is_err(),
+            "unsupported database config should abort startup after database cutover"
+        );
     }
     #[tokio::test]
     async fn trace_service_lists_empty_store() {
@@ -847,6 +853,7 @@ backend = "unsupported"
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -858,15 +865,18 @@ backend = "unsupported"
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),
+            workspace_manager.clone(),
             credential_manager,
             QueryRuntimeContext::default(),
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager =
+            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
@@ -1239,6 +1249,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1250,9 +1261,11 @@ tables:
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),
+            workspace_manager.clone(),
             credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
@@ -1261,7 +1274,8 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager =
+            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1352,6 +1366,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1363,15 +1378,18 @@ tables:
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),
+            workspace_manager.clone(),
             credential_manager,
             QueryRuntimeContext::default(),
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager =
+            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1462,6 +1480,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout, &config_store).await;
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1473,15 +1492,18 @@ tables:
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let query_manager = QueryManager::new(
             config_store.clone(),
+            workspace_manager.clone(),
             credential_manager,
             QueryRuntimeContext::default(),
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager =
+            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
         let running = start_server(
             ServerManagers {
                 source: source_manager,

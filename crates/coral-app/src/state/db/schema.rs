@@ -6,3 +6,10 @@ pub(in crate::state::db) enum Workspaces {
     Id,
     CreatedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum AppStateMigrations {
+    Table,
+    Id,
+    CompletedAtUnixNanos,
+}

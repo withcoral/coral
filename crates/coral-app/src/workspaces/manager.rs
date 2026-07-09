@@ -5,52 +5,58 @@ use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::state::ConfigStore;
+use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
     DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspacePaths, WorkspaceRecord,
-    WorkspaceStore,
 };
 
 /// App-owned workspace lifecycle behavior.
 #[derive(Clone)]
 pub(crate) struct WorkspaceManager {
-    store: Arc<dyn WorkspaceStore>,
+    config_store: ConfigStore,
     credential_manager: CredentialManager,
     paths: Arc<dyn WorkspacePaths>,
     trace_store_dir: Option<PathBuf>,
     lifecycle_lock: WorkspaceLifecycleLock,
+    db: Arc<CoralDb>,
 }
 
 impl WorkspaceManager {
     #[cfg(test)]
     pub(crate) fn new_for_tests(
-        store: impl WorkspaceStore,
+        config_store: ConfigStore,
         credential_manager: CredentialManager,
         paths: impl WorkspacePaths,
         trace_store_dir: Option<PathBuf>,
+        db: Arc<CoralDb>,
     ) -> Self {
         Self::new(
-            store,
+            config_store,
             credential_manager,
             paths,
             trace_store_dir,
             WorkspaceLifecycleLock::default(),
+            db,
         )
     }
 
     pub(crate) fn new(
-        store: impl WorkspaceStore,
+        config_store: ConfigStore,
         credential_manager: CredentialManager,
         paths: impl WorkspacePaths,
         trace_store_dir: Option<PathBuf>,
         lifecycle_lock: WorkspaceLifecycleLock,
+        db: Arc<CoralDb>,
     ) -> Self {
         Self {
-            store: Arc::new(store),
+            config_store,
             credential_manager,
             paths: Arc::new(paths),
             trace_store_dir,
             lifecycle_lock,
+            db,
         }
     }
 
@@ -70,12 +76,50 @@ impl WorkspaceManager {
             .collect()
     }
 
-    pub(crate) fn create_workspace(
+    pub(crate) async fn require_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(), AppError> {
+        let mut session = self.db.as_ref();
+        if session
+            .workspaces()
+            .get(workspace_name.as_str())
+            .await?
+            .is_some()
+        {
+            Ok(())
+        } else {
+            Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
+        }
+    }
+
+    pub(crate) async fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
-        self.store.create_workspace(workspace_name)
+        let mut tx = self.db.begin().await?;
+        if tx
+            .workspaces()
+            .get(workspace_name.as_str())
+            .await?
+            .is_some()
+        {
+            return Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()));
+        }
+        if let Err(error) = tx
+            .workspaces()
+            .create(workspace_name.as_str(), now_unix_nanos_i64()?)
+            .await
+        {
+            if error.is_unique_violation() {
+                return Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()));
+            }
+            return Err(error.into());
+        }
+        tx.commit().await?;
+        Ok(WorkspaceRecord {
+            name: workspace_name.clone(),
+        })
     }
 
     pub(crate) async fn delete_workspace(
@@ -89,11 +133,38 @@ impl WorkspaceManager {
         }
 
         let (deleted, workspace_dir_backup) = {
-            let _lifecycle_guard = self.lifecycle_lock.lock();
-            let deleted = self
-                .store
-                .delete_workspace(workspace_name)?
-                .ok_or_else(|| AppError::WorkspaceNotFound(workspace_name.to_string()))?;
+            let mut tx = self.db.begin().await?;
+            if tx
+                .workspaces()
+                .get(workspace_name.as_str())
+                .await?
+                .is_none()
+            {
+                return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+            }
+            tx.workspaces().delete(workspace_name.as_str()).await?;
+            let deleted = {
+                let _lifecycle_guard = self.lifecycle_lock.lock();
+                self.config_store.delete_workspace(workspace_name)
+            };
+            let deleted = match deleted {
+                Ok(deleted) => deleted.unwrap_or_else(|| DeletedWorkspace {
+                    workspace: WorkspaceRecord {
+                        name: workspace_name.clone(),
+                    },
+                    sources: Vec::new(),
+                }),
+                Err(error) => {
+                    if let Err(rollback_error) = tx.rollback().await {
+                        warn!(
+                            workspace = %workspace_name,
+                            "legacy config workspace delete failed, and database rollback also failed: {rollback_error}"
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+            tx.commit().await?;
             self.remove_deleted_workspace_credentials(&deleted);
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
@@ -196,6 +267,7 @@ impl WorkspaceManager {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use tempfile::TempDir;
 
@@ -203,6 +275,7 @@ mod tests {
     use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
 
@@ -221,6 +294,18 @@ mod tests {
         }
     }
 
+    async fn test_db(layout: &AppStateLayout) -> Arc<CoralDb> {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        Arc::new(db)
+    }
+
     #[tokio::test]
     async fn delete_workspace_commits_config_then_cleans_artifacts() {
         let temp = TempDir::new().expect("temp dir");
@@ -228,18 +313,21 @@ mod tests {
         let store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
+        let db = test_db(&layout).await;
         let manager = WorkspaceManager::new_for_tests(
             store.clone(),
             credential_manager.clone(),
             layout.clone(),
             None,
+            Arc::clone(&db),
         );
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
         let source = installed_source("github");
         let credential_set_id = CredentialSetId::for_source(&source.name);
 
-        store
+        manager
             .create_workspace(&workspace_name)
+            .await
             .expect("create workspace");
         store
             .upsert_source(&workspace_name, source)
@@ -265,10 +353,12 @@ mod tests {
             .expect("delete workspace");
 
         assert_eq!(deleted.name, workspace_name);
-        assert!(matches!(
-            store.list_workspace_sources(&workspace_name),
-            Err(crate::bootstrap::AppError::WorkspaceNotFound(_))
-        ));
+        assert!(
+            store
+                .list_workspace_sources(&workspace_name)
+                .expect("list source definitions")
+                .is_empty()
+        );
         assert!(
             !layout.workspace_dir(&workspace_name).exists(),
             "workspace artifact directory should be removed after config commit"

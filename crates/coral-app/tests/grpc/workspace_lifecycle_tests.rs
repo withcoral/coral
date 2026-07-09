@@ -6,6 +6,7 @@ use coral_api::v1::{
 };
 use coral_client::default_workspace;
 use serde_json::json;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -62,6 +63,33 @@ async fn import_source_in_workspace(
         .expect("import source response")
 }
 
+async fn seed_stale_workspace_row(config_dir: &std::path::Path, workspace_name: &str) {
+    fs::create_dir_all(config_dir).expect("create config dir");
+    let options = SqliteConnectOptions::new()
+        .filename(config_dir.join("coral.db"))
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("open stale shadow db");
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT NOT NULL PRIMARY KEY,
+            created_at_unix_nanos BIGINT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create workspaces table");
+    sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES (?, ?)")
+        .bind(workspace_name)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("insert stale workspace row");
+    pool.close().await;
+}
+
 #[cfg(unix)]
 fn find_workspace_delete_backup(
     config_dir: &std::path::Path,
@@ -95,7 +123,18 @@ async fn lists_default_workspace_when_config_is_missing() {
 }
 
 #[tokio::test]
-async fn create_workspace_persists_empty_workspace_table() {
+async fn startup_cutover_removes_stale_shadow_workspace_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    seed_stale_workspace_row(&config_dir, "stale").await;
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+
+    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+}
+
+#[tokio::test]
+async fn create_workspace_persists_database_row_without_config_scaffolding() {
     let harness = GrpcHarness::new().await;
 
     let created = harness
@@ -114,8 +153,8 @@ async fn create_workspace_persists_empty_workspace_table() {
 
     let raw = fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(
-        raw.contains("[workspaces.work]"),
-        "created empty workspace should persist as an explicit table: {raw}"
+        !raw.contains("[workspaces.work]"),
+        "created empty workspace should not persist config scaffolding: {raw}"
     );
 
     let sources = harness
@@ -147,6 +186,62 @@ async fn list_workspaces_reads_database_after_config_becomes_invalid() {
 }
 
 #[tokio::test]
+async fn list_sources_uses_database_workspace_after_config_entry_is_missing() {
+    let harness = GrpcHarness::new().await;
+
+    harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("create workspace");
+    fs::write(
+        harness.config_dir().join("config.toml"),
+        "[credentials]\nstorage = \"file\"\n",
+    )
+    .expect("remove workspace compatibility entry");
+
+    let sources = harness
+        .source_client()
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("db workspace should authorize source catalog read")
+        .into_inner()
+        .sources;
+    assert!(sources.is_empty());
+}
+
+#[tokio::test]
+async fn create_duplicate_workspace_checks_database_not_config() {
+    let harness = GrpcHarness::new().await;
+
+    harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("create workspace");
+    fs::write(
+        harness.config_dir().join("config.toml"),
+        "[credentials]\nstorage = \"file\"\n",
+    )
+    .expect("remove workspace compatibility entry");
+
+    let error = harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect_err("duplicate workspace should be rejected from database state");
+    assert_eq!(error.code(), tonic::Code::AlreadyExists);
+}
+
+#[tokio::test]
 async fn create_duplicate_workspace_returns_already_exists() {
     let harness = GrpcHarness::new().await;
 
@@ -166,6 +261,26 @@ async fn create_duplicate_workspace_returns_already_exists() {
         .await
         .expect_err("duplicate workspace should fail");
     assert_eq!(error.code(), tonic::Code::AlreadyExists);
+}
+
+#[tokio::test]
+async fn delete_missing_workspace_checks_database_not_config() {
+    let harness = GrpcHarness::new().await;
+    fs::write(
+        harness.config_dir().join("config.toml"),
+        "[credentials]\nstorage = \"file\"\n\n[workspaces.ghost]\n",
+    )
+    .expect("write stale workspace compatibility entry");
+
+    let error = harness
+        .workspace_client()
+        .delete_workspace(Request::new(DeleteWorkspaceRequest {
+            workspace: Some(workspace("ghost")),
+        }))
+        .await
+        .expect_err("missing workspace should be rejected from database state");
+
+    assert_eq!(error.code(), tonic::Code::NotFound);
 }
 
 #[tokio::test]

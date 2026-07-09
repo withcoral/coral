@@ -54,6 +54,7 @@ impl SearchServiceApi for SearchService {
                 .map_err(search_status)?;
             let response = search
                 .search(&request, &attribution)
+                .await
                 .map_err(search_status)?;
             Ok(Response::new(search_response_to_proto(response)))
         })

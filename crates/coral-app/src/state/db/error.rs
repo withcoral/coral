@@ -15,3 +15,17 @@ pub(crate) enum DbError {
     #[error(transparent)]
     Migration(#[from] sqlx::migrate::MigrateError),
 }
+
+impl DbError {
+    pub(crate) fn is_unique_violation(&self) -> bool {
+        match self {
+            Self::Sqlx(sqlx::Error::Database(error)) => error.is_unique_violation(),
+            Self::Config(_)
+            | Self::MissingDatabaseParent(_)
+            | Self::Io(_)
+            | Self::TomlDecode(_)
+            | Self::Sqlx(_)
+            | Self::Migration(_) => false,
+        }
+    }
+}

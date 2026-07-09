@@ -61,7 +61,6 @@ impl CatalogSnapshotLoader {
         workspace_name: &WorkspaceName,
         config: &AppConfig,
     ) -> Result<CatalogInfo, AppError> {
-        config.require_workspace(workspace_name)?;
         let mut catalog = CatalogInfo {
             tables: Vec::new(),
             table_functions: Vec::new(),

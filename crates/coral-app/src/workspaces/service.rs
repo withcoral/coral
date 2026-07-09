@@ -56,6 +56,7 @@ impl WorkspaceServiceApi for WorkspaceService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let workspace = workspaces
                 .create_workspace(&workspace_name)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(CreateWorkspaceResponse {
                 workspace: Some(workspace_record_to_proto(&workspace)),

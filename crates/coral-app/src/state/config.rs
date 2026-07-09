@@ -13,7 +13,7 @@ use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
-use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, WorkspaceStore};
+use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppConfig {
@@ -39,10 +39,12 @@ impl AppConfig {
         self.workspaces.list()
     }
 
+    #[cfg(test)]
     pub(crate) fn has_workspace(&self, workspace_name: &WorkspaceName) -> bool {
         self.workspaces.contains(workspace_name)
     }
 
+    #[cfg(test)]
     pub(crate) fn require_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
         if self.has_workspace(workspace_name) {
             Ok(())
@@ -251,6 +253,7 @@ impl WorkspaceCatalog {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, workspace_name: &WorkspaceName) -> bool {
         self.0.contains(workspace_name)
     }
@@ -515,6 +518,7 @@ impl ConfigStore {
         self.update_config_unlocked(|config| Ok(update(&mut config.catalog)))
     }
 
+    #[cfg(test)]
     pub(crate) fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -564,7 +568,6 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
         let config = self.load_config()?;
-        config.require_workspace(workspace_name)?;
         Ok(config.workspace_sources(workspace_name))
     }
 
@@ -588,7 +591,6 @@ impl ConfigStore {
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
         let config = self.load_config()?;
-        config.require_workspace(workspace_name)?;
         config
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
@@ -612,7 +614,6 @@ impl ConfigStore {
         source: InstalledSource,
     ) -> Result<(), AppError> {
         self.update_config(|config| {
-            config.require_workspace(workspace_name)?;
             config.catalog.upsert_source(workspace_name, source);
             Ok(())
         })
@@ -638,26 +639,9 @@ impl ConfigStore {
         source_name: &SourceName,
     ) -> Result<(), AppError> {
         self.update_config(|config| {
-            config.require_workspace(workspace_name)?;
             config.catalog.remove_source(workspace_name, source_name);
             Ok(())
         })
-    }
-}
-
-impl WorkspaceStore for ConfigStore {
-    fn create_workspace(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<WorkspaceRecord, AppError> {
-        ConfigStore::create_workspace(self, workspace_name)
-    }
-
-    fn delete_workspace(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<Option<DeletedWorkspace>, AppError> {
-        ConfigStore::delete_workspace(self, workspace_name)
     }
 }
 
@@ -1213,28 +1197,39 @@ origin = "bundled"
     }
 
     #[test]
-    fn scoped_config_store_methods_reject_missing_workspace() {
+    fn scoped_config_store_source_methods_do_not_require_workspace() {
         let temp = TempDir::new().expect("temp dir");
         let store = ConfigStore::new(test_layout(&temp));
         let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
 
-        assert_workspace_not_found(
-            store.list_workspace_sources(&missing_workspace),
-            &missing_workspace,
+        assert!(
+            store
+                .list_workspace_sources(&missing_workspace)
+                .expect("list source definitions")
+                .is_empty()
         );
-        assert_workspace_not_found(
+        assert!(matches!(
             store.get_source(&missing_workspace, &source_name),
-            &missing_workspace,
+            Err(AppError::SourceNotFound(_))
+        ));
+        store
+            .upsert_source(&missing_workspace, installed_source("github"))
+            .expect("upsert source definition");
+        assert_eq!(
+            store
+                .get_source(&missing_workspace, &source_name)
+                .expect("get source definition")
+                .name,
+            source_name
         );
-        assert_workspace_not_found(
-            store.upsert_source(&missing_workspace, installed_source("github")),
-            &missing_workspace,
-        );
-        assert_workspace_not_found(
-            store.remove_source(&missing_workspace, &source_name),
-            &missing_workspace,
-        );
+        store
+            .remove_source(&missing_workspace, &source_name)
+            .expect("remove source definition");
+        assert!(matches!(
+            store.get_source(&missing_workspace, &source_name),
+            Err(AppError::SourceNotFound(_))
+        ));
     }
 
     #[test]
@@ -1258,9 +1253,11 @@ origin = "bundled"
         assert_eq!(deleted.workspace.name, workspace_name);
         assert_eq!(deleted.sources.len(), 1);
         assert_eq!(deleted.sources[0].name.as_str(), "github");
-        assert_workspace_not_found(
-            store.list_workspace_sources(&deleted.workspace.name),
-            &deleted.workspace.name,
+        assert!(
+            store
+                .list_workspace_sources(&deleted.workspace.name)
+                .expect("list source definitions")
+                .is_empty()
         );
     }
 

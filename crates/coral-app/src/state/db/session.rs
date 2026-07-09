@@ -6,6 +6,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
+use crate::state::db::repositories::state_migrations::StateMigrationsRepo;
 use crate::state::db::repositories::workspaces::WorkspacesRepo;
 
 pub(crate) trait DbSession {
@@ -27,6 +28,10 @@ pub(crate) trait DbSession {
 }
 
 pub(crate) trait DbRepos: DbSession + Sized {
+    fn state_migrations(&mut self) -> StateMigrationsRepo<'_, Self> {
+        StateMigrationsRepo::new(self)
+    }
+
     fn workspaces(&mut self) -> WorkspacesRepo<'_, Self> {
         WorkspacesRepo::new(self)
     }

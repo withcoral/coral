@@ -32,7 +32,7 @@ use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceManager, WorkspaceName};
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
@@ -61,6 +61,7 @@ struct LoadedQuerySource {
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
+    workspace_manager: Arc<WorkspaceManager>,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
@@ -70,6 +71,7 @@ pub(crate) struct QueryManager {
 impl QueryManager {
     pub(crate) fn new(
         config_store: ConfigStore,
+        workspace_manager: WorkspaceManager,
         credential_manager: CredentialManager,
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
@@ -77,6 +79,7 @@ impl QueryManager {
     ) -> Self {
         Self {
             config_store,
+            workspace_manager: Arc::new(workspace_manager),
             credential_manager,
             runtime_context,
             layout,
@@ -99,6 +102,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config_with_credential_mode(
@@ -133,6 +137,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config_with_credential_mode(
@@ -178,6 +183,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -206,6 +212,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -234,6 +241,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -255,6 +263,9 @@ impl QueryManager {
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
         let (source, loaded_source, version, config) = {
+            self.require_workspace(workspace_name)
+                .await
+                .map_err(QueryManagerError::App)?;
             let _state_lock = self
                 .config_store
                 .state_lock_shared()
@@ -262,9 +273,6 @@ impl QueryManager {
             let config = self
                 .config_store
                 .load_config_unlocked()
-                .map_err(QueryManagerError::App)?;
-            config
-                .require_workspace(workspace_name)
                 .map_err(QueryManagerError::App)?;
             let source = config
                 .get_source(workspace_name, source_name)
@@ -295,14 +303,21 @@ impl QueryManager {
         Ok(ValidatedSource { source, report })
     }
 
-    fn load_query_sources(
+    async fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<(Vec<LoadedQuerySource>, AppConfig), AppError> {
+        self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
         let sources = self.load_query_sources_from_config(workspace_name, &config)?;
         Ok((sources, config))
+    }
+
+    async fn require_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
+        self.workspace_manager
+            .require_workspace(workspace_name)
+            .await
     }
 
     fn load_query_sources_from_config(
@@ -317,7 +332,6 @@ impl QueryManager {
         );
         span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
         let _guard = span.enter();
-        config.require_workspace(workspace_name)?;
         let mut loaded_sources = Vec::new();
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
@@ -777,22 +791,37 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, ResolvedDatabaseConfig, cutover_legacy_config,
+    };
 
     struct QueryManagerFixture {
         _temp: TempDir,
         manager: QueryManager,
     }
 
-    fn query_manager_with(
+    async fn query_manager_with(
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> QueryManagerFixture {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout, &config_store).await;
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
         let manager = QueryManager::new(
-            ConfigStore::new(layout.clone()),
-            CredentialManager::new(CredentialStore::new(layout.clone())),
+            config_store,
+            workspace_manager,
+            credential_manager,
             runtime_context,
             layout,
             providers,
@@ -803,6 +832,21 @@ mod tests {
         }
     }
 
+    async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        cutover_legacy_config(&db, config_store)
+            .await
+            .expect("cut over legacy config");
+        Arc::new(db)
+    }
+
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
         match error {
             AppError::WorkspaceNotFound(actual) => assert_eq!(actual, workspace_name.as_str()),
@@ -810,19 +854,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn load_query_sources_fails_closed_for_missing_workspace() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+    #[tokio::test]
+    async fn load_query_sources_fails_closed_for_missing_workspace() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
 
         let error = fixture
             .manager
-            .load_query_sources_from_config(&missing_workspace, &config)
+            .load_query_sources(&missing_workspace)
+            .await
             .expect_err("missing workspace should fail closed");
 
         assert_workspace_not_found(error, &missing_workspace);
@@ -830,7 +870,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_source_fails_with_workspace_not_found_for_missing_workspace() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
 
@@ -934,12 +974,13 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json rows should decode")
     }
 
-    #[test]
-    fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
+    #[tokio::test]
+    async fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
         let fixture = query_manager_with(
             QueryRuntimeContext::default().with_body_capture_max_bytes(Some(42)),
             Vec::new(),
-        );
+        )
+        .await;
 
         let runtime = fixture
             .manager
@@ -953,9 +994,9 @@ mod tests {
         assert_eq!(config, 42);
     }
 
-    #[test]
-    fn load_query_source_passes_present_optional_secrets_to_runtime() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+    #[tokio::test]
+    async fn load_query_source_passes_present_optional_secrets_to_runtime() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("optional_auth").expect("source name");
@@ -1047,7 +1088,7 @@ tables:
             .mount(&server)
             .await;
 
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
         let source_manager = SourceManager::new_for_tests(
             fixture.manager.config_store.clone(),
@@ -1149,7 +1190,7 @@ surfaces:
             .mount(&server)
             .await;
 
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
         let source_manager = SourceManager::new_for_tests(
             fixture.manager.config_store.clone(),
@@ -1288,9 +1329,9 @@ pagination:
             .collect()
     }
 
-    #[test]
-    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+    #[tokio::test]
+    async fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
@@ -1331,6 +1372,7 @@ surfaces:
         let error = fixture
             .manager
             .load_query_sources(&workspace_name)
+            .await
             .expect_err("missing materialization should fail closed");
 
         assert!(
@@ -1342,13 +1384,14 @@ surfaces:
         );
     }
 
-    #[test]
-    fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
+    #[tokio::test]
+    async fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout, &config_store).await;
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("github").expect("source name");
         config_store
@@ -1368,15 +1411,25 @@ surfaces:
             layout.clone(),
             CredentialStoragePreference::Keychain,
         );
+        let credential_manager = CredentialManager::new(credential_store);
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
         let manager = QueryManager::new(
             config_store,
-            CredentialManager::new(credential_store),
+            workspace_manager,
+            credential_manager,
             QueryRuntimeContext::default(),
             layout,
             Vec::new(),
         );
         let error = manager
             .load_query_sources(&workspace_name)
+            .await
             .expect_err("unavailable keychain should fail closed");
 
         assert!(
@@ -1435,7 +1488,7 @@ surfaces:
 
     #[tokio::test]
     async fn runtime_input_resolver_uses_loaded_credential_snapshot() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("secured_messages").expect("source name");
@@ -1540,7 +1593,8 @@ tables:
                 calls: Arc::clone(&calls),
                 observed_token: Arc::clone(&observed_token),
             })],
-        );
+        )
+        .await;
         let source_spec = parse_source_manifest_yaml(
             r#"
 name: secured_messages
