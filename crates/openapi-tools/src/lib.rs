@@ -9,6 +9,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Duration;
 
 use serde_json::{Map, Value};
@@ -26,6 +27,9 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// User-Agent sent for HTTPS fetches.
 pub const USER_AGENT: &str = "openapi-tools";
+
+/// Maximum number of external documents fetched at the same time.
+pub const MAX_CONCURRENT_FETCHES: usize = 32;
 
 /// Errors returned by `OpenAPI` hydration.
 #[derive(Debug, Error)]
@@ -150,7 +154,7 @@ struct Resolver {
     root_uri: String,
     root_dir: Option<PathBuf>,
     client: reqwest::blocking::Client,
-    documents: HashMap<String, Document>,
+    document_cache: HashMap<String, Document>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -173,7 +177,7 @@ pub fn hydrate_openapi(input: &[u8], base_uri: &str) -> Result<Value, OpenApiToo
     let root = parse_document(input, &root_uri)?;
     let mut resolver = Resolver::new(root_uri.clone(), root_dir)?;
     resolver
-        .documents
+        .document_cache
         .insert(root_uri.clone(), Document { value: root });
     resolver.hydrate()
 }
@@ -219,7 +223,7 @@ impl Resolver {
             root_uri,
             root_dir,
             client: http_client()?,
-            documents: HashMap::new(),
+            document_cache: HashMap::new(),
         })
     }
 
@@ -229,7 +233,7 @@ impl Resolver {
         let mut seen_refs = BTreeSet::new();
 
         let root_value = &self
-            .documents
+            .document_cache
             .get(&self.root_uri)
             .expect("root document inserted before hydration")
             .value;
@@ -241,32 +245,44 @@ impl Resolver {
             &mut reachable_root_components,
         )?;
 
-        while let Some(target) = queue.pop_front() {
-            if !seen_refs.insert(target.clone()) {
-                continue;
+        while !queue.is_empty() {
+            let mut pending_targets = Vec::new();
+            let mut missing_doc_uris = BTreeSet::new();
+            while let Some(target) = queue.pop_front() {
+                if !seen_refs.insert(target.clone()) {
+                    continue;
+                }
+                if !self.document_cache.contains_key(&target.doc_uri) {
+                    missing_doc_uris.insert(target.doc_uri.clone());
+                }
+                pending_targets.push(target);
             }
-            self.ensure_document(&target.doc_uri)?;
-            let value = self
-                .documents
-                .get(&target.doc_uri)
-                .and_then(|doc| pointer_target(&doc.value, &target.fragment))
-                .ok_or_else(|| OpenApiToolsError::UnresolvedRefTarget {
-                    base: target.doc_uri.clone(),
-                    reference: format!("{}#{}", target.doc_uri, target.fragment),
-                })?
-                .clone();
-            collect_refs_in_value(
-                &value,
-                &target.doc_uri,
-                &self.root_uri,
-                &mut queue,
-                &mut reachable_root_components,
-            )?;
+
+            self.load_missing_documents(missing_doc_uris)?;
+
+            for target in pending_targets {
+                let value = self
+                    .document_cache
+                    .get(&target.doc_uri)
+                    .and_then(|doc| pointer_target(&doc.value, &target.fragment))
+                    .ok_or_else(|| OpenApiToolsError::UnresolvedRefTarget {
+                        base: target.doc_uri.clone(),
+                        reference: format!("{}#{}", target.doc_uri, target.fragment),
+                    })?
+                    .clone();
+                collect_refs_in_value(
+                    &value,
+                    &target.doc_uri,
+                    &self.root_uri,
+                    &mut queue,
+                    &mut reachable_root_components,
+                )?;
+            }
         }
 
         let mut pruned_root = {
             let root = &self
-                .documents
+                .document_cache
                 .get(&self.root_uri)
                 .expect("root document inserted before hydration")
                 .value;
@@ -275,7 +291,7 @@ impl Resolver {
         normalize_same_document_refs(&mut pruned_root, &self.root_uri)?;
 
         let resources = self
-            .documents
+            .document_cache
             .iter()
             .filter(|(uri, _doc)| uri.as_str() != self.root_uri)
             .map(|(uri, doc)| (uri.as_str(), doc.value.clone()))
@@ -304,60 +320,104 @@ impl Resolver {
             })
     }
 
-    fn ensure_document(&mut self, doc_uri: &str) -> Result<(), OpenApiToolsError> {
-        if self.documents.contains_key(doc_uri) {
-            return Ok(());
-        }
-        let url = parse_document_url(doc_uri)?;
-        let bytes = match url.scheme() {
-            "https" => fetch_https(&self.client, doc_uri, EXTERNAL_REF_MAX_BYTES)?,
-            "file" => self.read_confined_file_ref(&url, doc_uri)?,
-            scheme => {
-                return Err(OpenApiToolsError::UnsupportedScheme {
-                    scheme: scheme.to_owned(),
-                    location: doc_uri.to_owned(),
-                });
+    fn load_missing_documents(
+        &mut self,
+        doc_uris: BTreeSet<String>,
+    ) -> Result<(), OpenApiToolsError> {
+        let missing_doc_uris = doc_uris
+            .into_iter()
+            .filter(|doc_uri| !self.document_cache.contains_key(doc_uri))
+            .collect::<Vec<_>>();
+
+        for chunk in missing_doc_uris.chunks(MAX_CONCURRENT_FETCHES) {
+            let mut handles = Vec::new();
+            for doc_uri in chunk {
+                let client = self.client.clone();
+                let root_dir = self.root_dir.clone();
+                let doc_uri = doc_uri.clone();
+                handles.push(thread::spawn(move || {
+                    load_external_document(&client, root_dir.as_deref(), &doc_uri)
+                        .map(|value| (doc_uri, value))
+                }));
             }
-        };
-        let value = parse_document(&bytes, doc_uri)?;
-        self.documents
-            .insert(doc_uri.to_owned(), Document { value });
+
+            for handle in handles {
+                let (doc_uri, value) =
+                    handle
+                        .join()
+                        .map_err(|_error| OpenApiToolsError::DereferenceFailure {
+                            message: "external ref loader thread panicked".to_owned(),
+                        })??;
+                self.document_cache
+                    .entry(doc_uri)
+                    .or_insert_with(|| Document { value });
+            }
+        }
+
         Ok(())
     }
+}
 
-    fn read_confined_file_ref(
-        &self,
-        url: &Url,
-        reference: &str,
-    ) -> Result<Vec<u8>, OpenApiToolsError> {
-        let root = self
-            .root_dir
-            .as_ref()
-            .ok_or_else(|| OpenApiToolsError::UnsupportedScheme {
-                scheme: "file".to_owned(),
-                location: reference.to_owned(),
-            })?;
-        let path = url
-            .to_file_path()
-            .map_err(|()| OpenApiToolsError::InvalidLocation {
-                location: reference.to_owned(),
-                message: "file URL cannot be converted to a local path".to_owned(),
-            })?;
-        let canonical = path
-            .canonicalize()
-            .map_err(|source| OpenApiToolsError::ReadFailure {
-                location: reference.to_owned(),
-                source,
-            })?;
-        if !canonical.starts_with(root) {
-            return Err(OpenApiToolsError::LocalFileConfinementViolation {
-                reference: reference.to_owned(),
-                root: root.clone(),
+fn load_external_document(
+    client: &reqwest::blocking::Client,
+    root_dir: Option<&Path>,
+    doc_uri: &str,
+) -> Result<Value, OpenApiToolsError> {
+    let url = parse_document_url(doc_uri)?;
+    let bytes = match url.scheme() {
+        "https" => fetch_https(client, doc_uri, EXTERNAL_REF_MAX_BYTES)?,
+        "file" => read_confined_file_ref(root_dir, &url, doc_uri)?,
+        scheme => {
+            return Err(OpenApiToolsError::UnsupportedScheme {
+                scheme: scheme.to_owned(),
+                location: doc_uri.to_owned(),
             });
         }
-        reject_symlink_target(&path, reference)?;
-        read_limited_file(&path, EXTERNAL_REF_MAX_BYTES, reference)
+    };
+    parse_document(&bytes, doc_uri)
+}
+
+fn read_confined_file_ref(
+    root_dir: Option<&Path>,
+    url: &Url,
+    reference: &str,
+) -> Result<Vec<u8>, OpenApiToolsError> {
+    let root = root_dir.ok_or_else(|| OpenApiToolsError::UnsupportedScheme {
+        scheme: "file".to_owned(),
+        location: reference.to_owned(),
+    })?;
+    let path = url
+        .to_file_path()
+        .map_err(|()| OpenApiToolsError::InvalidLocation {
+            location: reference.to_owned(),
+            message: "file URL cannot be converted to a local path".to_owned(),
+        })?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|source| OpenApiToolsError::ReadFailure {
+            location: reference.to_owned(),
+            source,
+        })?;
+    if !canonical.starts_with(root) {
+        return Err(OpenApiToolsError::LocalFileConfinementViolation {
+            reference: reference.to_owned(),
+            root: root.to_path_buf(),
+        });
     }
+    reject_symlink_target(&path, reference)?;
+    read_limited_file(&path, EXTERNAL_REF_MAX_BYTES, reference)
+}
+
+#[cfg(test)]
+fn cache_miss_doc_uris<'a>(
+    targets: impl IntoIterator<Item = &'a RefTarget>,
+    document_cache: &HashMap<String, Document>,
+) -> BTreeSet<String> {
+    targets
+        .into_iter()
+        .filter(|target| !document_cache.contains_key(&target.doc_uri))
+        .map(|target| target.doc_uri.clone())
+        .collect()
 }
 
 fn hydrate_file_path(path: &Path) -> Result<Value, OpenApiToolsError> {
@@ -707,4 +767,47 @@ fn prune_root_components(root: &Value, reachable_components: &BTreeSet<Vec<Strin
     }
     *components = next_components;
     pruned
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_miss_doc_uris_deduplicates_fragments_by_resolved_uri() {
+        let targets = [
+            RefTarget {
+                doc_uri: "https://example.com/schemas.yaml".to_owned(),
+                fragment: "/Pet".to_owned(),
+            },
+            RefTarget {
+                doc_uri: "https://example.com/schemas.yaml".to_owned(),
+                fragment: "/Category".to_owned(),
+            },
+        ];
+        let cache = HashMap::new();
+
+        let missing = cache_miss_doc_uris(targets.iter(), &cache);
+
+        assert_eq!(
+            missing,
+            BTreeSet::from(["https://example.com/schemas.yaml".to_owned()])
+        );
+    }
+
+    #[test]
+    fn cache_miss_doc_uris_skips_cached_documents() {
+        let targets = [RefTarget {
+            doc_uri: "https://example.com/schemas.yaml".to_owned(),
+            fragment: "/Pet".to_owned(),
+        }];
+        let cache = HashMap::from([(
+            "https://example.com/schemas.yaml".to_owned(),
+            Document { value: Value::Null },
+        )]);
+
+        let missing = cache_miss_doc_uris(targets.iter(), &cache);
+
+        assert!(missing.is_empty());
+    }
 }
