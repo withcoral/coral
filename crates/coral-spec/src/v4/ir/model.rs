@@ -49,7 +49,8 @@ pub struct IrOperationInput {
     pub data_type: IrScalarType,
     pub default_value: Option<String>,
     pub description: String,
-    pub exclude_from_lookup_keys: bool,
++    #[serde(default)]
++    pub exclude_from_lookup_keys: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
