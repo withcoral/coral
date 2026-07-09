@@ -49,7 +49,8 @@ message RebuildSearchIndexResponse {
 message DrainSearchQueueRequest {
   // Workspace whose local search queue should be drained.
   Workspace workspace = 1;
-  // Optional per-request drain budget in milliseconds. Zero applies the server default.
+  // Optional per-request drain budget in milliseconds. Zero applies the server
+  // default; values above 60000 are rejected.
   uint32 budget_ms = 2;
 }
 
@@ -105,7 +106,8 @@ message SearchClearTarget {
   oneof target {
     // Clear the selected scope for the whole workspace.
     bool workspace = 1;
-    // Clear the selected scope for one source.
+    // Clear observed-value data for one source. SEARCH_DATA_SCOPE_ALL with a
+    // source target is not currently supported.
     string source_name = 2;
   }
 }
@@ -171,9 +173,11 @@ message CatalogClearResult {
 message ObservedDrainResult {
   // Queue jobs successfully projected.
   uint32 queue_jobs_processed = 1;
-  // Queue jobs skipped because a newer source generation superseded them.
+  // Queue jobs skipped because a newer workspace or source generation
+  // superseded them.
   uint32 stale_jobs_skipped = 2;
-  // Queue jobs left for retry after projection failed.
+  // Queue jobs whose projection failed during this drain pass; they may be
+  // retried or dead-lettered if the retry cap was reached.
   uint32 failed_jobs = 3;
   // Canonical observed-value rows inserted or updated.
   uint32 canonical_rows_upserted = 4;

@@ -197,7 +197,7 @@ enum SearchRebuildProvider {
 #[derive(Debug, Args)]
 struct SearchDrainArgs {
     /// Per-request drain budget in milliseconds. Zero applies the server default.
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 0)]
     budget_ms: u32,
 }
 
@@ -1347,6 +1347,9 @@ fn print_search_rebuild_response(response: &coral_api::v1::RebuildSearchIndexRes
                     detail.canonical_rows_scanned,
                     detail.fts_rows_rebuilt
                 );
+                if !result.note.is_empty() {
+                    println!("{}", result.note);
+                }
             }
             _ => {
                 println!(
