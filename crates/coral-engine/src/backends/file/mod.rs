@@ -216,7 +216,10 @@ impl CompiledBackendSource for FileCompiledSource {
         );
 
         for table in &self.manifest.tables {
-            let table_statistics = if matches!(table.format, FileFormat::Json | FileFormat::Jsonl) {
+            let table_statistics = if matches!(
+                table.format,
+                FileFormat::Json | FileFormat::Jsonl | FileFormat::Parquet
+            ) {
                 Some(FileStatisticsRegistration::new(
                     self.manifest.common.version.clone(),
                 ))
