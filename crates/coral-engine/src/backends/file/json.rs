@@ -53,7 +53,9 @@ use super::listing::{PreparedListingTable, prepare_listing_table};
 use super::metadata::FileMetadataColumns;
 use super::partitions::{
     PartitionColumns, filter_is_supported_partition_filter, filter_references_partition,
+    partition_filter_column_names,
 };
+use super::{FileStatisticsRegistration, FileTableStatistics};
 
 const JSON_ARRAY_CHANNEL_BUFFER_SIZE: usize = 128;
 const JSON_ARRAY_CONVERTER_BUFFER_SIZE: usize = 2 * 1024 * 1024;
@@ -99,6 +101,7 @@ pub(super) struct JsonFileTableProvider {
     json_fields: Arc<HashSet<String>>,
     metadata_columns: FileMetadataColumns,
     partition_columns: PartitionColumns,
+    statistics: Option<FileTableStatistics>,
 }
 
 impl fmt::Debug for JsonFileTableProvider {
@@ -119,6 +122,7 @@ impl JsonFileTableProvider {
         table: FileTableSpec,
         home_dir: Option<&Path>,
         resolved_inputs: &BTreeMap<String, String>,
+        statistics: Option<FileStatisticsRegistration>,
     ) -> Result<Self> {
         let format = table.format;
         let PreparedListingTable {
@@ -135,6 +139,16 @@ impl JsonFileTableProvider {
         let table_schema = metadata_columns.extend_table_schema_if_present(table_schema);
         let schema = Arc::clone(table_schema.table_schema());
         let json_fields = Arc::new(json_field_names(table.columns()));
+        let table_metadata = super::registered_table(&table, &schema);
+        let statistics = statistics.map(|registration| {
+            FileTableStatistics::new(
+                source_schema,
+                table.name(),
+                table_metadata.schema_signature(),
+                schema.fields().len(),
+                registration,
+            )
+        });
 
         Ok(Self {
             source_schema: source_schema.to_string(),
@@ -148,6 +162,7 @@ impl JsonFileTableProvider {
             json_fields,
             metadata_columns,
             partition_columns,
+            statistics,
         })
     }
 }
@@ -240,7 +255,15 @@ impl TableProvider for JsonFileTableProvider {
             .with_projection_indices(projection.cloned())?
             .build();
 
-        Ok(DataSourceExec::from_data_source(config))
+        let exec = DataSourceExec::from_data_source(config);
+        Ok(match &self.statistics {
+            Some(statistics) => {
+                let pushed_filter_columns =
+                    partition_filter_column_names(filters, &self.partition_columns);
+                statistics.observe_scan(exec, projection, pushed_filter_columns, limit)
+            }
+            None => exec,
+        })
     }
 }
 

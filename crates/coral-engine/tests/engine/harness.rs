@@ -6,10 +6,18 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use coral_engine::{CoreError, QueryExecution, QueryRuntimeConfig, QuerySource, StatusCode};
+use coral_engine::{
+    CoralQuery, CoreError, QueryExecution, QueryRuntimeConfig, QuerySource, StatisticsObservation,
+    StatusCode,
+};
 use coral_spec::parse_source_manifest_value;
+use opentelemetry::Value as OtelValue;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
 use parquet::arrow::ArrowWriter;
 use serde_json::{Value, json};
+use tracing::Instrument as _;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 pub(crate) fn test_runtime() -> QueryRuntimeConfig {
     QueryRuntimeConfig::default()
@@ -50,6 +58,55 @@ pub(crate) fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
 pub(crate) fn assert_row_count(execution: &QueryExecution, expected: usize) {
     assert_eq!(execution.row_count(), expected);
     assert_eq!(execution_to_rows(execution).len(), expected);
+}
+
+pub(crate) async fn execute_sql_with_trace_observations(
+    sources: &[QuerySource],
+    sql: &str,
+) -> Result<(QueryExecution, Vec<StatisticsObservation>), CoreError> {
+    let source_vec = sources.to_vec();
+    let sql = sql.to_string();
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("coral-engine-test");
+    let subscriber =
+        tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+    let result = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let span = tracing::info_span!("coral.query");
+        let result = CoralQuery::execute_sql(&source_vec, test_runtime(), &sql)
+            .instrument(span.clone())
+            .await;
+        drop(span);
+        result
+    };
+
+    provider.force_flush().expect("trace provider should flush");
+    let spans = exporter
+        .get_finished_spans()
+        .expect("finished spans should be readable");
+    let observations = statistics_observations_from_spans(&spans);
+    result.map(|execution| (execution, observations))
+}
+
+fn statistics_observations_from_spans(spans: &[SpanData]) -> Vec<StatisticsObservation> {
+    spans
+        .iter()
+        .flat_map(|span| {
+            span.events
+                .events
+                .iter()
+                .flat_map(|event| event.attributes.iter())
+        })
+        .filter(|attribute| attribute.key.as_str() == "coral.statistics.observation")
+        .filter_map(|attribute| match &attribute.value {
+            OtelValue::String(value) => serde_json::from_str(value.as_str()).ok(),
+            _ => None,
+        })
+        .collect()
 }
 
 #[expect(

@@ -17,9 +17,7 @@ use crate::backends::common::{
     RegisteredColumn, RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
 };
 use crate::backends::{RegisteredSource, RegisteredTable, RegisteredTableFunction};
-use crate::contracts::{
-    ColumnStatistics, StatisticsProfile, TableSchemaSignature, TableStatistics,
-};
+use crate::contracts::{ColumnStatistics, StatisticsProfile, TableStatistics};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
@@ -954,7 +952,7 @@ fn matching_table_statistics<'a>(
                 table_stats.source_version.as_deref(),
             )
         })
-        .filter(|table_stats| table_stats.schema_signature == table_schema_signature(table))
+        .filter(|table_stats| table_stats.schema_signature == table.schema_signature())
 }
 
 fn source_version_matches(
@@ -1074,23 +1072,6 @@ fn columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<RecordBa
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))
 }
 
-pub(crate) fn table_schema_signature(table: &RegisteredTable) -> TableSchemaSignature {
-    TableSchemaSignature {
-        columns: table.columns.iter().map(column_schema_signature).collect(),
-        required_filters: table.required_filters.clone(),
-    }
-}
-
-fn column_schema_signature(column: &RegisteredColumn) -> crate::contracts::ColumnSchemaSignature {
-    crate::contracts::ColumnSchemaSignature {
-        name: column.name.clone(),
-        data_type: column.data_type.clone(),
-        nullable: column.nullable,
-        is_virtual: column.is_virtual,
-        is_required_filter: column.is_required_filter,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1101,7 +1082,7 @@ mod tests {
     use datafusion::arrow::array::{Array, Float64Array, Int64Array, StringArray};
     use datafusion::datasource::TableProvider;
 
-    use super::{build_columns_table, collect_table_functions, table_schema_signature};
+    use super::{build_columns_table, collect_table_functions};
     use crate::backends::common::RegisteredColumn;
     use crate::backends::{RegisteredSource, RegisteredTable, RegisteredTableFunction};
     use crate::contracts::{
@@ -1173,7 +1154,7 @@ mod tests {
                 schema_name: source.schema_name.clone(),
                 table_name: table.table_name.clone(),
                 source_version: Some(source.source_version.clone()),
-                schema_signature: table_schema_signature(table),
+                schema_signature: table.schema_signature(),
                 columns,
             },
         );

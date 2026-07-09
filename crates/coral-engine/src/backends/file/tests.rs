@@ -795,7 +795,7 @@ fn infer_schema_slow_path_returns_error_for_corrupt_parquet_footer() {
     let ctx = SessionContext::new();
     let location = file_url_from_directory_path(dir.path());
     let table = parquet_table_spec(&location);
-    let result = FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default());
+    let result = FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default(), None);
     let error = result.expect_err("corrupt parquet should cause provider construction failure");
     assert!(
         error.to_string().contains("data.parquet"),
@@ -812,7 +812,7 @@ fn infer_schema_slow_path_returns_error_for_too_small_parquet_file() {
     let ctx = SessionContext::new();
     let location = file_url_from_directory_path(dir.path());
     let table = parquet_table_spec(&location);
-    let result = FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default());
+    let result = FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default(), None);
     assert!(
         result.is_err(),
         "too-small parquet should cause provider construction failure"

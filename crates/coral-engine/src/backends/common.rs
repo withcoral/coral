@@ -15,6 +15,8 @@ use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::SessionContext;
 
+use crate::contracts::{ColumnSchemaSignature, TableSchemaSignature};
+
 /// Provider factory for one registered source-scoped table function.
 ///
 /// Implementations bind one call site's positional arguments (manifest order,
@@ -50,6 +52,25 @@ pub(crate) struct RegisteredTable {
     pub(crate) filters: Vec<RegisteredFilter>,
     pub(crate) required_filters: Vec<String>,
     pub(crate) search_limits: Option<SearchLimitsSpec>,
+}
+
+impl RegisteredTable {
+    pub(crate) fn schema_signature(&self) -> TableSchemaSignature {
+        TableSchemaSignature {
+            columns: self
+                .columns
+                .iter()
+                .map(|column| ColumnSchemaSignature {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    nullable: column.nullable,
+                    is_virtual: column.is_virtual,
+                    is_required_filter: column.is_required_filter,
+                })
+                .collect(),
+            required_filters: self.required_filters.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

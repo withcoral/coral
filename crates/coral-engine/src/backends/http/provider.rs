@@ -24,15 +24,19 @@ use crate::backends::shared::filter_expr::{
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
+use crate::contracts::{StatisticsObservationScope, TableSchemaSignature};
+use crate::runtime::statistics::BatchStatisticsPlan;
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
 pub(crate) struct HttpSourceTableProvider {
     backend: HttpSourceClient,
     source_schema: String,
+    source_version: Option<String>,
     table: Arc<HttpTableSpec>,
     target: HttpFetchTarget,
     schema: SchemaRef,
+    schema_signature: TableSchemaSignature,
 }
 
 impl std::fmt::Debug for HttpSourceTableProvider {
@@ -54,16 +58,20 @@ impl HttpSourceTableProvider {
     pub(crate) fn new(
         backend: HttpSourceClient,
         source_schema: String,
+        source_version: Option<String>,
         table: HttpTableSpec,
+        schema_signature: TableSchemaSignature,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         let target = HttpFetchTarget::from_resolved_table_request(&table, table.request.clone());
         Ok(Self {
             backend,
             source_schema,
+            source_version,
             table: Arc::new(table),
             target,
             schema,
+            schema_signature,
         })
     }
 
@@ -102,6 +110,7 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) arg_values: HashMap<String, String>,
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) limit: Option<usize>,
+    pub(crate) statistics_plan: Option<BatchStatisticsPlan>,
 }
 
 #[async_trait]
@@ -144,6 +153,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         arg_values,
         projection,
         limit,
+        statistics_plan,
     } = request;
     let target = Arc::new(target);
     let mut conversion_filter_values = request_filter_values.clone();
@@ -204,14 +214,25 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         })
     };
 
-    let exec = JsonExec::new(
-        source_schema,
-        target.name(),
-        schema,
-        fetcher,
-        converter,
-        projection.cloned(),
-    )?;
+    let exec = match statistics_plan {
+        Some(statistics_plan) => JsonExec::new_with_statistics(
+            source_schema,
+            target.name(),
+            schema,
+            fetcher,
+            converter,
+            projection.cloned(),
+            statistics_plan,
+        )?,
+        None => JsonExec::new(
+            source_schema,
+            target.name(),
+            schema,
+            fetcher,
+            converter,
+            projection.cloned(),
+        )?,
+    };
 
     Ok(Arc::new(exec))
 }
@@ -302,6 +323,8 @@ impl TableProvider for HttpSourceTableProvider {
                 FilterExtraction::Contradiction => HashMap::new(),
             };
         let target = self.target.with_resolved_request(active_request);
+        let effective_limit = limit.or_else(|| target.fetch_limit_default());
+        let statistics_plan = self.statistics_plan(&filter_values, effective_limit);
 
         http_json_exec(HttpJsonExecRequest {
             backend: self.backend.clone(),
@@ -315,6 +338,32 @@ impl TableProvider for HttpSourceTableProvider {
             arg_values: HashMap::new(),
             projection,
             limit,
+            statistics_plan: Some(statistics_plan),
         })
+    }
+}
+
+impl HttpSourceTableProvider {
+    fn statistics_plan(
+        &self,
+        filters: &HashMap<String, String>,
+        effective_limit: Option<usize>,
+    ) -> BatchStatisticsPlan {
+        let scope = if effective_limit.is_some() {
+            StatisticsObservationScope::Limited
+        } else if filters.is_empty() {
+            StatisticsObservationScope::TableGlobal
+        } else {
+            let mut filter_columns = filters.keys().cloned().collect::<Vec<_>>();
+            filter_columns.sort();
+            StatisticsObservationScope::Filtered { filter_columns }
+        };
+        BatchStatisticsPlan::table_global(
+            self.source_schema.clone(),
+            self.table.name().to_string(),
+            self.source_version.clone(),
+            self.schema_signature.clone(),
+        )
+        .with_scope(scope)
     }
 }

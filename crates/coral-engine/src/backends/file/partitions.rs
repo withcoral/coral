@@ -1,6 +1,6 @@
 //! Partition extraction and pruning helpers for file-backed sources.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
@@ -248,6 +248,37 @@ pub(super) fn partition_filter_constraints(
         collect_partition_filter_constraints(filter, partitions, &mut constraints);
     }
     constraints
+}
+
+pub(super) fn partition_filter_column_names(
+    filters: &[Expr],
+    partitions: &PartitionColumns,
+) -> Vec<String> {
+    let mut columns = BTreeSet::new();
+    for filter in filters {
+        collect_partition_filter_column_names(filter, partitions, &mut columns);
+    }
+    columns.into_iter().collect()
+}
+
+fn collect_partition_filter_column_names(
+    expr: &Expr,
+    partitions: &PartitionColumns,
+    columns: &mut BTreeSet<String>,
+) {
+    match expr {
+        Expr::BinaryExpr(binary) if binary.op == Operator::And => {
+            collect_partition_filter_column_names(binary.left.as_ref(), partitions, columns);
+            collect_partition_filter_column_names(binary.right.as_ref(), partitions, columns);
+        }
+        _ => {
+            if let Some(constraint) = partition_constraint(expr, partitions)
+                && let Some(partition) = partitions.get(constraint.index)
+            {
+                columns.insert(partition.name.clone());
+            }
+        }
+    }
 }
 
 fn collect_partition_filter_constraints(
