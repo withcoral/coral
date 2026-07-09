@@ -1,4 +1,11 @@
-.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks perf-check
+.PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
+.PHONY: license-check lint-proto lint-sources fix-sources
+.PHONY: docs-generate docs-check schema-generate schema-check
+
+LOCAL_POSTGRES_IMAGE ?= postgres:17
+LOCAL_POSTGRES_CONTAINER ?= coral-test-postgres
+LOCAL_POSTGRES_PORT ?=
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -17,6 +24,92 @@ rust-checks:
 perf-check:
 	cargo build --locked -p coral-cli --release
 	cargo run --locked -p xtask --release -- perf-check --coral-bin target/release/coral
+
+# ----------------------------------------------------------------------------
+# Local Postgres-backed tests
+# ----------------------------------------------------------------------------
+# Starts a Docker Postgres matching CI's major version and runs the ignored
+# Postgres coverage against it. By default Docker chooses an available localhost
+# port, and postgres-tests creates a fresh database inside the container for
+# each run. Set LOCAL_POSTGRES_PORT=55432 if you need a stable host port.
+#
+#   make postgres-start   # start/wait for local Docker Postgres
+#   make postgres-url     # print the local Postgres connection URL
+#   make postgres-tests   # start Docker Postgres, then run Postgres tests
+#   make postgres-stop    # stop the local Docker Postgres container
+#   make postgres-clean   # remove the local Docker Postgres container
+
+postgres-start:
+	@set -eu; \
+	if ! command -v docker >/dev/null 2>&1; then \
+	  echo "docker is required to start local Postgres"; \
+	  exit 1; \
+	fi; \
+	if docker container inspect "$(LOCAL_POSTGRES_CONTAINER)" >/dev/null 2>&1; then \
+	  docker start "$(LOCAL_POSTGRES_CONTAINER)" >/dev/null; \
+	else \
+	  local_postgres_port="$(LOCAL_POSTGRES_PORT)"; \
+	  if [ -n "$$local_postgres_port" ]; then \
+	    port_arg="-p 127.0.0.1:$$local_postgres_port:5432"; \
+	  else \
+	    port_arg="-p 127.0.0.1::5432"; \
+	  fi; \
+	  docker run -d \
+	    --name "$(LOCAL_POSTGRES_CONTAINER)" \
+	    -e POSTGRES_PASSWORD=postgres \
+	    $$port_arg \
+	    "$(LOCAL_POSTGRES_IMAGE)" >/dev/null; \
+	fi; \
+	for _ in $$(seq 1 60); do \
+	  if docker exec "$(LOCAL_POSTGRES_CONTAINER)" pg_isready -U postgres >/dev/null 2>&1; then \
+	    host_port=$$(docker port "$(LOCAL_POSTGRES_CONTAINER)" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$$/\1/p' | head -n 1); \
+	    if [ -z "$$host_port" ]; then \
+	      echo "Could not determine local Postgres host port"; \
+	      exit 1; \
+	    fi; \
+	    echo "Postgres is ready at postgres://postgres:postgres@127.0.0.1:$$host_port/postgres"; \
+	    exit 0; \
+	  fi; \
+	  sleep 1; \
+	done; \
+	docker logs "$(LOCAL_POSTGRES_CONTAINER)" || true; \
+	echo "Postgres did not become ready"; \
+	exit 1
+
+postgres-url:
+	@set -eu; \
+	host_port=$$(docker port "$(LOCAL_POSTGRES_CONTAINER)" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$$/\1/p' | head -n 1); \
+	if [ -z "$$host_port" ]; then \
+	  echo "Local Postgres is not exposing 5432/tcp. Run make postgres-start first."; \
+	  exit 1; \
+	fi; \
+	echo "postgres://postgres:postgres@127.0.0.1:$$host_port/postgres"
+
+postgres-stop:
+	@docker stop "$(LOCAL_POSTGRES_CONTAINER)" >/dev/null 2>&1 || true
+
+postgres-clean:
+	@docker rm -f "$(LOCAL_POSTGRES_CONTAINER)" >/dev/null 2>&1 || true
+
+postgres-tests: postgres-start
+	@set -eu; \
+	host_port=$$(docker port "$(LOCAL_POSTGRES_CONTAINER)" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$$/\1/p' | head -n 1); \
+	if [ -z "$$host_port" ]; then \
+	  echo "Local Postgres is not exposing 5432/tcp"; \
+	  exit 1; \
+	fi; \
+	db_name="coral_test_$$(date +%s)_$$$$"; \
+	docker exec "$(LOCAL_POSTGRES_CONTAINER)" createdb -U postgres "$$db_name"; \
+	cleanup() { docker exec "$(LOCAL_POSTGRES_CONTAINER)" dropdb -U postgres --if-exists "$$db_name" >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT INT TERM; \
+	url="postgres://postgres:postgres@127.0.0.1:$$host_port/$$db_name"; \
+	echo "Running Postgres tests against $$url"; \
+	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
+	  state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
+	  -- --ignored; \
+	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
+	  --test postgres_database_tests \
+	  -- --ignored
 
 # ----------------------------------------------------------------------------
 # Dependency license scan

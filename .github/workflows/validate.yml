@@ -32,6 +32,7 @@ jobs:
     outputs:
       github_actions: ${{ steps.filter.outputs.github_actions }}
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
+      postgres_database_tests: ${{ steps.filter.outputs.postgres_database_tests }}
       release_workflow: ${{ steps.filter.outputs.release_workflow }}
       install-script: ${{ steps.filter.outputs.install-script }}
       ui-build: ${{ steps.filter.outputs.ui-build }}
@@ -66,6 +67,11 @@ jobs:
               - 'rust-toolchain'
               - 'crates/**'
               - 'xtask/**'
+            postgres_database_tests:
+              - '.github/workflows/validate.yml'
+              - 'crates/coral-app/migrations/**'
+              - 'crates/coral-app/src/state/db/**'
+              - 'crates/coral-app/tests/postgres_database_tests.rs'
             release_workflow:
               - '.github/workflows/release.yml'
             install-script:
@@ -173,7 +179,7 @@ jobs:
     name: Postgres database tests
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ needs.changes.outputs.rust_checks == 'true' }}
+    if: ${{ needs.changes.outputs.postgres_database_tests == 'true' }}
     services:
       postgres:
         image: postgres:17
@@ -205,11 +211,11 @@ jobs:
         env:
           CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
         run: |
-          cargo test --locked -p coral-app \
+          cargo test --locked -p coral-app --lib \
             state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
             -- --ignored
           cargo test --locked -p coral-app \
-            --test grpc server_lifecycle_can_start_with_postgres_database_config \
+            --test postgres_database_tests \
             -- --ignored
 
   windows-rust-smoke:
