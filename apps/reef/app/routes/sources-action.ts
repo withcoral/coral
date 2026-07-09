@@ -6,14 +6,29 @@ import {
   DeleteSourceRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
-  type Source,
-  type SourceInfo,
-  type SourceInputSpec,
 } from '@/generated/coral/v1/sources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
 import { WORKSPACE } from '@/lib/constants'
+import {
+  editBindingsFromForm,
+  firstMissingRequiredInput,
+  firstOAuthMethodInput,
+  formValue,
+  installBindingsFromForm,
+  splitInstallBindings,
+  type InstallInput,
+} from '@/lib/source-install-form'
 import { originLabel } from '@/lib/sources'
 import { errorMessage } from '@/lib/utils'
+
+export {
+  editBindingsFromForm,
+  firstMissingRequiredInput,
+  firstOAuthMethodInput,
+  installBindingsFromForm,
+  oauthCredentialRetrievalsFromForm,
+  type InstallInput,
+} from '@/lib/source-install-form'
 
 export type SourceActionIntent = 'delete' | 'edit' | 'install'
 
@@ -25,12 +40,6 @@ export type SourcesActionData =
       status: 'error'
     }
   | undefined
-
-interface InstallInput {
-  key: string
-  value: string
-  secret: boolean
-}
 
 export async function action({
   request,
@@ -82,98 +91,6 @@ export async function action({
   }
 }
 
-export function installBindingsFromForm(info: SourceInfo, formData: FormData): InstallInput[] {
-  const bindings: InstallInput[] = []
-  for (const input of info.inputs) {
-    if (input.input.case === 'variable') {
-      const value = formValue(formData, `var:${input.key}`, input.input.value.defaultValue)
-      if (value.length > 0) bindings.push({ key: input.key, secret: false, value })
-      continue
-    }
-    if (input.input.case !== 'secret') continue
-    const methodIndex = Number(formValue(formData, `method:${input.key}`, '0'))
-    const method = input.input.value.credential?.methods[methodIndex]
-    if (method?.method.case === 'oauth') continue
-    const value = formValue(formData, `sec:${input.key}`)
-    if (value.length > 0) bindings.push({ key: input.key, secret: true, value })
-  }
-  return bindings
-}
-
-export function editBindingsFromForm(
-  source: Source,
-  info: SourceInfo | null,
-  formData: FormData,
-): InstallInput[] {
-  if (!info) return bindingsFromInstalledSource(source, formData)
-  const bindings: InstallInput[] = []
-  const variables = new Map(source.variables.map((variable) => [variable.key, variable.value]))
-  for (const input of info.inputs) {
-    if (input.input.case === 'variable') {
-      const existingValue = variables.get(input.key) ?? input.input.value.defaultValue
-      const value = formValue(formData, `var:${input.key}`, existingValue)
-      if (value.length > 0) bindings.push({ key: input.key, secret: false, value })
-      continue
-    }
-    if (input.input.case !== 'secret') continue
-    const method = submittedCredentialMethod(input, formData)
-    if (method?.method.case === 'oauth') continue
-    const value = formValue(formData, `sec:${input.key}`)
-    if (value.length > 0) bindings.push({ key: input.key, secret: true, value })
-  }
-  return bindings
-}
-
-export function firstMissingRequiredInput(info: SourceInfo, formData: FormData): string | null {
-  for (const input of info.inputs) {
-    if (!input.required) continue
-    if (input.input.case === 'variable') {
-      const value = formValue(formData, `var:${input.key}`, input.input.value.defaultValue)
-      if (value.length === 0) return input.key
-      continue
-    }
-    if (input.input.case !== 'secret') continue
-    const methodIndex = Number(formValue(formData, `method:${input.key}`, '0'))
-    const method = input.input.value.credential?.methods[methodIndex]
-    if (!method || method.method.case === 'sourceConfig') {
-      if (formValue(formData, `sec:${input.key}`).length === 0) return input.key
-    }
-  }
-  return null
-}
-
-export function firstOAuthMethodInput(info: SourceInfo, formData: FormData): string | null {
-  for (const input of info.inputs) {
-    if (input.input.case !== 'secret') continue
-    const methodIndex = Number(formValue(formData, `method:${input.key}`, '0'))
-    const method = input.input.value.credential?.methods[methodIndex]
-    if (method?.method.case === 'oauth') return input.key
-  }
-  return null
-}
-
-function bindingsFromInstalledSource(source: Source, formData: FormData): InstallInput[] {
-  const bindings: InstallInput[] = source.variables.map((variable) => ({
-    key: variable.key,
-    secret: false,
-    value: formValue(formData, `var:${variable.key}`, variable.value),
-  }))
-  for (const secret of source.secrets) {
-    const value = formValue(formData, `sec:${secret.key}`)
-    if (value.length > 0) bindings.push({ key: secret.key, secret: true, value })
-  }
-  return bindings
-}
-
-function submittedCredentialMethod(input: SourceInputSpec, formData: FormData) {
-  if (input.input.case !== 'secret') return undefined
-  const submittedMethod = formData.get(`method:${input.key}`)
-  if (typeof submittedMethod !== 'string') return undefined
-  const methodIndex = Number(submittedMethod)
-  if (!Number.isInteger(methodIndex) || methodIndex < 0) return undefined
-  return input.input.value.credential?.methods[methodIndex]
-}
-
 async function getSourceInfo(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
   name: string,
@@ -201,16 +118,13 @@ async function createBundledSource(
   name: string,
   bindings: InstallInput[],
 ) {
+  const { secrets, variables } = splitInstallBindings(bindings)
   const response = await sourceClient.createBundledSource(
     create(CreateBundledSourceRequestSchema, {
       name,
       workspace: WORKSPACE,
-      variables: bindings
-        .filter((binding) => !binding.secret)
-        .map((binding) => ({ key: binding.key, value: binding.value })),
-      secrets: bindings
-        .filter((binding) => binding.secret)
-        .map((binding) => ({ key: binding.key, value: binding.value })),
+      variables,
+      secrets,
     }),
   )
   if (!response.source) throw new Error(`Coral did not return installed source ${name}`)
@@ -219,10 +133,4 @@ async function createBundledSource(
 
 function actionError(intent: SourceActionIntent, name: string, message: string): SourcesActionData {
   return { intent, message, name, status: 'error' }
-}
-
-function formValue(formData: FormData, key: string, defaultValue = ''): string {
-  const value = formData.get(key)
-  if (typeof value !== 'string') return defaultValue.trim()
-  return value.trim()
 }

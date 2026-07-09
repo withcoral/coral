@@ -1,6 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-import { fontFamily } from '@/wax/theme/font.css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const header = style({
@@ -92,28 +91,6 @@ export const methodTab = style({
       color: theme.content.primary,
     },
   },
-})
-
-export const oauthFields = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-})
-
-export const oauthBox = style({
-  alignItems: 'flex-start',
-  background: theme.surface.onMainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
-  display: 'flex',
-  gap: 10,
-  padding: 12,
-})
-
-export const oauthCode = style({
-  color: theme.content.primary,
-  fontFamily: fontFamily.dmMono,
-  fontWeight: 700,
 })
 
 export const alertBox = style({
