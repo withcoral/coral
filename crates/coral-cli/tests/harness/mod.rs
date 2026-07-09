@@ -25,11 +25,12 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse,
     CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteSourceRequest, DeleteSourceResponse,
     DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
-    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
-    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
-    ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, DrainSearchQueueRequest,
+    DrainSearchQueueResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
+    ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListSourcesRequest,
+    ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, ObservedDrainResult,
     PaginationRequest, PaginationResponse, QueryPlan, RebuildSearchIndexRequest,
     RebuildSearchIndexResponse, SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole,
     SearchMaintenanceResult, SearchMaintenanceState, SearchProvider, SearchProviderCoverage,
@@ -461,6 +462,27 @@ fn mock_rebuild_search_index_response() -> RebuildSearchIndexResponse {
     }
 }
 
+fn mock_drain_search_queue_response() -> DrainSearchQueueResponse {
+    DrainSearchQueueResponse {
+        results: vec![SearchMaintenanceResult {
+            provider: SearchProvider::ObservedValues as i32,
+            state: SearchMaintenanceState::Completed as i32,
+            note: "drained 2 observed-value queue job(s)".to_string(),
+            detail: Some(search_maintenance_result::Detail::ObservedDrain(
+                ObservedDrainResult {
+                    queue_jobs_processed: 2,
+                    stale_jobs_skipped: 0,
+                    failed_jobs: 0,
+                    canonical_rows_upserted: 2,
+                    fts_rows_written: 2,
+                    remaining_queue_depth: 0,
+                    budget_exhausted: false,
+                },
+            )),
+        }],
+    }
+}
+
 fn mock_clear_search_data_response() -> ClearSearchDataResponse {
     ClearSearchDataResponse {
         results: vec![SearchMaintenanceResult {
@@ -620,6 +642,7 @@ pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     search: MockResult<SearchResponse>,
     rebuild_search_index: MockResult<RebuildSearchIndexResponse>,
+    drain_search_queue: MockResult<DrainSearchQueueResponse>,
     clear_search_data: MockResult<ClearSearchDataResponse>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
@@ -634,6 +657,7 @@ impl Default for MockServerConfig {
             execute_sql_override: None,
             search: MockResult::ok(mock_search_response()),
             rebuild_search_index: MockResult::ok(mock_rebuild_search_index_response()),
+            drain_search_queue: MockResult::ok(mock_drain_search_queue_response()),
             clear_search_data: MockResult::ok(mock_clear_search_data_response()),
             discover_sources: MockResult::ok(mock_discover_response()),
             list_sources: MockResult::ok(ListSourcesResponse {
@@ -780,6 +804,7 @@ struct Captured {
     search: Mutex<Vec<SearchRequest>>,
     execute_sql_task_ids: Mutex<Vec<Option<String>>>,
     rebuild_search_index: Mutex<Vec<RebuildSearchIndexRequest>>,
+    drain_search_queue: Mutex<Vec<DrainSearchQueueRequest>>,
     clear_search_data: Mutex<Vec<ClearSearchDataRequest>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
@@ -850,6 +875,20 @@ impl SearchService for MockSearchService {
                 .rebuild_search_index
                 .clone()
                 .into_tonic_result()?,
+        ))
+    }
+
+    async fn drain_search_queue(
+        &self,
+        request: Request<DrainSearchQueueRequest>,
+    ) -> Result<Response<DrainSearchQueueResponse>, Status> {
+        self.captured
+            .drain_search_queue
+            .lock()
+            .expect("drain search queue capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.drain_search_queue.clone().into_tonic_result()?,
         ))
     }
 
@@ -1406,6 +1445,14 @@ impl MockServer {
             .rebuild_search_index
             .lock()
             .expect("rebuild search index capture")
+            .clone()
+    }
+
+    pub(crate) fn drain_search_queue_requests(&self) -> Vec<DrainSearchQueueRequest> {
+        self.captured
+            .drain_search_queue
+            .lock()
+            .expect("drain search queue capture")
             .clone()
     }
 

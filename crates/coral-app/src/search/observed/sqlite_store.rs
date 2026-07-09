@@ -153,13 +153,6 @@ impl SqliteObservedValuesStore {
         Ok(result)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "policy-aware rebuild is staged for the final maintenance API PR"
-        )
-    )]
     pub(crate) fn rebuild_fts(
         &self,
         workspace_name: &WorkspaceName,
@@ -180,6 +173,14 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
         sqlite_projection::search_observed_values(&connection, workspace_name, terms, limit, policy)
+    }
+
+    pub(crate) fn compact_after_clear(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<crate::search::sqlite_store::SqliteSearchCompactionResult, SqliteSearchError> {
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
+        Ok(store.compact_after_clear())
     }
 
     pub(crate) fn pending_queue_job_count(
