@@ -226,12 +226,18 @@ impl SearchProviderMaintenance for CatalogMetadataProvider {
                 let result = store
                     .clear_catalog_workspace()
                     .map_err(|error| search_sqlite_app_error(&error))?;
-                let compaction = store.compact_after_clear();
                 Ok(SearchProviderClearOutcome {
                     result: catalog_clear_provider_result(result.deleted_document_count),
-                    storage_cleanup: search_storage_cleanup_result(&compaction),
+                    storage_cleanup: request.compact_after_clear.then(|| {
+                        let compaction = store.compact_after_clear();
+                        search_storage_cleanup_result(&compaction)
+                    }),
                 })
             }
+            SearchClearTarget::Source(source_name) => Err(AppError::InvalidInput(format!(
+                "source-scoped catalog search-data clear is not implemented yet for source '{source_name}'"
+            ))
+            .into()),
         }
     }
 }

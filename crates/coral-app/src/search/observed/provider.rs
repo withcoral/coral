@@ -3,6 +3,12 @@
 use std::time::Duration;
 
 use crate::bootstrap::AppError;
+use crate::search::maintenance::{
+    ObservedClearMaintenanceResult, ObservedDrainMaintenanceResult,
+    ObservedRebuildMaintenanceResult, SearchClearTarget, SearchDataScope, SearchMaintenanceDetail,
+    SearchMaintenanceResult, SearchMaintenanceState, SearchProviderClearOutcome,
+    SearchProviderClearRequest, SearchProviderRebuildRequest, SearchStorageCleanupResult,
+};
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::ranking;
 use crate::search::observed::sqlite_projection::{
@@ -10,12 +16,13 @@ use crate::search::observed::sqlite_projection::{
     ObservedValuesSearchHits,
 };
 use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
-use crate::search::observed::sqlite_store::SqliteObservedValuesStore;
+use crate::search::observed::sqlite_store::{ObservedValuesClearResult, SqliteObservedValuesStore};
 use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
     ObservedValueResult, ProviderCoverage, ProviderStatus, SearchCandidate, SearchPayload,
     SearchProviderKind, SearchProviderState, SearchRequest, SearchSurfaceKind,
 };
+use crate::search::sqlite_store::SqliteSearchCompactionResult;
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
@@ -24,6 +31,8 @@ const OBSERVED_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const OBSERVED_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
 const OBSERVED_DRAIN_BEFORE_SEARCH_MAX_JOBS: usize = 128;
 const OBSERVED_DRAIN_BEFORE_SEARCH_MS: u64 = 50;
+const OBSERVED_REBUILD_DRAIN_MAX_JOBS: usize = 10_000;
+const OBSERVED_REBUILD_DRAIN_MS: u64 = 1_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesProvider {
@@ -74,11 +83,14 @@ impl ObservedValuesProvider {
         &self,
         workspace_name: &WorkspaceName,
         budget: ObservedValuesDrainBudget,
-    ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
-        let result = self.store.drain_queue(workspace_name, budget)?;
+    ) -> Result<SearchMaintenanceResult, crate::search::result::SearchManagerError> {
+        let result = self
+            .store
+            .drain_queue(workspace_name, budget)
+            .map_err(|error| observed_sqlite_app_error(&error))?;
         log_storage_drops(workspace_name, &result);
         log_drain_budget_exhaustion(workspace_name, &result);
-        Ok(result)
+        Ok(observed_drain_provider_result(&result))
     }
 
     fn drain_before_search(
@@ -127,6 +139,71 @@ impl ObservedValuesProvider {
                 )
             }
         }
+    }
+
+    pub(crate) fn rebuild_index(
+        &self,
+        request: SearchProviderRebuildRequest<'_>,
+        policy: &ObservedValuesRetrievalPolicy,
+    ) -> Result<SearchMaintenanceResult, crate::search::result::SearchManagerError> {
+        let drain = self
+            .store
+            .drain_queue(
+                request.workspace_name,
+                ObservedValuesDrainBudget::new(
+                    OBSERVED_REBUILD_DRAIN_MAX_JOBS,
+                    Duration::from_millis(OBSERVED_REBUILD_DRAIN_MS),
+                ),
+            )
+            .map_err(|error| observed_sqlite_app_error(&error))?;
+        log_storage_drops(request.workspace_name, &drain);
+        log_drain_budget_exhaustion(request.workspace_name, &drain);
+        let result = self
+            .store
+            .rebuild_fts(request.workspace_name, policy)
+            .map_err(|error| observed_sqlite_app_error(&error))?;
+        Ok(observed_rebuild_provider_result(
+            &drain,
+            result.canonical_rows_scanned,
+            result.fts_rows_rebuilt,
+        ))
+    }
+
+    pub(crate) fn clear_data(
+        &self,
+        request: SearchProviderClearRequest<'_>,
+    ) -> Result<SearchProviderClearOutcome, crate::search::result::SearchManagerError> {
+        if !matches!(
+            request.scope,
+            SearchDataScope::Observed | SearchDataScope::All
+        ) {
+            return Err(AppError::InvalidInput(
+                "observed-value search provider supports observed or all clear scope".to_string(),
+            )
+            .into());
+        }
+        let result = match request.target {
+            SearchClearTarget::Workspace => self
+                .store
+                .clear_workspace_and_advance_epoch(request.workspace_name)
+                .map_err(|error| observed_sqlite_app_error(&error))?,
+            SearchClearTarget::Source(source_name) => self
+                .store
+                .clear_source_and_advance_epoch(request.workspace_name, source_name)
+                .map_err(|error| observed_sqlite_app_error(&error))?,
+        };
+        Ok(SearchProviderClearOutcome {
+            result: observed_clear_provider_result(result),
+            storage_cleanup: if request.compact_after_clear {
+                let compaction = self
+                    .store
+                    .compact_after_clear(request.workspace_name)
+                    .map_err(|error| observed_sqlite_app_error(&error))?;
+                Some(observed_storage_cleanup_result(&compaction))
+            } else {
+                None
+            },
+        })
     }
 }
 
@@ -348,6 +425,159 @@ fn log_storage_drops(workspace_name: &WorkspaceName, result: &ObservedValuesDrai
     }
 }
 
+fn observed_drain_provider_result(result: &ObservedValuesDrainResult) -> SearchMaintenanceResult {
+    let state = if observed_drain_is_partial(result) {
+        SearchMaintenanceState::Partial
+    } else if observed_drain_did_no_work(result) {
+        SearchMaintenanceState::Noop
+    } else {
+        SearchMaintenanceState::Completed
+    };
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::ObservedValues,
+        state,
+        note: observed_drain_note(result),
+        detail: Some(SearchMaintenanceDetail::ObservedDrain(
+            ObservedDrainMaintenanceResult {
+                queue_jobs_processed: result.queue_jobs_processed,
+                stale_jobs_skipped: result.stale_jobs_skipped,
+                failed_jobs: result.failed_jobs,
+                canonical_rows_upserted: result.canonical_rows_upserted,
+                fts_rows_written: result.fts_rows_written,
+                remaining_queue_depth: result.remaining_queue_depth,
+                budget_exhausted: result.budget_exhausted,
+            },
+        )),
+    }
+}
+
+fn observed_rebuild_provider_result(
+    drain: &ObservedValuesDrainResult,
+    canonical_rows_scanned: u32,
+    fts_rows_rebuilt: u32,
+) -> SearchMaintenanceResult {
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::ObservedValues,
+        state: if observed_drain_is_partial(drain) {
+            SearchMaintenanceState::Partial
+        } else {
+            SearchMaintenanceState::Completed
+        },
+        note: observed_rebuild_note(drain, canonical_rows_scanned),
+        detail: Some(SearchMaintenanceDetail::ObservedRebuild(
+            ObservedRebuildMaintenanceResult {
+                canonical_rows_scanned,
+                fts_rows_rebuilt,
+            },
+        )),
+    }
+}
+
+fn observed_drain_is_partial(result: &ObservedValuesDrainResult) -> bool {
+    result.budget_exhausted
+        || result.remaining_queue_depth > 0
+        || result.failed_jobs > 0
+        || result.storage_jobs_dropped > 0
+        || result.storage_limit_reached
+}
+
+fn observed_drain_did_no_work(result: &ObservedValuesDrainResult) -> bool {
+    result.queue_jobs_processed == 0
+        && result.stale_jobs_skipped == 0
+        && result.stale_rows_purged == 0
+        && result.evicted_rows == 0
+}
+
+fn observed_clear_provider_result(result: ObservedValuesClearResult) -> SearchMaintenanceResult {
+    let deleted_total = result
+        .values
+        .saturating_add(result.fts_rows)
+        .saturating_add(result.queue_jobs);
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::ObservedValues,
+        state: if deleted_total == 0 {
+            SearchMaintenanceState::Noop
+        } else {
+            SearchMaintenanceState::Completed
+        },
+        note: "cleared observed-value search data".to_string(),
+        detail: Some(SearchMaintenanceDetail::ObservedClear(
+            ObservedClearMaintenanceResult {
+                values: result.values,
+                fts_rows: result.fts_rows,
+                queue_jobs: result.queue_jobs,
+            },
+        )),
+    }
+}
+
+fn observed_drain_note(result: &ObservedValuesDrainResult) -> String {
+    let mut note = format!(
+        "drained {} observed-value queue job(s)",
+        result.queue_jobs_processed
+    );
+    let mut causes = Vec::new();
+    if result.failed_jobs > 0 {
+        let disposition = if result.remaining_queue_depth > 0 {
+            "left for retry"
+        } else {
+            "dead-lettered"
+        };
+        causes.push(format!(
+            "{} failed job(s) {disposition}",
+            result.failed_jobs
+        ));
+    } else if result.remaining_queue_depth > 0 && !result.budget_exhausted {
+        causes.push(format!(
+            "{} queue job(s) remain",
+            result.remaining_queue_depth
+        ));
+    }
+    if result.storage_jobs_dropped > 0 {
+        causes.push(format!(
+            "{} queued observation job(s) omitted to preserve storage headroom",
+            result.storage_jobs_dropped
+        ));
+    }
+    if result.storage_limit_reached {
+        causes.push("storage limit remains reached".to_string());
+    }
+    if result.budget_exhausted {
+        causes.push(format!(
+            "cooperative budget exhausted with {} queue job(s) remaining",
+            result.remaining_queue_depth
+        ));
+    }
+    if !causes.is_empty() {
+        note.push_str("; ");
+        note.push_str(&causes.join("; "));
+    }
+    note
+}
+
+fn observed_rebuild_note(drain: &ObservedValuesDrainResult, canonical_rows_scanned: u32) -> String {
+    let drained_jobs = drain
+        .queue_jobs_processed
+        .saturating_add(drain.stale_jobs_skipped)
+        .saturating_add(drain.failed_jobs);
+    let mut note = if drained_jobs == 0 {
+        format!("rebuilt observed-value FTS projection from {canonical_rows_scanned} row(s)")
+    } else {
+        format!(
+            "drained {drained_jobs} observed-value queue job(s), then rebuilt observed-value FTS projection from {canonical_rows_scanned} row(s)"
+        )
+    };
+    let drain_note = observed_drain_note(drain);
+    if observed_drain_is_partial(drain) {
+        let (_, partial_detail) = drain_note
+            .split_once("; ")
+            .unwrap_or((drain_note.as_str(), drain_note.as_str()));
+        note.push_str("; ");
+        note.push_str(partial_detail);
+    }
+    note
+}
+
 fn log_drain_budget_exhaustion(workspace_name: &WorkspaceName, result: &ObservedValuesDrainResult) {
     if result.budget_exhausted {
         tracing::debug!(
@@ -365,16 +595,271 @@ fn log_drain_budget_exhaustion(workspace_name: &WorkspaceName, result: &Observed
     }
 }
 
+fn observed_storage_cleanup_result(
+    result: &SqliteSearchCompactionResult,
+) -> SearchStorageCleanupResult {
+    let (state, note) = match (
+        result.wal_checkpoint_truncate_completed,
+        result.vacuum_completed,
+    ) {
+        (true, true) => (
+            SearchMaintenanceState::Completed,
+            "local search storage cleanup completed",
+        ),
+        (true, false) | (false, true) => (
+            SearchMaintenanceState::Partial,
+            "local search storage cleanup partially completed",
+        ),
+        (false, false) => (
+            SearchMaintenanceState::Failed,
+            "local search storage cleanup did not complete",
+        ),
+    };
+    if state != SearchMaintenanceState::Completed {
+        tracing::warn!(
+            wal_checkpoint_truncate_completed = result.wal_checkpoint_truncate_completed,
+            vacuum_completed = result.vacuum_completed,
+            detail = %result.note,
+            "local search storage cleanup did not fully complete"
+        );
+    }
+    SearchStorageCleanupResult {
+        state,
+        note: note.to_string(),
+    }
+}
+
+fn observed_sqlite_app_error(error: &SqliteSearchError) -> AppError {
+    if error.is_lock_contention() {
+        AppError::Unavailable(format!("search maintenance storage is busy: {error}"))
+    } else if error.is_storage_exhaustion() {
+        AppError::ResourceExhausted(format!("search maintenance storage is exhausted: {error}"))
+    } else if matches!(
+        error,
+        SqliteSearchError::UnsupportedCapability { .. }
+            | SqliteSearchError::UnsupportedSchemaVersion { .. }
+    ) {
+        AppError::FailedPrecondition(format!("search maintenance is not supported: {error}"))
+    } else {
+        AppError::Internal(format!("search maintenance storage failed: {error}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::observed_search_outcome;
+    use rusqlite::TransactionBehavior;
+    use tempfile::tempdir;
+
+    use super::{
+        ObservedValuesProvider, observed_clear_provider_result, observed_drain_provider_result,
+        observed_rebuild_provider_result, observed_search_outcome,
+    };
+    use crate::bootstrap::AppError;
+    use crate::search::maintenance::{
+        ObservedClearMaintenanceResult, SearchMaintenanceDetail, SearchMaintenanceState,
+    };
     use crate::search::observed::sqlite_projection::{
-        ObservedValuesDrainResult, ObservedValuesSearchHits,
+        ObservedValuesDrainBudget, ObservedValuesDrainResult, ObservedValuesSearchHit,
+        ObservedValuesSearchHits,
+    };
+    use crate::search::observed::sqlite_queue::{
+        ObservedValuesQueueJob, ObservedValuesSurfaceKind,
+    };
+    use crate::search::observed::sqlite_store::{
+        ObservedValuesClearResult, SqliteObservedValuesStore,
     };
     use crate::search::observed::{
-        ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
+        ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
     };
-    use crate::search::result::SearchProviderState;
+    use crate::search::result::{
+        SearchPayload, SearchProviderKind, SearchProviderState, SearchRequest, SearchSurfaceKind,
+    };
+    use crate::search::sqlite_store::SqliteSearchStore;
+    use crate::state::AppStateLayout;
+    use crate::workspaces::WorkspaceName;
+
+    #[test]
+    fn observed_provider_drains_queue_and_returns_observed_value_hits() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store
+            .capture_epoch(&workspace, "github")
+            .expect("capture epoch");
+        store
+            .enqueue_if_current(&workspace, &test_job(), epoch)
+            .expect("enqueue observed value");
+        let provider = ObservedValuesProvider::new(layout);
+        let request = SearchRequest::new(workspace, "payment", 10).expect("valid search request");
+
+        let policy = test_policy(&["scope"]);
+
+        let outcome = provider.search(&request, Ok(&policy));
+
+        assert_eq!(outcome.status.provider, SearchProviderKind::ObservedValues);
+        assert_eq!(outcome.status.state, SearchProviderState::ResultsFound);
+        assert_eq!(outcome.candidates.len(), 1);
+        let candidate = outcome.candidates.first().expect("observed candidate");
+        let SearchPayload::ObservedValue(observed) = &candidate.payload else {
+            panic!("expected observed value payload");
+        };
+        assert_eq!(observed.value, "Payment outage");
+        assert_eq!(observed.schema_name, "github");
+        assert_eq!(observed.surface_name, "issues");
+        assert_eq!(observed.column_name, "title");
+        assert_eq!(observed.surface_kind, SearchSurfaceKind::Table);
+        assert_eq!(observed.observed_count, 1);
+    }
+
+    #[test]
+    fn observed_provider_searches_existing_projection_when_drain_lock_is_busy() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store
+            .capture_epoch(&workspace, "github")
+            .expect("capture epoch");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("scope-1", "Payment outage"),
+                epoch,
+            )
+            .expect("enqueue first observed value");
+        store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, std::time::Duration::from_secs(1)),
+            )
+            .expect("drain first observed value");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("scope-2", "Payment backlog"),
+                epoch,
+            )
+            .expect("enqueue pending observed value");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("hold write lock");
+        let provider = ObservedValuesProvider::new(layout);
+        let request = SearchRequest::new(workspace, "payment", 10).expect("valid search request");
+
+        let policy = test_policy(&["scope-1", "scope-2"]);
+
+        let outcome = provider.search(&request, Ok(&policy));
+        drop(transaction);
+
+        assert_eq!(outcome.status.provider, SearchProviderKind::ObservedValues);
+        assert_eq!(outcome.status.state, SearchProviderState::Partial);
+        let coverage = outcome.status.coverage.expect("coverage");
+        assert_eq!(coverage.failed_units, 1);
+        assert!(coverage.stale_index);
+        assert_eq!(outcome.candidates.len(), 1);
+        let candidate = outcome.candidates.first().expect("observed candidate");
+        let SearchPayload::ObservedValue(observed) = &candidate.payload else {
+            panic!("expected observed value payload");
+        };
+        assert_eq!(observed.value, "Payment outage");
+    }
+
+    #[test]
+    fn observed_provider_fails_closed_when_live_scope_policy_is_unavailable() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let provider = ObservedValuesProvider::new(layout);
+        let request = SearchRequest::new(WorkspaceName::default(), "payment", 10).expect("request");
+        let error = AppError::FailedPrecondition("missing source scope".to_string());
+
+        let outcome = provider.search(&request, Err(&error));
+
+        assert_eq!(outcome.status.provider, SearchProviderKind::ObservedValues);
+        assert_eq!(outcome.status.state, SearchProviderState::Error);
+        assert!(outcome.candidates.is_empty());
+        assert!(
+            outcome
+                .status
+                .note
+                .contains("could not load live source scope"),
+            "unexpected note: {}",
+            outcome.status.note
+        );
+    }
+
+    #[test]
+    fn observed_provider_degrades_when_one_live_scope_source_fails() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store
+            .capture_epoch(&workspace, "github")
+            .expect("capture epoch");
+        store
+            .enqueue_if_current(&workspace, &test_job(), epoch)
+            .expect("enqueue observed value");
+        let provider = ObservedValuesProvider::new(layout);
+        let request = SearchRequest::new(workspace, "payment", 10).expect("valid search request");
+        let policy = ObservedValuesRetrievalPolicy::with_load_failures(
+            test_live_scopes(&["scope"]),
+            vec![ObservedValuesLiveScopeLoadFailure {
+                owner_source_name: "jira".to_string(),
+                message: "manifest parse failed".to_string(),
+            }],
+            365,
+        );
+
+        let outcome = provider.search(&request, Ok(&policy));
+
+        assert_eq!(outcome.status.provider, SearchProviderKind::ObservedValues);
+        assert_eq!(outcome.status.state, SearchProviderState::Partial);
+        let coverage = outcome.status.coverage.expect("coverage");
+        assert_eq!(coverage.failed_units, 1);
+        assert!(coverage.stale_index);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert!(
+            outcome.status.note.contains("skipped 1 source")
+                && outcome.status.note.contains("jira"),
+            "unexpected note: {}",
+            outcome.status.note
+        );
+    }
+
+    #[test]
+    fn observed_provider_diversifies_observed_values_by_surface_and_column() {
+        let policy = test_policy(&["scope"]);
+        let hits = ObservedValuesSearchHits {
+            hits: vec![
+                test_hit("issues", "Payment alpha", 1),
+                test_hit("issues", "Payment beta", 1),
+                test_hit("pulls", "Payment pull", 1),
+                test_hit("issues", "Payment gamma", 1),
+            ],
+            value_count: 4,
+            retrieval_limited: true,
+        };
+
+        let outcome = observed_search_outcome(
+            hits,
+            &ObservedValuesDrainResult::default(),
+            None,
+            &policy,
+            3,
+        );
+
+        assert_eq!(
+            observed_values(&outcome.candidates),
+            ["Payment alpha", "Payment pull", "Payment beta",]
+        );
+    }
 
     #[test]
     fn storage_drops_make_observed_coverage_partial_and_stale() {
@@ -476,5 +961,186 @@ mod tests {
                     .stale_index
             );
         }
+    }
+
+    #[test]
+    fn observed_drain_budget_exhaustion_reports_partial_not_empty() {
+        let result = ObservedValuesDrainResult {
+            remaining_queue_depth: 1,
+            budget_exhausted: true,
+            ..ObservedValuesDrainResult::default()
+        };
+
+        let provider_result = observed_drain_provider_result(&result);
+
+        assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+    }
+
+    #[test]
+    fn observed_drain_storage_limit_reports_partial() {
+        let result = ObservedValuesDrainResult {
+            storage_limit_reached: true,
+            ..ObservedValuesDrainResult::default()
+        };
+
+        let provider_result = observed_drain_provider_result(&result);
+
+        assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+    }
+
+    #[test]
+    fn observed_drain_storage_drops_report_partial_with_compound_note() {
+        let result = ObservedValuesDrainResult {
+            failed_jobs: 1,
+            storage_jobs_dropped: 2,
+            storage_limit_reached: true,
+            ..ObservedValuesDrainResult::default()
+        };
+
+        let provider_result = observed_drain_provider_result(&result);
+
+        assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+        assert!(
+            provider_result
+                .note
+                .contains("1 failed job(s) dead-lettered")
+        );
+        assert!(
+            provider_result
+                .note
+                .contains("2 queued observation job(s) omitted")
+        );
+        assert!(
+            provider_result
+                .note
+                .contains("storage limit remains reached")
+        );
+    }
+
+    #[test]
+    fn observed_drain_noop_accounts_for_governance_work() {
+        let noop = observed_drain_provider_result(&ObservedValuesDrainResult::default());
+        let purged = observed_drain_provider_result(&ObservedValuesDrainResult {
+            stale_rows_purged: 1,
+            ..ObservedValuesDrainResult::default()
+        });
+        let evicted = observed_drain_provider_result(&ObservedValuesDrainResult {
+            evicted_rows: 1,
+            ..ObservedValuesDrainResult::default()
+        });
+
+        assert_eq!(noop.state, SearchMaintenanceState::Noop);
+        assert_eq!(purged.state, SearchMaintenanceState::Completed);
+        assert_eq!(evicted.state, SearchMaintenanceState::Completed);
+    }
+
+    #[test]
+    fn observed_rebuild_failed_jobs_report_partial() {
+        let drain = ObservedValuesDrainResult {
+            failed_jobs: 1,
+            remaining_queue_depth: 0,
+            ..ObservedValuesDrainResult::default()
+        };
+
+        let provider_result = observed_rebuild_provider_result(&drain, 3, 3);
+
+        assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+    }
+
+    #[test]
+    fn observed_rebuild_with_no_rows_still_reports_completed() {
+        let provider_result =
+            observed_rebuild_provider_result(&ObservedValuesDrainResult::default(), 0, 0);
+
+        assert_eq!(provider_result.state, SearchMaintenanceState::Completed);
+    }
+
+    #[test]
+    fn observed_clear_reports_noop_only_when_nothing_was_deleted() {
+        let noop = observed_clear_provider_result(ObservedValuesClearResult {
+            values: 0,
+            fts_rows: 0,
+            queue_jobs: 0,
+        });
+        let completed = observed_clear_provider_result(ObservedValuesClearResult {
+            values: 1,
+            fts_rows: 0,
+            queue_jobs: 0,
+        });
+
+        assert_eq!(noop.state, SearchMaintenanceState::Noop);
+        assert_eq!(completed.state, SearchMaintenanceState::Completed);
+        assert!(matches!(
+            completed.detail,
+            Some(SearchMaintenanceDetail::ObservedClear(
+                ObservedClearMaintenanceResult { values: 1, .. }
+            ))
+        ));
+    }
+
+    fn test_job() -> ObservedValuesQueueJob {
+        test_job_with("scope", "Payment outage")
+    }
+
+    fn test_job_with(source_scope_id: &str, display_value: &str) -> ObservedValuesQueueJob {
+        ObservedValuesQueueJob {
+            owner_source_name: "github".to_string(),
+            source_name: "github".to_string(),
+            source_scope_id: source_scope_id.to_string(),
+            surface_kind: ObservedValuesSurfaceKind::Table,
+            surface_name: "issues".to_string(),
+            payload_json: format!(
+                r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"{}","value_key":"{}"}}]}}"#,
+                display_value.to_ascii_lowercase(),
+                display_value.to_ascii_lowercase().replace(' ', "-")
+            ),
+        }
+    }
+
+    fn test_policy(scopes: &[&str]) -> ObservedValuesRetrievalPolicy {
+        ObservedValuesRetrievalPolicy::new(test_live_scopes(scopes), 365)
+    }
+
+    fn test_live_scopes(scopes: &[&str]) -> Vec<ObservedValuesLiveScope> {
+        scopes
+            .iter()
+            .map(|scope| ObservedValuesLiveScope {
+                owner_source_name: "github".to_string(),
+                source_name: "github".to_string(),
+                source_scope_id: (*scope).to_string(),
+                surface_kind: ObservedValuesSurfaceKind::Table,
+                surface_name: "issues".to_string(),
+            })
+            .collect()
+    }
+
+    fn test_hit(
+        surface_name: &str,
+        display_value: &str,
+        observation_count: u64,
+    ) -> ObservedValuesSearchHit {
+        ObservedValuesSearchHit {
+            source_name: "github".to_string(),
+            source_scope_id: format!("{surface_name}-scope"),
+            surface_kind: ObservedValuesSurfaceKind::Table,
+            surface_name: surface_name.to_string(),
+            column_name: "title".to_string(),
+            value_key: display_value.to_ascii_lowercase().replace(' ', "-"),
+            display_value: display_value.to_string(),
+            last_observed_at: "2026-07-09T00:00:00.000Z".to_string(),
+            observation_count,
+        }
+    }
+
+    fn observed_values(candidates: &[crate::search::result::SearchCandidate]) -> Vec<&str> {
+        candidates
+            .iter()
+            .map(|candidate| {
+                let SearchPayload::ObservedValue(observed) = &candidate.payload else {
+                    panic!("expected observed value payload");
+                };
+                observed.value.as_str()
+            })
+            .collect()
     }
 }

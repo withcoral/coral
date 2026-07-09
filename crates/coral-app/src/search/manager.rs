@@ -10,16 +10,20 @@ use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::engine::UniversalSearchEngine;
 use crate::search::maintenance::{
-    ClearSearchDataRequest, ClearSearchDataResponse, RebuildSearchIndexRequest,
-    RebuildSearchIndexResponse, SearchMaintenanceResult, SearchProviderClearRequest,
-    SearchProviderMaintenance, SearchProviderRebuildRequest,
+    ClearSearchDataRequest, ClearSearchDataResponse, DrainSearchQueueRequest,
+    DrainSearchQueueResponse, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
+    SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchMaintenanceResult,
+    SearchMaintenanceState, SearchProviderClearRequest, SearchProviderMaintenance,
+    SearchProviderRebuildRequest,
 };
 use crate::search::observed::provider::ObservedValuesProvider;
 use crate::search::observed::{
     ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad, ObservedValuesLiveScopeLoader,
     ObservedValuesRetrievalPolicy,
 };
-use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
+use crate::search::result::{
+    SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse,
+};
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::{WorkspaceManager, WorkspaceName};
@@ -34,9 +38,12 @@ pub(crate) struct SearchManager {
     workspaces: WorkspaceManager,
 }
 
+const DEFAULT_MANUAL_DRAIN_BUDGET_MS: u32 = 1_000;
+const MAX_MANUAL_DRAIN_BUDGET_MS: u32 = 60_000;
 const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
 const SHUTDOWN_DRAIN_SOFT_BUDGET: Duration = Duration::from_secs(1);
 const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
+const OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE: &str = "observed value search maintenance is disabled; enable `observed_values_search` to rebuild or drain observed values";
 
 impl SearchManager {
     #[cfg(test)]
@@ -121,9 +128,37 @@ impl SearchManager {
         &self,
         request: &RebuildSearchIndexRequest,
     ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
-        let result = self.rebuild_catalog_index(request)?;
-        Ok(RebuildSearchIndexResponse {
-            results: vec![result],
+        let results = match request.provider {
+            SearchIndexProvider::Catalog => vec![self.rebuild_catalog_index(request)?],
+            SearchIndexProvider::ObservedValues => vec![self.rebuild_observed_index(request)],
+            SearchIndexProvider::All => vec![
+                self.rebuild_catalog_index(request)?,
+                self.rebuild_observed_index(request),
+            ],
+        };
+        Ok(RebuildSearchIndexResponse { results })
+    }
+
+    pub(crate) async fn drain_queue(
+        &self,
+        request: &DrainSearchQueueRequest,
+    ) -> Result<DrainSearchQueueResponse, SearchManagerError> {
+        self.workspaces
+            .require_workspace(&request.workspace_name)
+            .await?;
+        let search = self.clone();
+        let request = request.clone();
+        run_blocking_search_operation(move || search.drain_queue_blocking(&request)).await
+    }
+
+    fn drain_queue_blocking(
+        &self,
+        request: &DrainSearchQueueRequest,
+    ) -> Result<DrainSearchQueueResponse, SearchManagerError> {
+        Ok(DrainSearchQueueResponse {
+            results: vec![
+                self.drain_observed_queue_with_budget(&request.workspace_name, request.budget_ms)?,
+            ],
         })
     }
 
@@ -143,14 +178,57 @@ impl SearchManager {
         &self,
         request: &ClearSearchDataRequest,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
-        let outcome = self.catalog.clear_data(SearchProviderClearRequest {
-            workspace_name: &request.workspace_name,
-            scope: request.scope,
-            target: &request.target,
+        let provider_outcomes = match request.scope {
+            SearchDataScope::Observed => {
+                vec![self.observed.clear_data(SearchProviderClearRequest {
+                    workspace_name: &request.workspace_name,
+                    scope: request.scope,
+                    target: &request.target,
+                    compact_after_clear: true,
+                })?]
+            }
+            SearchDataScope::All => {
+                if let SearchClearTarget::Source(source_name) = &request.target {
+                    return Err(AppError::InvalidInput(format!(
+                        "source-scoped all search-data clear is not implemented yet for source '{source_name}'; set scope to observed for observed-value source data"
+                    ))
+                    .into());
+                }
+                vec![
+                    self.catalog.clear_data(SearchProviderClearRequest {
+                        workspace_name: &request.workspace_name,
+                        scope: request.scope,
+                        target: &request.target,
+                        compact_after_clear: false,
+                    })?,
+                    self.observed.clear_data(SearchProviderClearRequest {
+                        workspace_name: &request.workspace_name,
+                        scope: request.scope,
+                        target: &request.target,
+                        compact_after_clear: true,
+                    })?,
+                ]
+            }
+        };
+        let mut results = Vec::with_capacity(provider_outcomes.len());
+        let mut storage_cleanup = None;
+        for outcome in provider_outcomes {
+            results.push(outcome.result);
+            if let Some(cleanup) = outcome.storage_cleanup {
+                if storage_cleanup.replace(cleanup).is_some() {
+                    return Err(AppError::Internal(
+                        "multiple providers attempted shared search storage cleanup".to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+        let storage_cleanup = storage_cleanup.ok_or_else(|| {
+            AppError::Internal("no provider performed shared search storage cleanup".to_string())
         })?;
         Ok(ClearSearchDataResponse {
-            results: vec![outcome.result],
-            storage_cleanup: outcome.storage_cleanup,
+            results,
+            storage_cleanup,
         })
     }
 
@@ -178,15 +256,8 @@ impl SearchManager {
                     Ok(result) => {
                         tracing::debug!(
                             workspace = %workspace.name,
-                            queue_jobs_processed = result.queue_jobs_processed,
-                            stale_jobs_skipped = result.stale_jobs_skipped,
-                            failed_jobs = result.failed_jobs,
-                            storage_jobs_dropped = result.storage_jobs_dropped,
-                            stale_rows_purged = result.stale_rows_purged,
-                            evicted_rows = result.evicted_rows,
-                            storage_limit_reached = result.storage_limit_reached,
-                            remaining_queue_depth = result.remaining_queue_depth,
-                            budget_exhausted = result.budget_exhausted,
+                            state = ?result.state,
+                            note = %result.note,
                             remaining_soft_budget_ms = remaining_budget.as_millis(),
                             "drained observed-value queue before shutdown"
                         );
@@ -205,6 +276,61 @@ impl SearchManager {
         .await
     }
 
+    fn rebuild_catalog_index(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        self.catalog.rebuild_index(SearchProviderRebuildRequest {
+            workspace_name: &request.workspace_name,
+            force: request.force,
+        })
+    }
+
+    fn rebuild_observed_index(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> SearchMaintenanceResult {
+        if !self.observed_values_search_enabled {
+            return observed_values_search_disabled_maintenance_result();
+        }
+        match self.try_rebuild_observed_index(request) {
+            Ok(result) => result,
+            Err(error) => observed_rebuild_error_provider_result(&error),
+        }
+    }
+
+    fn try_rebuild_observed_index(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        let policy = self.observed_retrieval_policy(&request.workspace_name)?;
+        self.observed.rebuild_index(
+            SearchProviderRebuildRequest {
+                workspace_name: &request.workspace_name,
+                force: request.force,
+            },
+            &policy,
+        )
+    }
+
+    fn drain_observed_queue_with_budget(
+        &self,
+        workspace_name: &WorkspaceName,
+        budget_ms: u32,
+    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        if !self.observed_values_search_enabled {
+            return Ok(observed_values_search_disabled_maintenance_result());
+        }
+        let budget_ms = manual_drain_budget_ms(budget_ms)?;
+        self.observed.drain_queue(
+            workspace_name,
+            ObservedValuesDrainBudget::new(
+                MANUAL_DRAIN_MAX_JOBS,
+                Duration::from_millis(u64::from(budget_ms)),
+            ),
+        )
+    }
+
     fn observed_retrieval_policy(
         &self,
         workspace_name: &WorkspaceName,
@@ -214,16 +340,6 @@ impl SearchManager {
             load,
             OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS,
         ))
-    }
-
-    fn rebuild_catalog_index(
-        &self,
-        request: &RebuildSearchIndexRequest,
-    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
-        self.catalog.rebuild_index(SearchProviderRebuildRequest {
-            workspace_name: &request.workspace_name,
-            force: request.force,
-        })
     }
 }
 
@@ -238,6 +354,21 @@ where
         .map_err(AppError::from)?
 }
 
+fn manual_drain_budget_ms(requested_budget_ms: u32) -> Result<u32, SearchManagerError> {
+    let budget_ms = if requested_budget_ms == 0 {
+        DEFAULT_MANUAL_DRAIN_BUDGET_MS
+    } else {
+        requested_budget_ms
+    };
+    if budget_ms > MAX_MANUAL_DRAIN_BUDGET_MS {
+        return Err(AppError::InvalidInput(format!(
+            "search queue drain budget must be at most {MAX_MANUAL_DRAIN_BUDGET_MS}ms"
+        ))
+        .into());
+    }
+    Ok(budget_ms)
+}
+
 fn observed_retrieval_policy_from_load(
     load: ObservedValuesLiveScopeLoad,
     stale_after_last_observed_days: u32,
@@ -247,4 +378,31 @@ fn observed_retrieval_policy_from_load(
         load.failed_sources,
         stale_after_last_observed_days,
     )
+}
+
+fn observed_rebuild_error_provider_result(error: &SearchManagerError) -> SearchMaintenanceResult {
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::ObservedValues,
+        state: SearchMaintenanceState::Failed,
+        note: format!(
+            "observed-value search index rebuild failed: {}",
+            search_manager_error_message(error)
+        ),
+        detail: None,
+    }
+}
+
+fn observed_values_search_disabled_maintenance_result() -> SearchMaintenanceResult {
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::ObservedValues,
+        state: SearchMaintenanceState::Noop,
+        note: OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE.to_string(),
+        detail: None,
+    }
+}
+
+fn search_manager_error_message(error: &SearchManagerError) -> String {
+    match error {
+        SearchManagerError::App(error) => error.to_string(),
+    }
 }
