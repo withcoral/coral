@@ -18,9 +18,10 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::{
     CatalogRebuildResult, DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse,
-    ListWorkspacesResponse, RebuildSearchIndexResponse, SearchDataScope, SearchMaintenanceResult,
-    SearchMaintenanceState, SearchProvider, Source, SourceCredentialStorage, SourceInfo,
-    SourceOrigin, Workspace, search_clear_target, search_maintenance_result,
+    ListWorkspacesResponse, RebuildSearchIndexResponse, SearchDataScope, SearchIndexProvider,
+    SearchMaintenanceResult, SearchMaintenanceState, SearchProvider, Source,
+    SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, search_clear_target,
+    search_maintenance_result,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -958,6 +959,34 @@ async fn search_index_rebuild_reports_current_projection_as_skipped() {
         !stdout.contains("Rebuilt catalog"),
         "no-op rebuild must not claim a rebuild: {stdout}"
     );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_index_drain_calls_app_maintenance_rpc() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search-index", "drain", "--budget-ms", "2500"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Drained observed-values search queue"),
+        "expected drain output: {stdout}"
+    );
+
+    assert!(
+        server.search_requests().is_empty(),
+        "maintenance command must not call Search"
+    );
+    let requests = server.drain_search_queue_requests();
+    assert_eq!(requests.len(), 1, "expected one drain call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].budget_ms, 2500);
 
     server.shutdown().await;
 }
