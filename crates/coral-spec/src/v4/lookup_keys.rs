@@ -103,8 +103,8 @@ fn normalized_param_name(name: &str) -> String {
 mod tests {
     use crate::v4::ir::{
         HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-        IrOperationOutput, IrScalarType, OutputCardinality, RestExecutionAttachment,
-        RestResponseAttachment, SemanticIr,
+        IrOperationOutput, IrScalarType, McpExecutionAttachment, OutputCardinality,
+        RestExecutionAttachment, RestResponseAttachment, SemanticIr,
     };
     use crate::v4::manifest::SurfaceType;
     use crate::v4::{OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
@@ -158,9 +158,16 @@ mod tests {
         assert!(!input_excluded(&ir, "widgets_list", "state"));
         assert!(!input_excluded(&ir, "widgets_list", "category"));
         assert!(!input_excluded(&ir, "gadgets_list", "since"));
+    }
 
-        let mut mcp_only = semantic_ir(Vec::new());
-        apply_lookup_key_inference(&mut mcp_only);
+    #[test]
+    fn resets_lookup_key_exclusions_for_mcp_inputs() {
+        let mut ir = semantic_ir(vec![mcp_operation("items_search", "query")]);
+        assert!(input_excluded(&ir, "items_search", "query"));
+
+        apply_lookup_key_inference(&mut ir);
+
+        assert!(!input_excluded(&ir, "items_search", "query"));
     }
 
     #[test]
@@ -233,6 +240,38 @@ mod tests {
                 },
                 pagination,
             })),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn mcp_operation(id: &str, input_name: &str) -> IrOperation {
+        IrOperation {
+            id: id.to_string(),
+            method_name: "tools/call".to_string(),
+            description: String::new(),
+            deprecated: false,
+            read_only: true,
+            naming: None,
+            inputs: vec![IrOperationInput {
+                name: input_name.to_string(),
+                location: IrInputLocation::ToolArg,
+                required: false,
+                data_type: IrScalarType::String,
+                default_value: None,
+                description: String::new(),
+                exclude_from_lookup_keys: true,
+            }],
+            output: IrOperationOutput {
+                cardinality: OutputCardinality::List,
+                type_ref: "row".to_string(),
+                row_path: Vec::new(),
+            },
+            entity: None,
+            execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
+                tool_name: id.to_string(),
+                pagination: None,
+                offset_pagination: None,
+            }),
             diagnostics: Vec::new(),
         }
     }
