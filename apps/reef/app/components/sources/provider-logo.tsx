@@ -7,7 +7,7 @@ import { providerIcon, providerIconNeedsDarkInvert } from '@/lib/provider-icons'
 
 import * as styles from './provider-logo.css'
 
-type ProviderLogoSize = 'large' | 'medium' | 'small'
+export type ProviderLogoSize = 'large' | 'medium' | 'small'
 
 const FALLBACK_ICON_SIZE: Record<ProviderLogoSize, '16' | '18' | '20'> = {
   large: '20',

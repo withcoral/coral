@@ -18,7 +18,7 @@ import type {
 import type { action as sourceDetailAction } from '@/routes/source-detail'
 import type { SourcesActionData } from '@/routes/sources-action'
 
-import { ProviderLogo } from './provider-logo'
+import { ProviderLogo } from '@/components/sources'
 import * as styles from './source-detail.css'
 import { SourceInstallDialog } from './source-install'
 

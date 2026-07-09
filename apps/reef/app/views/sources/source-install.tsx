@@ -19,7 +19,7 @@ import type {
 } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
-import { ProviderLogo } from './provider-logo'
+import { ProviderLogo } from '@/components/sources'
 import * as styles from './source-install.css'
 
 function formatFieldName(key: string): string {
