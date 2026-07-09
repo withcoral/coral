@@ -8,7 +8,8 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
+    RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatisticsProfile,
+    StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -31,8 +32,8 @@ use crate::sources::materialization::{
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
-use crate::state::{AppConfig, AppStateLayout, ConfigStore};
-use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+use crate::state::{AppConfig, AppStateLayout, ConfigStore, StatisticsStore};
+use crate::telemetry::{InstalledLocalTraceStore, WORKSPACE_SPAN_ATTRIBUTE};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -63,6 +64,8 @@ struct LoadedQuerySource {
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
+    statistics_store: StatisticsStore,
+    local_trace_store: Option<InstalledLocalTraceStore>,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -79,10 +82,20 @@ impl QueryManager {
         Self {
             config_store,
             credential_manager,
+            statistics_store: StatisticsStore::new(layout.clone()),
+            local_trace_store: None,
             runtime_context,
             layout,
             engine_extensions_providers,
         }
+    }
+
+    pub(crate) fn with_local_trace_store(
+        mut self,
+        local_trace_store: Option<InstalledLocalTraceStore>,
+    ) -> Self {
+        self.local_trace_store = local_trace_store;
+        self
     }
 
     pub(crate) async fn list_tables(
@@ -108,6 +121,7 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
+                        StatisticsProfile::empty(),
                     )
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
@@ -143,6 +157,7 @@ impl QueryManager {
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
+                        StatisticsProfile::empty(),
                     )
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
@@ -203,7 +218,7 @@ impl QueryManager {
         sql: &str,
         attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
-        run_query_operation(
+        let result = run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
@@ -212,18 +227,30 @@ impl QueryManager {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &loaded_sources, &config)
-                    .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::execute_sql(&sources, runtime, sql)
+                let statistics = self.load_statistics_profile(workspace_name, &sources);
+                let runtime = self
+                    .runtime_config_with_statistics(
+                        workspace_name,
+                        &loaded_sources,
+                        &config,
+                        statistics,
+                    )
+                    .map_err(QueryManagerError::App)?;
+                let execution = CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
-                    .map_err(QueryManagerError::Core)
+                    .map_err(QueryManagerError::Core)?;
+                Ok(execution)
             },
             |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
             |span, execution| record_query_provenance(span, execution.provenance()),
         )
-        .await
+        .await;
+        if result.is_ok() {
+            self.refresh_statistics_profile_from_traces(workspace_name)
+                .await;
+        }
+        result
     }
 
     pub(crate) async fn explain_sql(
@@ -241,10 +268,16 @@ impl QueryManager {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &loaded_sources, &config)
-                    .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
+                let statistics = self.load_statistics_profile(workspace_name, &sources);
+                let runtime = self
+                    .runtime_config_with_statistics(
+                        workspace_name,
+                        &loaded_sources,
+                        &config,
+                        statistics,
+                    )
+                    .map_err(QueryManagerError::App)?;
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -434,17 +467,54 @@ impl QueryManager {
         ))
     }
 
+    fn load_statistics_profile(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> StatisticsProfile {
+        match self.statistics_store.load_profile(workspace_name) {
+            Ok(mut profile) => {
+                profile.retain_sources(selected_sources.iter().map(QuerySource::source_name));
+                profile
+            }
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    detail = %error,
+                    "failed to load workspace statistics profile"
+                );
+                StatisticsProfile::empty()
+            }
+        }
+    }
+
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, AppError> {
+        self.runtime_config_with_statistics(
+            workspace_name,
+            selected_sources,
+            config,
+            StatisticsProfile::empty(),
+        )
+    }
+
+    fn runtime_config_with_statistics(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+        statistics: StatisticsProfile,
+    ) -> Result<QueryRuntimeConfig, AppError> {
         self.runtime_config_with_credential_mode(
             workspace_name,
             selected_sources,
             config,
             CredentialResolutionMode::Refreshing,
+            statistics,
         )
     }
 
@@ -454,6 +524,7 @@ impl QueryManager {
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
         credential_resolution_mode: CredentialResolutionMode,
+        statistics: StatisticsProfile,
     ) -> Result<QueryRuntimeConfig, AppError> {
         let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
@@ -489,7 +560,8 @@ impl QueryManager {
         extensions.source_input_resolver = Some(input_resolver);
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
-        let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
+        let mut runtime =
+            QueryRuntimeConfig::new(runtime_context, extensions).with_statistics(statistics);
         let selected_source_names = selected_sources
             .iter()
             .map(|source| source.query_source.source_name().to_string())
@@ -497,6 +569,65 @@ impl QueryManager {
         runtime.memory = config.memory_config()?;
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
+    }
+
+    async fn refresh_statistics_profile_from_traces(&self, workspace_name: &WorkspaceName) {
+        let Some(local_trace_store) = &self.local_trace_store else {
+            return;
+        };
+
+        crate::telemetry::force_flush_tracing();
+
+        let observations =
+            match crate::telemetry::load_statistics_observations(local_trace_store, workspace_name)
+                .await
+            {
+                Ok(observations) => observations,
+                Err(error) => {
+                    tracing::warn!(
+                        workspace = %workspace_name,
+                        detail = %error,
+                        "failed to load statistics observations from local trace history"
+                    );
+                    return;
+                }
+            };
+        let config = match self.config_store.load_config() {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    detail = %error,
+                    "failed to load config for statistics profile materialization"
+                );
+                return;
+            }
+        };
+        let loaded_sources = match self.load_query_sources_from_config(workspace_name, &config) {
+            Ok(sources) => sources,
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    detail = %error,
+                    "failed to refresh query sources for statistics profile materialization"
+                );
+                return;
+            }
+        };
+        let sources = query_sources_from_loaded(&loaded_sources);
+        if let Err(error) = self.statistics_store.rebuild_profile_from_observations(
+            workspace_name,
+            &observations,
+            sources
+                .iter()
+                .map(|source| source.source_name().to_string()),
+        ) {
+            tracing::warn!(
+                workspace = %workspace_name,
+                detail = %error,
+                "failed to rebuild statistics profile from local trace history"
+            );
+        }
     }
 }
 
@@ -774,6 +905,7 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use arrow::json::ArrayWriter;
     use coral_engine::{
         EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
         QueryTableUsage, SourceInputResolutionContext, SourceInputResolver,
@@ -781,7 +913,7 @@ mod tests {
     };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::{Value, json};
-    use tempfile::TempDir;
+    use tempfile::{TempDir, tempdir};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -789,6 +921,8 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
+    use crate::state::StatisticsStore;
+    use crate::storage::fs;
 
     struct QueryManagerFixture {
         _temp: TempDir,
@@ -1635,6 +1769,10 @@ surfaces:
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration-style test keeps setup, execution, and assertions together for readability"
+    )]
     #[tokio::test]
     async fn runtime_input_resolver_uses_loaded_credential_snapshot() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
@@ -1824,5 +1962,198 @@ tables:
                 .as_deref(),
             Some("stored-token")
         );
+    }
+
+    #[tokio::test]
+    async fn execute_sql_without_trace_history_keeps_statistics_empty() {
+        let temp = tempdir().expect("tempdir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        layout.ensure().expect("layout should be created");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("local_stats_jsonl").expect("source");
+        let data_dir = temp.path().join("jsonl-data");
+        std::fs::create_dir_all(&data_dir).expect("data dir");
+        std::fs::write(
+            data_dir.join("events.jsonl"),
+            r#"{"id":1,"category":"alpha","nullable_text":"one"}
+{"id":2,"category":"beta","nullable_text":null}
+{"id":3,"category":"alpha","nullable_text":"three"}
+"#,
+        )
+        .expect("jsonl fixture");
+
+        let manifest = format!(
+            r#"name: local_stats_jsonl
+version: 0.1.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Events
+    format: jsonl
+    source:
+      location: file://{}/
+      glob: "**/*.jsonl"
+    columns:
+      - name: id
+        type: Int64
+      - name: category
+        type: Utf8
+      - name: nullable_text
+        type: Utf8
+        nullable: true
+"#,
+            data_dir.display()
+        );
+        let manifest_path = layout.manifest_file(&workspace, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("manifest dir");
+        fs::write_atomic(&manifest_path, manifest.as_bytes()).expect("manifest write");
+
+        let config_store = ConfigStore::new(layout.clone());
+        config_store
+            .upsert_source(
+                &workspace,
+                InstalledSource {
+                    name: source_name,
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("install source");
+        let manager = QueryManager::new(
+            config_store,
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            Vec::<Arc<dyn crate::query::extensions::EngineExtensionsProvider>>::new(),
+        );
+
+        manager
+            .execute_sql(
+                &workspace,
+                "SELECT id, category, nullable_text FROM local_stats_jsonl.events ORDER BY id",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query should succeed");
+
+        let stored = StatisticsStore::new(layout.clone())
+            .load_profile(&workspace)
+            .expect("profile should load");
+        assert!(stored.sources.is_empty());
+
+        let catalog = manager
+            .execute_sql(
+                &workspace,
+                "SELECT column_name, stats_sample_count, approx_distinct_count, stats_precision \
+                 FROM coral.columns \
+                 WHERE schema_name = 'local_stats_jsonl' AND table_name = 'events' \
+                 ORDER BY ordinal_position",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("catalog query should succeed");
+        let rows = execution_rows(&catalog);
+        let by_name = rows
+            .iter()
+            .map(|row| (row["column_name"].as_str().expect("column name"), row))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let category = by_name.get("category").expect("category row");
+        assert!(
+            category
+                .get("stats_sample_count")
+                .is_none_or(Value::is_null)
+        );
+        assert!(
+            category
+                .get("approx_distinct_count")
+                .is_none_or(Value::is_null)
+        );
+        assert!(category.get("stats_precision").is_none_or(Value::is_null));
+    }
+
+    #[tokio::test]
+    async fn failed_query_does_not_create_statistics_profile() {
+        let temp = tempdir().expect("tempdir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        layout.ensure().expect("layout should be created");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            Vec::<Arc<dyn crate::query::extensions::EngineExtensionsProvider>>::new(),
+        );
+
+        let result = manager
+            .execute_sql(
+                &workspace,
+                "SELECT * FROM missing.table",
+                &QueryAttribution::default(),
+            )
+            .await;
+
+        let _ = result.unwrap_err();
+        let profile = StatisticsStore::new(layout)
+            .load_profile(&workspace)
+            .expect("profile should load");
+        assert!(profile.sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_metadata_does_not_load_persisted_statistics_profile() {
+        let temp = tempdir().expect("tempdir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        layout.ensure().expect("layout should be created");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let profile_path = layout.statistics_profile_file(&workspace);
+        std::fs::create_dir_all(profile_path.parent().expect("profile parent"))
+            .expect("profile dir");
+        std::fs::write(&profile_path, b"{ malformed json").expect("profile write");
+        let manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::<Arc<dyn crate::query::extensions::EngineExtensionsProvider>>::new(),
+        );
+
+        let tables = manager
+            .list_tables(&workspace, None, None, &QueryAttribution::default())
+            .await
+            .expect("list tables should not read malformed stats profile");
+        let catalog = manager
+            .list_catalog(&workspace, None, &QueryAttribution::default())
+            .await
+            .expect("list catalog should not read malformed stats profile");
+
+        assert!(!tables.is_empty());
+        assert!(tables.iter().all(|table| table.schema_name == "coral"));
+        assert!(!catalog.tables.is_empty());
+        assert!(
+            catalog
+                .tables
+                .iter()
+                .all(|table| table.schema_name == "coral")
+        );
+        assert!(catalog.table_functions.is_empty());
+    }
+
+    fn execution_rows(execution: &QueryExecution) -> Vec<Value> {
+        let mut bytes = Vec::new();
+        {
+            let mut writer = ArrayWriter::new(&mut bytes);
+            for batch in execution.batches() {
+                writer.write(batch).expect("batch should encode");
+            }
+            writer.finish().expect("writer should finish");
+        }
+        serde_json::from_slice(&bytes).expect("json rows")
     }
 }
