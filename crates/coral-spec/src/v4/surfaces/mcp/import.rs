@@ -518,12 +518,9 @@ surfaces:
                 .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_NOT_FOUND")
         );
 
-        let projections = generate_projection_catalog(
-            manifest().as_v4().expect("v4"),
-            std::slice::from_ref(&ir),
-            &BTreeMap::new(),
-        )
-        .expect("projections");
+        let projections =
+            generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
+                .expect("projections");
         assert_eq!(projections.projections.len(), 0);
     }
 
@@ -852,12 +849,9 @@ surfaces:
                 .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED")
         );
 
-        let projections = generate_projection_catalog(
-            manifest().as_v4().expect("v4"),
-            std::slice::from_ref(&ir),
-            &BTreeMap::new(),
-        )
-        .expect("projections");
+        let projections =
+            generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
+                .expect("projections");
         assert_eq!(projections.projections.len(), 0);
     }
 
@@ -1057,8 +1051,7 @@ surfaces:
         assert_eq!(pagination.offset_start, 0);
 
         let projections =
-            generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
-                .expect("projection catalog");
+            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projection catalog");
         let projection = projections
             .projections
             .iter()
@@ -1174,8 +1167,7 @@ surfaces:
         assert!(!operation.read_only);
 
         let projections =
-            generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
-                .expect("projections");
+            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projections");
         let projection = projections.projections.first().expect("projection");
         assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
     }

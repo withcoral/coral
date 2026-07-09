@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
@@ -7,7 +7,6 @@ use crate::v4::ir::{
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};
-use crate::v4::parameter_metadata::LookupKeysMetadata;
 use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{
     ManifestDataType, ManifestError, PaginationSpec, Result, SearchLimitsSpec,
@@ -29,9 +28,7 @@ type TypeIndex<'a> = HashMap<&'a str, &'a IrType>;
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
     surfaces: &[SemanticIr],
-    lookup_keys_by_surface: &BTreeMap<String, LookupKeysMetadata>,
 ) -> Result<ProjectionCatalog> {
-    let absent_lookup_keys = LookupKeysMetadata::default();
     let mut projections = Vec::new();
     let mut diagnostics = Vec::new();
     for ir in surfaces {
@@ -45,18 +42,9 @@ pub fn generate_projection_catalog(
                 ))
             })?;
         let type_by_id = type_index(ir);
-        let lookup_keys = lookup_keys_by_surface
-            .get(&ir.surface_id)
-            .unwrap_or(&absent_lookup_keys);
         for operation in &ir.operations {
-            let projection = generate_projection(
-                ir,
-                namespace,
-                &type_by_id,
-                operation,
-                lookup_keys,
-                &mut diagnostics,
-            );
+            let projection =
+                generate_projection(ir, namespace, &type_by_id, operation, &mut diagnostics);
             projections.push(projection);
         }
         diagnostics.extend(ir.diagnostics.clone());
@@ -80,7 +68,6 @@ fn generate_projection(
     namespace: &str,
     type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
-    lookup_keys: &LookupKeysMetadata,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Projection {
     let is_search = is_search_operation(operation);
@@ -135,7 +122,7 @@ fn generate_projection(
                 data_type: input.data_type.lower(),
                 default_value: input.default_value.clone(),
                 description: input.description.clone(),
-                lookup_key: rest_filter_is_lookup_key(rest, input, exposure, lookup_keys),
+                lookup_key: rest_filter_is_lookup_key(rest, input, exposure),
             }
         })
         .collect::<Vec<_>>();
@@ -279,11 +266,8 @@ fn rest_filter_is_lookup_key(
     rest: Option<&RestExecutionAttachment>,
     input: &IrOperationInput,
     exposure: SqlInputExposure,
-    lookup_keys: &LookupKeysMetadata,
 ) -> bool {
-    rest.is_some()
-        && exposure == SqlInputExposure::Filter
-        && lookup_keys.permits_lookup_key(&input.name)
+    rest.is_some() && exposure == SqlInputExposure::Filter && !input.exclude_from_lookup_keys
 }
 
 fn mcp_pagination_owns_input(

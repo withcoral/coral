@@ -29,7 +29,7 @@ surfaces:
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("one surface");
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let published = catalog
         .projections
         .iter()
@@ -73,19 +73,16 @@ paths:
         - {name: project_id, in: path, required: true, schema: {type: string}}
       responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
 ";
-    let ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
-    let lookup_keys = lookup_keys
-        .map(|(enabled, exclude)| {
-            BTreeMap::from([(
-                "rest".to_string(),
-                LookupKeysMetadata {
-                    enabled,
-                    exclude: exclude.iter().map(ToString::to_string).collect(),
-                },
-            )])
-        })
-        .unwrap_or_default();
-    generate_projection_catalog(v4, std::slice::from_ref(&ir), &lookup_keys).expect("catalog")
+    let mut ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
+    if let Some((enabled, exclude)) = lookup_keys {
+        for operation in &mut ir.operations {
+            for input in &mut operation.inputs {
+                input.exclude_from_lookup_keys =
+                    !enabled || exclude.iter().any(|excluded| *excluded == input.name);
+            }
+        }
+    }
+    generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog")
 }
 
 fn exposure(catalog: &ProjectionCatalog, operation_id: &str, input_name: &str) -> SqlInputExposure {
@@ -211,7 +208,7 @@ paths:
     )
     .expect("import");
 
-    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let column_types = catalog
         .projections
         .iter()
@@ -387,7 +384,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let names = catalog
         .projections
         .iter()
@@ -437,8 +434,7 @@ surfaces:
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("one surface");
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
-        .expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -567,8 +563,7 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
-        .expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -657,8 +652,7 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
-        .expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -746,8 +740,7 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
-        .expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -862,8 +855,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir), &BTreeMap::new())
-        .expect("catalog");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
     let list_projection = catalog
         .projections
         .iter()
@@ -1034,7 +1026,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let names_by_operation = catalog
         .projections
         .iter()
@@ -1250,7 +1242,7 @@ paths:
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("surface");
     let ir = import_openapi_surface(v4, surface, openapi.as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir], &BTreeMap::new()).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let sql_name_by_wire = projection
         .inputs
@@ -1281,8 +1273,7 @@ fn different_surface_namespaces_keep_colliding_projection_names() {
     let mcp_ir =
         import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
 
-    let catalog =
-        generate_projection_catalog(v4, &[rest_ir, mcp_ir], &BTreeMap::new()).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[rest_ir, mcp_ir]).expect("catalog");
     let rest_projection = catalog
         .projections
         .iter()
@@ -1323,7 +1314,7 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
     let mcp_ir =
         import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
 
-    let catalog = generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -1403,8 +1394,7 @@ fn generated_mcp_projection_keeps_pagination_cursor_internal() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections =
-        generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1469,8 +1459,7 @@ fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections =
-        generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1525,8 +1514,7 @@ fn generated_mcp_projection_snake_cases_camel_input_names() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections =
-        generate_projection_catalog(v4, &[mcp_ir], &BTreeMap::new()).expect("catalog");
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1571,8 +1559,7 @@ fn same_type_surface_namespaces_keep_colliding_projection_names() {
     let secondary_ir = import_openapi_surface(v4, secondary_surface, rest_search_openapi())
         .expect("secondary rest import");
 
-    let catalog = generate_projection_catalog(v4, &[primary_ir, secondary_ir], &BTreeMap::new())
-        .expect("catalog");
+    let catalog = generate_projection_catalog(v4, &[primary_ir, secondary_ir]).expect("catalog");
     let primary_projection = catalog
         .projections
         .iter()

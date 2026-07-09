@@ -169,6 +169,7 @@ impl OpenApiImporter<'_> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    exclude_from_lookup_keys: false,
                 })
             })
             .collect()

@@ -49,6 +49,7 @@ pub struct IrOperationInput {
     pub data_type: IrScalarType,
     pub default_value: Option<String>,
     pub description: String,
+    pub exclude_from_lookup_keys: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_execution_attachment_uses_v2_artifact_schema() {
+    fn mcp_execution_attachment_uses_current_artifact_schema() {
         let ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
@@ -274,6 +275,7 @@ mod tests {
                     data_type: IrScalarType::String,
                     default_value: None,
                     description: String::new(),
+                    exclude_from_lookup_keys: false,
                 }],
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
@@ -299,8 +301,10 @@ mod tests {
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize MCP semantic IR");
         assert!(
-            yaml.contains("artifact_schema_version: 2"),
-            "MCP execution variants require the v2 artifact schema: {yaml}"
+            yaml.contains(&format!(
+                "artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}"
+            )),
+            "MCP execution variants require the current artifact schema: {yaml}"
         );
         assert!(
             yaml.contains("surface_type: mcp"),
@@ -355,6 +359,7 @@ diagnostics: []
             data_type: IrScalarType::String,
             default_value: None,
             description: String::new(),
+            exclude_from_lookup_keys: false,
         };
 
         let yaml = serde_yaml::to_string(&input).expect("serialize input");

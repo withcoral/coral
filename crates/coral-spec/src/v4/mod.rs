@@ -3,7 +3,7 @@
     reason = "DSL v4 contracts are field-heavy artifact models documented in the PRD."
 )]
 
-pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 2;
+pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 3;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v1";
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v4";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v1";
@@ -40,16 +40,15 @@ pub use ir::{
     McpExecutionAttachment, OutputCardinality, RestExecutionAttachment, RestParameterBinding,
     RestRequestBody, RestResponseAttachment, SemanticIr,
 };
-pub use lookup_keys::infer_lookup_keys;
+pub use lookup_keys::apply_lookup_key_inference;
 pub use manifest::{
     McpRuntimeConfig, OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
     V4SourceCommon, V4SourceManifest, V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
 pub use parameter_metadata::{
-    GeneratedParameterMetadata, LookupKeysMetadata, ParameterMetadataOverrides,
-    ProjectionPaginationInputSyncMode, apply_parameter_metadata_overrides,
-    parse_generated_parameter_metadata_yaml, parse_parameter_metadata_overrides_yaml,
+    LookupKeysMetadata, ParameterMetadataOverrides, ProjectionPaginationInputSyncMode,
+    apply_parameter_metadata_overrides, parse_parameter_metadata_overrides_yaml,
     sync_projection_pagination_inputs, validate_lookup_keys_for_surface,
 };
 pub use projections::{
