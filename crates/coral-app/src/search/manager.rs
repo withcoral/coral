@@ -17,7 +17,7 @@ pub(crate) struct SearchManager {
 impl SearchManager {
     pub(crate) fn new(
         layout: AppStateLayout,
-        config_store: ConfigStore,
+        config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
     ) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());

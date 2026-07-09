@@ -310,7 +310,7 @@ impl ServerBuilder {
             layout.clone(),
             self.config.engine_extensions_providers,
         );
-        let search_manager = SearchManager::new(layout, config_store, workspace_manager.clone());
+        let search_manager = SearchManager::new(layout, &config_store, workspace_manager.clone());
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {
@@ -876,7 +876,7 @@ backend = "unsupported"
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_manager =
-            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
+            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
@@ -1275,7 +1275,7 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_manager =
-            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
+            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1389,7 +1389,7 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_manager =
-            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
+            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1503,7 +1503,7 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_manager =
-            SearchManager::new(layout.clone(), config_store, workspace_manager.clone());
+            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
             ServerManagers {
                 source: source_manager,
