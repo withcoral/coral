@@ -38,6 +38,12 @@ pub(crate) trait DbSession {
         T: Send + Unpin,
         for<'r> T: FromRow<'r, SqliteRow>,
         for<'r> T: FromRow<'r, PgRow>;
+
+    async fn fetch_all_scalars<T>(&mut self, statement: SelectStatement) -> Result<Vec<T>, DbError>
+    where
+        T: Send + Unpin,
+        for<'r> (T,): FromRow<'r, SqliteRow>,
+        for<'r> (T,): FromRow<'r, PgRow>;
 }
 
 pub(crate) trait DbRepos: DbSession + Sized {
@@ -121,6 +127,15 @@ impl DbSession for &CoralDb {
     {
         fetch_all_statement(&self.backend, statement).await
     }
+
+    async fn fetch_all_scalars<T>(&mut self, statement: SelectStatement) -> Result<Vec<T>, DbError>
+    where
+        T: Send + Unpin,
+        for<'r> (T,): FromRow<'r, SqliteRow>,
+        for<'r> (T,): FromRow<'r, PgRow>,
+    {
+        fetch_all_scalar_statement(&self.backend, statement).await
+    }
 }
 
 impl DbSession for CoralTx<'_> {
@@ -154,6 +169,15 @@ impl DbSession for CoralTx<'_> {
         for<'r> T: FromRow<'r, PgRow>,
     {
         self.fetch_all(statement).await
+    }
+
+    async fn fetch_all_scalars<T>(&mut self, statement: SelectStatement) -> Result<Vec<T>, DbError>
+    where
+        T: Send + Unpin,
+        for<'r> (T,): FromRow<'r, SqliteRow>,
+        for<'r> (T,): FromRow<'r, PgRow>,
+    {
+        self.fetch_all_scalars(statement).await
     }
 }
 
@@ -229,6 +253,33 @@ where
         CoralDbBackend::Postgres(db) => {
             let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
             sqlx::query_as_with::<Postgres, T, _>(sqlx::AssertSqlSafe(sql), values)
+                .fetch_all(&db.pool)
+                .await
+                .map_err(Into::into)
+        }
+    }
+}
+
+pub(super) async fn fetch_all_scalar_statement<T>(
+    backend: &CoralDbBackend,
+    statement: SelectStatement,
+) -> Result<Vec<T>, DbError>
+where
+    T: Send + Unpin,
+    for<'r> (T,): FromRow<'r, SqliteRow>,
+    for<'r> (T,): FromRow<'r, PgRow>,
+{
+    match backend {
+        CoralDbBackend::Sqlite(db) => {
+            let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
+            sqlx::query_scalar_with::<Sqlite, T, _>(sqlx::AssertSqlSafe(sql), values)
+                .fetch_all(&db.pool)
+                .await
+                .map_err(Into::into)
+        }
+        CoralDbBackend::Postgres(db) => {
+            let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
+            sqlx::query_scalar_with::<Postgres, T, _>(sqlx::AssertSqlSafe(sql), values)
                 .fetch_all(&db.pool)
                 .await
                 .map_err(Into::into)
