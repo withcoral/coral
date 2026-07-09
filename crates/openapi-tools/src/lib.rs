@@ -6,13 +6,16 @@
 )]
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::{Map, Value};
+use serde::Deserialize;
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_json::{Map, Number, Value};
 use thiserror::Error;
 use url::Url;
 
@@ -237,7 +240,7 @@ impl Resolver {
             .get(&self.root_uri)
             .expect("root document inserted before hydration")
             .value;
-        collect_refs_from_paths(
+        collect_refs_from_root_document(
             root_value,
             &self.root_uri,
             &self.root_uri,
@@ -528,10 +531,226 @@ fn fetch_https(
 }
 
 fn parse_document(input: &[u8], location: &str) -> Result<Value, OpenApiToolsError> {
-    serde_yaml::from_slice(input).map_err(|source| OpenApiToolsError::ParseFailure {
-        location: location.to_owned(),
-        source,
+    let value = serde_yaml::from_slice::<JsonValue>(input).map_err(|source| {
+        OpenApiToolsError::ParseFailure {
+            location: location.to_owned(),
+            source,
+        }
+    })?;
+    Ok(value.0)
+}
+
+struct JsonValue(Value);
+
+// Deserialize through our own visitor because `serde_json::Value` rejects YAML
+// integers outside its native i64/u64 range before callers can handle them.
+impl<'de> Deserialize<'de> for JsonValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(JsonValueVisitor)
+    }
+}
+
+struct JsonValueVisitor;
+
+impl<'de> Visitor<'de> for JsonValueVisitor {
+    type Value = JsonValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a YAML value that can be represented as JSON")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(JsonValue(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(JsonValue(Value::Number(Number::from(value))))
+    }
+
+    fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if let Ok(value) = i64::try_from(value) {
+            Ok(JsonValue(Value::Number(Number::from(value))))
+        } else {
+            f64_json_number(i128_to_f64_lossy(value)).map(|number| JsonValue(Value::Number(number)))
+        }
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(JsonValue(Value::Number(Number::from(value))))
+    }
+
+    fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if let Ok(value) = u64::try_from(value) {
+            Ok(JsonValue(Value::Number(Number::from(value))))
+        } else {
+            f64_json_number(u128_to_f64_lossy(value)).map(|number| JsonValue(Value::Number(number)))
+        }
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        f64_json_number(value).map(|number| JsonValue(Value::Number(number)))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(JsonValue(Value::String(value.to_owned())))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(JsonValue(Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(JsonValue(Value::Null))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(JsonValue(Value::Null))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = seq.next_element::<JsonValue>()? {
+            values.push(value.0);
+        }
+        Ok(JsonValue(Value::Array(values)))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = Map::new();
+        while let Some(key) = map.next_key_seed(JsonMapKeySeed)? {
+            let value = map.next_value::<JsonValue>()?;
+            object.insert(key, value.0);
+        }
+        Ok(JsonValue(Value::Object(object)))
+    }
+}
+
+struct JsonMapKeySeed;
+
+impl<'de> DeserializeSeed<'de> for JsonMapKeySeed {
+    type Value = String;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(JsonMapKeyVisitor)
+    }
+}
+
+struct JsonMapKeyVisitor;
+
+impl<'de> Visitor<'de> for JsonMapKeyVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a scalar YAML mapping key")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E> {
+        Ok(value.to_string())
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let number = f64_json_number(value)?;
+        Ok(number.to_string())
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(value.to_owned())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(value)
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok("null".to_owned())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok("null".to_owned())
+    }
+
+    fn visit_seq<A>(self, _seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        Err(de::Error::custom(
+            "YAML sequence keys cannot be represented as JSON object keys",
+        ))
+    }
+
+    fn visit_map<A>(self, _map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        Err(de::Error::custom(
+            "YAML mapping keys cannot be represented as JSON object keys",
+        ))
+    }
+}
+
+fn f64_json_number<E>(value: f64) -> Result<Number, E>
+where
+    E: de::Error,
+{
+    Number::from_f64(value).ok_or_else(|| {
+        de::Error::custom("YAML number is not representable as a finite JSON number")
     })
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "serde_json::Number cannot represent i128; large YAML integers are preserved as finite JSON numbers with f64 precision."
+)]
+fn i128_to_f64_lossy(value: i128) -> f64 {
+    value as f64
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "serde_json::Number cannot represent u128; large YAML integers are preserved as finite JSON numbers with f64 precision."
+)]
+fn u128_to_f64_lossy(value: u128) -> f64 {
+    value as f64
 }
 
 fn normalize_base_uri(base_uri: &str) -> Result<String, OpenApiToolsError> {
@@ -596,15 +815,21 @@ fn reject_symlink_target(path: &Path, location: &str) -> Result<(), OpenApiTools
     Ok(())
 }
 
-fn collect_refs_from_paths(
+fn collect_refs_from_root_document(
     root: &Value,
     base_uri: &str,
     root_uri: &str,
     queue: &mut VecDeque<RefTarget>,
     reachable_root_components: &mut BTreeSet<Vec<String>>,
 ) -> Result<(), OpenApiToolsError> {
-    if let Some(paths) = root.get("paths") {
-        collect_refs_in_value(paths, base_uri, root_uri, queue, reachable_root_components)?;
+    let Value::Object(object) = root else {
+        return collect_refs_in_value(root, base_uri, root_uri, queue, reachable_root_components);
+    };
+
+    for (key, child) in object {
+        if key != "components" {
+            collect_refs_in_value(child, base_uri, root_uri, queue, reachable_root_components)?;
+        }
     }
     Ok(())
 }
@@ -809,5 +1034,43 @@ mod tests {
         let missing = cache_miss_doc_uris(targets.iter(), &cache);
 
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn hydrate_accepts_yaml_integer_above_u64_max_as_json_number() {
+        let input = br##"
+openapi: 3.1.0
+info: {title: Test, version: "1"}
+paths:
+  /mysql:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Config"
+components:
+  schemas:
+    Config:
+      type: object
+      properties:
+        group_concat_max_len:
+          type: integer
+          minimum: 4
+          maximum: 18446744073709552000
+"##;
+
+        let hydrated =
+            hydrate_openapi(input, "https://example.com/openapi.yaml").expect("hydrates");
+
+        let maximum = hydrated
+            .pointer(
+                "/paths/~1mysql/get/responses/200/content/application~1json/schema/properties/group_concat_max_len/maximum",
+            )
+            .and_then(Value::as_f64)
+            .expect("maximum remains a JSON number");
+        assert!((maximum - 18_446_744_073_709_552_000.0).abs() < f64::EPSILON);
     }
 }

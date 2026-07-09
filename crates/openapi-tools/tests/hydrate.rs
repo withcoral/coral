@@ -292,6 +292,43 @@ components:
 }
 
 #[test]
+fn root_refs_outside_components_are_hydrated() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "openapi.yaml",
+        r#"
+openapi: 3.1.0
+info:
+  title: Test
+  version: "1"
+  description:
+    $ref: description.yaml
+paths:
+  /pets:
+    get:
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    Unused:
+      $ref: missing.yaml
+"#,
+    );
+    fixture.write("description.yaml", "Root description\n");
+
+    let hydrated =
+        hydrate_openapi_from_location(&fixture.path("openapi.yaml").display().to_string())
+            .expect("hydrate succeeds");
+
+    assert_eq!(hydrated["info"]["description"], "Root description");
+    assert_eq!(
+        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["description"],
+        "ok"
+    );
+}
+
+#[test]
 fn missing_reachable_external_refs_fail() {
     let fixture = Fixture::new();
     fixture.write(
