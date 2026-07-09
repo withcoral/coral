@@ -5,7 +5,7 @@
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 3;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v1";
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v4";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v5";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v1";
 pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v8";
 

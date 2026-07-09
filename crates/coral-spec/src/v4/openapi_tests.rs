@@ -50,6 +50,117 @@ paths: {}
 }
 
 #[test]
+fn importer_warns_and_skips_external_openapi_operation_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: digitalocean_ref_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /account:
+    get:
+      $ref: resources/account/account_get.yml
+"
+        .as_bytes(),
+    )
+    .expect("operation ref import should emit diagnostics");
+
+    assert!(
+        ir.operations.is_empty(),
+        "unsupported operation refs should not import empty operations: {:?}",
+        ir.operations
+    );
+    let diagnostic = ir
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "OPENAPI_OPERATION_REF_UNSUPPORTED")
+        .expect("unsupported operation ref diagnostic");
+    assert_eq!(diagnostic.surface_id.as_deref(), Some("rest"));
+    assert!(diagnostic.operation_id.is_none());
+    assert!(
+        diagnostic
+            .message
+            .contains("resources/account/account_get.yml"),
+        "{}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .message
+            .contains("dereferenced or bundled OpenAPI documents"),
+        "{}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn importer_resolves_local_openapi_operation_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: local_ref_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      $ref: '#/x-operations/listItems'
+x-operations:
+  listItems:
+    operationId: items/list
+    responses:
+      '200':
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("local operation ref import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.id, "items_list");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    assert!(
+        ir.diagnostics.is_empty(),
+        "local operation ref should not produce diagnostics: {:?}",
+        ir.diagnostics
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps related naming metadata cases together."

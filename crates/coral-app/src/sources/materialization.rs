@@ -1281,6 +1281,16 @@ paths:
 "
     }
 
+    fn unsupported_operation_ref_openapi_fixture() -> &'static str {
+        r"
+openapi: 3.0.3
+paths:
+  /account:
+    get:
+      $ref: resources/account/account_get.yml
+"
+    }
+
     fn json_rpc_result_response(id: Value, result: Value) -> ResponseTemplate {
         let mut body = serde_json::Map::new();
         body.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
@@ -1643,6 +1653,91 @@ surfaces:
                 .projections
                 .iter()
                 .all(|projection| projection.surface_id == "rest")
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_reports_unsupported_openapi_operation_refs() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, unsupported_operation_ref_openapi_fixture())
+            .expect("write descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: unsupported_openapi_refs
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+            openapi_file.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+        let source_name = SourceName::parse("unsupported_openapi_refs").expect("source");
+
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("unsupported operation refs should materialize with diagnostics");
+
+        let semantic_ir: SemanticIr = read_yaml(
+            &build
+                .temp_dir
+                .join("surfaces")
+                .join("rest")
+                .join("semantic-ir.yaml"),
+        )
+        .expect("read semantic IR");
+        assert!(
+            semantic_ir.operations.is_empty(),
+            "unsupported refs should not import empty operations: {:?}",
+            semantic_ir.operations
+        );
+
+        let projections: ProjectionCatalog =
+            read_yaml(&build.temp_dir.join(PROJECTIONS_FILENAME)).expect("read projections");
+        assert!(
+            projections.projections.is_empty(),
+            "unsupported refs should not create hidden projections: {:?}",
+            projections.projections
+        );
+
+        let diagnostics: Vec<Diagnostic> =
+            read_yaml(&build.temp_dir.join(DIAGNOSTICS_FILENAME)).expect("read diagnostics");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "OPENAPI_OPERATION_REF_UNSUPPORTED")
+            .expect("unsupported operation ref diagnostic");
+        assert_eq!(diagnostic.surface_id.as_deref(), Some("rest"));
+        assert!(
+            diagnostic
+                .message
+                .contains("resources/account/account_get.yml"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic
+                .message
+                .contains("dereferenced or bundled OpenAPI documents"),
+            "{}",
+            diagnostic.message
         );
     }
 
