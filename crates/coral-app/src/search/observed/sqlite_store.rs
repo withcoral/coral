@@ -1,5 +1,6 @@
 //! `SQLite` observed-values queue and governance operations.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
@@ -40,14 +41,35 @@ impl SqliteObservedValuesStore {
         Self { layout }
     }
 
+    #[cfg(test)]
     pub(crate) fn current_generations(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &str,
     ) -> Result<ObservedValuesGeneration, SqliteSearchError> {
+        let mut generations =
+            self.current_generations_for_sources(workspace_name, [source_name])?;
+        let Some(generation) = generations.remove(source_name) else {
+            return Ok(ObservedValuesGeneration::ZERO);
+        };
+        Ok(generation)
+    }
+
+    pub(crate) fn current_generations_for_sources<'a>(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<BTreeMap<String, ObservedValuesGeneration>, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
-        observed_generations(&connection, workspace_name, source_name)
+        let mut generations = BTreeMap::new();
+        for source_name in source_names {
+            generations.insert(
+                source_name.to_string(),
+                observed_generations(&connection, workspace_name, source_name)?,
+            );
+        }
+        Ok(generations)
     }
 
     pub(crate) fn enqueue_source_scan(
@@ -314,6 +336,7 @@ fn pending_queue_job_id(
               AND surface_name = ?5
               AND workspace_generation = ?6
               AND source_generation = ?7
+              AND attempts < ?8
             ",
             params![
                 workspace_name.as_str(),
@@ -323,6 +346,7 @@ fn pending_queue_job_id(
                 &job.surface_name,
                 generation.workspace_generation,
                 generation.source_generation,
+                MAX_OBSERVED_QUEUE_JOB_ATTEMPTS,
             ],
             |row| row.get(0),
         )
@@ -508,6 +532,51 @@ mod tests {
     }
 
     #[test]
+    fn current_generations_for_sources_reads_all_sources_with_one_store_open() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+
+        store
+            .clear_source(&workspace, "github")
+            .expect("clear github");
+        store
+            .clear_source(&workspace, "slack")
+            .expect("clear slack");
+        store
+            .clear_source(&workspace, "slack")
+            .expect("clear slack again");
+
+        let generations = store
+            .current_generations_for_sources(&workspace, ["github", "slack", "notion"])
+            .expect("generations");
+
+        assert_eq!(
+            generations
+                .get("github")
+                .expect("github generation")
+                .source_generation,
+            1
+        );
+        assert_eq!(
+            generations
+                .get("slack")
+                .expect("slack generation")
+                .source_generation,
+            2
+        );
+        assert_eq!(
+            generations
+                .get("notion")
+                .expect("notion generation")
+                .source_generation,
+            0
+        );
+    }
+
+    #[test]
     fn pending_queue_jobs_are_deduplicated_by_scope() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -625,6 +694,37 @@ mod tests {
     }
 
     #[test]
+    fn search_finds_short_observed_values_without_trigram_match() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let generation = store
+            .current_generations(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_source_scan(
+                &workspace,
+                &test_job_with("scope", "issues", "OK"),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+
+        let hits = store
+            .search(&workspace, &[String::from("ok")], 10)
+            .expect("short search observed values");
+
+        assert_eq!(hits.value_count, 1);
+        assert_eq!(hits.hits.len(), 1);
+        let hit = hits.hits.first().expect("observed hit");
+        assert_eq!(hit.display_value, "OK");
+    }
+
+    #[test]
     fn drain_queue_keeps_failed_payload_for_retry() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -715,6 +815,26 @@ mod tests {
                 .expect("second active enqueue"),
             ObservedValuesEnqueueResult::Enqueued { .. }
         ));
+        let result = store
+            .enqueue_source_scan(&workspace, &job, generation)
+            .expect("revive dead-lettered poison job");
+
+        assert_eq!(result, ObservedValuesEnqueueResult::QueueFull);
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("active queue count"),
+            2
+        );
+        let attempts = store
+            .queue_attempts_and_errors(&workspace)
+            .expect("attempts after rejected revive");
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.0 == MAX_OBSERVED_QUEUE_JOB_ATTEMPTS),
+            "dead-lettered job should not be reset when active queue is full"
+        );
     }
 
     #[test]

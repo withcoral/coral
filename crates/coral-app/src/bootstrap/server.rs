@@ -343,7 +343,7 @@ pub struct RunningServer {
     endpoint_uri: String,
     local_trace_store_dir: Option<PathBuf>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
+    task: Mutex<Option<JoinHandle<Result<(), AppError>>>>,
 }
 
 impl RunningServer {
@@ -446,9 +446,9 @@ async fn start_server(
         feedback,
         episode_store,
     } = managers;
+    let source = source.with_search_observation_handle(search_observations.clone());
     let query = query.with_search_observation_handle(search_observations.clone());
-    let source_service = SourceService::new(source, query.clone())
-        .with_search_observation_handle(search_observations);
+    let source_service = SourceService::new(source, query.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
@@ -500,10 +500,21 @@ async fn start_server(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let task = match mode {
-        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes, shutdown_search),
-        ServerMode::EmbeddedUi { assets, .. } => {
-            start_grpc_web_server(listener, shutdown_rx, routes, assets, shutdown_search)
-        }
+        ServerMode::NativeGrpc => start_grpc_server(
+            listener,
+            shutdown_rx,
+            routes,
+            shutdown_search,
+            search_observations,
+        ),
+        ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
+            listener,
+            shutdown_rx,
+            routes,
+            assets,
+            shutdown_search,
+            search_observations,
+        ),
     };
 
     Ok(RunningServer {
@@ -519,7 +530,8 @@ fn start_grpc_server(
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
     search: SearchManager,
-) -> JoinHandle<Result<(), tonic::transport::Error>> {
+    search_observations: SearchObservationHandle,
+) -> JoinHandle<Result<(), AppError>> {
     tokio::spawn(async move {
         let result = Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
@@ -527,9 +539,13 @@ fn start_grpc_server(
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await;
+            .await
+            .map_err(AppError::from);
+        let search_observations_result = shutdown_search_observations(search_observations).await;
         drain_search_before_shutdown(search).await;
-        result
+        result?;
+        search_observations_result?;
+        Ok(())
     })
 }
 
@@ -539,7 +555,8 @@ fn start_grpc_web_server(
     routes: Routes,
     static_assets: Arc<dyn StaticAssetsProvider>,
     search: SearchManager,
-) -> JoinHandle<Result<(), tonic::transport::Error>> {
+    search_observations: SearchObservationHandle,
+) -> JoinHandle<Result<(), AppError>> {
     let grpc = routes
         .into_axum_router()
         .layer(GrpcWebLayer::new())
@@ -559,10 +576,21 @@ fn start_grpc_web_server(
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await;
+            .await
+            .map_err(AppError::from);
+        let search_observations_result = shutdown_search_observations(search_observations).await;
         drain_search_before_shutdown(search).await;
-        result
+        result?;
+        search_observations_result?;
+        Ok(())
     })
+}
+
+async fn shutdown_search_observations(
+    search_observations: SearchObservationHandle,
+) -> Result<(), AppError> {
+    task::spawn_blocking(move || search_observations.shutdown()).await??;
+    Ok(())
 }
 
 async fn drain_search_before_shutdown(search: SearchManager) {
