@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::json;
 
-use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;
 use super::*;
 use crate::{
@@ -37,9 +36,9 @@ surfaces:
         .filter(|projection| projection.visibility == ProjectionVisibility::Published)
         .map(|projection| projection.name.as_str())
         .collect::<Vec<_>>();
-    assert!(published.contains(&"issues"), "{published:?}");
+    assert!(published.contains(&"issue"), "{published:?}");
     assert!(published.contains(&"search_issues"), "{published:?}");
-    assert!(published.contains(&"get_issue"), "{published:?}");
+    assert!(published.contains(&"get_issues"), "{published:?}");
 }
 
 #[test]
@@ -921,19 +920,19 @@ components:
     let issues_list = names_by_operation
         .get("issues_list")
         .expect("issues_list projection");
-    assert_eq!(issues_list.0, "issues");
+    assert_eq!(issues_list.0, "issue");
     let org_issues = names_by_operation
         .get("issues_list_for_org")
         .expect("issues_list_for_org projection");
-    assert_eq!(org_issues.0, "orgs_issues");
+    assert_eq!(org_issues.0, "orgs_issue");
     let repo_issues = names_by_operation
         .get("issues_list_for_repo")
         .expect("issues_list_for_repo projection");
-    assert_eq!(repo_issues.0, "repos_issues");
+    assert_eq!(repo_issues.0, "repos_issue");
     let pulls = names_by_operation
         .get("pulls_list")
         .expect("pulls_list projection");
-    assert_eq!(pulls.0, "pull_requests");
+    assert_eq!(pulls.0, "pull_request");
     assert!(matches!(
         pulls.1,
         ProjectionKind::TableFunction {
@@ -943,11 +942,11 @@ components:
     let commits = names_by_operation
         .get("repos_list_commits")
         .expect("repos_list_commits projection");
-    assert_eq!(commits.0, "commits");
+    assert_eq!(commits.0, "commit");
     let pull_commits = names_by_operation
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
-    assert_eq!(pull_commits.0, "repos_pulls_commits");
+    assert_eq!(pull_commits.0, "repos_pulls_commit");
     let pull_commits_projection = catalog
         .projections
         .iter()
@@ -1462,13 +1461,4 @@ fn same_type_surface_namespaces_keep_colliding_projection_names() {
             .iter()
             .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
     );
-}
-
-#[test]
-fn projection_names_avoid_obvious_bad_singulars() {
-    assert_eq!(singularize("status"), "status");
-    assert_eq!(singularize("news"), "news");
-    assert_eq!(singularize("analytics"), "analytics");
-    assert_eq!(singularize("addresses"), "address");
-    assert_eq!(pluralize("box"), "boxes");
 }

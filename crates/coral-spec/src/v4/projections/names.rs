@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::v4::diagnostics::{Diagnostic, DiagnosticSeverity};
 use crate::v4::ir::{IrExecutionAttachment, IrOperation, OutputCardinality, SemanticIr};
 use crate::v4::manifest::V4SourceManifest;
-use crate::v4::naming::{normalize_identifier, pluralize, singularize, stable_suffix};
+use crate::v4::naming::{normalize_identifier, stable_suffix};
 
 use super::model::{
     Projection, ProjectionInput, ProjectionKind, ProjectionVisibility, SqlInputExposure,
@@ -248,14 +248,15 @@ fn human_join(items: &[&str]) -> String {
 pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> String {
     let entity = projection_entity_name(operation, is_search);
     if is_search {
-        return format!("search_{}", pluralize(&entity));
+        return format!("search_{entity}");
     }
     match operation.output.cardinality {
-        OutputCardinality::List | OutputCardinality::WrappedList => pluralize(&entity),
         OutputCardinality::Singleton if operation.inputs.iter().any(|input| input.required) => {
-            format!("get_{}", singularize(&entity))
+            format!("get_{entity}")
         }
-        OutputCardinality::Singleton => singularize(&entity),
+        OutputCardinality::List | OutputCardinality::WrappedList | OutputCardinality::Singleton => {
+            entity
+        }
         OutputCardinality::None | OutputCardinality::Unknown => {
             normalize_identifier(&operation.id, "projection")
         }
@@ -287,7 +288,6 @@ fn search_entity_from_path(operation: &IrOperation) -> Option<String> {
     rest_literal_path_segments(operation)
         .into_iter()
         .next_back()
-        .map(|segment| singularize(&segment))
 }
 
 fn normalize_entity_identifier(raw: &str) -> String {

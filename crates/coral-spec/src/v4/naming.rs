@@ -51,50 +51,6 @@ pub(crate) fn normalize_sql_identifier(value: &str, prefix: &str) -> String {
     }
 }
 
-pub(crate) fn singularize(value: &str) -> String {
-    if let Some(stem) = value.strip_suffix("ies")
-        && !stem.is_empty()
-    {
-        return format!("{stem}y");
-    }
-    for suffix in ["ches", "shes", "xes", "ses"] {
-        if let Some(stem) = value.strip_suffix(suffix)
-            && !stem.is_empty()
-        {
-            return format!("{stem}{}", suffix.trim_end_matches("es"));
-        }
-    }
-    if value.ends_with('s')
-        && !value.ends_with("ss")
-        && !value.ends_with("us")
-        && !value.ends_with("ics")
-        && value != "news"
-    {
-        return value.trim_end_matches('s').to_string();
-    }
-    value.to_string()
-}
-
-pub(crate) fn pluralize(value: &str) -> String {
-    if value.ends_with('s') {
-        value.to_string()
-    } else if let Some(stem) = value.strip_suffix('y') {
-        if stem
-            .chars()
-            .next_back()
-            .is_some_and(|c| !"aeiou".contains(c))
-        {
-            format!("{stem}ies")
-        } else {
-            format!("{value}s")
-        }
-    } else if value.ends_with('x') || value.ends_with("ch") || value.ends_with("sh") {
-        format!("{value}es")
-    } else {
-        format!("{value}s")
-    }
-}
-
 pub(crate) fn stable_suffix(value: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in value.as_bytes() {

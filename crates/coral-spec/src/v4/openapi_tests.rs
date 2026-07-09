@@ -242,7 +242,7 @@ components:
         .iter()
         .find(|projection| projection.operation_id == "listincidents")
         .expect("projection");
-    assert_eq!(projection.name, "incidents");
+    assert_eq!(projection.name, "incident");
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -306,7 +306,7 @@ components:
 
     let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
-    assert_eq!(projection.name, "repositories");
+    assert_eq!(projection.name, "repository");
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -520,7 +520,7 @@ components:
         .iter()
         .find(|projection| projection.operation_id == "issues_list_for_repo")
         .expect("projection");
-    assert_eq!(projection.name, "issues");
+    assert_eq!(projection.name, "issue");
     assert_eq!(projection.visibility, ProjectionVisibility::Published);
     assert!(matches!(
         projection.kind,
