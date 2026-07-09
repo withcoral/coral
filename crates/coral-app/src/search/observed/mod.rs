@@ -5,6 +5,7 @@ mod publisher;
 mod sensitive;
 mod source_scope;
 pub(crate) mod provider;
+mod ranking;
 mod sqlite_projection;
 mod sqlite_queue;
 mod sqlite_store;

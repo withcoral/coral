@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::search::observed::ranking;
 use crate::search::observed::sqlite_projection::{
     ObservedValuesDrainBudget, ObservedValuesDrainResult, ObservedValuesSearchHit,
     ObservedValuesSearchHits,
@@ -21,7 +22,6 @@ const OBSERVED_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const OBSERVED_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
 const OBSERVED_DRAIN_BEFORE_SEARCH_MAX_JOBS: usize = 128;
 const OBSERVED_DRAIN_BEFORE_SEARCH_MS: u64 = 50;
-const OBSERVED_VALUE_BASE_SCORE: u32 = 10_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesProvider {
@@ -154,6 +154,11 @@ fn observed_search_outcome(
     }
 }
 
+/// Converts store-ordered hits into cross-provider candidates.
+///
+/// The observed-values provider must not rerank hits. It only translates the
+/// store order into a cross-provider score so engine-level merging preserves the
+/// retrieval order selected by observed storage.
 fn observed_candidate(hit: ObservedValuesSearchHit, index: usize) -> SearchCandidate {
     let surface_kind = surface_kind(hit.surface_kind);
     SearchCandidate {
@@ -166,7 +171,7 @@ fn observed_candidate(hit: ObservedValuesSearchHit, index: usize) -> SearchCandi
             hit.column_name,
             hit.value_key
         ),
-        score: observed_score(&hit, index),
+        score: ranking::observed_candidate_score(&hit, index),
         provider: SearchProviderKind::ObservedValues,
         payload: SearchPayload::ObservedValue(ObservedValueResult {
             value: hit.display_value,
@@ -179,14 +184,6 @@ fn observed_candidate(hit: ObservedValuesSearchHit, index: usize) -> SearchCandi
             last_observed_at: hit.last_observed_at,
         }),
     }
-}
-
-fn observed_score(hit: &ObservedValuesSearchHit, index: usize) -> u32 {
-    let observation_boost = u32::try_from(hit.observation_count.min(1_000)).unwrap_or(1_000);
-    let rank_penalty = u32::try_from(index).unwrap_or(u32::MAX);
-    OBSERVED_VALUE_BASE_SCORE
-        .saturating_add(observation_boost)
-        .saturating_sub(rank_penalty)
 }
 
 fn surface_kind(kind: ObservedValuesSurfaceKind) -> SearchSurfaceKind {
