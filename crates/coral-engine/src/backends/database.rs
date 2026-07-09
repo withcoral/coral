@@ -1,6 +1,7 @@
 //! Relational database backend registration through `datafusion-table-providers`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,28 +12,33 @@ use coral_spec::backends::database::{
     SqliteConnectionSpec,
 };
 use coral_spec::{ParsedTemplate, SourceManifestCommon};
+use datafusion::arrow::array::StringArray;
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
+use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::logical_expr::TableType;
 use datafusion::prelude::SessionContext;
+use datafusion::sql::TableReference;
 use datafusion_table_providers::UnsupportedTypeAction;
-use datafusion_table_providers::common::DatabaseCatalogProvider;
-use datafusion_table_providers::sql::db_connection_pool::Mode;
+use datafusion_table_providers::sql::db_connection_pool::dbconnection::query_arrow;
 use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
+use datafusion_table_providers::sql::db_connection_pool::{DbConnectionPool, Mode};
+use datafusion_table_providers::sql::sql_provider_datafusion::SqlTable;
 use datafusion_table_providers::util::secrets::to_secret_map;
-use futures::{StreamExt, stream};
+use futures::TryStreamExt as _;
 
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
     BackendRegistrationContext, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    SourceQualifiedName, build_registered_inputs, registered_columns_from_schema,
+    SourceQualifiedName, build_registered_inputs,
 };
 
 const REMOTE_DATABASE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(10);
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const TABLE_SCHEMA_DISCOVERY_CONCURRENCY: usize = 8;
 
 pub(crate) fn compile_manifest(
     manifest: &DatabaseSourceManifest,
@@ -59,10 +65,8 @@ trait DatabaseCatalogStrategy: Send + Sync {
         Some(REMOTE_DATABASE_REGISTRATION_TIMEOUT)
     }
 
-    async fn build_catalog(
-        &self,
-        context: &RenderContext<'_>,
-    ) -> DataFusionResult<Arc<dyn CatalogProvider>>;
+    async fn build_catalog(&self, context: &RenderContext<'_>)
+    -> DataFusionResult<DatabaseCatalog>;
 }
 
 fn database_strategy(connection: &DatabaseConnectionSpec) -> &dyn DatabaseCatalogStrategy {
@@ -102,19 +106,21 @@ impl CompiledBackendSource for CompiledDatabaseSource {
         let provider_name = strategy.provider_name();
         let registration_timeout = strategy.registration_timeout();
         let registration = async {
-            let catalog = strategy.build_catalog(&context).await?;
+            let database_catalog = strategy.build_catalog(&context).await?;
             let source = registered_source_for_catalog(
                 &self.manifest.common,
                 &self.manifest.declared_inputs,
                 &self.source_secrets,
                 &self.source_variables,
-                Arc::clone(&catalog),
-            )
-            .await?;
+                &database_catalog.relations,
+            );
 
             Ok(BackendRegistration {
                 schemas: Vec::new(),
-                catalogs: vec![BackendCatalogRegistration { catalog, source }],
+                catalogs: vec![BackendCatalogRegistration {
+                    catalog: database_catalog.provider,
+                    source,
+                }],
             })
         };
 
@@ -158,7 +164,7 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
     async fn build_catalog(
         &self,
         context: &RenderContext<'_>,
-    ) -> DataFusionResult<Arc<dyn CatalogProvider>> {
+    ) -> DataFusionResult<DatabaseCatalog> {
         let mut params = render_connection_params(
             [
                 ("host", &self.host),
@@ -177,7 +183,7 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
             .map_err(provider_error)?
             // The MySQL adapter has no equivalent unsupported-type policy.
             .with_unsupported_type_action(UnsupportedTypeAction::String);
-        database_catalog(Arc::new(pool)).await
+        database_catalog(Arc::new(pool), POSTGRES_RELATIONS_SQL).await
     }
 }
 
@@ -190,7 +196,7 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
     async fn build_catalog(
         &self,
         context: &RenderContext<'_>,
-    ) -> DataFusionResult<Arc<dyn CatalogProvider>> {
+    ) -> DataFusionResult<DatabaseCatalog> {
         let mut params = render_connection_params(
             [
                 ("host", &self.host),
@@ -214,7 +220,7 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
         let pool = MySQLConnectionPool::new(to_secret_map(params))
             .await
             .map_err(provider_error)?;
-        database_catalog(Arc::new(pool)).await
+        database_catalog(Arc::new(pool), MYSQL_RELATIONS_SQL).await
     }
 }
 
@@ -241,109 +247,253 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
     async fn build_catalog(
         &self,
         context: &RenderContext<'_>,
-    ) -> DataFusionResult<Arc<dyn CatalogProvider>> {
+    ) -> DataFusionResult<DatabaseCatalog> {
         let path = render_template(&self.path, context)?;
         let pool = SqliteConnectionPoolFactory::new(&path, Mode::File, SQLITE_BUSY_TIMEOUT)
             .build()
             .await
             .map_err(boxed_provider_error)?;
-        database_catalog(Arc::new(pool)).await
+        database_catalog(Arc::new(pool), SQLITE_RELATIONS_SQL).await
     }
 }
 
-async fn database_catalog<T: 'static, P: 'static>(
-    pool: Arc<
-        dyn datafusion_table_providers::sql::db_connection_pool::DbConnectionPool<T, P>
-            + Send
-            + Sync,
-    >,
-) -> DataFusionResult<Arc<dyn CatalogProvider>> {
-    DatabaseCatalogProvider::try_new(pool)
-        .await
-        .map(|catalog| Arc::new(catalog) as Arc<dyn CatalogProvider>)
-        .map_err(boxed_provider_error)
+const POSTGRES_RELATIONS_SQL: &str = "
+SELECT table_schema AS schema_name,
+       table_name,
+       table_type AS relation_type
+FROM information_schema.tables
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+UNION ALL
+SELECT schemaname AS schema_name,
+       matviewname AS table_name,
+       'MATERIALIZED VIEW' AS relation_type
+FROM pg_matviews
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')";
+
+const MYSQL_RELATIONS_SQL: &str = "
+SELECT TABLE_SCHEMA AS schema_name,
+       TABLE_NAME AS table_name,
+       TABLE_TYPE AS relation_type
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')";
+
+const SQLITE_RELATIONS_SQL: &str = "
+SELECT 'main' AS schema_name,
+       name AS table_name,
+       CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type
+FROM sqlite_master
+WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
+
+type Pool<T, P> = Arc<dyn DbConnectionPool<T, P> + Send + Sync>;
+
+struct DatabaseCatalog {
+    provider: Arc<dyn CatalogProvider>,
+    relations: Vec<DatabaseRelation>,
 }
 
-async fn registered_source_for_catalog(
+#[derive(Clone, Debug)]
+struct DatabaseRelation {
+    schema_name: String,
+    table_name: String,
+    table_type: TableType,
+}
+
+async fn database_catalog<T: 'static, P: 'static>(
+    pool: Pool<T, P>,
+    inventory_sql: &str,
+) -> DataFusionResult<DatabaseCatalog> {
+    let relations = load_database_inventory(&pool, inventory_sql).await?;
+    let provider = Arc::new(CoralDatabaseCatalogProvider::new(
+        Arc::clone(&pool),
+        &relations,
+    )) as Arc<dyn CatalogProvider>;
+    Ok(DatabaseCatalog {
+        provider,
+        relations,
+    })
+}
+
+async fn load_database_inventory<T: 'static, P: 'static>(
+    pool: &Pool<T, P>,
+    inventory_sql: &str,
+) -> DataFusionResult<Vec<DatabaseRelation>> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("table_name", DataType::Utf8, false),
+        Field::new("relation_type", DataType::Utf8, false),
+    ]));
+    let connection = pool.connect().await.map_err(boxed_provider_error)?;
+    let batches = query_arrow(connection, inventory_sql.to_string(), Some(schema))
+        .await
+        .map_err(provider_error)?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let mut relations = Vec::new();
+    for batch in batches {
+        let schema_names = database_inventory_column(&batch, "schema_name")?;
+        let table_names = database_inventory_column(&batch, "table_name")?;
+        let relation_types = database_inventory_column(&batch, "relation_type")?;
+        for row in 0..batch.num_rows() {
+            relations.push(DatabaseRelation {
+                schema_name: schema_names.value(row).to_string(),
+                table_name: table_names.value(row).to_string(),
+                table_type: relation_table_type(relation_types.value(row)),
+            });
+        }
+    }
+    relations.sort_by(|left, right| {
+        (&left.schema_name, &left.table_name).cmp(&(&right.schema_name, &right.table_name))
+    });
+    relations.dedup_by(|left, right| {
+        left.schema_name == right.schema_name && left.table_name == right.table_name
+    });
+    Ok(relations)
+}
+
+fn database_inventory_column<'a>(
+    batch: &'a datafusion::arrow::record_batch::RecordBatch,
+    name: &str,
+) -> DataFusionResult<&'a StringArray> {
+    batch
+        .column_by_name(name)
+        .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| {
+            DataFusionError::Execution(format!("database inventory column '{name}' is not Utf8"))
+        })
+}
+
+fn relation_table_type(value: &str) -> TableType {
+    if value.eq_ignore_ascii_case("VIEW") || value.eq_ignore_ascii_case("MATERIALIZED VIEW") {
+        TableType::View
+    } else {
+        TableType::Base
+    }
+}
+
+struct CoralDatabaseCatalogProvider {
+    schemas: HashMap<String, Arc<dyn SchemaProvider>>,
+}
+
+impl CoralDatabaseCatalogProvider {
+    fn new<T: 'static, P: 'static>(pool: Pool<T, P>, relations: &[DatabaseRelation]) -> Self {
+        let mut by_schema = BTreeMap::<String, BTreeMap<String, TableType>>::new();
+        for relation in relations {
+            by_schema
+                .entry(relation.schema_name.clone())
+                .or_default()
+                .insert(relation.table_name.clone(), relation.table_type);
+        }
+        let schemas = by_schema
+            .into_iter()
+            .map(|(schema_name, tables)| {
+                let provider = CoralDatabaseSchemaProvider {
+                    schema_name: schema_name.clone(),
+                    tables,
+                    pool: Arc::clone(&pool),
+                };
+                (schema_name, Arc::new(provider) as Arc<dyn SchemaProvider>)
+            })
+            .collect();
+        Self { schemas }
+    }
+}
+
+impl fmt::Debug for CoralDatabaseCatalogProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CoralDatabaseCatalogProvider")
+            .field("schemas", &self.schemas.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl CatalogProvider for CoralDatabaseCatalogProvider {
+    fn schema_names(&self) -> Vec<String> {
+        self.schemas.keys().cloned().collect()
+    }
+
+    fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+        self.schemas.get(name).cloned()
+    }
+}
+
+struct CoralDatabaseSchemaProvider<T: 'static, P: 'static> {
+    schema_name: String,
+    tables: BTreeMap<String, TableType>,
+    pool: Pool<T, P>,
+}
+
+impl<T: 'static, P: 'static> fmt::Debug for CoralDatabaseSchemaProvider<T, P> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CoralDatabaseSchemaProvider")
+            .field("schema_name", &self.schema_name)
+            .field("tables", &self.tables)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<T: 'static, P: 'static> SchemaProvider for CoralDatabaseSchemaProvider<T, P> {
+    fn table_names(&self) -> Vec<String> {
+        self.tables.keys().cloned().collect()
+    }
+
+    async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
+        if !self.tables.contains_key(name) {
+            return Ok(None);
+        }
+        SqlTable::new(
+            &self.schema_name,
+            &self.pool,
+            TableReference::partial(self.schema_name.clone(), name.to_string()),
+        )
+        .await
+        .map(|table| Some(Arc::new(table) as Arc<dyn TableProvider>))
+        .map_err(provider_error)
+    }
+
+    fn table_exist(&self, name: &str) -> bool {
+        self.tables.contains_key(name)
+    }
+
+    async fn table_type(&self, name: &str) -> DataFusionResult<Option<TableType>> {
+        Ok(self.tables.get(name).copied())
+    }
+}
+
+fn registered_source_for_catalog(
     common: &SourceManifestCommon,
     declared_inputs: &[coral_spec::ManifestInputSpec],
     source_secrets: &BTreeMap<String, String>,
     source_variables: &BTreeMap<String, String>,
-    catalog: Arc<dyn CatalogProvider>,
-) -> DataFusionResult<RegisteredSource> {
-    let mut table_discovery = Vec::new();
-    let mut schema_names = catalog.schema_names();
-    schema_names.sort();
-    for schema_name in schema_names {
-        let Some(schema) = catalog.schema(&schema_name) else {
-            continue;
-        };
-        let mut table_names = schema.table_names();
-        table_names.sort();
-        for table_name in table_names {
-            table_discovery.push((schema_name.clone(), table_name, Arc::clone(&schema)));
-        }
-    }
-
-    let source_name: Arc<str> = Arc::from(common.name.as_str());
-    let mut discovery_futures = Vec::with_capacity(table_discovery.len());
-    for (schema_name, table_name, schema) in table_discovery {
-        discovery_futures.push(discover_registered_table(
-            Arc::clone(&source_name),
-            schema_name,
-            table_name,
-            schema,
-        ));
-    }
-    let mut tables = stream::iter(discovery_futures)
-        .buffer_unordered(TABLE_SCHEMA_DISCOVERY_CONCURRENCY)
-        .filter_map(std::future::ready)
-        .collect::<Vec<_>>()
-        .await;
-    tables.sort_by(|left, right| {
-        left.schema_name
-            .cmp(&right.schema_name)
-            .then_with(|| left.table_name.cmp(&right.table_name))
-    });
-
+    relations: &[DatabaseRelation],
+) -> RegisteredSource {
     let secret_keys = source_secrets.keys().cloned().collect::<BTreeSet<_>>();
-    Ok(RegisteredSource {
+    RegisteredSource {
         qualified_name: SourceQualifiedName::Catalog(common.name.clone()),
-        tables,
+        tables: database_relation_inventory(relations),
         table_functions: Vec::new(),
         inputs: build_registered_inputs(declared_inputs, source_variables, &secret_keys),
-    })
+    }
 }
 
-async fn discover_registered_table(
-    source_name: Arc<str>,
-    schema_name: String,
-    table_name: String,
-    schema: Arc<dyn SchemaProvider>,
-) -> Option<RegisteredTable> {
-    match schema.table(&table_name).await {
-        Ok(Some(provider)) => Some(RegisteredTable {
-            schema_name: Some(schema_name),
-            table_name,
+/// Project the Coral-owned relation inventory into public catalog metadata
+/// without constructing table providers or fetching column schemas.
+fn database_relation_inventory(relations: &[DatabaseRelation]) -> Vec<RegisteredTable> {
+    relations
+        .iter()
+        .map(|relation| RegisteredTable {
+            schema_name: Some(relation.schema_name.clone()),
+            table_name: relation.table_name.clone(),
             description: String::new(),
             guide: String::new(),
-            columns: registered_columns_from_schema(&provider.schema(), &[]),
+            columns: Vec::new(),
             filters: Vec::new(),
             required_filters: Vec::new(),
             search_limits: None,
-        }),
-        Ok(None) => None,
-        Err(error) => {
-            tracing::warn!(
-                source = %source_name,
-                schema = %schema_name,
-                table = %table_name,
-                detail = %error,
-                "skipping table that failed schema discovery"
-            );
-            None
-        }
-    }
+        })
+        .collect()
 }
 
 fn provider_error(error: impl std::error::Error + Send + Sync + 'static) -> DataFusionError {

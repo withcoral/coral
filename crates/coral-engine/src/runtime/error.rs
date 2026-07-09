@@ -71,6 +71,16 @@ pub(crate) fn datafusion_to_core_with_sql_and_table_functions(
     }
 }
 
+pub(crate) fn missing_table_reference(
+    error: &DataFusionError,
+    sql: Option<&str>,
+) -> Option<TableRefParts> {
+    let DataFusionError::Plan(detail) = error.find_root() else {
+        return None;
+    };
+    table_not_found_ref(error, detail, sql)
+}
+
 pub(crate) fn source_decorator_error_to_core(error: &SourceDecoratorError) -> CoreError {
     match error {
         SourceDecoratorError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),

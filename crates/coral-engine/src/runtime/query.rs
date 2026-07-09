@@ -26,7 +26,7 @@ use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
 use crate::runtime::dependent_join::planner::DependentJoinExtensionPlanner;
 use crate::runtime::error::{
-    datafusion_to_core, datafusion_to_core_with_sql_and_table_functions,
+    datafusion_to_core, datafusion_to_core_with_sql_and_table_functions, missing_table_reference,
     query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
@@ -127,7 +127,7 @@ pub(crate) async fn build_runtime(
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let span = info_span!("coral.engine.runtime.build", source.count = sources.len());
-    build_runtime_inner(sources, runtime).instrument(span).await
+    Box::pin(build_runtime_inner(sources, runtime).instrument(span)).await
 }
 
 async fn build_runtime_inner(
@@ -213,8 +213,9 @@ async fn build_registered_runtime(
     let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
+        .await
         .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_tables(&registration.active_sources);
+    let tables = catalog::collect_static_tables(&registration.active_sources);
     let table_functions =
         catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
     install_table_function_call_planners(
@@ -369,24 +370,6 @@ async fn register_runtime_sources(
     register_sources(ctx, source_candidates, source_decorators).await
 }
 
-fn table_qualifier_matches(
-    table: &TableInfo,
-    catalog_filter: Option<&str>,
-    schema_filter: Option<&str>,
-) -> bool {
-    catalog_filter.is_none_or(|value| table.catalog_name == value)
-        && schema_filter.is_none_or(|value| table.schema_name == value)
-}
-
-fn table_reference_matches(
-    table: &TableInfo,
-    catalog_name: Option<&str>,
-    schema_name: &str,
-) -> bool {
-    table.catalog_name == non_default_catalog_name(catalog_name).unwrap_or_default()
-        && table.schema_name == schema_name
-}
-
 impl QueryRuntimeAdapter {
     pub(crate) async fn install_udfs(
         &mut self,
@@ -421,6 +404,7 @@ impl QueryRuntimeAdapter {
         .await
         .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         catalog::register(&self.ctx, &self.active_sources, &udf_table_functions)
+            .await
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         udf_calls
             .install(&self.ctx)
@@ -435,18 +419,15 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    pub(crate) fn list_tables(
+    pub(crate) async fn list_tables(
         &self,
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
-    ) -> Vec<TableInfo> {
-        self.tables
-            .iter()
-            .filter(|table| table_qualifier_matches(table, catalog_filter, schema_filter))
-            .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
-            .cloned()
-            .collect()
+    ) -> Result<Vec<TableInfo>, CoreError> {
+        catalog::collect_tables(&self.ctx, catalog_filter, schema_filter, table_filter)
+            .await
+            .map_err(|err| datafusion_to_core(&err, &self.tables))
     }
 
     fn list_table_functions(
@@ -462,81 +443,87 @@ impl QueryRuntimeAdapter {
             .collect()
     }
 
-    pub(crate) fn catalog_info(
+    pub(crate) async fn catalog_info(
         &self,
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
-    ) -> CatalogInfo {
-        CatalogInfo {
-            tables: self.list_tables(catalog_filter, schema_filter, None),
+    ) -> Result<CatalogInfo, CoreError> {
+        Ok(CatalogInfo {
+            tables: self
+                .list_tables(catalog_filter, schema_filter, None)
+                .await?,
             table_functions: if catalog_filter.is_none() {
                 self.list_table_functions(schema_filter, None)
             } else {
                 Vec::new()
             },
-        }
+        })
     }
 
     /// Catalog metadata restricted to the sources publishing the given
     /// schema and catalog names. Schema names never match database-internal
     /// schemas, which are addressed through their catalog.
-    pub(crate) fn catalog_info_for_sources(
+    pub(crate) async fn catalog_info_for_sources(
         &self,
         schema_names: &[&str],
         catalog_names: &[&str],
-    ) -> CatalogInfo {
-        CatalogInfo {
-            tables: self
-                .tables
-                .iter()
-                .filter(|table| {
-                    if table.catalog_name.is_empty() {
-                        schema_names.contains(&table.schema_name.as_str())
-                    } else {
-                        catalog_names.contains(&table.catalog_name.as_str())
-                    }
-                })
-                .cloned()
-                .collect(),
+    ) -> Result<CatalogInfo, CoreError> {
+        let mut tables = Vec::new();
+        for schema_name in schema_names {
+            tables.extend(self.list_tables(None, Some(schema_name), None).await?);
+        }
+        for catalog_name in catalog_names {
+            tables.extend(self.list_tables(Some(catalog_name), None, None).await?);
+        }
+        tables.sort_by(|left, right| {
+            (&left.catalog_name, &left.schema_name, &left.table_name).cmp(&(
+                &right.catalog_name,
+                &right.schema_name,
+                &right.table_name,
+            ))
+        });
+        tables.dedup_by(|left, right| {
+            left.catalog_name == right.catalog_name
+                && left.schema_name == right.schema_name
+                && left.table_name == right.table_name
+        });
+        Ok(CatalogInfo {
+            tables,
             table_functions: self
                 .table_functions
                 .iter()
                 .filter(|function| schema_names.contains(&function.schema_name.as_str()))
                 .cloned()
                 .collect(),
-        }
+        })
     }
 
-    pub(crate) fn describe_table(
+    pub(crate) async fn describe_table(
         &self,
         catalog_name: Option<&str>,
         schema_name: &str,
         table_name: &str,
-    ) -> DescribeTableInfo {
-        if let Some(table) = self
-            .tables
-            .iter()
-            .find(|table| {
-                table_reference_matches(table, catalog_name, schema_name)
-                    && table.table_name == table_name
-            })
-            .cloned()
-        {
-            return DescribeTableInfo {
+    ) -> Result<DescribeTableInfo, CoreError> {
+        let mut tables = self
+            .list_tables(catalog_name, Some(schema_name), Some(table_name))
+            .await?;
+        if let Some(table) = tables.pop() {
+            return Ok(DescribeTableInfo {
                 table: Some(table),
                 missing_context_tables: Vec::new(),
-            };
+            });
         }
 
-        let missing_context_tables = self
-            .tables
+        let missing_context_tables = catalog::collect_table_metadata(&self.ctx, None, None, None)
+            .await
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?
             .iter()
             .map(table_metadata_without_columns)
             .collect();
-        DescribeTableInfo {
+        Ok(DescribeTableInfo {
             table: None,
             missing_context_tables,
-        }
+        })
     }
 
     pub(crate) fn registration_failure(
@@ -588,12 +575,12 @@ impl QueryRuntimeAdapter {
                         if is_missing_required_filter_failure(&error) {
                             return Err(cap_core_error);
                         }
-                        let fallback_error = self.sql_execution_failure_to_core(error, sql);
+                        let fallback_error = self.sql_execution_failure_to_core(error, sql).await;
                         Err(fallback_error)
                     }
                 }
             }
-            Err(error) => Err(self.sql_execution_failure_to_core(error, sql)),
+            Err(error) => Err(self.sql_execution_failure_to_core(error, sql).await),
         }
     }
 
@@ -669,12 +656,17 @@ impl QueryRuntimeAdapter {
         Ok(execution)
     }
 
-    fn sql_execution_failure_to_core(&self, error: SqlExecutionFailure, sql: &str) -> CoreError {
+    async fn sql_execution_failure_to_core(
+        &self,
+        error: SqlExecutionFailure,
+        sql: &str,
+    ) -> CoreError {
         match error {
             SqlExecutionFailure::Planning(error) => {
+                let tables = self.table_context_for_planning_error(&error, sql).await;
                 datafusion_to_core_with_sql_and_table_functions(
                     &error,
-                    &self.tables,
+                    &tables,
                     &self.table_functions,
                     Some(sql),
                 )
@@ -691,6 +683,35 @@ impl QueryRuntimeAdapter {
             return error;
         }
         datafusion_to_core(error, &self.tables)
+    }
+
+    async fn table_context_for_planning_error(
+        &self,
+        error: &DataFusionError,
+        sql: &str,
+    ) -> Vec<TableInfo> {
+        let qualifier = missing_table_reference(error, Some(sql))
+            .and_then(|reference| table_context_qualifier(reference.parts.as_slice()));
+        let Some((catalog_name, schema_name)) = qualifier else {
+            return self.tables.clone();
+        };
+        match catalog::collect_table_metadata(
+            &self.ctx,
+            catalog_name.as_deref(),
+            Some(&schema_name),
+            None,
+        )
+        .await
+        {
+            Ok(tables) => tables,
+            Err(error) => {
+                tracing::debug!(
+                    detail = %error,
+                    "failed to collect dynamic table metadata for error context"
+                );
+                self.tables.clone()
+            }
+        }
     }
 
     fn observe_query_result(
@@ -1215,6 +1236,20 @@ fn name_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
         .collect()
 }
 
+fn table_context_qualifier(parts: &[String]) -> Option<(Option<String>, String)> {
+    let parts = match parts {
+        [catalog, rest @ ..] if catalog == "datafusion" => rest,
+        _ => parts,
+    };
+    match parts {
+        [schema_name, _table_name] => Some((None, schema_name.clone())),
+        [catalog_name, schema_name, _table_name] => {
+            Some((Some(catalog_name.clone()), schema_name.clone()))
+        }
+        _ => None,
+    }
+}
+
 fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
     let schema_name = table_reference.schema()?;
     Some((schema_name, table_reference.table()))
@@ -1252,37 +1287,51 @@ mod tests {
     use datafusion::execution::memory_pool::MemoryConsumer;
 
     use super::*;
+    use crate::backends::common::RegisteredColumn;
+    use crate::backends::{RegisteredTable, SourceQualifiedName};
     use crate::{
-        ColumnInfo, DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
+        DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
         UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
         UdfRuntimeTableFunctionPublish,
     };
 
-    fn adapter_with_table() -> QueryRuntimeAdapter {
-        QueryRuntimeAdapter {
-            ctx: Arc::new(SessionContext::new()),
-            fallback_runtime: None,
-            memory: QueryMemoryConfig::default(),
-            active_sources: Vec::new(),
-            source_function_names: HashSet::new(),
-            udfs_installed: false,
-            tables: vec![TableInfo {
-                catalog_name: String::new(),
-                schema_name: "demo".to_string(),
+    async fn adapter_with_table() -> QueryRuntimeAdapter {
+        let active_sources = vec![RegisteredSource {
+            qualified_name: SourceQualifiedName::Schema("demo".to_string()),
+            tables: vec![RegisteredTable {
+                schema_name: None,
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
                 guide: "Query event rows.".to_string(),
-                columns: vec![ColumnInfo {
+                columns: vec![RegisteredColumn {
                     name: "event_id".to_string(),
                     data_type: "Utf8".to_string(),
                     nullable: false,
                     is_virtual: false,
                     is_required_filter: false,
+                    filter_mode: None,
                     description: "Event ID".to_string(),
-                    ordinal_position: 0,
                 }],
+                filters: Vec::new(),
                 required_filters: vec!["owner".to_string()],
+                search_limits: None,
             }],
+            table_functions: Vec::new(),
+            inputs: Vec::new(),
+        }];
+        let ctx = Arc::new(SessionContext::new());
+        catalog::register(&ctx, &active_sources, &[])
+            .await
+            .expect("catalog should register");
+        let tables = catalog::collect_static_tables(&active_sources);
+        QueryRuntimeAdapter {
+            ctx,
+            fallback_runtime: None,
+            memory: QueryMemoryConfig::default(),
+            active_sources,
+            source_function_names: HashSet::new(),
+            udfs_installed: false,
+            tables,
             table_functions: Vec::new(),
             failures: Vec::new(),
             name_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
@@ -1290,24 +1339,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn describe_table_hit_returns_full_table_without_missing_context() {
-        let result = adapter_with_table().describe_table(None, "demo", "events");
+    #[tokio::test]
+    async fn describe_table_hit_returns_full_table_without_missing_context() {
+        let result = adapter_with_table()
+            .await
+            .describe_table(None, "demo", "events")
+            .await
+            .expect("describe table");
 
         let table = result.table.expect("exact table");
         assert_eq!(table.columns.len(), 1);
         assert!(result.missing_context_tables.is_empty());
     }
 
-    #[test]
-    fn describe_table_miss_returns_columnless_context_tables() {
-        let result = adapter_with_table().describe_table(None, "demo", "missing");
+    #[tokio::test]
+    async fn describe_table_miss_returns_columnless_context_tables() {
+        let result = adapter_with_table()
+            .await
+            .describe_table(None, "demo", "missing")
+            .await
+            .expect("describe table miss");
 
         assert!(result.table.is_none());
-        assert_eq!(result.missing_context_tables.len(), 1);
         let context_table = result
             .missing_context_tables
-            .first()
+            .iter()
+            .find(|table| table.schema_name == "demo" && table.table_name == "events")
             .expect("missing context table");
         assert!(context_table.columns.is_empty());
         assert_eq!(context_table.required_filters, ["owner".to_string()]);
