@@ -1,5 +1,6 @@
 //! App-owned environment accessors for local runtime setup.
 
+use std::env::VarError;
 use std::path::PathBuf;
 
 use coral_engine::QueryRuntimeContext;
@@ -40,7 +41,7 @@ impl AppEnvironment {
         }
     }
 
-    pub(crate) fn env_var(name: &str) -> Option<String> {
+    pub(crate) fn env_var(name: &str) -> Result<Option<String>, VarError> {
         env_var(name)
     }
 }
@@ -57,8 +58,12 @@ fn coral_config_dir_override() -> Option<PathBuf> {
     clippy::disallowed_methods,
     reason = "coral-app is the single owner of process environment access."
 )]
-fn env_var(name: &str) -> Option<String> {
-    std::env::var(name).ok()
+fn env_var(name: &str) -> Result<Option<String>, VarError> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(error @ VarError::NotUnicode(_)) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +102,37 @@ mod tests {
             .arg(
                 "bootstrap::env::tests::coral_config_dir_override_reads_env_once_through_app_accessor",
             )
+            .arg("--nocapture")
+            .status()
+            .expect("run subprocess");
+        assert!(status.success(), "subprocess should pass");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "This test intentionally controls process environment values to validate the app-owned accessor."
+    )]
+    fn env_var_preserves_non_utf8_errors() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        const RUN_FLAG: &str = "CORAL_RUN_NON_UTF8_ENV_TEST";
+        const VALUE_ENV: &str = "CORAL_NON_UTF8_ENV_TEST";
+
+        if std::env::var_os(RUN_FLAG).is_some() {
+            let error = AppEnvironment::env_var(VALUE_ENV)
+                .expect_err("non-UTF8 env var should be reported");
+            assert!(matches!(error, std::env::VarError::NotUnicode(_)));
+            return;
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
+            .env(RUN_FLAG, "1")
+            .env(VALUE_ENV, OsString::from_vec(vec![0xFF]))
+            .arg("--exact")
+            .arg("bootstrap::env::tests::env_var_preserves_non_utf8_errors")
             .arg("--nocapture")
             .status()
             .expect("run subprocess");

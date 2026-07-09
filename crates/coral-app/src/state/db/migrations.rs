@@ -104,4 +104,23 @@ mod tests {
             .1 = b"not the embedded checksum".to_vec();
         assert!(!rows_match_current_migrations(&bad_checksum));
     }
+
+    #[tokio::test]
+    async fn sqlite_workspace_id_rejects_null() {
+        let pool = sqlx::SqlitePool::connect(":memory:")
+            .await
+            .expect("sqlite pool");
+        MIGRATOR.run(&pool).await.expect("run migrations");
+
+        let error =
+            sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES (NULL, 0)")
+                .execute(&pool)
+                .await
+                .expect_err("workspace id must reject null");
+
+        assert!(
+            error.to_string().contains("NOT NULL"),
+            "unexpected error: {error}"
+        );
+    }
 }

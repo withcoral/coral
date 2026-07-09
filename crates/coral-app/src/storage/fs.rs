@@ -42,10 +42,20 @@ pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
     match open_create_new_file_private(path) {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            set_file_permissions_private(path)
+            ensure_existing_file_private(path)
         }
         Err(error) => Err(error),
     }
+}
+
+fn ensure_existing_file_private(path: &Path) -> io::Result<()> {
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("path exists and is not a regular file: {}", path.display()),
+        ));
+    }
+    set_file_permissions_private(path)
 }
 
 /// Write to a temp file then rename to avoid partial writes on crash.
@@ -278,7 +288,22 @@ fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::DirectoryBackup;
+    use super::{DirectoryBackup, ensure_file_private};
+
+    #[test]
+    fn ensure_file_private_rejects_existing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("coral.db");
+        std::fs::create_dir(&path).expect("create directory at file path");
+
+        let error = ensure_file_private(&path).expect_err("directory should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn directory_backup_moves_and_restores_delete_target() {

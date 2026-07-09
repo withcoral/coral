@@ -258,11 +258,17 @@ impl ServerBuilder {
         let database_config = match database_config {
             DatabaseConfig::Sqlite { path } => ResolvedDatabaseConfig::Sqlite { path },
             DatabaseConfig::Postgres { url_env } => {
-                let url = AppEnvironment::env_var(&url_env).ok_or_else(|| {
-                    AppError::FailedPrecondition(format!(
-                        "database backend 'postgres' requires environment variable `{url_env}`"
-                    ))
-                })?;
+                let url = AppEnvironment::env_var(&url_env)
+                    .map_err(|_error| {
+                        AppError::FailedPrecondition(format!(
+                            "database backend 'postgres' requires environment variable `{url_env}` to contain valid UTF-8"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        AppError::FailedPrecondition(format!(
+                            "database backend 'postgres' requires environment variable `{url_env}`"
+                        ))
+                    })?;
                 ResolvedDatabaseConfig::Postgres { url }
             }
         };
