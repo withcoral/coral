@@ -6,7 +6,8 @@ use std::sync::Arc;
 use coral_spec::ManifestInputKind;
 use datafusion::arrow::array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::datasource::MemTable;
+use datafusion::catalog::{MemorySchemaProvider, SchemaProvider};
+use datafusion::datasource::{MemTable, ViewTable};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 use serde::Serialize;
@@ -23,6 +24,8 @@ use crate::{
 
 /// Schema name for source metadata tables such as `coral.tables`.
 pub(crate) const SYSTEM_SCHEMA: &str = "coral";
+const STATIC_TABLES_TABLE: &str = "_tables_static";
+const STATIC_COLUMNS_TABLE: &str = "_columns_static";
 
 /// Register `coral.tables` and `coral.columns` for the active source set.
 ///
@@ -30,17 +33,24 @@ pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 ///
 /// Returns a `DataFusionError` if the catalog is missing or the metadata
 /// tables cannot be materialized.
-pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]) -> Result<()> {
+pub(crate) async fn register(
+    ctx: &SessionContext,
+    active_sources: &[RegisteredSource],
+) -> Result<()> {
     let tables_table = build_tables_table(active_sources)?;
     let columns_table = build_columns_table(active_sources)?;
     let filters_table = build_filters_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
     let table_functions_table = build_table_functions_table(active_sources)?;
+    let catalog_names = active_sources
+        .iter()
+        .filter_map(|source| source.catalog_name.as_deref())
+        .collect::<Vec<_>>();
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
-    meta_tables.insert("tables".to_string(), Arc::new(tables_table));
-    meta_tables.insert("columns".to_string(), Arc::new(columns_table));
+    meta_tables.insert(STATIC_TABLES_TABLE.to_string(), Arc::new(tables_table));
+    meta_tables.insert(STATIC_COLUMNS_TABLE.to_string(), Arc::new(columns_table));
     meta_tables.insert("filters".to_string(), Arc::new(filters_table));
     meta_tables.insert("inputs".to_string(), Arc::new(inputs_table));
     meta_tables.insert(
@@ -51,12 +61,84 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
     let catalog = ctx
         .catalog("datafusion")
         .ok_or_else(|| DataFusionError::Plan("catalog 'datafusion' not found".to_string()))?;
+    let planning_schema = Arc::new(MemorySchemaProvider::new());
+    for (name, table) in &meta_tables {
+        planning_schema.register_table(name.clone(), table.clone())?;
+    }
+    catalog.register_schema(SYSTEM_SCHEMA, planning_schema)?;
+
+    let tables_sql = tables_view_sql(&catalog_names);
+    let tables_view = view_table_for_sql(ctx, &tables_sql).await?;
+    meta_tables.insert("tables".to_string(), Arc::new(tables_view));
+
+    let columns_sql = columns_view_sql(&catalog_names);
+    let columns_view = view_table_for_sql(ctx, &columns_sql).await?;
+    meta_tables.insert("columns".to_string(), Arc::new(columns_view));
+
     catalog.register_schema(
         SYSTEM_SCHEMA,
         Arc::new(StaticSchemaProvider::new(meta_tables)),
     )?;
 
     Ok(())
+}
+
+async fn view_table_for_sql(ctx: &SessionContext, sql: &str) -> Result<ViewTable> {
+    let df = ctx.sql(sql).await?;
+    let (_state, plan) = df.into_parts();
+    Ok(ViewTable::new(plan, Some(sql.to_string())))
+}
+
+fn tables_view_sql(catalog_names: &[&str]) -> String {
+    let static_sql = format!(
+        "SELECT schema_name, table_name, description, guide, required_filters, \
+         search_limits_json, namespace FROM {SYSTEM_SCHEMA}.{STATIC_TABLES_TABLE}"
+    );
+    if catalog_names.is_empty() {
+        return static_sql;
+    }
+    format!(
+        "{static_sql} UNION ALL \
+         SELECT table_catalog AS schema_name, table_name, '' AS description, '' AS guide, \
+         '' AS required_filters, '' AS search_limits_json, table_schema AS namespace \
+         FROM information_schema.tables \
+         WHERE table_catalog IN ({}) AND table_schema <> 'information_schema'",
+        sql_string_list(catalog_names)
+    )
+}
+
+fn columns_view_sql(catalog_names: &[&str]) -> String {
+    let static_sql = format!(
+        "SELECT schema_name, table_name, ordinal_position, column_name, data_type, \
+         is_nullable, is_virtual, is_required_filter, description, filter_mode, namespace \
+         FROM {SYSTEM_SCHEMA}.{STATIC_COLUMNS_TABLE}"
+    );
+    if catalog_names.is_empty() {
+        return static_sql;
+    }
+    format!(
+        "{static_sql} UNION ALL \
+         SELECT table_catalog AS schema_name, table_name, \
+         CAST(ordinal_position AS INT) AS ordinal_position, column_name, data_type, \
+         is_nullable = 'YES' AS is_nullable, false AS is_virtual, \
+         false AS is_required_filter, '' AS description, '' AS filter_mode, \
+         table_schema AS namespace \
+         FROM information_schema.columns \
+         WHERE table_catalog IN ({}) AND table_schema <> 'information_schema'",
+        sql_string_list(catalog_names)
+    )
+}
+
+fn sql_string_list(values: &[&str]) -> String {
+    values
+        .iter()
+        .map(|value| sql_string_literal(value))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
@@ -493,9 +575,13 @@ fn system_table_infos() -> Vec<TableInfo> {
         .collect()
 }
 
-/// Collect typed query-visible table metadata for the active source set.
+/// Collect static query-visible table metadata for the active source set.
+///
+/// This intentionally excludes catalog-backed database tables. Query execution
+/// uses this lightweight snapshot for static source hints and does not need to
+/// enumerate database catalogs before running ordinary SQL.
 #[must_use]
-pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableInfo> {
+pub(crate) fn collect_static_tables(active_sources: &[RegisteredSource]) -> Vec<TableInfo> {
     let mut tables = system_table_infos();
     tables.extend(active_sources.iter().flat_map(|source| {
         source.tables.iter().map(move |table| TableInfo {
@@ -532,6 +618,272 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
         ))
     });
     tables
+}
+
+/// Collect typed table metadata by querying the public `coral` catalog views.
+pub(crate) async fn collect_tables(
+    ctx: &SessionContext,
+    source_filter: Option<&str>,
+    table_filter: Option<&str>,
+) -> Result<Vec<TableInfo>> {
+    let source_filters = source_filter.into_iter().collect::<Vec<_>>();
+    collect_tables_with_filters(ctx, &source_filters, table_filter).await
+}
+
+/// Collect typed table metadata for any of the supplied source/schema filters.
+pub(crate) async fn collect_tables_for_schema_filters(
+    ctx: &SessionContext,
+    schema_filters: &[&str],
+) -> Result<Vec<TableInfo>> {
+    collect_tables_with_filters(ctx, schema_filters, None).await
+}
+
+async fn collect_tables_with_filters(
+    ctx: &SessionContext,
+    source_filters: &[&str],
+    table_filter: Option<&str>,
+) -> Result<Vec<TableInfo>> {
+    let mut tables = collect_table_info_by_key(ctx, source_filters, table_filter).await?;
+
+    let columns_sql = catalog_columns_query(source_filters, table_filter);
+    let column_batches = ctx.sql(&columns_sql).await?.collect().await?;
+    apply_column_infos_from_batches(&mut tables, &column_batches)?;
+
+    let mut tables = tables.into_values().collect::<Vec<_>>();
+    sort_tables(&mut tables);
+    for table in &mut tables {
+        table.columns.sort_by_key(|column| column.ordinal_position);
+    }
+    Ok(tables)
+}
+
+/// Collect table metadata without column expansion.
+pub(crate) async fn collect_table_metadata(
+    ctx: &SessionContext,
+    source_filter: Option<&str>,
+    table_filter: Option<&str>,
+) -> Result<Vec<TableInfo>> {
+    let source_filters = source_filter.into_iter().collect::<Vec<_>>();
+    let mut tables = collect_table_info_by_key(ctx, &source_filters, table_filter)
+        .await?
+        .into_values()
+        .collect::<Vec<_>>();
+    sort_tables(&mut tables);
+    Ok(tables)
+}
+
+async fn collect_table_info_by_key(
+    ctx: &SessionContext,
+    source_filters: &[&str],
+    table_filter: Option<&str>,
+) -> Result<TableInfoByKey> {
+    let tables_sql = catalog_tables_query(source_filters, table_filter);
+    let table_batches = ctx.sql(&tables_sql).await?.collect().await?;
+    collect_table_infos_from_batches(&table_batches, source_filters, table_filter)
+}
+
+fn catalog_tables_query(source_filters: &[&str], table_filter: Option<&str>) -> String {
+    let mut sql =
+        "SELECT schema_name, namespace, table_name, description, guide, required_filters \
+         FROM coral.tables"
+            .to_string();
+    append_catalog_filter(&mut sql, source_filters, table_filter);
+    sql
+}
+
+fn catalog_columns_query(source_filters: &[&str], table_filter: Option<&str>) -> String {
+    let mut sql =
+        "SELECT schema_name, namespace, table_name, ordinal_position, column_name, data_type, \
+         is_nullable, is_virtual, is_required_filter, description FROM coral.columns"
+            .to_string();
+    append_catalog_filter(&mut sql, source_filters, table_filter);
+    sql
+}
+
+fn append_catalog_filter(sql: &mut String, source_filters: &[&str], table_filter: Option<&str>) {
+    let mut predicates = Vec::new();
+    if !source_filters.is_empty() {
+        let source_predicates = source_filters
+            .iter()
+            .map(|filter| {
+                let literal = sql_string_literal(filter);
+                format!(
+                    "(schema_name = {literal} OR \
+                     (namespace <> '' AND concat(schema_name, '.', namespace) = {literal}))"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        predicates.push(format!("({source_predicates})"));
+    }
+    if let Some(table_filter) = table_filter {
+        predicates.push(format!("table_name = {}", sql_string_literal(table_filter)));
+    }
+    if !predicates.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&predicates.join(" AND "));
+    }
+}
+
+fn sort_tables(tables: &mut [TableInfo]) {
+    tables.sort_by(|left, right| {
+        (&left.schema_name, &left.namespace, &left.table_name).cmp(&(
+            &right.schema_name,
+            &right.namespace,
+            &right.table_name,
+        ))
+    });
+}
+
+type TableInfoByKey = HashMap<(String, String, String), TableInfo>;
+
+fn collect_table_infos_from_batches(
+    batches: &[RecordBatch],
+    source_filters: &[&str],
+    table_filter: Option<&str>,
+) -> Result<TableInfoByKey> {
+    let mut tables = HashMap::new();
+    for batch in batches {
+        let schema_names = string_array(batch, "schema_name")?;
+        let namespaces = string_array(batch, "namespace")?;
+        let table_names = string_array(batch, "table_name")?;
+        let descriptions = string_array(batch, "description")?;
+        let guides = string_array(batch, "guide")?;
+        let required_filters = string_array(batch, "required_filters")?;
+
+        for row in 0..batch.num_rows() {
+            let schema_name = schema_names.value(row).to_string();
+            let namespace = namespaces.value(row).to_string();
+            let table_name = table_names.value(row).to_string();
+            if !table_matches_query_filter(
+                &schema_name,
+                &namespace,
+                &table_name,
+                source_filters,
+                table_filter,
+            ) {
+                continue;
+            }
+            tables.insert(
+                (schema_name.clone(), namespace.clone(), table_name.clone()),
+                TableInfo {
+                    schema_name,
+                    namespace,
+                    table_name,
+                    description: descriptions.value(row).to_string(),
+                    guide: guides.value(row).to_string(),
+                    columns: Vec::new(),
+                    required_filters: split_required_filters(required_filters.value(row)),
+                },
+            );
+        }
+    }
+    Ok(tables)
+}
+
+fn apply_column_infos_from_batches(
+    tables: &mut TableInfoByKey,
+    batches: &[RecordBatch],
+) -> Result<()> {
+    for batch in batches {
+        let schema_names = string_array(batch, "schema_name")?;
+        let namespaces = string_array(batch, "namespace")?;
+        let table_names = string_array(batch, "table_name")?;
+        let positions = int32_array(batch, "ordinal_position")?;
+        let column_names = string_array(batch, "column_name")?;
+        let data_types = string_array(batch, "data_type")?;
+        let is_nullable = bool_array(batch, "is_nullable")?;
+        let is_virtual = bool_array(batch, "is_virtual")?;
+        let is_required_filter = bool_array(batch, "is_required_filter")?;
+        let descriptions = string_array(batch, "description")?;
+
+        for row in 0..batch.num_rows() {
+            let key = (
+                schema_names.value(row).to_string(),
+                namespaces.value(row).to_string(),
+                table_names.value(row).to_string(),
+            );
+            let Some(table) = tables.get_mut(&key) else {
+                continue;
+            };
+            table.columns.push(ColumnInfo {
+                name: column_names.value(row).to_string(),
+                data_type: data_types.value(row).to_string(),
+                nullable: is_nullable.value(row),
+                is_virtual: is_virtual.value(row),
+                is_required_filter: is_required_filter.value(row),
+                description: descriptions.value(row).to_string(),
+                ordinal_position: u32::try_from(positions.value(row)).unwrap_or_default(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn string_array<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
+    batch
+        .column_by_name(name)
+        .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| {
+            DataFusionError::Execution(format!("coral catalog column '{name}' is not Utf8"))
+        })
+}
+
+fn int32_array<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array> {
+    batch
+        .column_by_name(name)
+        .and_then(|column| column.as_any().downcast_ref::<Int32Array>())
+        .ok_or_else(|| {
+            DataFusionError::Execution(format!("coral catalog column '{name}' is not Int32"))
+        })
+}
+
+fn bool_array<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a BooleanArray> {
+    batch
+        .column_by_name(name)
+        .and_then(|column| column.as_any().downcast_ref::<BooleanArray>())
+        .ok_or_else(|| {
+            DataFusionError::Execution(format!("coral catalog column '{name}' is not Boolean"))
+        })
+}
+
+fn split_required_filters(value: &str) -> Vec<String> {
+    if value.is_empty() {
+        Vec::new()
+    } else {
+        value.split(',').map(ToString::to_string).collect()
+    }
+}
+
+fn table_matches_query_filter(
+    schema_name: &str,
+    namespace: &str,
+    table_name: &str,
+    source_filters: &[&str],
+    table_filter: Option<&str>,
+) -> bool {
+    (source_filters.is_empty()
+        || source_filters
+            .iter()
+            .any(|value| table_schema_matches(schema_name, namespace, value)))
+        && table_filter.is_none_or(|value| table_name == value)
+}
+
+/// Matches a user-supplied source/schema filter against one table.
+///
+/// Database sources expose three-part names, so a table is addressable by its
+/// source schema (`coral_db`) or the dotted schema-namespace combination
+/// (`coral_db.main`). Tables without a namespace reduce to the plain
+/// schema-name match.
+fn table_schema_matches(schema_name: &str, namespace: &str, value: &str) -> bool {
+    if value == schema_name {
+        return true;
+    }
+    !namespace.is_empty()
+        && value
+            .strip_prefix(schema_name)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|rest| rest == namespace)
 }
 
 /// Collect typed source-scoped table function metadata for the active source set.
@@ -1006,6 +1358,7 @@ mod tests {
         let functions = collect_table_functions(&[RegisteredSource {
             catalog_name: None,
             schema_name: "source_schema".to_string(),
+            catalog_name: None,
             tables: Vec::new(),
             table_functions: vec![RegisteredTableFunction {
                 schema_name: "function_schema".to_string(),
