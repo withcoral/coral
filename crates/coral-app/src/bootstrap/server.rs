@@ -30,7 +30,7 @@ use coral_api::{
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::task::{self, JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codegen::http::header::CONTENT_TYPE;
 use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
@@ -427,8 +427,9 @@ fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseCo
 pub struct RunningServer {
     endpoint_uri: String,
     local_trace_store_dir: Option<PathBuf>,
+    search_observations: Mutex<Option<SearchObservationHandle>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
+    task: Mutex<Option<JoinHandle<Result<(), AppError>>>>,
 }
 
 impl RunningServer {
@@ -473,8 +474,27 @@ impl RunningServer {
         }
 
         let task = self.task.lock().expect("task mutex poisoned").take();
-        if let Some(task) = task {
-            task.await??;
+        let task_result = match task {
+            Some(task) => match task.await {
+                Ok(result) => result,
+                Err(error) => Err(AppError::from(error)),
+            },
+            None => Ok(()),
+        };
+        let search_observations_result = self.shutdown_search_observations().await;
+        task_result?;
+        search_observations_result?;
+        Ok(())
+    }
+
+    async fn shutdown_search_observations(&self) -> Result<(), AppError> {
+        let search_observations = self
+            .search_observations
+            .lock()
+            .expect("search observation mutex poisoned")
+            .take();
+        if let Some(search_observations) = search_observations {
+            shutdown_search_observations(search_observations).await?;
         }
         Ok(())
     }
@@ -532,19 +552,14 @@ async fn start_server(
         feedback,
         task,
     } = dependencies;
-    let observed_values_search_enabled = search_observations.is_some();
-    let (query, source_service) = match search_observations {
-        Some(search_observations) => {
-            let query = query.with_search_observation_handle(search_observations.clone());
-            let source_service = SourceService::new(source, query.clone(), workspace.clone())
-                .with_search_observation_handle(search_observations);
-            (query, source_service)
-        }
-        None => {
-            let source_service = SourceService::new(source, query.clone(), workspace.clone());
-            (query, source_service)
-        }
+    let (source, query) = match search_observations.as_ref() {
+        Some(search_observations) => (
+            source.with_search_observation_handle(search_observations.clone()),
+            query.with_search_observation_handle(search_observations.clone()),
+        ),
+        None => (source, query),
     };
+    let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
     let function_service = FunctionService::new(query.clone());
@@ -589,13 +604,14 @@ async fn start_server(
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
+    let task_search_observations = search_observations.clone();
     let task = match mode {
         ServerMode::NativeGrpc => start_grpc_server(
             listener,
             shutdown_rx,
             routes,
             shutdown_search,
-            observed_values_search_enabled,
+            task_search_observations,
         ),
         ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
             listener,
@@ -603,13 +619,14 @@ async fn start_server(
             routes,
             assets,
             shutdown_search,
-            observed_values_search_enabled,
+            task_search_observations,
         ),
     };
 
     Ok(RunningServer {
         endpoint_uri,
         local_trace_store_dir,
+        search_observations: Mutex::new(search_observations),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })
@@ -620,8 +637,8 @@ fn start_grpc_server(
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
     search: SearchManager,
-    observed_values_search_enabled: bool,
-) -> JoinHandle<Result<(), tonic::transport::Error>> {
+    search_observations: Option<SearchObservationHandle>,
+) -> JoinHandle<Result<(), AppError>> {
     tokio::spawn(async move {
         let result = Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
@@ -629,11 +646,19 @@ fn start_grpc_server(
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await;
-        if observed_values_search_enabled {
-            drain_search_before_shutdown(search).await;
-        }
-        result
+            .await
+            .map_err(AppError::from);
+        let search_observations_result = match search_observations {
+            Some(search_observations) => {
+                let result = shutdown_search_observations(search_observations).await;
+                drain_search_before_shutdown(search).await;
+                result
+            }
+            None => Ok(()),
+        };
+        result?;
+        search_observations_result?;
+        Ok(())
     })
 }
 
@@ -643,8 +668,8 @@ fn start_grpc_web_server(
     routes: Routes,
     static_assets: Arc<dyn StaticAssetsProvider>,
     search: SearchManager,
-    observed_values_search_enabled: bool,
-) -> JoinHandle<Result<(), tonic::transport::Error>> {
+    search_observations: Option<SearchObservationHandle>,
+) -> JoinHandle<Result<(), AppError>> {
     let grpc = routes
         .into_axum_router()
         .layer(GrpcWebLayer::new())
@@ -664,12 +689,27 @@ fn start_grpc_web_server(
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await;
-        if observed_values_search_enabled {
-            drain_search_before_shutdown(search).await;
-        }
-        result
+            .await
+            .map_err(AppError::from);
+        let search_observations_result = match search_observations {
+            Some(search_observations) => {
+                let result = shutdown_search_observations(search_observations).await;
+                drain_search_before_shutdown(search).await;
+                result
+            }
+            None => Ok(()),
+        };
+        result?;
+        search_observations_result?;
+        Ok(())
     })
+}
+
+async fn shutdown_search_observations(
+    search_observations: SearchObservationHandle,
+) -> Result<(), AppError> {
+    task::spawn_blocking(move || search_observations.shutdown()).await??;
+    Ok(())
 }
 
 async fn drain_search_before_shutdown(search: SearchManager) {
