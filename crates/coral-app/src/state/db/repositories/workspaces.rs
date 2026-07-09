@@ -1,7 +1,8 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 
+use crate::state::db::DbError;
 use crate::state::db::schema::Workspaces;
-use crate::state::db::{DbError, DbSession};
+use crate::state::db::session::DbSession;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub(crate) struct WorkspaceRecord {
@@ -58,7 +59,7 @@ where
             .from_table(Workspaces::Table)
             .and_where(Expr::col(Workspaces::Id).eq(id))
             .to_owned();
-        self.session.execute_delete(statement).await
+        self.session.execute(statement).await
     }
 }
 

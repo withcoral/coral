@@ -1,4 +1,4 @@
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::sources::model::InstalledSource;
 use crate::workspaces::WorkspaceName;
@@ -19,50 +19,22 @@ pub(crate) struct DeletedWorkspace {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorkspaceLifecycleLock {
-    inner: Arc<WorkspaceLifecycleLockInner>,
+    inner: Arc<Mutex<()>>,
 }
 
 impl WorkspaceLifecycleLock {
     #[must_use = "bind the returned guard for the full critical section"]
-    pub(crate) fn lock(&self) -> WorkspaceLifecycleGuard {
-        let mut locked = self
-            .inner
-            .locked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *locked {
-            locked = self
-                .inner
-                .available
-                .wait(locked)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        *locked = true;
+    pub(crate) fn lock(&self) -> WorkspaceLifecycleGuard<'_> {
         WorkspaceLifecycleGuard {
-            inner: Arc::clone(&self.inner),
+            _guard: self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         }
     }
-}
-
-#[derive(Debug, Default)]
-struct WorkspaceLifecycleLockInner {
-    locked: Mutex<bool>,
-    available: Condvar,
 }
 
 #[must_use]
-pub(crate) struct WorkspaceLifecycleGuard {
-    inner: Arc<WorkspaceLifecycleLockInner>,
-}
-
-impl Drop for WorkspaceLifecycleGuard {
-    fn drop(&mut self) {
-        let mut locked = self
-            .inner
-            .locked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *locked = false;
-        self.inner.available.notify_one();
-    }
+pub(crate) struct WorkspaceLifecycleGuard<'a> {
+    _guard: MutexGuard<'a, ()>,
 }

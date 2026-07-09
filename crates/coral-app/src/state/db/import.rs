@@ -9,6 +9,10 @@ pub(crate) struct LegacyConfigImportReport {
     pub(crate) workspace_count: usize,
 }
 
+/// Backfills the workspace database shadow from the filesystem-backed config.
+///
+/// Workspace reads still use `config.toml`; startup treats this as a rehearsal
+/// import and logs failures instead of making the database authoritative.
 pub(crate) async fn import_legacy_config(
     db: &CoralDb,
     config_store: &ConfigStore,
