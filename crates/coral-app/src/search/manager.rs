@@ -20,7 +20,7 @@ impl SearchManager {
         config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
     ) -> Self {
-        let catalog_loader = CatalogSnapshotLoader::new(config_store, layout.clone());
+        let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout, catalog_loader);
         Self {
             engine: UniversalSearchEngine::new(catalog),
