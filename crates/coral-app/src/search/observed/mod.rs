@@ -3,6 +3,7 @@
 mod collector;
 pub(crate) mod provider;
 mod publisher;
+mod ranking;
 mod sensitive;
 mod source_scope;
 mod sqlite_projection;
