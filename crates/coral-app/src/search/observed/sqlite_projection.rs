@@ -333,6 +333,7 @@ fn search_observed_values_short_terms(
                 OR v.value_key = ?2
                 OR lower(v.display_value) = ?2
                 OR v.source_name = ?2
+                OR v.source_scope_id = ?2
                 OR v.surface_name = ?2
                 OR v.column_name = ?2
                 OR instr(v.search_text, ?2) > 0
@@ -836,7 +837,7 @@ mod tests {
     use rusqlite::params;
     use tempfile::tempdir;
 
-    use super::{ObservedValuesDrainBudget, drain_observed_queue};
+    use super::{ObservedValuesDrainBudget, drain_observed_queue, search_observed_values};
     use crate::search::observed::sqlite_queue::{
         ObservedValuesQueueJob, ObservedValuesSurfaceKind,
     };
@@ -888,6 +889,39 @@ mod tests {
             )
             .expect("attempts");
         assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn search_finds_short_source_scope_id_without_trigram_match() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        let mut job = test_job();
+        job.source_scope_id = "eu".to_string();
+        store
+            .enqueue_if_current(&workspace, &job, generation)
+            .expect("enqueue");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+
+        drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+        )
+        .expect("drain");
+
+        let result = search_observed_values(&connection, &workspace, &[String::from("eu")], 10)
+            .expect("search");
+
+        assert_eq!(result.hits.len(), 1);
+        let hit = result.hits.first().expect("one observed-value hit");
+        assert_eq!(hit.source_scope_id, "eu");
     }
 
     fn test_job() -> ObservedValuesQueueJob {
