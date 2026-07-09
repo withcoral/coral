@@ -988,6 +988,15 @@ async fn search_index_drain_calls_app_maintenance_rpc() {
     assert_default_workspace(requests[0].workspace.as_ref());
     assert_eq!(requests[0].budget_ms, 2500);
 
+    server
+        .cmd()
+        .args(["search-index", "drain"])
+        .assert()
+        .success();
+    let requests = server.drain_search_queue_requests();
+    assert_eq!(requests.len(), 2, "expected second drain call");
+    assert_eq!(requests[1].budget_ms, 0);
+
     server.shutdown().await;
 }
 
