@@ -12,6 +12,10 @@ on:
       - ".github/workflows/chromatic.yml"
       - "apps/reef/**"
 
+concurrency:
+  group: chromatic-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -50,6 +54,8 @@ jobs:
         run: npm ci
 
       - name: Run Chromatic
-        run: npm exec -- chromatic
-        env:
-          CHROMATIC_PROJECT_TOKEN: ${{ secrets.CHROMATIC_PROJECT_TOKEN }}
+        uses: chromaui/action@94713c544284a14195de3b50ef24301579f1877e # v18.0.1
+        with:
+          projectToken: ${{ secrets.CHROMATIC_PROJECT_TOKEN }}
+          workingDir: apps/reef
+          onlyChanged: true
