@@ -5,6 +5,47 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
+## [0.5.2](https://github.com/withcoral/coral/compare/v0.5.1...v0.5.2) (2026-07-09)
+
+
+### Features
+
+* **desktop:** add Coral Desktop Electron app foundation ([#1467](https://github.com/withcoral/coral/issues/1467)) ([323a842](https://github.com/withcoral/coral/commit/323a842742a5dd6b8cc2ed13f05782a31f0d242b))
+* **engine:** support named query parameters ([#1468](https://github.com/withcoral/coral/issues/1468)) ([db424f0](https://github.com/withcoral/coral/commit/db424f0c8d2b189864604285aed630c34f755b46))
+* **engine:** type source table-function arguments ([#1490](https://github.com/withcoral/coral/issues/1490)) ([d26306b](https://github.com/withcoral/coral/commit/d26306b03b798f597f089d9629d1d4351342612d))
+* **oauth:** add dynamic client registration ([#1216](https://github.com/withcoral/coral/issues/1216)) ([d996bd1](https://github.com/withcoral/coral/commit/d996bd1b2568bea876d02c31a1943b1672ab4017))
+* **reef:** add reusable empty page ([#1570](https://github.com/withcoral/coral/issues/1570)) ([116c416](https://github.com/withcoral/coral/commit/116c4166df222514d6d1d6db5820f8c64c74ce31))
+* **reef:** make Wax cards polymorphic ([#1552](https://github.com/withcoral/coral/issues/1552)) ([41254bd](https://github.com/withcoral/coral/commit/41254bde7b287ebb17c7bc52f496c926d4a7b8c2))
+* **reef:** update sources page layout ([#1571](https://github.com/withcoral/coral/issues/1571)) ([6792d48](https://github.com/withcoral/coral/commit/6792d48659f309e32db17061b8816141e982304d))
+* **reef:** wire Sources & Traces UI to the desktop sidecar ([#1463](https://github.com/withcoral/coral/issues/1463)) ([0eaab44](https://github.com/withcoral/coral/commit/0eaab44a6eee6bd17a4b428db5079f1ac38c0688))
+* **search:** add local catalog snapshot loader ([#1550](https://github.com/withcoral/coral/issues/1550)) ([4675e5b](https://github.com/withcoral/coral/commit/4675e5bc78f643c4041e261bc608b5fee3f5e8a9))
+* **search:** add sqlite catalog provider ([#1423](https://github.com/withcoral/coral/issues/1423)) ([fee1eb3](https://github.com/withcoral/coral/commit/fee1eb3eef16811eb58d6b95884b10627e5e7721))
+* **search:** add sqlite search store ([#1464](https://github.com/withcoral/coral/issues/1464)) ([2d8dfcd](https://github.com/withcoral/coral/commit/2d8dfcd9035f2efd9756b0e9deb9359fd51fd70b))
+* **search:** add universal search contracts ([#1372](https://github.com/withcoral/coral/issues/1372)) ([524376a](https://github.com/withcoral/coral/commit/524376afce1a0cbbbb73df3ae76e51081f26caab))
+* **search:** expose metadata search in CLI and MCP ([#1462](https://github.com/withcoral/coral/issues/1462)) ([c3f99ff](https://github.com/withcoral/coral/commit/c3f99ffc649d192e1acb134bb3a46ba52673a63f))
+* **spec:** infer OpenAPI pagination hints ([#1576](https://github.com/withcoral/coral/issues/1576)) ([0d40adf](https://github.com/withcoral/coral/commit/0d40adfb4dd2c40d52858ae94408c07b82c56dd8))
+* **spec:** parse function artifacts ([#1473](https://github.com/withcoral/coral/issues/1473)) ([07423cf](https://github.com/withcoral/coral/commit/07423cf5b93706c1940b2f29853678b6c9ca44a9))
+* **spec:** support OAuth credentials in DSL v4 ([#1588](https://github.com/withcoral/coral/issues/1588)) ([da141a8](https://github.com/withcoral/coral/commit/da141a8d51b22e03c13bf0b7a0921a3bf625f92b))
+* **spec:** support parameter metadata overrides ([#1481](https://github.com/withcoral/coral/issues/1481)) ([4191955](https://github.com/withcoral/coral/commit/4191955fbf8867770452c759323f364c406c0c6d))
+
+
+### Bug Fixes
+
+* **app:** allow larger DSL v4 source registration payloads ([#1586](https://github.com/withcoral/coral/issues/1586)) ([9fd85c2](https://github.com/withcoral/coral/commit/9fd85c2dc1087e51922f8498c1888ca7a9dce6c0))
+* **desktop:** download the Electron binary before dev if missing ([#1545](https://github.com/withcoral/coral/issues/1545)) ([1db23e0](https://github.com/withcoral/coral/commit/1db23e03ce11e34605e347619f758ae94a86a60b))
+* **desktop:** load Sources & Traces from the sidecar in dev ([#1523](https://github.com/withcoral/coral/issues/1523)) ([1755841](https://github.com/withcoral/coral/commit/1755841432548a789da49791cdbf828e6dbed680))
+* **mcp:** scope startup query history to workspace ([#1567](https://github.com/withcoral/coral/issues/1567)) ([986da19](https://github.com/withcoral/coral/commit/986da195e3ea7dd04b27c6371baed787e5c472bb))
+* **spec:** use OpenAPI tags for v4 operation names ([#1484](https://github.com/withcoral/coral/issues/1484)) ([6c553b9](https://github.com/withcoral/coral/commit/6c553b90e7bf31a5636ed369cc156cfc0735b02d))
+* **ui:** improve source provider logo rendering ([#1544](https://github.com/withcoral/coral/issues/1544)) ([0aa0237](https://github.com/withcoral/coral/commit/0aa02371d9cd848f851496879eccaded9e7d14fc))
+* **ui:** use custom icons ([#1537](https://github.com/withcoral/coral/issues/1537)) ([185f6cf](https://github.com/withcoral/coral/commit/185f6cfede8c853e190f60b56634396c32e21d9c))
+* **v4:** make required REST inputs table functions ([#1492](https://github.com/withcoral/coral/issues/1492)) ([7fa0d7a](https://github.com/withcoral/coral/commit/7fa0d7a5270f95b91db65cbb24777f308d4ad4bb))
+* **v4:** preserve scalar row projection types ([#1493](https://github.com/withcoral/coral/issues/1493)) ([6be21a3](https://github.com/withcoral/coral/commit/6be21a3af798a3f687d9e8d083390dbd49326f96))
+
+
+### Performance Improvements
+
+* **spec:** reuse v4 projection type index per surface ([#1584](https://github.com/withcoral/coral/issues/1584)) ([68f349b](https://github.com/withcoral/coral/commit/68f349b969db0629860518194ed96a1aeeaa5c65))
+
 ## [0.5.1](https://github.com/withcoral/coral/compare/v0.5.0...v0.5.1) (2026-07-01)
 
 
