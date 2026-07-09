@@ -21,6 +21,10 @@ impl CoralDb {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "Phase 1 keeps an explicit database health probe for the server diagnostics wired in a later stack PR."
+    )]
     pub(crate) async fn ping(&self) -> Result<(), DbError> {
         match &self.backend {
             CoralDbBackend::Sqlite(db) => {

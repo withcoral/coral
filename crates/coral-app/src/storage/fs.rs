@@ -49,7 +49,7 @@ pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
 }
 
 fn ensure_existing_file_private(path: &Path) -> io::Result<()> {
-    if !fs::metadata(path)?.is_file() {
+    if !fs::symlink_metadata(path)?.file_type().is_file() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("path exists and is not a regular file: {}", path.display()),
@@ -303,6 +303,34 @@ mod tests {
             error.to_string().contains("not a regular file"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_file_private_rejects_symlink_without_chmoding_target() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target.db");
+        let link = temp.path().join("coral.db");
+        std::fs::write(&target, "existing database").expect("write target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))
+            .expect("set target permissions");
+        symlink(&target, &link).expect("create symlink");
+
+        let error = ensure_file_private(&link).expect_err("symlink should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "unexpected error: {error}"
+        );
+        let target_mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(target_mode, 0o644);
     }
 
     #[test]
