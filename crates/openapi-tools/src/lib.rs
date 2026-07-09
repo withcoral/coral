@@ -1,0 +1,710 @@
+//! Standalone `OpenAPI` reference hydration utilities.
+
+#![allow(
+    unused_crate_dependencies,
+    reason = "This package includes a CLI binary and integration-test dependencies in addition to the library target."
+)]
+
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fs::{self, File};
+use std::io::{self, Read as _};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde_json::{Map, Value};
+use thiserror::Error;
+use url::Url;
+
+/// Maximum number of bytes accepted for the root `OpenAPI` descriptor.
+pub const ROOT_DESCRIPTOR_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Maximum number of bytes accepted for a referenced external descriptor.
+pub const EXTERNAL_REF_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Timeout for HTTPS fetches.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// User-Agent sent for HTTPS fetches.
+pub const USER_AGENT: &str = "openapi-tools";
+
+/// Errors returned by `OpenAPI` hydration.
+#[derive(Debug, Error)]
+pub enum OpenApiToolsError {
+    /// The input location or base URI is invalid.
+    #[error("invalid location or base URI `{location}`: {message}")]
+    InvalidLocation {
+        /// Location or base URI that could not be used.
+        location: String,
+        /// Human-readable detail.
+        message: String,
+    },
+
+    /// The URI scheme is not supported.
+    #[error("unsupported URI scheme `{scheme}` for `{location}`")]
+    UnsupportedScheme {
+        /// Unsupported scheme.
+        scheme: String,
+        /// Location that used the scheme.
+        location: String,
+    },
+
+    /// A local file could not be read.
+    #[error("failed to read `{location}`: {source}")]
+    ReadFailure {
+        /// Location that could not be read.
+        location: String,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// A network fetch failed.
+    #[error("failed to fetch `{location}`: {source}")]
+    FetchFailure {
+        /// URL that could not be fetched.
+        location: String,
+        /// Underlying HTTP client error.
+        #[source]
+        source: reqwest::Error,
+    },
+
+    /// An HTTPS request redirected to a non-HTTPS URL.
+    #[error("HTTPS request for `{location}` redirected to non-HTTPS `{redirected_to}`")]
+    RedirectToNonHttps {
+        /// Original URL.
+        location: String,
+        /// Final redirected URL.
+        redirected_to: String,
+    },
+
+    /// The HTTP response status was not successful.
+    #[error("`{location}` returned unsuccessful HTTP status {status}")]
+    ResponseNotSuccessful {
+        /// URL that returned the status.
+        location: String,
+        /// HTTP status code.
+        status: reqwest::StatusCode,
+    },
+
+    /// A descriptor exceeded the configured maximum size.
+    #[error("`{location}` exceeded size limit of {limit} bytes")]
+    SizeLimitExceeded {
+        /// Location that exceeded the limit.
+        location: String,
+        /// Maximum permitted bytes.
+        limit: u64,
+    },
+
+    /// A descriptor could not be parsed as YAML or JSON.
+    #[error("failed to parse `{location}` as YAML or JSON: {source}")]
+    ParseFailure {
+        /// Location that failed to parse.
+        location: String,
+        /// Parser error.
+        #[source]
+        source: serde_yaml::Error,
+    },
+
+    /// A reachable JSON Pointer target was missing.
+    #[error("unresolved ref target `{reference}` in `{base}`")]
+    UnresolvedRefTarget {
+        /// Document containing the ref.
+        base: String,
+        /// Ref that could not be resolved.
+        reference: String,
+    },
+
+    /// A fragment syntax is not supported.
+    #[error("unsupported fragment `{fragment}` in `{reference}`")]
+    UnsupportedFragment {
+        /// Ref containing the unsupported fragment.
+        reference: String,
+        /// Unsupported fragment.
+        fragment: String,
+    },
+
+    /// A local file reference would escape the root descriptor directory.
+    #[error("local file ref `{reference}` resolves outside descriptor directory `{root}`")]
+    LocalFileConfinementViolation {
+        /// Ref that escaped confinement.
+        reference: String,
+        /// Root descriptor directory.
+        root: PathBuf,
+    },
+
+    /// Final dereferencing failed.
+    #[error("failed to dereference OpenAPI document: {message}")]
+    DereferenceFailure {
+        /// Human-readable dereference error.
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct Document {
+    value: Value,
+}
+
+#[derive(Debug)]
+struct Resolver {
+    root_uri: String,
+    root_dir: Option<PathBuf>,
+    client: reqwest::blocking::Client,
+    documents: HashMap<String, Document>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct RefTarget {
+    doc_uri: String,
+    fragment: String,
+}
+
+/// Hydrates an `OpenAPI` document from bytes and a base URI.
+///
+/// # Errors
+///
+/// Returns [`OpenApiToolsError`] if the descriptor cannot be parsed, if a
+/// reachable reference cannot be loaded or resolved, or if final dereferencing
+/// fails.
+pub fn hydrate_openapi(input: &[u8], base_uri: &str) -> Result<Value, OpenApiToolsError> {
+    let root_uri = normalize_base_uri(base_uri)?;
+    let document_url = parse_document_url(&root_uri)?;
+    let root_dir = root_directory_from_url(&document_url)?;
+    let root = parse_document(input, &root_uri)?;
+    let mut resolver = Resolver::new(root_uri.clone(), root_dir)?;
+    resolver
+        .documents
+        .insert(root_uri.clone(), Document { value: root });
+    resolver.hydrate()
+}
+
+/// Hydrates an `OpenAPI` document from an HTTPS URL or local file path.
+///
+/// # Errors
+///
+/// Returns [`OpenApiToolsError`] if the location cannot be read, fetched,
+/// parsed, or dereferenced.
+pub fn hydrate_openapi_from_location(location: &str) -> Result<Value, OpenApiToolsError> {
+    if let Ok(mut url) = Url::parse(location) {
+        return match url.scheme() {
+            "https" => {
+                url.set_fragment(None);
+                let client = http_client()?;
+                let bytes = fetch_https(&client, url.as_str(), ROOT_DESCRIPTOR_MAX_BYTES)?;
+                hydrate_openapi(&bytes, location)
+            }
+            "file" => {
+                let url = strip_query_and_fragment(url);
+                let path = url
+                    .to_file_path()
+                    .map_err(|()| OpenApiToolsError::InvalidLocation {
+                        location: location.to_owned(),
+                        message: "file URL cannot be converted to a local path".to_owned(),
+                    })?;
+                hydrate_file_path(&path)
+            }
+            scheme => Err(OpenApiToolsError::UnsupportedScheme {
+                scheme: scheme.to_owned(),
+                location: location.to_owned(),
+            }),
+        };
+    }
+
+    hydrate_file_path(Path::new(location))
+}
+
+impl Resolver {
+    fn new(root_uri: String, root_dir: Option<PathBuf>) -> Result<Self, OpenApiToolsError> {
+        Ok(Self {
+            root_uri,
+            root_dir,
+            client: http_client()?,
+            documents: HashMap::new(),
+        })
+    }
+
+    fn hydrate(&mut self) -> Result<Value, OpenApiToolsError> {
+        let mut queue = VecDeque::new();
+        let mut reachable_root_components = BTreeSet::new();
+        let mut seen_refs = BTreeSet::new();
+
+        let root_value = &self
+            .documents
+            .get(&self.root_uri)
+            .expect("root document inserted before hydration")
+            .value;
+        collect_refs_from_paths(
+            root_value,
+            &self.root_uri,
+            &self.root_uri,
+            &mut queue,
+            &mut reachable_root_components,
+        )?;
+
+        while let Some(target) = queue.pop_front() {
+            if !seen_refs.insert(target.clone()) {
+                continue;
+            }
+            self.ensure_document(&target.doc_uri)?;
+            let value = self
+                .documents
+                .get(&target.doc_uri)
+                .and_then(|doc| pointer_target(&doc.value, &target.fragment))
+                .ok_or_else(|| OpenApiToolsError::UnresolvedRefTarget {
+                    base: target.doc_uri.clone(),
+                    reference: format!("{}#{}", target.doc_uri, target.fragment),
+                })?
+                .clone();
+            collect_refs_in_value(
+                &value,
+                &target.doc_uri,
+                &self.root_uri,
+                &mut queue,
+                &mut reachable_root_components,
+            )?;
+        }
+
+        let mut pruned_root = {
+            let root = &self
+                .documents
+                .get(&self.root_uri)
+                .expect("root document inserted before hydration")
+                .value;
+            prune_root_components(root, &reachable_root_components)
+        };
+        normalize_same_document_refs(&mut pruned_root, &self.root_uri)?;
+
+        let resources = self
+            .documents
+            .iter()
+            .filter(|(uri, _doc)| uri.as_str() != self.root_uri)
+            .map(|(uri, doc)| (uri.as_str(), doc.value.clone()))
+            .collect::<Vec<_>>();
+        let mut registry = jsonschema::Registry::new();
+        for (uri, value) in &resources {
+            registry = registry.add(*uri, value).map_err(|error| {
+                OpenApiToolsError::DereferenceFailure {
+                    message: error.to_string(),
+                }
+            })?;
+        }
+        let registry =
+            registry
+                .prepare()
+                .map_err(|error| OpenApiToolsError::DereferenceFailure {
+                    message: error.to_string(),
+                })?;
+
+        jsonschema::options()
+            .with_registry(&registry)
+            .with_base_uri(self.root_uri.clone())
+            .dereference(&pruned_root)
+            .map_err(|error| OpenApiToolsError::DereferenceFailure {
+                message: error.to_string(),
+            })
+    }
+
+    fn ensure_document(&mut self, doc_uri: &str) -> Result<(), OpenApiToolsError> {
+        if self.documents.contains_key(doc_uri) {
+            return Ok(());
+        }
+        let url = parse_document_url(doc_uri)?;
+        let bytes = match url.scheme() {
+            "https" => fetch_https(&self.client, doc_uri, EXTERNAL_REF_MAX_BYTES)?,
+            "file" => self.read_confined_file_ref(&url, doc_uri)?,
+            scheme => {
+                return Err(OpenApiToolsError::UnsupportedScheme {
+                    scheme: scheme.to_owned(),
+                    location: doc_uri.to_owned(),
+                });
+            }
+        };
+        let value = parse_document(&bytes, doc_uri)?;
+        self.documents
+            .insert(doc_uri.to_owned(), Document { value });
+        Ok(())
+    }
+
+    fn read_confined_file_ref(
+        &self,
+        url: &Url,
+        reference: &str,
+    ) -> Result<Vec<u8>, OpenApiToolsError> {
+        let root = self
+            .root_dir
+            .as_ref()
+            .ok_or_else(|| OpenApiToolsError::UnsupportedScheme {
+                scheme: "file".to_owned(),
+                location: reference.to_owned(),
+            })?;
+        let path = url
+            .to_file_path()
+            .map_err(|()| OpenApiToolsError::InvalidLocation {
+                location: reference.to_owned(),
+                message: "file URL cannot be converted to a local path".to_owned(),
+            })?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|source| OpenApiToolsError::ReadFailure {
+                location: reference.to_owned(),
+                source,
+            })?;
+        if !canonical.starts_with(root) {
+            return Err(OpenApiToolsError::LocalFileConfinementViolation {
+                reference: reference.to_owned(),
+                root: root.clone(),
+            });
+        }
+        reject_symlink_target(&path, reference)?;
+        read_limited_file(&path, EXTERNAL_REF_MAX_BYTES, reference)
+    }
+}
+
+fn hydrate_file_path(path: &Path) -> Result<Value, OpenApiToolsError> {
+    let bytes = read_limited_file(path, ROOT_DESCRIPTOR_MAX_BYTES, &path.display().to_string())?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|source| OpenApiToolsError::ReadFailure {
+            location: path.display().to_string(),
+            source,
+        })?;
+    reject_symlink_target(path, &path.display().to_string())?;
+    let url = Url::from_file_path(&canonical).map_err(|()| OpenApiToolsError::InvalidLocation {
+        location: path.display().to_string(),
+        message: "file path cannot be represented as a file URL".to_owned(),
+    })?;
+    hydrate_openapi(&bytes, url.as_str())
+}
+
+fn http_client() -> Result<reqwest::blocking::Client, OpenApiToolsError> {
+    reqwest::blocking::Client::builder()
+        .timeout(FETCH_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|source| OpenApiToolsError::FetchFailure {
+            location: "https client".to_owned(),
+            source,
+        })
+}
+
+fn read_limited_file(
+    path: &Path,
+    limit: u64,
+    location: &str,
+) -> Result<Vec<u8>, OpenApiToolsError> {
+    if let Ok(metadata) = fs::metadata(path)
+        && metadata.len() > limit
+    {
+        return Err(OpenApiToolsError::SizeLimitExceeded {
+            location: location.to_owned(),
+            limit,
+        });
+    }
+    let file = File::open(path).map_err(|source| OpenApiToolsError::ReadFailure {
+        location: location.to_owned(),
+        source,
+    })?;
+    read_limited(file, limit, location)
+}
+
+fn read_limited(
+    reader: impl io::Read,
+    limit: u64,
+    location: &str,
+) -> Result<Vec<u8>, OpenApiToolsError> {
+    let mut limited = reader.take(limit.saturating_add(1));
+    let mut bytes = Vec::new();
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|source| OpenApiToolsError::ReadFailure {
+            location: location.to_owned(),
+            source,
+        })?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(OpenApiToolsError::SizeLimitExceeded {
+            location: location.to_owned(),
+            limit,
+        });
+    }
+    Ok(bytes)
+}
+
+fn fetch_https(
+    client: &reqwest::blocking::Client,
+    location: &str,
+    limit: u64,
+) -> Result<Vec<u8>, OpenApiToolsError> {
+    let response =
+        client
+            .get(location)
+            .send()
+            .map_err(|source| OpenApiToolsError::FetchFailure {
+                location: location.to_owned(),
+                source,
+            })?;
+    if response.url().scheme() != "https" {
+        return Err(OpenApiToolsError::RedirectToNonHttps {
+            location: location.to_owned(),
+            redirected_to: response.url().to_string(),
+        });
+    }
+    let status = response.status();
+    if !status.is_success() {
+        return Err(OpenApiToolsError::ResponseNotSuccessful {
+            location: location.to_owned(),
+            status,
+        });
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit)
+    {
+        return Err(OpenApiToolsError::SizeLimitExceeded {
+            location: location.to_owned(),
+            limit,
+        });
+    }
+    read_limited(response, limit, location)
+}
+
+fn parse_document(input: &[u8], location: &str) -> Result<Value, OpenApiToolsError> {
+    serde_yaml::from_slice(input).map_err(|source| OpenApiToolsError::ParseFailure {
+        location: location.to_owned(),
+        source,
+    })
+}
+
+fn normalize_base_uri(base_uri: &str) -> Result<String, OpenApiToolsError> {
+    let url = Url::parse(base_uri).map_err(|error| OpenApiToolsError::InvalidLocation {
+        location: base_uri.to_owned(),
+        message: error.to_string(),
+    })?;
+    Ok(strip_query_and_fragment(url).to_string())
+}
+
+fn strip_query_and_fragment(mut url: Url) -> Url {
+    url.set_query(None);
+    url.set_fragment(None);
+    url
+}
+
+fn parse_document_url(location: &str) -> Result<Url, OpenApiToolsError> {
+    Url::parse(location).map_err(|error| OpenApiToolsError::InvalidLocation {
+        location: location.to_owned(),
+        message: error.to_string(),
+    })
+}
+
+fn root_directory_from_url(url: &Url) -> Result<Option<PathBuf>, OpenApiToolsError> {
+    if url.scheme() != "file" {
+        return Ok(None);
+    }
+    let path = url
+        .to_file_path()
+        .map_err(|()| OpenApiToolsError::InvalidLocation {
+            location: url.to_string(),
+            message: "file URL cannot be converted to a local path".to_owned(),
+        })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| OpenApiToolsError::InvalidLocation {
+            location: url.to_string(),
+            message: "file descriptor has no parent directory".to_owned(),
+        })?;
+    parent
+        .canonicalize()
+        .map(Some)
+        .map_err(|source| OpenApiToolsError::ReadFailure {
+            location: parent.display().to_string(),
+            source,
+        })
+}
+
+fn reject_symlink_target(path: &Path, location: &str) -> Result<(), OpenApiToolsError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| OpenApiToolsError::ReadFailure {
+        location: location.to_owned(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(OpenApiToolsError::LocalFileConfinementViolation {
+            reference: location.to_owned(),
+            root: path
+                .parent()
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+        });
+    }
+    Ok(())
+}
+
+fn collect_refs_from_paths(
+    root: &Value,
+    base_uri: &str,
+    root_uri: &str,
+    queue: &mut VecDeque<RefTarget>,
+    reachable_root_components: &mut BTreeSet<Vec<String>>,
+) -> Result<(), OpenApiToolsError> {
+    if let Some(paths) = root.get("paths") {
+        collect_refs_in_value(paths, base_uri, root_uri, queue, reachable_root_components)?;
+    }
+    Ok(())
+}
+
+fn collect_refs_in_value(
+    value: &Value,
+    base_uri: &str,
+    root_uri: &str,
+    queue: &mut VecDeque<RefTarget>,
+    reachable_root_components: &mut BTreeSet<Vec<String>>,
+) -> Result<(), OpenApiToolsError> {
+    match value {
+        Value::Object(object) => {
+            if let Some(Value::String(reference)) = object.get("$ref") {
+                let target = resolve_ref(base_uri, reference)?;
+                if target.doc_uri == root_uri
+                    && let Some(component_path) = root_component_path(&target.fragment)
+                {
+                    reachable_root_components.insert(component_path);
+                }
+                queue.push_back(target);
+            }
+            for child in object.values() {
+                collect_refs_in_value(child, base_uri, root_uri, queue, reachable_root_components)?;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                collect_refs_in_value(child, base_uri, root_uri, queue, reachable_root_components)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn resolve_ref(base_uri: &str, reference: &str) -> Result<RefTarget, OpenApiToolsError> {
+    let base = parse_document_url(base_uri)?;
+    let joined = base
+        .join(reference)
+        .map_err(|error| OpenApiToolsError::InvalidLocation {
+            location: reference.to_owned(),
+            message: error.to_string(),
+        })?;
+    let scheme = joined.scheme();
+    if scheme != "https" && scheme != "file" {
+        return Err(OpenApiToolsError::UnsupportedScheme {
+            scheme: scheme.to_owned(),
+            location: reference.to_owned(),
+        });
+    }
+    if base.scheme() == "https" && scheme == "file" {
+        return Err(OpenApiToolsError::UnsupportedScheme {
+            scheme: "file".to_owned(),
+            location: reference.to_owned(),
+        });
+    }
+    let fragment = joined.fragment().unwrap_or_default().to_owned();
+    validate_fragment(reference, &fragment)?;
+    let doc_uri = strip_query_and_fragment(joined).to_string();
+    Ok(RefTarget { doc_uri, fragment })
+}
+
+fn validate_fragment(reference: &str, fragment: &str) -> Result<(), OpenApiToolsError> {
+    let decoded =
+        urlencoding::decode(fragment).map_err(|error| OpenApiToolsError::UnsupportedFragment {
+            reference: reference.to_owned(),
+            fragment: format!("{fragment}: {error}"),
+        })?;
+    if decoded.is_empty() || decoded.starts_with('/') {
+        Ok(())
+    } else {
+        Err(OpenApiToolsError::UnsupportedFragment {
+            reference: reference.to_owned(),
+            fragment: fragment.to_owned(),
+        })
+    }
+}
+
+fn pointer_target<'a>(value: &'a Value, fragment: &str) -> Option<&'a Value> {
+    if fragment.is_empty() {
+        return Some(value);
+    }
+    let decoded = urlencoding::decode(fragment).ok()?;
+    value.pointer(decoded.as_ref())
+}
+
+fn root_component_path(fragment: &str) -> Option<Vec<String>> {
+    let decoded = urlencoding::decode(fragment).ok()?;
+    let tokens = pointer_tokens(decoded.as_ref())?;
+    if tokens.len() >= 3 && tokens.first().is_some_and(|token| token == "components") {
+        Some(tokens.into_iter().take(3).collect())
+    } else {
+        None
+    }
+}
+
+fn pointer_tokens(pointer: &str) -> Option<Vec<String>> {
+    if pointer.is_empty() {
+        return Some(Vec::new());
+    }
+    pointer
+        .strip_prefix('/')
+        .map(|stripped| stripped.split('/').map(unescape_pointer_token).collect())
+}
+
+fn unescape_pointer_token(token: &str) -> String {
+    token.replace("~1", "/").replace("~0", "~")
+}
+
+fn normalize_same_document_refs(value: &mut Value, doc_uri: &str) -> Result<(), OpenApiToolsError> {
+    match value {
+        Value::Object(object) => {
+            if let Some(Value::String(reference)) = object.get_mut("$ref") {
+                let target = resolve_ref(doc_uri, reference)?;
+                if target.doc_uri == doc_uri {
+                    *reference = format!("#{}", target.fragment);
+                }
+            }
+            for child in object.values_mut() {
+                normalize_same_document_refs(child, doc_uri)?;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                normalize_same_document_refs(child, doc_uri)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn prune_root_components(root: &Value, reachable_components: &BTreeSet<Vec<String>>) -> Value {
+    let mut pruned = root.clone();
+    let Some(components) = pruned.get_mut("components").and_then(Value::as_object_mut) else {
+        return pruned;
+    };
+
+    let mut next_components = Map::new();
+    for path in reachable_components {
+        let [_, group, name] = path.as_slice() else {
+            continue;
+        };
+        let Some(value) = components
+            .get(group)
+            .and_then(|group_value| group_value.get(name))
+        else {
+            continue;
+        };
+        next_components
+            .entry(group.clone())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(group_object) = next_components
+            .get_mut(group)
+            .and_then(Value::as_object_mut)
+        {
+            group_object.insert(name.clone(), value.clone());
+        }
+    }
+    *components = next_components;
+    pruned
+}

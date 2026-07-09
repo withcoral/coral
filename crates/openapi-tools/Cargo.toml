@@ -1,0 +1,31 @@
+[package]
+name = "openapi-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "openapi_tools"
+
+[[bin]]
+name = "openapi-tools"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+jsonschema.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+url.workspace = true
+urlencoding.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+tempfile.workspace = true
