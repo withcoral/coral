@@ -20,7 +20,7 @@ export const Default: Story = {
 
 export const WithRetry: Story = {
   args: {
-    message: 'Try again after the local Coral runtime is ready.',
+    message: 'Retry after the local Coral runtime is ready.',
     onRetry: () => undefined,
     title: 'Runtime unavailable',
   },
