@@ -1,0 +1,22 @@
+[package]
+name = "coral-serve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+coral-app.workspace = true
+coral-client.workspace = true
+coral-mcp.workspace = true
+
+[dev-dependencies]
+rmcp.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

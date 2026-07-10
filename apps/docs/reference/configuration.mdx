@@ -85,6 +85,17 @@ bind_addr = "127.0.0.1:14555"
   The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
 </Warning>
 
+MCP Streamable HTTP is disabled by default. Enable its companion listener under
+`[server.mcp_http]`:
+
+```toml
+[server.mcp_http]
+enabled = true
+bind = "127.0.0.1:14556"
+```
+
+The unauthenticated MCP listener is restricted to loopback addresses.
+
 ## Runtime features
 
 Experimental runtime features are configured under `[features]`.

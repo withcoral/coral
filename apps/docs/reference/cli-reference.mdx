@@ -491,7 +491,8 @@ coral ui --no-open
 
 Start a long-running native gRPC server. Coral prints the selected endpoint and
 a `CORAL_ENDPOINT` hint for clients, then runs until you press `Ctrl-C` or send
-`SIGTERM` on Unix.
+`SIGTERM` on Unix. When `[server.mcp_http]` is enabled, it also prints the bound
+MCP Streamable HTTP endpoint.
 
 ```shellscript
 coral server
