@@ -24,6 +24,7 @@ use super::state_store::{InMemoryStateStore, StateStore};
 use crate::outbound_url_policy::ConfiguredEndpointUrl;
 
 mod authorize;
+mod callback;
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 25 } else { 5_000 });
@@ -90,6 +91,10 @@ impl OidcAuthConfig {
             )
             .route("/oauth/clients/{client}", get(client_metadata))
             .route("/oauth/authorize", get(authorize::oauth_authorize))
+            .route(
+                "/auth/oidc/{provider}/callback",
+                get(callback::oidc_callback),
+            )
             .with_state(state);
         let listener = TcpListener::bind(bind_addr)
             .await
