@@ -29,4 +29,19 @@ surfaces:
       reset_header: x-rate-limit-reset
 
 test_queries:
-  - SELECT id, text FROM x_v4.search_recents(query => 'from:XDevelopers', max_results => 10) LIMIT 5
+  - >-
+    SELECT id, text, author_id, username, created_at, public_metrics
+    FROM x_v4.tweets_searchpostsrecent(
+      query => 'from:XDevelopers',
+      tweet_fields => 'author_id,created_at,conversation_id,public_metrics,referenced_tweets,in_reply_to_user_id',
+      expansions => 'author_id',
+      user_fields => 'username,name,public_metrics,verified,verified_type,description'
+    )
+    LIMIT 5
+  - >-
+    SELECT id, username, name, public_metrics
+    FROM x_v4.users_getusersbyusernames(
+      usernames => 'XDevelopers',
+      user_fields => 'username,name,public_metrics,verified,verified_type,description'
+    )
+    LIMIT 5

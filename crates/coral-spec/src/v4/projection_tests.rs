@@ -42,6 +42,93 @@ surfaces:
 }
 
 #[test]
+fn comma_delimited_required_query_arrays_become_table_function_args() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: x
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.x.com/2
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /users:
+    get:
+      operationId: getUsersByIds
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: user.fields
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        username: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+
+    assert_eq!(projection.operation_id, "getusersbyids");
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
+    let inputs = projection
+        .inputs
+        .iter()
+        .map(|input| (input.name.as_str(), (input.sql_exposure, input.required)))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        inputs.get("ids"),
+        Some(&(SqlInputExposure::FunctionArg, true))
+    );
+    assert_eq!(
+        inputs.get("user_fields"),
+        Some(&(SqlInputExposure::FunctionArg, false))
+    );
+}
+
+#[test]
 fn top_level_scalar_rows_use_scalar_projection_types() {
     let manifest = parse_source_manifest_yaml(
         r"

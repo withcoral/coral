@@ -156,8 +156,13 @@ impl OpenApiImporter<'_> {
                     .and_then(Value::as_str)
                     .and_then(parse_parameter_location)?;
                 let schema = parameter_obj.get("schema").unwrap_or(&Value::Null);
-                let scalar =
-                    self.import_parameter_scalar(schema, &name, operation_id, diagnostics)?;
+                let scalar = self.import_parameter_scalar(
+                    parameter_obj,
+                    schema,
+                    &name,
+                    operation_id,
+                    diagnostics,
+                )?;
                 Some(IrOperationInput {
                     name,
                     location,
@@ -176,12 +181,20 @@ impl OpenApiImporter<'_> {
 
     fn import_parameter_scalar(
         &mut self,
+        parameter: &Map<String, Value>,
         schema: &Value,
         name: &str,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<IrScalarType> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        if parameter_serializes_as_comma_delimited_array(parameter, &resolved) {
+            let items = resolved.get("items")?;
+            let item_schema = self.resolve_ref(items, operation_id, diagnostics)?;
+            if json_schema_scalar_type_or_string(&item_schema).is_some() {
+                return Some(IrScalarType::String);
+            }
+        }
         let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
             diagnostics.push(Diagnostic::warning(
                 "PROJECTION_INPUT_UNSUPPORTED",
@@ -232,6 +245,20 @@ impl OpenApiImporter<'_> {
             type_ref,
         })
     }
+}
+
+fn parameter_serializes_as_comma_delimited_array(
+    parameter: &Map<String, Value>,
+    schema: &Value,
+) -> bool {
+    parameter.get("in").and_then(Value::as_str) == Some("query")
+        && parameter
+            .get("style")
+            .and_then(Value::as_str)
+            .unwrap_or("form")
+            == "form"
+        && parameter.get("explode").and_then(Value::as_bool) == Some(false)
+        && json_schema_type_contains(schema, "array")
 }
 
 fn openapi_operation_naming(

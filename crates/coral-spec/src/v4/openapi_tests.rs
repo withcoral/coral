@@ -917,6 +917,96 @@ paths:
 }
 
 #[test]
+fn importer_exposes_comma_delimited_array_query_parameters_as_strings() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: x
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.x.com/2
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /users:
+    get:
+      operationId: getUsersByIds
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/UserId'
+        - name: user.fields
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        username: {type: string}
+components:
+  schemas:
+    UserId:
+      type: string
+"
+        .as_bytes(),
+    )
+    .expect("array params import");
+
+    let operation = ir.operations.first().expect("operation");
+    let input_types = operation
+        .inputs
+        .iter()
+        .map(|input| (input.name.as_str(), (input.data_type, input.required)))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(input_types.get("ids"), Some(&(IrScalarType::String, true)));
+    assert_eq!(
+        input_types.get("user.fields"),
+        Some(&(IrScalarType::String, false))
+    );
+    assert!(
+        operation.diagnostics.iter().all(|diagnostic| {
+            !(diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
+                && diagnostic
+                    .message
+                    .contains("unsupported schema type 'array'"))
+        }),
+        "unexpected diagnostics: {:#?}",
+        operation.diagnostics
+    );
+}
+
+#[test]
 fn importer_infers_common_query_pagination_modes() {
     let manifest = parse_source_manifest_yaml(
         r"
