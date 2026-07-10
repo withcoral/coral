@@ -1,6 +1,6 @@
 //! Heuristic inference of lookup key joinability for REST surfaces.
 //!
-//! During OpenAPI import Coral guesses which REST query parameters are NOT
+//! During `OpenAPI` import Coral guesses which REST query parameters are NOT
 //! complete exact lookups and stamps that fact into the semantic IR. Excluded
 //! parameters stay pushdown filters; they just cannot anchor dependent joins
 //! (`FilterSpec.lookup_key` stays false). MCP pagination is handled separately
