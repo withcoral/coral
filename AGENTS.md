@@ -49,6 +49,10 @@
   latency. CI installs the bundled `github` source with fake credentials and
   fails when release `coral sql "select * from coral.tables"` has a hyperfine
   mean above 750 ms.
+- Desktop distribution changes must exercise the release-shaped macOS package
+  path, not only the desktop type-check. The Validate workflow runs the
+  `Desktop macOS package` job for desktop, Reef, UI, Rust, and release-workflow
+  inputs so PRs catch missing DMG/ZIP/update metadata before the release job.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.
