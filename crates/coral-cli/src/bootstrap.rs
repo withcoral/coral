@@ -3,12 +3,12 @@ use std::sync::Arc;
 use coral_app::{AwsEngineExtensionsProvider, features::FeatureOverrides};
 use coral_client::{
     AppClient, ClientError,
-    local::{LocalServerError, RunningServer, ServerBuilder},
+    local::{LocalServerError, RunningServer as AppRunningServer, ServerBuilder},
 };
 
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
-    server: Option<RunningServer>,
+    server: Option<AppRunningServer>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -31,6 +31,8 @@ pub(crate) enum BootstrapError {
     Startup(#[from] LocalServerError),
     #[error(transparent)]
     Connect(#[from] ClientError),
+    #[error(transparent)]
+    Serve(#[from] coral_serve::ServeError),
 }
 
 pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, BootstrapError> {
@@ -55,7 +57,7 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
 pub(crate) async fn start_ui_server(
     port: u16,
     feature_overrides: FeatureOverrides,
-) -> Result<RunningServer, BootstrapError> {
+) -> Result<AppRunningServer, BootstrapError> {
     let server = configure_server_builder(
         ServerBuilder::embedded_ui_loopback(port, crate::embedded_ui_assets()),
         BootstrapOptions {
@@ -70,17 +72,17 @@ pub(crate) async fn start_ui_server(
 
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
-) -> Result<RunningServer, BootstrapError> {
-    let server = configure_server_builder(
+) -> Result<coral_serve::RunningServer, BootstrapError> {
+    let builder = configure_server_builder(
         ServerBuilder::configured_standalone_grpc(),
         BootstrapOptions {
             feature_overrides,
             ..BootstrapOptions::default()
         },
-    )
-    .start()
-    .await?;
-    Ok(server)
+    );
+    coral_serve::start(builder, coral_mcp::McpOptions::default())
+        .await
+        .map_err(Into::into)
 }
 
 fn configure_server_builder(builder: ServerBuilder, options: BootstrapOptions) -> ServerBuilder {

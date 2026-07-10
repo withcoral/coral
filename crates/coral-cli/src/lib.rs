@@ -751,6 +751,9 @@ async fn run_server(
         );
     }
     println!("Coral gRPC server listening on {endpoint}");
+    if let Some(address) = server.mcp_http_addr() {
+        println!("Coral MCP HTTP server listening on http://{address}/mcp");
+    }
     println!("Connect clients with CORAL_ENDPOINT={endpoint}");
     println!("Press Ctrl-C to stop the server.");
 

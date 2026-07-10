@@ -1306,6 +1306,7 @@ dependencies = [
  "coral-app",
  "coral-client",
  "coral-mcp",
+ "coral-serve",
  "coral-spec",
  "crossterm",
  "dialoguer",
@@ -1434,6 +1435,20 @@ dependencies = [
  "tonic",
  "tower",
  "url",
+]
+
+[[package]]
+name = "coral-serve"
+version = "0.7.1"
+dependencies = [
+ "coral-app",
+ "coral-client",
+ "coral-mcp",
+ "coral-mcp-http",
+ "rmcp",
+ "tempfile",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

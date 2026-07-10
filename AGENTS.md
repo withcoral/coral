@@ -12,6 +12,8 @@
   and query execution.
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
 - `crates/coral-mcp-http`: MCP Streamable HTTP transport adapter.
+- `crates/coral-serve`: upper composition for the long-running gRPC server and
+  its optional MCP HTTP companion.
 - `crates/coral-spec`: declarative source-spec parsing, validation,
   input discovery, and normalized source-definition models.
 - `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
