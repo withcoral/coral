@@ -751,7 +751,7 @@ async fn run_server(
     let server = bootstrap::start_standalone_server(feature_overrides).await?;
     let endpoint = server.endpoint_uri().to_string();
 
-    if !server_endpoint_is_loopback(&endpoint) {
+    if server_requires_security_warning(&endpoint, server.grpc_authentication_enabled()) {
         eprintln!(
             "Warning: the native gRPC server at {endpoint} does not authenticate clients; \
              any client that can reach the server can access Coral and its configured sources. \
@@ -791,6 +791,10 @@ fn server_endpoint_is_loopback(endpoint: &str) -> bool {
         .strip_prefix("http://")
         .and_then(|authority| authority.parse::<SocketAddr>().ok())
         .is_some_and(|address| address.ip().is_loopback())
+}
+
+fn server_requires_security_warning(endpoint: &str, authentication_enabled: bool) -> bool {
+    !authentication_enabled && !server_endpoint_is_loopback(endpoint)
 }
 
 #[cfg(unix)]
@@ -1718,7 +1722,7 @@ mod tests {
 
     use super::{
         Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary,
-        function_status_summary, server_endpoint_is_loopback,
+        function_status_summary, server_endpoint_is_loopback, server_requires_security_warning,
     };
 
     #[test]
@@ -1757,6 +1761,18 @@ mod tests {
                 "endpoint: {endpoint}"
             );
         }
+        assert!(server_requires_security_warning(
+            "http://0.0.0.0:14555",
+            false
+        ));
+        assert!(!server_requires_security_warning(
+            "http://0.0.0.0:14555",
+            true
+        ));
+        assert!(!server_requires_security_warning(
+            "http://127.0.0.1:14555",
+            false
+        ));
     }
 
     #[cfg(feature = "embedded-ui")]

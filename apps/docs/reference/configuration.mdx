@@ -82,7 +82,7 @@ bind_addr = "127.0.0.1:14555"
 ```
 
 <Warning>
-  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+  Without `[auth]`, the native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
 </Warning>
 
 MCP Streamable HTTP is disabled by default. Enable its companion listener under
@@ -95,6 +95,42 @@ bind = "127.0.0.1:14556"
 ```
 
 The unauthenticated MCP listener is restricted to loopback addresses.
+
+To require Coral access tokens, configure the authorization-server issuer, a
+session signing key, and the upstream identity provider. The MCP
+listener's public URL becomes its protected-resource identifier and token
+audience:
+
+```toml
+[auth.authorization_server]
+issuer = "https://auth.example"
+
+[auth.session]
+signing_key_file = "session.key"
+
+[auth.provider]
+issuer = "https://accounts.example"
+client_id = "coral"
+client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+redirect_uri = "https://auth.example/auth/oidc/callback"
+
+[server.mcp_http]
+enabled = true
+bind = "0.0.0.0:14556"
+allow_insecure_remote_http_bind = true
+public_url = "https://coral.example/mcp"
+```
+
+The signing key file must contain a PKCS#8 DER-encoded P-256 private key and is
+resolved relative to Coral's config directory. MCP accepts only tokens whose
+audience is its canonical public URL. The private gRPC API accepts the explicit
+first-party audience allowlist, which currently contains that same MCP URL;
+gRPC health checks remain unauthenticated. The explicit insecure-bind
+acknowledgement is required because Coral serves cleartext HTTP on that socket.
+Put it behind TLS termination and prevent untrusted clients from reaching the
+private gRPC listener directly. While MCP HTTP and gRPC run in one process
+started by `coral server`, the gRPC bind must be loopback or wildcard so MCP can
+forward the bearer over a loopback connection.
 
 ## Runtime features
 

@@ -3,13 +3,6 @@ mod config;
 mod error;
 mod id_token;
 mod provider_client;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the verification half is wired later in the OAuth serving stack"
-    )
-)]
 pub(crate) mod session;
 pub(crate) mod state_store;
 

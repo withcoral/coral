@@ -54,6 +54,7 @@ mod hash;
 mod identity;
 mod outbound_url_policy;
 mod query;
+mod request_auth;
 mod request_context;
 mod search;
 mod sources;
@@ -68,8 +69,8 @@ pub use auth::{
     AuthServerError, AuthSettings, CoralAuthorizationServer, RunningCoralAuthorizationServer,
 };
 pub use bootstrap::{
-    AppError, McpHttpServeConfig, RunningServer, ServerBuilder, ServerMode, StaticAsset,
-    StaticAssetsProvider,
+    AppError, McpHttpServeConfig, PreparedGrpcServer, RunningServer, ServeCompanionConfig,
+    ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use identity::{

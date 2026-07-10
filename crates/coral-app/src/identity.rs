@@ -71,13 +71,22 @@ pub enum PrincipalKind {
 pub struct Principal {
     id: PrincipalId,
     kind: PrincipalKind,
+    token_id: Option<String>,
+    audience: Option<String>,
+    client_id: Option<String>,
 }
 
 impl Principal {
     /// Builds a principal from its canonical identity and authenticated kind.
     #[must_use]
     pub const fn new(id: PrincipalId, kind: PrincipalKind) -> Self {
-        Self { id, kind }
+        Self {
+            id,
+            kind,
+            token_id: None,
+            audience: None,
+            client_id: None,
+        }
     }
 
     /// Parses and builds a principal with an authenticated kind.
@@ -95,7 +104,41 @@ impl Principal {
         Self {
             id: PrincipalId(LOCAL_PRINCIPAL_ID.to_string()),
             kind: PrincipalKind::User,
+            token_id: None,
+            audience: None,
+            client_id: None,
         }
+    }
+
+    pub(crate) fn for_federated(provider: &str, subject: &str) -> Self {
+        let mut identity = Vec::with_capacity(provider.len() + subject.len() + 32);
+        identity.extend_from_slice(b"coral-federated-user-v1\0");
+        identity.extend_from_slice(&(provider.len() as u64).to_be_bytes());
+        identity.extend_from_slice(provider.as_bytes());
+        identity.extend_from_slice(&(subject.len() as u64).to_be_bytes());
+        identity.extend_from_slice(subject.as_bytes());
+        Self {
+            id: PrincipalId(format!(
+                "federated-{}",
+                crate::hash::sha256_hex(&identity)
+            )),
+            kind: PrincipalKind::User,
+            token_id: None,
+            audience: None,
+            client_id: None,
+        }
+    }
+
+    pub(crate) fn with_access_token_attribution(
+        mut self,
+        token_id: String,
+        audience: String,
+        client_id: String,
+    ) -> Self {
+        self.token_id = Some(token_id);
+        self.audience = Some(audience);
+        self.client_id = Some(client_id);
+        self
     }
 
     /// Returns the stable principal identity.
@@ -108,6 +151,24 @@ impl Principal {
     #[must_use]
     pub const fn kind(&self) -> PrincipalKind {
         self.kind
+    }
+
+    /// Returns the validated access-token identifier, when authentication used one.
+    #[must_use]
+    pub fn token_id(&self) -> Option<&str> {
+        self.token_id.as_deref()
+    }
+
+    /// Returns the audience that authorized this request, when authenticated.
+    #[must_use]
+    pub fn audience(&self) -> Option<&str> {
+        self.audience.as_deref()
+    }
+
+    /// Returns the OAuth client that obtained the access token, when authenticated.
+    #[must_use]
+    pub fn client_id(&self) -> Option<&str> {
+        self.client_id.as_deref()
     }
 }
 
@@ -308,6 +369,20 @@ mod tests {
         assert_eq!(principal.id(), &id);
         assert_eq!(principal.id().as_str(), "product:principal/saul");
         assert_eq!(principal.kind(), PrincipalKind::Agent);
+    }
+
+    #[test]
+    fn federated_principal_is_stable_and_namespaces_provider_and_subject() {
+        let principal = Principal::for_federated("oidc", "alice");
+        assert_eq!(principal, Principal::for_federated("oidc", "alice"));
+        assert_ne!(principal, Principal::for_federated("saml", "alice"));
+        assert_ne!(principal, Principal::for_federated("oidc", "bob"));
+        assert_ne!(
+            Principal::for_federated("ab", "c"),
+            Principal::for_federated("a", "bc")
+        );
+        PrincipalId::parse(principal.id().as_str()).expect("generated id is canonical");
+        assert_eq!(principal.kind(), PrincipalKind::User);
     }
 
     #[tokio::test]

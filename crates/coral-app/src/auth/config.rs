@@ -94,7 +94,7 @@ impl AuthSettings {
     ///
     /// Returns [`AuthServerError::Config`] when a secret source cannot be read
     /// or the session key material is unusable.
-    pub(super) fn resolve_runtime_dependencies(
+    pub(crate) fn resolve_runtime_dependencies(
         self,
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
@@ -275,6 +275,10 @@ pub(crate) struct AuthorizationServerSettings {
 }
 
 impl AuthorizationServerSettings {
+    pub(crate) fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     fn validate(&mut self) -> Result<(), AuthServerError> {
         self.issuer = required("auth.authorization_server.issuer", &self.issuer)?;
         self.issuer = validate_issuer("auth.authorization_server.issuer", &self.issuer, true)?;

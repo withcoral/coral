@@ -48,6 +48,10 @@ impl fmt::Debug for SessionTokenIssuer {
 pub(crate) struct SessionTokenVerifier {
     issuer: String,
     verification_keys: Arc<HashMap<String, DecodingKey>>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retained for future JWKS exposure")
+    )]
     verification_jwks: Arc<JwkSet>,
     access_token_ttl: Duration,
 }
@@ -141,6 +145,10 @@ impl SessionTokenIssuer {
         self.verifier.clone()
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retained for future JWKS exposure")
+    )]
     pub(crate) fn verification_jwks(&self) -> &JwkSet {
         &self.verifier.verification_jwks
     }
@@ -387,10 +395,18 @@ fn unix_timestamp() -> Result<u64, SessionTokenError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) fn test_signing_key() -> Vec<u8> {
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 
+    EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+        .expect("P-256 signing key")
+        .as_ref()
+        .to_vec()
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
 
     const ISSUER: &str = "https://coral.example.test/";
@@ -399,10 +415,7 @@ mod tests {
     const CLIENT_ID: &str = "https://client.example.test/client.json";
 
     fn signing_key() -> Vec<u8> {
-        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-            .expect("P-256 signing key")
-            .as_ref()
-            .to_vec()
+        test_signing_key()
     }
 
     fn test_issuer_with_key(key: &[u8]) -> SessionTokenIssuer {

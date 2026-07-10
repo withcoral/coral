@@ -40,8 +40,11 @@ coral-spec.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+jsonwebtoken.workspace = true
 jsonschema.workspace = true
 regex.workspace = true
+reqwest.workspace = true
+ring.workspace = true
 rmcp = { workspace = true, features = ["transport-child-process"] }
 serde_json.workspace = true
 tempfile.workspace = true
