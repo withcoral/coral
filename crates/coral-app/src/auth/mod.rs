@@ -1,6 +1,7 @@
 mod authorization_server;
 mod config;
 mod error;
+mod id_token;
 mod provider_client;
 #[cfg_attr(
     not(test),
