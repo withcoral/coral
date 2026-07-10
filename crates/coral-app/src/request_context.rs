@@ -6,10 +6,6 @@ use crate::bootstrap::{AppError, app_status};
 use crate::identity::UserPrincipal;
 
 /// Request-scoped data that domain services may need after authentication.
-///
-/// This intentionally starts narrow. Query attribution still flows through its
-/// existing path today, but can move here later without widening every
-/// principal-aware call signature again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequestContext {
     principal: UserPrincipal,
@@ -20,15 +16,6 @@ impl RequestContext {
         Self { principal }
     }
 
-    // Installed server-wide by the immediate P1a child and consumed at service
-    // boundaries by P1b.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "installed server-wide by P1a and consumed at service boundaries by P1b"
-        )
-    )]
     pub(crate) fn from_request<T>(request: &Request<T>) -> Result<Self, Status> {
         request.extensions().get::<Self>().cloned().ok_or_else(|| {
             app_status(AppError::Unauthenticated(
@@ -37,14 +24,6 @@ impl RequestContext {
         })
     }
 
-    // Consumed by the QueryContext introduced in the immediate P1b child.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by the QueryContext introduced in the P1b child"
-        )
-    )]
     pub(crate) fn principal(&self) -> &UserPrincipal {
         &self.principal
     }

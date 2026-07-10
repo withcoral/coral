@@ -4,8 +4,9 @@
 )]
 
 use coral_api::v1::{
-    SearchFieldRole, SearchProvider, SearchProviderState, SearchRequest, SearchSurfaceKind,
-    TableFunctionKind, ValidateSourceRequest, Workspace, catalog_item, search_result,
+    CreateWorkspaceRequest, ImportSourceRequest, SearchFieldRole, SearchProvider,
+    SearchProviderState, SearchRequest, SearchSurfaceKind, TableFunctionKind,
+    ValidateSourceRequest, Workspace, catalog_item, search_result,
 };
 use coral_client::default_workspace;
 use serde_json::json;
@@ -97,6 +98,89 @@ async fn search_service_rejects_empty_query() {
         status.message().contains("search query must not be empty"),
         "unexpected message: {}",
         status.message()
+    );
+}
+
+#[tokio::test]
+async fn search_uses_non_default_workspace_for_catalog_index_and_response() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+    let workspace = Workspace {
+        name: "work".to_string(),
+    };
+    harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+        }))
+        .await
+        .expect("create work workspace");
+    let mut import = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(workspace.clone()),
+            manifest_yaml: searchable_manifest_yaml_named(
+                "workspace_searchable",
+                "search_workspace_messages",
+            ),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect("import work source")
+        .into_inner();
+    import
+        .message()
+        .await
+        .expect("read import response")
+        .expect("import response");
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(workspace.clone()),
+            query: "messages".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search work workspace")
+        .into_inner();
+
+    let functions = response
+        .results
+        .iter()
+        .filter_map(|result| {
+            let search_result::Payload::CatalogMetadata(metadata) = result.payload.as_ref()? else {
+                return None;
+            };
+            let catalog_item::Item::TableFunction(function) =
+                metadata.item.as_ref()?.item.as_ref()?
+            else {
+                return None;
+            };
+            Some(function)
+        })
+        .collect::<Vec<_>>();
+    assert!(!functions.is_empty(), "expected work catalog results");
+    assert!(
+        functions.iter().all(|function| {
+            function.name == "search_workspace_messages"
+                && function.workspace.as_ref() == Some(&workspace)
+        }),
+        "search leaked or mislabeled another workspace: {functions:?}"
+    );
+    assert!(
+        harness
+            .config_dir()
+            .join("workspaces")
+            .join("work")
+            .join("search")
+            .join("search.sqlite3")
+            .exists(),
+        "search should create the non-default workspace SQLite index"
     );
 }
 
@@ -376,14 +460,18 @@ fn assert_empty_provider_coverage(status: &coral_api::v1::SearchProviderStatus) 
 }
 
 fn searchable_manifest_yaml() -> String {
+    searchable_manifest_yaml_named("searchable", "search_messages")
+}
+
+fn searchable_manifest_yaml_named(source_name: &str, function_name: &str) -> String {
     manifest_yaml(&json!({
-        "name": "searchable",
+        "name": source_name,
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
         "base_url": "https://example.test",
         "functions": [{
-            "name": "search_messages",
+            "name": function_name,
             "kind": "search",
             "description": "Search messages",
             "args": [{

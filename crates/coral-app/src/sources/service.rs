@@ -35,6 +35,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
+use crate::query::QueryContext;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
@@ -325,19 +326,20 @@ impl SourceServiceApi for SourceService {
         let queries = self.queries.clone();
         let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
+            let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
+            let context = QueryContext::from_request(workspace_name, &request)?;
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            require_workspace(&workspaces, &workspace_name).await?;
+            require_workspace(&workspaces, context.workspace_name()).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let result = queries
-                .validate_source(&workspace_name, &source_name)
+                .validate_source(&context, &source_name)
                 .await
                 .map_err(query_status)?;
             let crate::query::manager::ValidatedSource { source, report } = result;
-            let source = installed_source_to_proto(&workspace_name, source);
+            let source = installed_source_to_proto(context.workspace_name(), source);
             Ok(Response::new(validate_source_response_to_proto(
                 source,
-                &workspace_name,
+                context.workspace_name(),
                 report,
             )))
         })

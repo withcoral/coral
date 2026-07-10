@@ -6,7 +6,6 @@ use coral_engine::ColumnInfo;
 
 use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogItem;
-use crate::workspaces::WorkspaceName;
 
 pub(crate) const DEFAULT_UNIVERSAL_SEARCH_LIMIT: u32 = 10;
 pub(crate) const MAX_UNIVERSAL_SEARCH_LIMIT: u32 = 50;
@@ -25,18 +24,13 @@ impl From<AppError> for SearchManagerError {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SearchRequest {
-    pub(crate) workspace_name: WorkspaceName,
     pub(crate) query: String,
     pub(crate) limit: u32,
     pub(crate) terms: Vec<String>,
 }
 
 impl SearchRequest {
-    pub(crate) fn new(
-        workspace_name: WorkspaceName,
-        query: &str,
-        limit: u32,
-    ) -> Result<Self, SearchManagerError> {
+    pub(crate) fn new(query: &str, limit: u32) -> Result<Self, SearchManagerError> {
         let query = query.trim();
         if query.is_empty() {
             return Err(
@@ -52,7 +46,6 @@ impl SearchRequest {
         let limit = normalized_search_limit(limit)?;
         let terms = query_terms(query);
         Ok(Self {
-            workspace_name,
             query: query.to_string(),
             limit,
             terms,
@@ -62,7 +55,6 @@ impl SearchRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SearchResponse {
-    pub(crate) workspace_name: WorkspaceName,
     pub(crate) results: Vec<SearchResult>,
     pub(crate) provider_statuses: Vec<ProviderStatus>,
     pub(crate) truncation: SearchTruncation,
@@ -273,12 +265,10 @@ mod tests {
         DEFAULT_UNIVERSAL_SEARCH_LIMIT, MAX_UNIVERSAL_SEARCH_LIMIT,
         MAX_UNIVERSAL_SEARCH_QUERY_BYTES, SearchRequest,
     };
-    use crate::workspaces::WorkspaceName;
 
     #[test]
     fn default_limit_applies_when_limit_is_zero() {
-        let request = SearchRequest::new(WorkspaceName::default(), "github issue", 0)
-            .expect("search request");
+        let request = SearchRequest::new("github issue", 0).expect("search request");
 
         assert_eq!(request.limit, DEFAULT_UNIVERSAL_SEARCH_LIMIT);
     }
@@ -286,8 +276,7 @@ mod tests {
     #[test]
     fn query_terms_preserve_common_identifier_punctuation() {
         let request =
-            SearchRequest::new(WorkspaceName::default(), "payments-api #eng acme/repo", 10)
-                .expect("search request");
+            SearchRequest::new("payments-api #eng acme/repo", 10).expect("search request");
 
         assert!(request.terms.iter().any(|term| term == "payments-api"));
         assert!(request.terms.iter().any(|term| term == "#eng"));
@@ -296,8 +285,7 @@ mod tests {
 
     #[test]
     fn query_terms_keep_single_character_identifiers() {
-        let request =
-            SearchRequest::new(WorkspaceName::default(), "github q", 10).expect("search request");
+        let request = SearchRequest::new("github q", 10).expect("search request");
 
         assert!(request.terms.iter().any(|term| term == "github"));
         assert!(request.terms.iter().any(|term| term == "q"));
@@ -305,8 +293,7 @@ mod tests {
 
     #[test]
     fn query_terms_use_unicode_lowercasing() {
-        let request =
-            SearchRequest::new(WorkspaceName::default(), "ÜBER café", 10).expect("search request");
+        let request = SearchRequest::new("ÜBER café", 10).expect("search request");
 
         assert!(request.terms.iter().any(|term| term == "über"));
         assert!(request.terms.iter().any(|term| term == "café"));
@@ -314,19 +301,14 @@ mod tests {
 
     #[test]
     fn oversized_limit_is_rejected() {
-        SearchRequest::new(
-            WorkspaceName::default(),
-            "github issue",
-            MAX_UNIVERSAL_SEARCH_LIMIT + 1,
-        )
-        .expect_err("oversized limit should fail");
+        SearchRequest::new("github issue", MAX_UNIVERSAL_SEARCH_LIMIT + 1)
+            .expect_err("oversized limit should fail");
     }
 
     #[test]
     fn oversized_query_is_rejected() {
         let query = "x".repeat(MAX_UNIVERSAL_SEARCH_QUERY_BYTES + 1);
 
-        SearchRequest::new(WorkspaceName::default(), &query, 10)
-            .expect_err("oversized query should fail");
+        SearchRequest::new(&query, 10).expect_err("oversized query should fail");
     }
 }

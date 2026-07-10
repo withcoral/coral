@@ -6,7 +6,7 @@ use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 
 use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogItem;
-use crate::query::QueryAttribution;
+use crate::query::QueryContext;
 use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_hits};
 use crate::search::catalog::snapshot::{
@@ -23,6 +23,7 @@ use crate::search::result::{
 };
 use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
 use crate::state::AppStateLayout;
+use crate::workspaces::WorkspaceName;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
@@ -60,14 +61,15 @@ impl CatalogMetadataProvider {
 
     pub(crate) fn search(
         &self,
+        context: &QueryContext,
         request: &SearchRequest,
-        _attribution: &QueryAttribution,
     ) -> ProviderSearchOutcome {
-        let catalog = match self.load_catalog(request) {
+        let workspace_name = context.workspace_name();
+        let catalog = match self.load_catalog(workspace_name) {
             Ok(catalog) => catalog,
             Err(error) => return catalog_query_error_outcome(&error),
         };
-        let projection = match self.prepare_projection(request, &catalog) {
+        let projection = match self.prepare_projection(workspace_name, &catalog) {
             Ok(projection) => projection,
             Err(error) => return catalog_index_error_outcome(&error),
         };
@@ -79,31 +81,32 @@ impl CatalogMetadataProvider {
             return outcome;
         }
 
-        catalog_search_outcome(request, &catalog, search_hits, &projection)
+        catalog_search_outcome(workspace_name, request, &catalog, search_hits, &projection)
     }
 
-    fn load_catalog(&self, request: &SearchRequest) -> Result<CatalogInfo, AppError> {
-        self.catalog_loader.load_catalog(&request.workspace_name)
+    fn load_catalog(&self, workspace_name: &WorkspaceName) -> Result<CatalogInfo, AppError> {
+        self.catalog_loader.load_catalog(workspace_name)
     }
 
     fn prepare_projection(
         &self,
-        request: &SearchRequest,
+        workspace_name: &WorkspaceName,
         catalog: &CatalogInfo,
     ) -> Result<CatalogProjection, SqliteSearchError> {
         let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(catalog);
-        let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let capabilities = store.capabilities();
         tracing::debug!(
-            workspace = %request.workspace_name,
+            workspace = %workspace_name,
             sqlite_version = %capabilities.sqlite_version,
             fts5 = capabilities.fts5,
             trigram = capabilities.trigram,
             "using SQLite catalog search store"
         );
-        let state = Self::prepare_projection_state(request, catalog, &store, &catalog_fingerprint)?;
+        let state =
+            Self::prepare_projection_state(workspace_name, catalog, &store, &catalog_fingerprint)?;
         tracing::debug!(
-            workspace = %request.workspace_name,
+            workspace = %workspace_name,
             refreshed = state.refresh.refreshed,
             document_count = state.refresh.document_count,
             stale_index = state.stale_index,
@@ -119,7 +122,7 @@ impl CatalogMetadataProvider {
     }
 
     fn prepare_projection_state(
-        request: &SearchRequest,
+        workspace_name: &WorkspaceName,
         catalog: &CatalogInfo,
         store: &SqliteSearchStore,
         catalog_fingerprint: &str,
@@ -149,7 +152,7 @@ impl CatalogMetadataProvider {
             }),
             Err(error) if error.is_lock_contention() => {
                 tracing::debug!(
-                    workspace = %request.workspace_name,
+                    workspace = %workspace_name,
                     error = %error,
                     "using cached SQLite catalog search projection after refresh lock contention"
                 );
@@ -181,6 +184,7 @@ impl CatalogMetadataProvider {
 }
 
 fn catalog_search_outcome(
+    workspace_name: &WorkspaceName,
     request: &SearchRequest,
     catalog: &CatalogInfo,
     search_hits: CatalogSearchHits,
@@ -192,7 +196,7 @@ fn catalog_search_outcome(
     let candidate_count = candidate_set.candidates.len();
     if retrieved_hit_count != candidate_count {
         tracing::debug!(
-            workspace = %request.workspace_name,
+            workspace = %workspace_name,
             retrieved_hit_count,
             candidate_count,
             omitted_column_hint_count = candidate_set.omitted_column_hint_count,
@@ -644,9 +648,10 @@ mod tests {
             refresh_lock_error: None,
             expected_document_count: 5,
         };
-        let request = SearchRequest::new(workspace_name, "alpha", 10).expect("search request");
+        let request = SearchRequest::new("alpha", 10).expect("search request");
         let catalog = column_cap_catalog(5);
         let outcome = catalog_search_outcome(
+            &workspace_name,
             &request,
             &catalog,
             CatalogSearchHits {

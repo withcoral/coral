@@ -1,6 +1,6 @@
 //! Universal Search provider orchestration.
 
-use crate::query::QueryAttribution;
+use crate::query::QueryContext;
 use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::result::{
     ProviderStatus, SearchProviderKind, SearchProviderState, SearchRequest, SearchResponse,
@@ -17,18 +17,14 @@ impl UniversalSearchEngine {
         Self { catalog }
     }
 
-    pub(crate) fn search(
-        &self,
-        request: &SearchRequest,
-        attribution: &QueryAttribution,
-    ) -> SearchResponse {
+    pub(crate) fn search(&self, context: &QueryContext, request: &SearchRequest) -> SearchResponse {
         tracing::debug!(
-            workspace = %request.workspace_name,
+            workspace = %context.workspace_name(),
             query_len_bytes = request.query.len(),
             limit = request.limit,
             "running Universal Search"
         );
-        let catalog = self.catalog.search(request, attribution);
+        let catalog = self.catalog.search(context, request);
         let provider_has_more = catalog
             .status
             .coverage
@@ -51,7 +47,6 @@ impl UniversalSearchEngine {
         let returned_count = u32::try_from(results.len()).unwrap_or(u32::MAX);
 
         SearchResponse {
-            workspace_name: request.workspace_name.clone(),
             results,
             provider_statuses: vec![
                 catalog.status,

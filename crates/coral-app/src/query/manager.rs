@@ -18,7 +18,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
-use crate::query::QueryAttribution;
+use crate::query::QueryContext;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::query::input_resolver::{
     CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
@@ -89,11 +89,11 @@ impl QueryManager {
 
     pub(crate) async fn list_tables(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
-        _attribution: &QueryAttribution,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         let trace_sql = list_tables_trace_sql(schema_filter, table_filter);
         run_query_operation(
             QueryOperation::ListTables,
@@ -125,10 +125,10 @@ impl QueryManager {
 
     pub(crate) async fn list_catalog(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         schema_filter: Option<&str>,
-        _attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         let trace_sql = list_catalog_trace_sql(schema_filter);
         run_query_operation(
             QueryOperation::ListCatalog,
@@ -170,11 +170,11 @@ impl QueryManager {
 
     pub(crate) async fn describe_table(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         schema_name: &str,
         table_name: &str,
-        _attribution: &QueryAttribution,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         let trace_sql = describe_table_trace_sql(schema_name, table_name);
         run_query_operation(
             QueryOperation::DescribeTable,
@@ -201,10 +201,10 @@ impl QueryManager {
 
     pub(crate) async fn execute_sql(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         sql: &str,
-        _attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
@@ -230,10 +230,10 @@ impl QueryManager {
 
     pub(crate) async fn explain_sql(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         sql: &str,
-        _attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
@@ -259,9 +259,10 @@ impl QueryManager {
 
     pub(crate) async fn validate_source(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         let (source, loaded_source, version, config) = {
             self.require_workspace(workspace_name)
                 .await
@@ -876,11 +877,12 @@ mod tests {
     async fn validate_source_fails_with_workspace_not_found_for_missing_workspace() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+        let context = QueryContext::local_for_test(missing_workspace.clone());
         let source_name = SourceName::parse("github").expect("source");
 
         let result = fixture
             .manager
-            .validate_source(&missing_workspace, &source_name)
+            .validate_source(&context, &source_name)
             .await;
         let Err(error) = result else {
             panic!("missing workspace should fail before source lookup");
@@ -1152,13 +1154,10 @@ surfaces:
             .expect("import v4 source");
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
+        let context = QueryContext::local_for_test(workspace_name.clone());
         let execution = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                "SELECT id, title FROM github_v4_query.issues",
-                &QueryAttribution,
-            )
+            .execute_sql(&context, "SELECT id, title FROM github_v4_query.issues")
             .await
             .expect("query executes");
 
@@ -1308,12 +1307,12 @@ surfaces:
             &source_name,
         );
 
+        let context = QueryContext::local_for_test(workspace_name.clone());
         let execution = fixture
             .manager
             .execute_sql(
-                &workspace_name,
+                &context,
                 "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
-                &QueryAttribution,
             )
             .await
             .expect("query executes");

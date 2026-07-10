@@ -13,7 +13,7 @@ use coral_api::v1::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
-use crate::query::QueryAttribution;
+use crate::query::QueryContext;
 use crate::search::manager::SearchManager;
 use crate::search::result::{
     CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchFieldRole,
@@ -47,16 +47,19 @@ impl SearchServiceApi for SearchService {
         let span = grpc_span(&request);
         let search = self.search.clone();
         instrument_grpc(span, async move {
-            let attribution = QueryAttribution::from_extensions(request.extensions());
+            let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
+            let context = QueryContext::from_request(workspace_name, &request)?;
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let request = SearchRequest::new(workspace_name, &request.query, request.limit)
-                .map_err(search_status)?;
+            let request =
+                SearchRequest::new(&request.query, request.limit).map_err(search_status)?;
             let response = search
-                .search(&request, &attribution)
+                .search(&context, &request)
                 .await
                 .map_err(search_status)?;
-            Ok(Response::new(search_response_to_proto(response)))
+            Ok(Response::new(search_response_to_proto(
+                context.workspace_name(),
+                response,
+            )))
         })
         .await
     }
@@ -68,17 +71,17 @@ fn search_status(error: SearchManagerError) -> Status {
     }
 }
 
-fn search_response_to_proto(response: SearchResponse) -> ProtoSearchResponse {
+fn search_response_to_proto(
+    workspace_name: &crate::workspaces::WorkspaceName,
+    response: SearchResponse,
+) -> ProtoSearchResponse {
     ProtoSearchResponse {
         results: response
             .results
             .into_iter()
             .map(|result| ProtoSearchResult {
                 provider: provider_kind_to_proto(result.provider) as i32,
-                payload: Some(search_payload_to_proto(
-                    &response.workspace_name,
-                    result.payload,
-                )),
+                payload: Some(search_payload_to_proto(workspace_name, result.payload)),
             })
             .collect(),
         provider_statuses: response

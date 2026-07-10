@@ -1,6 +1,6 @@
 //! App-level Universal Search manager.
 
-use crate::query::QueryAttribution;
+use crate::query::QueryContext;
 use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::engine::UniversalSearchEngine;
@@ -30,12 +30,12 @@ impl SearchManager {
 
     pub(crate) async fn search(
         &self,
+        context: &QueryContext,
         request: &SearchRequest,
-        attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
         self.workspaces
-            .require_workspace(&request.workspace_name)
+            .require_workspace(context.workspace_name())
             .await?;
-        Ok(self.engine.search(request, attribution))
+        Ok(self.engine.search(context, request))
     }
 }
