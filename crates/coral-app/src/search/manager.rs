@@ -11,8 +11,7 @@ use crate::search::maintenance::{
     RebuildSearchIndexResponse, SearchMaintenanceResult, SearchProviderClearRequest,
     SearchProviderMaintenance, SearchProviderRebuildRequest,
 };
-use crate::search::observed::ObservedValuesDrainBudget;
-use crate::search::observed::provider::ObservedValuesProvider;
+use crate::search::observed::{ObservedValuesDrainBudget, ObservedValuesProjection};
 use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -20,7 +19,7 @@ use crate::workspaces::WorkspaceName;
 #[derive(Clone)]
 pub(crate) struct SearchManager {
     catalog: CatalogMetadataProvider,
-    observed: ObservedValuesProvider,
+    observed_projection: ObservedValuesProjection,
     engine: UniversalSearchEngine,
     config_store: ConfigStore,
 }
@@ -32,11 +31,11 @@ impl SearchManager {
     pub(crate) fn new(layout: AppStateLayout, config_store: ConfigStore) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
-        let observed = ObservedValuesProvider::new(layout);
+        let observed_projection = ObservedValuesProjection::new(layout);
         Self {
             catalog: catalog.clone(),
-            observed: observed.clone(),
-            engine: UniversalSearchEngine::new(catalog, observed),
+            observed_projection,
+            engine: UniversalSearchEngine::new(catalog),
             config_store,
         }
     }
@@ -92,7 +91,7 @@ impl SearchManager {
                 );
                 break;
             }
-            match self.observed.drain_queue(
+            match self.observed_projection.drain_queue(
                 &workspace.name,
                 ObservedValuesDrainBudget::new(MANUAL_DRAIN_MAX_JOBS, remaining_budget),
             ) {

@@ -926,11 +926,12 @@ enabled = false
             .expect("start server");
         server.shutdown().await.expect("shutdown");
 
-        let hits = store
-            .search(&workspace, &["payment".to_string()], 10)
-            .expect("search observed values");
-        assert_eq!(hits.hits.len(), 1);
-        assert_eq!(hits.hits[0].display_value, "Payment outage");
+        assert_eq!(
+            store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            1
+        );
         assert_eq!(
             store
                 .pending_queue_job_count(&workspace)

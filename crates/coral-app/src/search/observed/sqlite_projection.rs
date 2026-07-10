@@ -1,6 +1,5 @@
-//! `SQLite` observed-values projection, drainage, and retrieval.
+//! `SQLite` observed-values queue drainage and canonical/FTS projection.
 
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use rusqlite::types::Type;
@@ -39,33 +38,6 @@ pub(crate) struct ObservedValuesDrainResult {
     pub(crate) fts_rows_written: u32,
     pub(crate) remaining_queue_depth: u32,
     pub(crate) budget_exhausted: bool,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ObservedValuesRebuildResult {
-    pub(crate) canonical_rows_scanned: u32,
-    pub(crate) fts_rows_rebuilt: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ObservedValuesSearchHit {
-    pub(crate) source_name: String,
-    pub(crate) source_scope_id: String,
-    pub(crate) surface_kind: ObservedValuesSurfaceKind,
-    pub(crate) surface_name: String,
-    pub(crate) column_name: String,
-    pub(crate) value_key: String,
-    pub(crate) display_value: String,
-    pub(crate) last_observed_at: String,
-    pub(crate) observation_count: u64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ObservedValuesSearchHits {
-    pub(crate) hits: Vec<ObservedValuesSearchHit>,
-    pub(crate) value_count: u32,
-    pub(crate) retrieval_limited: bool,
 }
 
 #[derive(Debug)]
@@ -151,209 +123,6 @@ pub(crate) fn drain_observed_queue(
         result.budget_exhausted = true;
     }
     Ok(result)
-}
-
-#[cfg(test)]
-pub(crate) fn rebuild_observed_fts(
-    connection: &mut Connection,
-    workspace_name: &WorkspaceName,
-) -> Result<ObservedValuesRebuildResult, SqliteSearchError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute(
-        "DELETE FROM observed_values_fts WHERE workspace = ?1",
-        params![workspace_name.as_str()],
-    )?;
-
-    let canonical_rows_scanned = observed_value_count(&transaction, workspace_name)?;
-    let fts_rows_rebuilt = transaction.execute(
-        "
-        INSERT INTO observed_values_fts (
-            workspace,
-            source_name,
-            source_scope_id,
-            surface_kind,
-            surface_name,
-            column_name,
-            value_key,
-            display_value,
-            search_text
-        )
-        SELECT
-            workspace,
-            source_name,
-            source_scope_id,
-            surface_kind,
-            surface_name,
-            column_name,
-            value_key,
-            display_value,
-            search_text
-        FROM observed_values
-        WHERE workspace = ?1
-        ",
-        params![workspace_name.as_str()],
-    )?;
-    transaction.commit()?;
-    Ok(ObservedValuesRebuildResult {
-        canonical_rows_scanned,
-        fts_rows_rebuilt: u32::try_from(fts_rows_rebuilt).unwrap_or(u32::MAX),
-    })
-}
-
-pub(crate) fn search_observed_values(
-    connection: &Connection,
-    workspace_name: &WorkspaceName,
-    terms: &[String],
-    limit: usize,
-) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
-    let value_count = observed_value_count(connection, workspace_name)?;
-    if terms.is_empty() || limit == 0 {
-        return Ok(ObservedValuesSearchHits {
-            hits: Vec::new(),
-            value_count,
-            retrieval_limited: false,
-        });
-    }
-
-    let (short_terms, fts_terms): (Vec<_>, Vec<_>) =
-        terms.iter().partition(|term| is_short_trigram_term(term));
-    let mut hits = Vec::new();
-    let mut retrieval_limited = false;
-
-    if !fts_terms.is_empty() {
-        let fts_terms = fts_terms.into_iter().cloned().collect::<Vec<_>>();
-        let mut fts_hits =
-            search_observed_values_fts(connection, workspace_name, &fts_terms, probe_limit(limit))?;
-        retrieval_limited |= truncate_probe_hits(&mut fts_hits, limit);
-        hits.extend(fts_hits);
-    }
-
-    if !short_terms.is_empty() {
-        let short_terms = short_terms
-            .into_iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let mut short_hits = search_observed_values_short_terms(
-            connection,
-            workspace_name,
-            &short_terms,
-            probe_limit(limit),
-        )?;
-        retrieval_limited |= truncate_probe_hits(&mut short_hits, limit);
-        hits.extend(short_hits);
-    }
-
-    deduplicate_observed_hits(&mut hits);
-    retrieval_limited |= truncate_probe_hits(&mut hits, limit);
-    Ok(ObservedValuesSearchHits {
-        hits,
-        value_count,
-        retrieval_limited,
-    })
-}
-
-fn search_observed_values_fts(
-    connection: &Connection,
-    workspace_name: &WorkspaceName,
-    terms: &[String],
-    limit: usize,
-) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
-    let match_query = fts_match_query(terms);
-    let mut statement = connection.prepare(
-        "
-        SELECT
-            v.source_name,
-            v.source_scope_id,
-            v.surface_kind,
-            v.surface_name,
-            v.column_name,
-            v.value_key,
-            v.display_value,
-            v.last_observed_at,
-            v.observation_count
-        FROM observed_values_fts f
-        JOIN observed_values v
-            ON v.workspace = f.workspace
-            AND v.source_name = f.source_name
-            AND v.source_scope_id = f.source_scope_id
-            AND v.surface_kind = f.surface_kind
-            AND v.surface_name = f.surface_name
-            AND v.column_name = f.column_name
-            AND v.value_key = f.value_key
-        WHERE f.workspace = ?1 AND observed_values_fts MATCH ?2
-        ORDER BY bm25(observed_values_fts, 1.0, 1.0) ASC,
-            v.last_observed_at DESC,
-            v.source_name ASC,
-            v.surface_name ASC,
-            v.column_name ASC,
-            v.value_key ASC
-        LIMIT ?3
-        ",
-    )?;
-    let rows = statement.query_map(
-        params![
-            workspace_name.as_str(),
-            match_query,
-            i64::try_from(limit).unwrap_or(i64::MAX),
-        ],
-        observed_search_hit_from_row,
-    )?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(SqliteSearchError::from)
-}
-
-fn search_observed_values_short_terms(
-    connection: &Connection,
-    workspace_name: &WorkspaceName,
-    terms: &[&str],
-    limit: usize,
-) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
-    let mut hits = Vec::new();
-    for term in terms {
-        let mut statement = connection.prepare(
-            "
-            SELECT
-                v.source_name,
-                v.source_scope_id,
-                v.surface_kind,
-                v.surface_name,
-                v.column_name,
-                v.value_key,
-                v.display_value,
-                v.last_observed_at,
-                v.observation_count
-            FROM observed_values v
-            WHERE v.workspace = ?1
-              AND (
-                v.search_text = ?2
-                OR v.value_key = ?2
-                OR lower(v.display_value) = ?2
-                OR v.source_name = ?2
-                OR v.source_scope_id = ?2
-                OR v.surface_name = ?2
-                OR v.column_name = ?2
-                OR instr(v.search_text, ?2) > 0
-              )
-            ORDER BY v.last_observed_at DESC,
-                v.observation_count DESC,
-                v.source_name ASC,
-                v.surface_name ASC,
-                v.column_name ASC,
-                v.value_key ASC
-            LIMIT ?3
-            ",
-        )?;
-        let rows = statement.query_map(
-            params![
-                workspace_name.as_str(),
-                term,
-                i64::try_from(limit).unwrap_or(i64::MAX),
-            ],
-            observed_search_hit_from_row,
-        )?;
-        hits.extend(rows.collect::<Result<Vec<_>, _>>()?);
-    }
-    Ok(hits)
 }
 
 fn drain_one_observed_job(
@@ -621,27 +390,6 @@ fn observed_queue_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Obse
     })
 }
 
-fn observed_search_hit_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<ObservedValuesSearchHit> {
-    let surface_kind_raw: String = row.get(2)?;
-    let surface_kind = ObservedValuesSurfaceKind::from_str(&surface_kind_raw).ok_or_else(|| {
-        invalid_observed_storage_error(2, "surface_kind", surface_kind_raw.as_str())
-    })?;
-    let observation_count: i64 = row.get(8)?;
-    Ok(ObservedValuesSearchHit {
-        source_name: row.get(0)?,
-        source_scope_id: row.get(1)?,
-        surface_kind,
-        surface_name: row.get(3)?,
-        column_name: row.get(4)?,
-        value_key: row.get(5)?,
-        display_value: row.get(6)?,
-        last_observed_at: row.get(7)?,
-        observation_count: u64::try_from(observation_count).unwrap_or(0),
-    })
-}
-
 fn observed_generations(
     connection: &Connection,
     workspace_name: &WorkspaceName,
@@ -726,57 +474,6 @@ fn pending_queue_job_count(
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
-fn observed_value_count(
-    connection: &Connection,
-    workspace_name: &WorkspaceName,
-) -> Result<u32, SqliteSearchError> {
-    let count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM observed_values WHERE workspace = ?1",
-        params![workspace_name.as_str()],
-        |row| row.get(0),
-    )?;
-    Ok(u32::try_from(count).unwrap_or(u32::MAX))
-}
-
-fn fts_match_query(terms: &[String]) -> String {
-    terms
-        .iter()
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" OR ")
-}
-
-fn is_short_trigram_term(term: &str) -> bool {
-    term.chars().count() < 3
-}
-
-fn deduplicate_observed_hits(hits: &mut Vec<ObservedValuesSearchHit>) {
-    let mut seen = HashSet::new();
-    hits.retain(|hit| {
-        seen.insert((
-            hit.source_name.clone(),
-            hit.source_scope_id.clone(),
-            hit.surface_kind.as_str(),
-            hit.surface_name.clone(),
-            hit.column_name.clone(),
-            hit.value_key.clone(),
-        ))
-    });
-}
-
-fn probe_limit(limit: usize) -> usize {
-    limit.saturating_add(1).max(1)
-}
-
-fn truncate_probe_hits<T>(hits: &mut Vec<T>, limit: usize) -> bool {
-    if hits.len() > limit {
-        hits.truncate(limit);
-        true
-    } else {
-        false
-    }
-}
-
 fn deadline_for(time_budget: Duration) -> Option<Instant> {
     if time_budget.is_zero() {
         None
@@ -822,7 +519,7 @@ mod tests {
     use rusqlite::params;
     use tempfile::tempdir;
 
-    use super::{ObservedValuesDrainBudget, drain_observed_queue, search_observed_values};
+    use super::{ObservedValuesDrainBudget, drain_observed_queue};
     use crate::search::observed::sqlite_queue::{
         ObservedValuesQueueJob, ObservedValuesSurfaceKind,
     };
@@ -874,39 +571,6 @@ mod tests {
             )
             .expect("attempts");
         assert_eq!(attempts, 1);
-    }
-
-    #[test]
-    fn search_finds_short_source_scope_id_without_trigram_match() {
-        let temp = tempdir().expect("tempdir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let workspace = WorkspaceName::default();
-        let store = SqliteObservedValuesStore::new(layout.clone());
-        let generation = store
-            .current_generations(&workspace, "github")
-            .expect("generation");
-        let mut job = test_job();
-        job.source_scope_id = "eu".to_string();
-        store
-            .enqueue_source_scan(&workspace, &job, generation)
-            .expect("enqueue");
-        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
-        let mut connection = backing.connect_for_test().expect("connection");
-
-        drain_observed_queue(
-            &mut connection,
-            &workspace,
-            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
-        )
-        .expect("drain");
-
-        let result = search_observed_values(&connection, &workspace, &[String::from("eu")], 10)
-            .expect("search");
-
-        assert_eq!(result.hits.len(), 1);
-        let hit = result.hits.first().expect("one observed-value hit");
-        assert_eq!(hit.source_scope_id, "eu");
     }
 
     fn test_job() -> ObservedValuesQueueJob {

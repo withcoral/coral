@@ -1,16 +1,16 @@
 //! Observed-values collection and governance for Universal Search.
 
 mod collector;
+mod projection;
 mod publisher;
 mod sensitive;
 mod source_scope;
-pub(crate) mod provider;
-mod ranking;
 mod sqlite_projection;
 mod sqlite_queue;
 mod sqlite_store;
 mod writer;
 
+pub(crate) use projection::ObservedValuesProjection;
 pub(crate) use publisher::SearchObservationHandle;
 pub(crate) use sqlite_projection::ObservedValuesDrainBudget;
 
