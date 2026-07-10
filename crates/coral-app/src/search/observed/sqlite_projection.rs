@@ -40,8 +40,11 @@ pub(crate) struct ObservedValuesDrainResult {
     pub(crate) failed_jobs: u32,
     pub(crate) canonical_rows_upserted: u32,
     pub(crate) fts_rows_written: u32,
+    pub(crate) stale_rows_purged: u32,
+    pub(crate) evicted_rows: u32,
     pub(crate) remaining_queue_depth: u32,
     pub(crate) budget_exhausted: bool,
+    pub(crate) storage_limit_reached: bool,
 }
 
 #[derive(Debug)]
