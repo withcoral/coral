@@ -144,14 +144,22 @@ impl SqliteSearchStore {
 
     pub(crate) fn compact_after_clear(&self) -> SqliteSearchCompactionResult {
         let mut notes = Vec::new();
-        let wal_checkpoint_truncate_completed =
-            match self.execute_maintenance_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
-                Ok(()) => true,
-                Err(error) => {
-                    notes.push(format!("WAL checkpoint/truncate failed: {error}"));
-                    false
-                }
-            };
+        let wal_checkpoint_truncate_completed = match self.wal_checkpoint_truncate() {
+            Ok(WalCheckpointOutcome::Completed) => true,
+            Ok(WalCheckpointOutcome::Busy {
+                log_frame_count,
+                checkpointed_frame_count,
+            }) => {
+                notes.push(format!(
+                        "WAL checkpoint/truncate did not complete because a reader is active (log frames: {log_frame_count}, checkpointed frames: {checkpointed_frame_count})"
+                    ));
+                false
+            }
+            Err(error) => {
+                notes.push(format!("WAL checkpoint/truncate failed: {error}"));
+                false
+            }
+        };
         let vacuum_completed = match self.execute_maintenance_batch("VACUUM;") {
             Ok(()) => true,
             Err(error) => {
@@ -170,6 +178,11 @@ impl SqliteSearchStore {
             vacuum_completed,
             note,
         }
+    }
+
+    fn wal_checkpoint_truncate(&self) -> Result<WalCheckpointOutcome, SqliteSearchError> {
+        let connection = self.connect()?;
+        wal_checkpoint_truncate(&connection)
     }
 
     fn execute_maintenance_batch(&self, sql: &str) -> Result<(), SqliteSearchError> {
@@ -202,6 +215,15 @@ pub(crate) struct SqliteSearchCompactionResult {
     pub(crate) note: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalCheckpointOutcome {
+    Completed,
+    Busy {
+        log_frame_count: i64,
+        checkpointed_frame_count: i64,
+    },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SqliteSearchError {
     #[error(transparent)]
@@ -232,6 +254,38 @@ impl SqliteSearchError {
                     Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
                 )
         )
+    }
+
+    pub(crate) fn is_storage_exhaustion(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(ErrorCode::DiskFull | ErrorCode::OutOfMemory | ErrorCode::TooBig)
+                )
+        )
+    }
+}
+
+fn wal_checkpoint_truncate(
+    connection: &Connection,
+) -> Result<WalCheckpointOutcome, SqliteSearchError> {
+    let (busy, log_frame_count, checkpointed_frame_count) =
+        connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+    if busy == 0 {
+        Ok(WalCheckpointOutcome::Completed)
+    } else {
+        Ok(WalCheckpointOutcome::Busy {
+            log_frame_count,
+            checkpointed_frame_count,
+        })
     }
 }
 
@@ -379,12 +433,14 @@ fn schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError>
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::OptionalExtension as _;
+    use std::time::Duration;
+
+    use rusqlite::{Connection, OptionalExtension as _};
     use tempfile::tempdir;
 
     use super::{
         SEARCH_SQLITE_MIGRATIONS, SEARCH_SQLITE_SCHEMA_VERSION, SqliteSearchError,
-        SqliteSearchStore,
+        SqliteSearchStore, WalCheckpointOutcome, configure_connection, wal_checkpoint_truncate,
     };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
@@ -459,6 +515,58 @@ mod tests {
         };
 
         assert!(!error.is_lock_contention());
+    }
+
+    #[test]
+    fn disk_full_error_is_storage_exhaustion() {
+        let error = SqliteSearchError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        ));
+
+        assert!(error.is_storage_exhaustion());
+    }
+
+    #[test]
+    fn wal_checkpoint_reports_reader_contention() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("checkpoint.sqlite3");
+        let writer = Connection::open(&path).expect("writer");
+        configure_connection(&writer).expect("configure writer");
+        writer
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .expect("disable automatic checkpoints");
+        writer
+            .execute_batch(
+                "
+                CREATE TABLE records (value TEXT NOT NULL);
+                INSERT INTO records (value) VALUES ('initial');
+                PRAGMA wal_checkpoint(TRUNCATE);
+                ",
+            )
+            .expect("seed database");
+
+        let reader = Connection::open(&path).expect("reader");
+        configure_connection(&reader).expect("configure reader");
+        reader.execute_batch("BEGIN").expect("begin reader");
+        let count: i64 = reader
+            .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+            .expect("establish reader snapshot");
+        assert_eq!(count, 1);
+
+        writer
+            .execute("INSERT INTO records (value) VALUES ('new')", [])
+            .expect("write after reader snapshot");
+
+        let checkpoint = Connection::open(&path).expect("checkpoint connection");
+        configure_connection(&checkpoint).expect("configure checkpoint connection");
+        checkpoint
+            .busy_timeout(Duration::ZERO)
+            .expect("disable checkpoint wait");
+        let outcome = wal_checkpoint_truncate(&checkpoint).expect("checkpoint result");
+
+        assert!(matches!(outcome, WalCheckpointOutcome::Busy { .. }));
+        reader.execute_batch("ROLLBACK").expect("end reader");
     }
 
     #[test]

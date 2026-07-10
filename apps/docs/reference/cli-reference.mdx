@@ -97,38 +97,35 @@ Rebuild a local search index. Coral skips the rebuild when the index is already
 up to date unless you pass `--force`.
 
 ```shellscript
-coral search-index rebuild --provider catalog
-coral search-index rebuild --provider catalog --force
+coral search-index rebuild
+coral search-index rebuild --force
 ```
 
 #### Options
 
-| Option               | Type | Default   | Description                                                     |
-| -------------------- | ---- | --------- | --------------------------------------------------------------- |
-| `--provider catalog` | enum | `catalog` | Search index provider to rebuild                                |
-| `--force`            | flag | `false`   | Rebuild even when the stored projection fingerprint is current   |
+| Option    | Type | Default | Description                                                    |
+| --------- | ---- | ------- | -------------------------------------------------------------- |
+| `--force` | flag | `false` | Rebuild even when the stored projection fingerprint is current |
 
 ### `coral search-index clear`
 
 Clear Coral's local search data for one workspace.
 
-Clear deletes local search data, so Coral requires both `--yes` and
-`--workspace`. Use `--workspace NAME` to clear that workspace. Use
-`--workspace` with no name to clear the workspace Coral would normally use for
-this command: `CORAL_WORKSPACE` if it is set, or `default` otherwise.
+Clear deletes local search data, so Coral requires both `--yes` and an explicit
+`--workspace NAME`.
 
 ```shellscript
-coral search-index clear --scope all --workspace --yes
 coral search-index clear --scope all --workspace work --yes
 ```
 
 #### Options
 
-| Option                      | Type        | Default  | Description                                      |
-| --------------------------- | ----------- | -------- | ------------------------------------------------ |
-| `--scope all`               | enum        | required | Search data scope to clear                       |
-| global `--workspace [NAME]` | flag/string | required | Confirm workspace-scoped deletion; with `NAME`, also select that workspace |
-| `--yes`                     | flag        | required | Confirm destructive search-data deletion         |
+| Option                    | Type   | Default  | Description                               |
+| ------------------------- | ------ | -------- | ----------------------------------------- |
+| `--scope all`             | enum   | required | Search data scope to clear                |
+| global `--workspace NAME` | string | required | Workspace whose search data will be cleared |
+| `--yes`                   | flag   | required | Confirm destructive search-data deletion  |
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.
