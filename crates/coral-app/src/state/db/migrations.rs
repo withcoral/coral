@@ -644,11 +644,12 @@ mod tests {
         S: DbSession,
     {
         Ok(session
-            .fetch_all_scalars::<i64>(statement)
+            .fetch_all::<(i64,)>(statement)
             .await?
             .into_iter()
             .next()
-            .expect("count row"))
+            .expect("count row")
+            .0)
     }
 
     fn postgres_test_url() -> Option<String> {
