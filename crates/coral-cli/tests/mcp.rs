@@ -461,7 +461,7 @@ origin = "bundled"
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_initialize_includes_trace_backed_query_examples()
+async fn mcp_stdio_remote_initialize_omits_local_query_examples()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::TempDir::new()?;
     let config_dir = temp.path().join("coral-config");
@@ -529,14 +529,12 @@ storage = "file"
         "initialize instructions should include connected source names: {instructions}"
     );
     assert!(
-        instructions.contains("Recent successful Coral SQL examples"),
-        "initialize instructions should include query examples heading: {instructions}"
+        !instructions.contains("Recent successful Coral SQL examples"),
+        "remote initialize instructions must not read local query history: {instructions}"
     );
     assert!(
-        instructions.contains(&format!(
-            "1. sources: local_messages; row_count: 2\n```sql\n{sql}\n```"
-        )),
-        "initialize instructions should include the traced query metadata and SQL: {instructions}"
+        !instructions.contains(sql),
+        "remote initialize instructions must not include local query SQL: {instructions}"
     );
 
     drop(stdin);
@@ -679,14 +677,12 @@ async fn assert_workspace_initialize_instructions(
         "initialize instructions should not use config-store source names: {instructions}"
     );
     assert!(
-        instructions.contains("Recent successful Coral SQL examples"),
-        "non-default workspace initialize instructions should include workspace query history: {instructions}"
+        !instructions.contains("Recent successful Coral SQL examples"),
+        "remote initialize instructions must not read workspace query history: {instructions}"
     );
     assert!(
-        instructions.contains(
-            "1. sources: linear; row_count: 3\n```sql\nSELECT title FROM linear.issues\n```"
-        ),
-        "initialize instructions should include selected workspace query history: {instructions}"
+        !instructions.contains("SELECT title FROM linear.issues"),
+        "remote initialize instructions must not include selected workspace query history: {instructions}"
     );
     assert!(
         !instructions.contains("SELECT title FROM github.issues"),

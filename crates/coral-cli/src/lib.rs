@@ -69,11 +69,33 @@ const MAX_SEARCH_LIMIT: u32 = 50;
 /// A local-first SQL interface for APIs, files, and other data sources.
 struct Cli {
     #[command(flatten)]
+    connection: ConnectionArgs,
+    #[command(flatten)]
     feature_overrides: FeatureOverrideArgs,
     #[command(flatten)]
     workspace_selection: WorkspaceSelectionArgs,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Args)]
+struct ConnectionArgs {
+    /// Connect to an existing Coral gRPC endpoint. Overrides `CORAL_ENDPOINT`.
+    #[arg(long, value_name = "URI", global = true)]
+    endpoint: Option<String>,
+    /// Send a bearer token to the Coral endpoint. Overrides `CORAL_AUTH_TOKEN`.
+    #[arg(long, value_name = "TOKEN", global = true)]
+    token: Option<String>,
+}
+
+impl std::fmt::Debug for ConnectionArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConnectionArgs")
+            .field("endpoint", &self.endpoint)
+            .field("token", &self.token.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -632,6 +654,7 @@ where
 /// formatting fails.
 pub async fn run_from_env() -> Result<(), CliError> {
     let Cli {
+        connection,
         feature_overrides,
         workspace_selection,
         mut command,
@@ -654,12 +677,21 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
                 feature_overrides: feature_overrides.clone(),
+                connection: env::connection_options(connection.endpoint, connection.token),
             })
             .await
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
             let result = if is_mcp_stdio {
-                run_app_command(app, command, Some(&ctx), &feature_overrides, &workspace).await
+                run_app_command(
+                    app,
+                    command,
+                    Some(&ctx),
+                    &feature_overrides,
+                    &workspace,
+                    bootstrap.mode,
+                )
+                .await
             } else {
                 coral_app::run_with_context(
                     &ctx,
@@ -669,6 +701,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
                         None,
                         &feature_overrides,
                         &workspace,
+                        bootstrap.mode,
                     )),
                 )
                 .await
@@ -857,6 +890,7 @@ async fn run_app_command(
     ctx: Option<&coral_app::RunContext>,
     feature_overrides: &coral_app::features::FeatureOverrides,
     workspace: &Workspace,
+    bootstrap_mode: bootstrap::BootstrapMode,
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
@@ -901,7 +935,11 @@ async fn run_app_command(
                     Vec::new()
                 }
             };
-            let (source_names, query_examples) =
+            let (source_names, query_examples) = if bootstrap_mode
+                == bootstrap::BootstrapMode::Remote
+            {
+                (source_names, Vec::new())
+            } else {
                 match coral_app::bootstrap::workspace_mcp_startup_context(
                     &workspace.name,
                     source_names.clone(),
@@ -925,7 +963,8 @@ async fn run_app_command(
                         );
                         (source_names, Vec::new())
                     }
-                };
+                }
+            };
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
@@ -1840,6 +1879,41 @@ mod tests {
             Some(function::Runtime::Invalid(_)) | None => panic!("ready function"),
         }
         assert_eq!(function_columns_summary(&function), "-");
+    }
+
+    #[test]
+    fn global_connection_flags_parse_before_or_after_subcommand() {
+        let before = Cli::try_parse_from([
+            "coral",
+            "--endpoint",
+            "https://coral.example.com",
+            "--token",
+            "secret",
+            "source",
+            "list",
+        ])
+        .expect("connection flags before subcommand should parse");
+        assert_eq!(
+            before.connection.endpoint.as_deref(),
+            Some("https://coral.example.com")
+        );
+        assert_eq!(before.connection.token.as_deref(), Some("secret"));
+
+        let after = Cli::try_parse_from([
+            "coral",
+            "source",
+            "list",
+            "--endpoint",
+            "http://127.0.0.1:1457",
+            "--token",
+            "",
+        ])
+        .expect("connection flags after subcommand should parse");
+        assert_eq!(
+            after.connection.endpoint.as_deref(),
+            Some("http://127.0.0.1:1457")
+        );
+        assert_eq!(after.connection.token.as_deref(), Some(""));
     }
 
     #[test]

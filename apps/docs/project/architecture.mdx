@@ -42,7 +42,9 @@ The user-facing command-line interface.
 | Output formatting | Table and JSON via `coral-client` helpers |
 
 Intentionally thin at the binary boundary — `main.rs` is a small wrapper, `bootstrap.rs` owns CLI bootstrap, and `lib.rs` owns shared command parsing and dispatch for Coral binaries. Query/result helpers stay in `coral-client`.
-For black-box CLI tests, contributors can enable the `CORAL_ENDPOINT` bootstrap override with `cargo nextest run --locked -p coral-cli --features cli-test-server`.
+`CORAL_ENDPOINT` is the public CLI override for dialing an existing server. The
+`cli-test-server` feature enables black-box test harnesses that use this same
+connection contract.
 
 ### `coral-client`
 

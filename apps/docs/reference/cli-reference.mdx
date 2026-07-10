@@ -34,6 +34,24 @@ The `--workspace <NAME>` flag overrides `CORAL_WORKSPACE` for that process.
 Coral does not persist a separate active-workspace setting; set
 `CORAL_WORKSPACE` in your shell when you want a default for repeated commands.
 
+## Remote connections
+
+Use the global endpoint and token options to run CLI commands against an
+existing Coral gRPC server instead of starting a local server:
+
+```shellscript
+coral --endpoint https://coral.example.com --token "$TOKEN" sql "select 1"
+CORAL_ENDPOINT=https://coral.example.com CORAL_AUTH_TOKEN="$TOKEN" coral source list
+```
+
+`--endpoint` overrides `CORAL_ENDPOINT`, and `--token` overrides
+`CORAL_AUTH_TOKEN`. A token is optional, so endpoints that do not require
+authentication remain supported. Prefer `CORAL_AUTH_TOKEN` where command-line
+arguments may be visible to other users or process-inspection tools.
+
+Coral sends bearer credentials only over HTTPS. Plaintext HTTP is accepted
+with a token only for loopback endpoints such as `http://127.0.0.1:1457`.
+
 ## `coral sql`
 
 Run one SQL query and exit.
