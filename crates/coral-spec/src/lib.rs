@@ -111,8 +111,8 @@ pub(crate) use common::{
 pub use error::{ManifestError, Result};
 pub use identities::{
     IDENTITY_SPEC_VERSION, IdentityManifest, IdentityOAuthMethodSpec, IdentityOAuthSpec,
-    IdentitySpecConfig, IdentitySpecType, parse_identity_manifest_value,
-    parse_identity_manifest_yaml,
+    IdentitySpecConfig, IdentitySpecType, generated_identity_manifest_schema,
+    parse_identity_manifest_value, parse_identity_manifest_yaml,
 };
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,

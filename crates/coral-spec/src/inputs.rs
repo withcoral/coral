@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace, TemplatePart};
 
-const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
+pub(crate) const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -591,8 +591,8 @@ pub(crate) fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputS
     Ok(ordered)
 }
 
-fn credential_like_input_key(key: &str) -> bool {
-    const MARKERS: &[&str] = &[
+pub(crate) fn credential_like_input_key_markers() -> &'static [&'static str] {
+    &[
         "API_KEY",
         "APPLICATION_KEY",
         "ACCESS_KEY",
@@ -607,10 +607,12 @@ fn credential_like_input_key(key: &str) -> bool {
         "READ_KEY",
         "SECRET",
         "TOKEN",
-    ];
+    ]
+}
 
+fn credential_like_input_key(key: &str) -> bool {
     let key = key.to_ascii_uppercase();
-    MARKERS.iter().any(|marker| {
+    credential_like_input_key_markers().iter().any(|marker| {
         key == *marker
             || key.contains(&format!("_{marker}_"))
             || key.ends_with(&format!("_{marker}"))
