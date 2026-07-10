@@ -95,7 +95,7 @@ impl McpQueryExample {
 }
 
 /// Optional MCP surface features.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
@@ -107,6 +107,18 @@ pub struct McpOptions {
     pub query_examples: Vec<McpQueryExample>,
     /// Workspace scoped to this MCP server instance.
     pub workspace: Option<coral_api::v1::Workspace>,
+}
+
+impl Default for McpOptions {
+    fn default() -> Self {
+        Self {
+            feedback_enabled: true,
+            trace_parent: None,
+            source_names: Vec::new(),
+            query_examples: Vec::new(),
+            workspace: None,
+        }
+    }
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.

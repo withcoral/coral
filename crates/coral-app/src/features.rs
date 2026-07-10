@@ -68,7 +68,7 @@ struct FeatureSpec {
 const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
     feature: Feature::Feedback,
     key: "feedback",
-    default_enabled: false,
+    default_enabled: true,
     description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
     enable_flag: "enable-feedback",
     disable_flag: "disable-feedback",
@@ -145,6 +145,13 @@ impl Features {
 
     fn from_raw_overrides(raw: &RawFeatureOverrides) -> Self {
         let mut features = Self::default();
+        if raw.container() == RawFeatureContainerState::Unsupported {
+            for spec in FEATURE_SPECS {
+                features.enabled.insert(spec.feature, false);
+            }
+            return features;
+        }
+
         for (key, value) in raw.iter() {
             let Some(spec) = spec_for_key(key) else {
                 warn!(feature = key, "ignoring unknown Coral runtime feature");
@@ -158,8 +165,9 @@ impl Features {
                 RawFeatureValue::UnsupportedType => {
                     warn!(
                         feature = key,
-                        "ignoring unsupported Coral runtime feature value; expected boolean"
+                        "disabling Coral runtime feature with unsupported value; expected boolean"
                     );
+                    features.enabled.insert(spec.feature, false);
                 }
             }
         }
@@ -237,7 +245,7 @@ impl FeatureStore {
         Ok(statuses_from_raw(&raw, &features))
     }
 
-    /// Persists a local opt-in override for a known feature key.
+    /// Persists a local enable override for a known feature key.
     ///
     /// # Errors
     ///
@@ -326,17 +334,18 @@ mod tests {
     }
 
     #[test]
-    fn defaults_disable_feedback() {
+    fn defaults_enable_feedback() {
         let features = Features::default();
 
-        assert!(!features.enabled(Feature::Feedback));
+        assert!(features.enabled(Feature::Feedback));
     }
 
     #[test]
-    fn process_overrides_enable_default_disabled_feature() {
+    fn process_overrides_enable_config_disabled_feature() {
         let mut overrides = FeatureOverrides::default();
         overrides.set(Feature::Feedback, true);
-        let mut features = Features::default();
+        let raw = raw([("feedback", RawFeatureValue::Bool(false))]);
+        let mut features = Features::from_raw_overrides(&raw);
 
         features.apply_overrides(&overrides);
 
@@ -372,15 +381,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_override_is_ignored() {
-        let raw = raw([("future_flag", RawFeatureValue::Bool(true))]);
+    fn unknown_override_does_not_disable_default_enabled_feedback() {
+        let raw = raw([("future_flag", RawFeatureValue::UnsupportedType)]);
         let features = Features::from_raw_overrides(&raw);
 
-        assert!(!features.enabled(Feature::Feedback));
+        assert!(features.enabled(Feature::Feedback));
     }
 
     #[test]
-    fn unsupported_known_override_is_ignored() {
+    fn unsupported_known_override_fails_closed() {
         let raw = raw([("feedback", RawFeatureValue::UnsupportedType)]);
         let features = Features::from_raw_overrides(&raw);
 

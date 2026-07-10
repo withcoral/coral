@@ -89,8 +89,8 @@ fn features_list_shows_feedback_status_without_state_creation() {
         "missing default status: {stdout}"
     );
     assert!(
-        stdout.contains("false"),
-        "missing disabled effective state: {stdout}"
+        stdout.contains("true"),
+        "missing enabled effective state: {stdout}"
     );
     assert!(
         stdout.contains("Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral."),
@@ -103,12 +103,12 @@ fn features_list_shows_feedback_status_without_state_creation() {
 }
 
 #[test]
-fn features_list_applies_global_process_override_without_state_creation() {
+fn features_list_applies_global_disable_override_without_state_creation() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("missing-config");
 
     let assert = coral_cmd(&config_dir)
-        .args(["--enable-feedback", "features", "list"])
+        .args(["--disable-feedback", "features", "list"])
         .assert()
         .success();
 
@@ -122,8 +122,8 @@ fn features_list_applies_global_process_override_without_state_creation() {
         "config status should remain default: {stdout}"
     );
     assert!(
-        stdout.contains("true"),
-        "process override should enable feature in effective state: {stdout}"
+        stdout.contains("false"),
+        "process override should disable feature in effective state: {stdout}"
     );
     assert!(
         !config_dir.exists(),
@@ -149,7 +149,7 @@ fn features_enable_creates_config_with_feedback_enabled() {
     assert!(raw.contains("[features]"), "missing features table: {raw}");
     assert!(
         raw.contains("feedback = true"),
-        "missing feedback opt-in: {raw}"
+        "missing feedback enable override: {raw}"
     );
 }
 
@@ -265,7 +265,7 @@ feedback = true
 }
 
 #[test]
-fn features_list_reports_invalid_known_value_as_default_effective_state() {
+fn features_list_reports_invalid_known_value_and_fails_closed() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     write_config(
@@ -288,12 +288,12 @@ feedback = "yes"
     );
     assert!(
         stdout.contains("false"),
-        "invalid value should fall back to default disabled state: {stdout}"
+        "invalid value should fail closed: {stdout}"
     );
 }
 
 #[test]
-fn features_list_reports_unsupported_container_as_default_effective_state() {
+fn features_list_reports_unsupported_container_and_fails_closed() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     write_config(&config_dir, "features = { feedback = true }\n");
@@ -310,7 +310,7 @@ fn features_list_reports_unsupported_container_as_default_effective_state() {
     );
     assert!(
         stdout.contains("false"),
-        "invalid container should fall back to default disabled state: {stdout}"
+        "invalid container should fail closed: {stdout}"
     );
 }
 

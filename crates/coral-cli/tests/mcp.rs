@@ -715,8 +715,16 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             "search",
             "list_catalog",
             "describe_table",
-            "list_columns"
+            "list_columns",
+            "feedback"
         ]
+    );
+    assert!(
+        !server
+            .config_dir()
+            .join("workspaces/default/feedback/reports.jsonl")
+            .exists(),
+        "listing the default-on feedback tool must not submit a report"
     );
     assert!(
         tools[0]
@@ -918,16 +926,9 @@ feedback = false
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_disable_feedback_override_overrides_config_enabled()
+async fn mcp_stdio_disable_feedback_flag_removes_default_feedback_tool()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
-    write_config(
-        &server,
-        r"
-[features]
-feedback = true
-",
-    )?;
     let client = start_mcp_client_with_args(&server, &["--disable-feedback"]).await?;
 
     let tools = client.list_all_tools().await?;

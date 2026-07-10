@@ -448,7 +448,8 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             "search",
             "list_catalog",
             "describe_table",
-            "list_columns"
+            "list_columns",
+            "feedback"
         ]
     );
     assert!(
@@ -990,14 +991,7 @@ async fn list_catalog_surfaces_table_functions() {
 #[tokio::test]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
-    let session = start_session_with_options(
-        &temp,
-        McpOptions {
-            feedback_enabled: true,
-            ..McpOptions::default()
-        },
-    )
-    .await;
+    let session = start_session(&temp).await;
     let client = &session.client;
 
     let tools = client.list_all_tools().await.expect("tools");
@@ -1098,11 +1092,45 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 }
 
 #[tokio::test]
-async fn mcp_feedback_tool_is_disabled_by_default() {
+async fn mcp_feedback_tool_is_enabled_by_default_without_submitting_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
     let client = &session.client;
 
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
+        "feedback should be exposed by default"
+    );
+    assert!(
+        !temp
+            .path()
+            .join("coral-config/workspaces/default/feedback/reports.jsonl")
+            .exists(),
+        "listing the default-on feedback tool must not submit a report"
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_feedback_tool_can_be_explicitly_disabled() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            feedback_enabled: false,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(
+        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
+        "feedback should not be listed when explicitly disabled"
+    );
     let feedback = client
         .call_tool(
             CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
@@ -1112,7 +1140,7 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
             }))),
         )
         .await
-        .expect_err("feedback should not be exposed by default");
+        .expect_err("feedback should not be exposed when explicitly disabled");
     assert!(feedback.to_string().contains("tool 'feedback' not found"));
     assert!(
         !temp
