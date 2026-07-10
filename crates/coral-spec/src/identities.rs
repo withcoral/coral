@@ -1,5 +1,9 @@
 //! Declarative identity-spec parsing and validation.
 
+mod schema;
+
+pub use schema::generated_identity_manifest_schema;
+
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
