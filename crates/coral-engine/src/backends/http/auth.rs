@@ -12,6 +12,7 @@ use url::Host;
 use coral_spec::{AuthSpec, BasicAuthSpec, HeaderAuthSpec};
 
 use crate::RequestAuthenticator;
+use crate::backends::http::error::CredentialTransportError;
 use crate::backends::shared::template::{
     RenderContext, render_template, resolve_value_source, value_to_string,
 };
@@ -139,13 +140,25 @@ pub(super) fn ensure_auth_uses_credential_safe_transport(url: &reqwest::Url) -> 
     if is_credential_safe_auth_transport(url) {
         return Ok(());
     }
-    Err(DataFusionError::Execution(format!(
-        "HTTP source auth headers require https or loopback http, got '{}'",
-        auth_transport_url_label(url)
+    Err(DataFusionError::External(Box::new(
+        CredentialTransportError(format!(
+            "HTTP source auth headers require https or loopback http, got '{}'",
+            auth_transport_url_label(url)
+        )),
     )))
 }
 
-pub(super) fn is_credential_safe_auth_transport(url: &reqwest::Url) -> bool {
+pub(super) fn request_requires_credential_safe_transport(
+    request: &reqwest::Request,
+    has_authored_headers: bool,
+) -> bool {
+    has_authored_headers
+        || request
+            .headers()
+            .contains_key(reqwest::header::AUTHORIZATION)
+}
+
+fn is_credential_safe_auth_transport(url: &reqwest::Url) -> bool {
     url.scheme() == "https" || is_loopback_http_url(url)
 }
 
@@ -226,6 +239,11 @@ mod tests {
             let error = resolve_bearer_auth_for_url(url, true)
                 .expect_err("non-https non-loopback auth request should fail");
 
+            assert!(matches!(
+                crate::runtime::error::datafusion_to_core(&error, &[]),
+                crate::CoreError::FailedPrecondition(_)
+            ));
+
             let error = error.to_string();
             assert!(error.contains("require https"), "{error}");
             assert!(
@@ -243,6 +261,22 @@ mod tests {
         .expect("test URL");
 
         assert_eq!(auth_transport_url_label(&url), "http://api.example.test");
+    }
+
+    #[test]
+    fn url_userinfo_or_authored_headers_require_credential_safe_transport() {
+        let http = reqwest::Client::new();
+        let request = http
+            .get("http://member:secret@api.example.test/items")
+            .build()
+            .expect("request with URL userinfo");
+
+        assert!(request_requires_credential_safe_transport(&request, false));
+        let request = http
+            .get("http://api.example.test/items")
+            .build()
+            .expect("plain request");
+        assert!(request_requires_credential_safe_transport(&request, true));
     }
 
     #[test]

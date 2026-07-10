@@ -9,7 +9,6 @@ use opentelemetry::Context as OtelContext;
 use serde_json::Value;
 
 use crate::backends::BackendRegistrationContext;
-use crate::backends::http::auth::is_credential_safe_auth_transport;
 use crate::backends::http::fetch::{FetchCompleteness, fetch_rows};
 use crate::backends::http::filter_usage::{HttpRequestFilterUsage, http_request_filter_names};
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
@@ -109,7 +108,7 @@ pub(super) fn default_http_client(
                 .timeout(Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))
                 .user_agent(DEFAULT_HTTP_USER_AGENT);
             if credential_safe {
-                builder = builder.redirect(credential_safe_redirect_policy());
+                builder = builder.redirect(reqwest::redirect::Policy::none());
             }
             builder.build().map_err(|error| error.to_string())
         })
@@ -118,24 +117,6 @@ pub(super) fn default_http_client(
                 "failed to build HTTP client for source '{source_name}': {error}"
             ))
         })
-}
-
-fn credential_safe_redirect_policy() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        let allowed = attempt
-            .previous()
-            .last()
-            .is_some_and(|previous| credential_safe_redirect_target(previous, attempt.url()));
-        if allowed {
-            reqwest::redirect::Policy::default().redirect(attempt)
-        } else {
-            attempt.error("credential-bearing HTTP source redirect rejected")
-        }
-    })
-}
-
-fn credential_safe_redirect_target(previous: &reqwest::Url, next: &reqwest::Url) -> bool {
-    previous.origin() == next.origin() && is_credential_safe_auth_transport(next)
 }
 
 impl HttpSourceClient {
@@ -288,21 +269,43 @@ fn source_input_error(error: SourceInputResolverError) -> DataFusionError {
 
 #[cfg(test)]
 mod tests {
-    use super::credential_safe_redirect_target;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    #[test]
-    fn credential_safe_redirects_stay_on_a_safe_origin() {
-        for (previous, next, allowed) in [
-            ("https://api.test/a", "https://api.test/b", true),
-            ("http://127.0.0.1:8080/a", "http://127.0.0.1:8080/b", true),
-            ("https://api.test/a", "https://other.test/b", false),
-            ("https://api.test/a", "http://api.test/b", false),
-            ("http://127.0.0.1:8080/a", "http://127.0.0.1:8081/b", false),
-            ("http://api.test/a", "http://api.test/b", false),
-        ] {
-            let previous = reqwest::Url::parse(previous).expect("previous URL");
-            let next = reqwest::Url::parse(next).expect("next URL");
-            assert_eq!(credential_safe_redirect_target(&previous, &next), allowed);
-        }
+    use super::default_http_client;
+    use crate::backends::BackendRegistrationContext;
+
+    #[tokio::test]
+    async fn credential_safe_client_does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/target", server.uri())),
+            )
+            .mount(&server)
+            .await;
+
+        let registration = BackendRegistrationContext::default();
+        let client =
+            default_http_client(&registration, "test", true).expect("credential-safe client");
+        let response = client
+            .get(format!("{}/start", server.uri()))
+            .send()
+            .await
+            .expect("redirect response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        assert_eq!(response.url().path(), "/start");
+
+        let legacy = default_http_client(&registration, "test", false).expect("legacy client");
+        let response = legacy
+            .get(format!("{}/start", server.uri()))
+            .send()
+            .await
+            .expect("followed redirect response");
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(response.url().path(), "/target");
     }
 }

@@ -15,7 +15,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::{
-    ensure_auth_uses_credential_safe_transport, resolve_auth_headers,
+    ensure_auth_uses_credential_safe_transport, request_requires_credential_safe_transport,
+    resolve_auth_headers,
 };
 use crate::backends::http::error::provider_error;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
@@ -124,6 +125,7 @@ pub(super) async fn execute_request(
                 header_map.insert(name, value);
             }
         }
+        let has_authored_headers = !header_map.is_empty();
         if matches!(body, Some(RequestBody::Text(_)))
             && !header_map.contains_key(reqwest::header::CONTENT_TYPE)
         {
@@ -213,6 +215,13 @@ pub(super) async fn execute_request(
                 return Err(error);
             }
         };
+        if require_credential_safe_auth_transport
+            && request_requires_credential_safe_transport(&built, has_authored_headers)
+            && let Err(error) = ensure_auth_uses_credential_safe_transport(built.url())
+        {
+            record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+            return Err(error);
+        }
         if let Some(authenticator) = request_identity_http_authenticator {
             let identity_headers = match authenticator(&built, render_context.resolved_inputs).await
             {

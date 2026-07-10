@@ -8,6 +8,7 @@ use datafusion::sql::sqlparser::parser::Parser;
 
 use crate::TableFunctionInfo;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::http::error::CredentialTransportError;
 use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
 use crate::runtime::dependent_join::error::DependentJoinError;
@@ -50,6 +51,9 @@ pub(crate) fn datafusion_to_core_with_sql_and_table_functions(
         DataFusionError::SchemaError(schema_error, _) => schema_error_to_core(schema_error),
         DataFusionError::NotImplemented(detail) => CoreError::Unimplemented(detail.clone()),
         DataFusionError::External(inner) => {
+            if let Some(error) = inner.downcast_ref::<CredentialTransportError>() {
+                return CoreError::FailedPrecondition(error.to_string());
+            }
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
                 return provider_error_to_core(provider_error);
             }

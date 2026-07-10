@@ -16,6 +16,10 @@ const FORBIDDEN: u16 = HttpStatus::FORBIDDEN.as_u16();
 const NOT_FOUND: u16 = HttpStatus::NOT_FOUND.as_u16();
 const TOO_MANY_REQUESTS: u16 = HttpStatus::TOO_MANY_REQUESTS.as_u16();
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct CredentialTransportError(pub(crate) String);
+
 /// Structured query-time failures for HTTP-backed tables.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ProviderQueryError {
