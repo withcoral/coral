@@ -11,16 +11,19 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
+base64.workspace = true
 rmcp.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 tower.workspace = true
+url.workspace = true
 
 coral-api.workspace = true
 coral-client.workspace = true
 coral-mcp.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true

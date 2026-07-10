@@ -1421,16 +1421,19 @@ name = "coral-mcp-http"
 version = "0.7.1"
 dependencies = [
  "axum",
+ "base64",
  "coral-api",
  "coral-client",
  "coral-mcp",
  "rmcp",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "tokio",
  "tonic",
  "tower",
+ "url",
 ]
 
 [[package]]
