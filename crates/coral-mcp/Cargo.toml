@@ -11,11 +11,13 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
+base64.workspace = true
 regex.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
@@ -23,6 +25,7 @@ tower.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 coral-api.workspace = true

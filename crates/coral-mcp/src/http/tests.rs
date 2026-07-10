@@ -2,9 +2,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
+use axum::{Router, response::Response};
 use coral_client::{AppClient, local::ServerBuilder};
 use rmcp::ServiceExt as _;
 use rmcp::model::CallToolRequestParams;
@@ -17,8 +17,9 @@ use tower::ServiceExt as _;
 use crate::McpOptions;
 
 use super::{
-    MAX_MCP_REQUEST_BODY_SIZE, McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer,
-    SESSION_ID_HEADER, SHUTDOWN_GRACE_PERIOD, auth_disabled_router, readiness_status,
+    AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime, MAX_MCP_REQUEST_BODY_SIZE,
+    McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, SESSION_ID_HEADER,
+    SHUTDOWN_GRACE_PERIOD, auth_disabled_router, authenticated_router, readiness_status,
     start_auth_disabled,
 };
 
@@ -52,7 +53,25 @@ async fn assert_bad_request_without_session(
 ) {
     let response = router.clone().oneshot(request).await.expect("response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(state.sessions.sessions.read().await.is_empty());
+    assert!(state.server.sessions.sessions.read().await.is_empty());
+}
+
+fn auth_request(authorization: &str, session: Option<&str>, body: &str) -> Request<Body> {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(header::HOST, "mcp.example.com")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, authorization);
+    if let Some(value) = session {
+        request = request.header(SESSION_ID_HEADER, value);
+    }
+    request.body(Body::from(body.to_string())).expect("request")
+}
+
+async fn send(router: &Router, request: Request<Body>) -> Response {
+    router.clone().oneshot(request).await.expect("response")
 }
 
 async fn local_app() -> (TempDir, coral_client::local::RunningServer, AppClient) {
@@ -474,4 +493,52 @@ async fn dropping_server_cancels_requests_and_releases_state() {
 
     let _cancel_result = client.cancel().await;
     app_server.shutdown().await.expect("shutdown app server");
+}
+
+#[tokio::test]
+async fn authenticated_sessions_do_not_leak_after_invalid_or_deleted_requests() {
+    let config = AuthenticatedMcpHttpConfig::new(
+        "0.0.0.0:0".parse().unwrap(),
+        "https://mcp.example.com/custom%20mcp",
+        "https://login.example.com/",
+        "coral:mcp",
+    )
+    .unwrap();
+    let (_temp, app_server, app) = local_app().await;
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |_| std::future::ready(Ok::<_, ()>(app.clone())),
+        McpOptions::default(),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let (router, state, bindings) = authenticated_router(config, runtime);
+    let _invalid = send(&router, auth_request("Bearer token-a", None, "{}")).await;
+    let unsupported = INITIALIZE.replace("2025-03-26", "2099-01-01");
+    let _unsupported = send(&router, auth_request("Bearer token-a", None, &unsupported)).await;
+    for protocols in [&["2025-06-18"][..], &["2025-03-26", "2025-06-18"][..]] {
+        let mut invalid = auth_request("Bearer token-a", None, INITIALIZE);
+        for protocol in protocols {
+            invalid
+                .headers_mut()
+                .append("mcp-protocol-version", protocol.parse().unwrap());
+        }
+        let _rejected = send(&router, invalid).await;
+    }
+    assert!(state.sessions.sessions.read().await.is_empty());
+    assert!(bindings.lock().await.is_empty());
+    let response = send(&router, auth_request("Bearer token-a", None, INITIALIZE)).await;
+    let session = response.headers()[SESSION_ID_HEADER].to_str().unwrap();
+    for invalid in [&b"bad id"[..], &b"bad\tid"[..], &b"bad\x80id"[..]] {
+        let invalid = axum::http::HeaderValue::from_bytes(invalid).unwrap();
+        let mut request = auth_request("Bearer token-a", None, "{}");
+        request.headers_mut().insert(SESSION_ID_HEADER, invalid);
+        let status = send(&router, request).await.status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let mut delete = auth_request("Bearer token-a", Some(session), "");
+    *delete.method_mut() = Method::DELETE;
+    assert!(send(&router, delete).await.status().is_success());
+    let missing = send(&router, auth_request("Bearer token-a", Some(session), "{}")).await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    app_server.shutdown().await.unwrap();
 }
