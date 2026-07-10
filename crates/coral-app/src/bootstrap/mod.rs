@@ -7,6 +7,7 @@ mod env;
 mod error;
 mod health;
 mod server;
+mod server_config;
 
 use crate::state::AppStateLayout;
 use crate::telemetry::{
