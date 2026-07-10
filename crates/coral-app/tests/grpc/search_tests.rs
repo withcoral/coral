@@ -14,7 +14,7 @@ use coral_client::default_workspace;
 use serde_json::json;
 use tonic::{Code, Request};
 
-use super::harness::{GrpcHarness, manifest_yaml};
+use super::harness::{GrpcHarness, manifest_yaml, source_dir};
 
 // The old live-scope VALUES CTE bound five fields per surface. At 6,553 surfaces, the
 // count query's two additional fields exceeded bundled SQLite's 32,766-variable limit.
@@ -437,6 +437,67 @@ async fn clear_search_data_removes_catalog_projection_and_next_search_recreates_
         )),
         "next search should recreate and use the catalog projection"
     );
+}
+
+#[tokio::test]
+async fn source_scoped_all_clear_does_not_load_manifest_and_bumps_generation() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+    harness
+        .search_client()
+        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+            workspace: Some(default_workspace()),
+            provider: SearchIndexProvider::Catalog as i32,
+            force: false,
+        }))
+        .await
+        .expect("seed catalog projection");
+    let sqlite_path = harness
+        .config_dir()
+        .join("workspaces/default/search/search.sqlite3");
+    let initial_generation: i64 = rusqlite::Connection::open(&sqlite_path)
+        .expect("open search sqlite before clear")
+        .query_row(
+            "SELECT generation FROM observed_source_generations WHERE workspace = 'default' AND source_name = 'searchable'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("initial source generation");
+    std::fs::remove_file(source_dir(harness.config_dir(), "searchable").join("manifest.yaml"))
+        .expect("remove manifest before clear");
+
+    let clear = harness
+        .search_client()
+        .clear_search_data(Request::new(ClearSearchDataRequest {
+            workspace: Some(default_workspace()),
+            scope: SearchDataScope::All as i32,
+            target: Some(SearchClearTarget {
+                target: Some(search_clear_target::Target::SourceName(
+                    "searchable".to_string(),
+                )),
+            }),
+        }))
+        .await
+        .expect("source-scoped all clear")
+        .into_inner();
+
+    assert_eq!(clear.results.len(), 2);
+    assert!(catalog_clear_detail(&clear).deleted_document_count > 0);
+    assert!(clear.results.iter().any(|result| matches!(
+        result.detail.as_ref(),
+        Some(search_maintenance_result::Detail::ObservedClear(_))
+    )));
+    let connection = rusqlite::Connection::open(sqlite_path).expect("open search sqlite");
+    let generation: i64 = connection
+        .query_row(
+            "SELECT generation FROM observed_source_generations WHERE workspace = 'default' AND source_name = 'searchable'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("source generation");
+    assert_eq!(generation, initial_generation + 1);
 }
 
 #[tokio::test]

@@ -122,11 +122,14 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let result = clear_source_in_transaction(&transaction, workspace_name, owner_source_name)?;
+        let result =
+            clear_observed_source_in_transaction(&transaction, workspace_name, owner_source_name)?;
         transaction.commit()?;
         Ok(result)
     }
+}
 
+impl SqliteObservedValuesStore {
     pub(crate) fn drain_queue(
         &self,
         workspace_name: &WorkspaceName,
@@ -378,7 +381,7 @@ fn clear_workspace_in_transaction(
     })
 }
 
-fn clear_source_in_transaction(
+pub(crate) fn clear_observed_source_in_transaction(
     transaction: &Transaction<'_>,
     workspace_name: &WorkspaceName,
     owner_source_name: &str,
@@ -556,7 +559,8 @@ mod tests {
         ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
     };
     use super::{
-        SqliteObservedValuesStore, clear_source_in_transaction, enqueue_if_current_in_transaction,
+        SqliteObservedValuesStore, clear_observed_source_in_transaction,
+        enqueue_if_current_in_transaction,
     };
     use crate::search::observed::sqlite_queue::{
         ObservedValuesEnqueueResult, ObservedValuesQueueJob, ObservedValuesSurfaceKind,
@@ -668,7 +672,7 @@ mod tests {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("clear transaction");
-        clear_source_in_transaction(&transaction, &workspace, "github")
+        clear_observed_source_in_transaction(&transaction, &workspace, "github")
             .expect("clear source in transaction");
 
         let (contended_tx, contended_rx) = sync_channel(0);

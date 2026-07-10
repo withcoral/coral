@@ -234,10 +234,20 @@ impl SearchProviderMaintenance for CatalogMetadataProvider {
                     }),
                 })
             }
-            SearchClearTarget::Source(source_name) => Err(AppError::InvalidInput(format!(
-                "source-scoped catalog search-data clear is not implemented yet for source '{source_name}'"
-            ))
-            .into()),
+            SearchClearTarget::Source(source_name) => {
+                let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
+                    .map_err(|error| search_sqlite_app_error(&error))?;
+                let result = store
+                    .clear_catalog_source(source_name)
+                    .map_err(|error| search_sqlite_app_error(&error))?;
+                Ok(SearchProviderClearOutcome {
+                    result: catalog_clear_provider_result(result.deleted_document_count),
+                    storage_cleanup: request.compact_after_clear.then(|| {
+                        let compaction = store.compact_after_clear();
+                        search_storage_cleanup_result(&compaction)
+                    }),
+                })
+            }
         }
     }
 }
@@ -276,7 +286,9 @@ fn catalog_rebuild_provider_result(
     }
 }
 
-fn catalog_clear_provider_result(deleted_document_count: u32) -> SearchMaintenanceResult {
+pub(crate) fn catalog_clear_provider_result(
+    deleted_document_count: u32,
+) -> SearchMaintenanceResult {
     SearchMaintenanceResult {
         provider: SearchProviderKind::CatalogMetadata,
         state: if deleted_document_count == 0 {

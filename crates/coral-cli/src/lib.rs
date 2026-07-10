@@ -1074,12 +1074,6 @@ fn validate_search_clear_args(args: &SearchClearArgs) -> Result<(), CliError> {
         )
         .into());
     }
-    if args.source.is_some() && args.scope == SearchClearScope::All {
-        return Err(anyhow::anyhow!(
-            "source-scoped search-data clear currently requires --scope observed"
-        )
-        .into());
-    }
     Ok(())
 }
 
@@ -1127,13 +1121,16 @@ fn print_search_rebuild_response(response: &coral_api::v1::RebuildSearchIndexRes
             }
             Some(search_maintenance_result::Detail::ObservedDrain(detail)) => {
                 println!(
-                    "Drained {} search queue before rebuild: processed {}, stale {}, failed {}, remaining {}, budget exhausted {}.",
+                    "Drained {} search queue before rebuild: processed {}, stale {}, failed {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
                     search_provider_label(result.provider),
                     detail.queue_jobs_processed,
                     detail.stale_jobs_skipped,
                     detail.failed_jobs,
                     detail.remaining_queue_depth,
-                    yes_no(detail.budget_exhausted)
+                    yes_no(detail.budget_exhausted),
+                    detail.stale_rows_purged,
+                    detail.evicted_rows,
+                    yes_no(detail.storage_limit_reached)
                 );
             }
             Some(search_maintenance_result::Detail::ObservedRebuild(detail)) => {
@@ -1163,7 +1160,7 @@ fn print_search_drain_response(response: &coral_api::v1::DrainSearchQueueRespons
         match result.detail.as_ref() {
             Some(search_maintenance_result::Detail::ObservedDrain(detail)) => {
                 println!(
-                    "Drained {} search queue: processed {}, upserted {}, wrote {} FTS rows, stale {}, failed {}, remaining {}, budget exhausted {}.",
+                    "Drained {} search queue: processed {}, upserted {}, wrote {} FTS rows, stale {}, failed {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
                     search_provider_label(result.provider),
                     detail.queue_jobs_processed,
                     detail.canonical_rows_upserted,
@@ -1171,7 +1168,10 @@ fn print_search_drain_response(response: &coral_api::v1::DrainSearchQueueRespons
                     detail.stale_jobs_skipped,
                     detail.failed_jobs,
                     detail.remaining_queue_depth,
-                    yes_no(detail.budget_exhausted)
+                    yes_no(detail.budget_exhausted),
+                    detail.stale_rows_purged,
+                    detail.evicted_rows,
+                    yes_no(detail.storage_limit_reached)
                 );
             }
             _ => {
