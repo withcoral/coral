@@ -1,19 +1,24 @@
 import { fetchTableColumnsFromCoral } from '@/lib/schema-explorer'
+import { catalogClientForRequest } from '@/lib/coral-request.server'
 import { SchemaTableError, SchemaTableView } from '@/views/schema-explorer/schema-table'
 
 import type { Route } from './+types/schema-table'
 
-// Deferred like the parent schema loader; the columns stream in under Suspense.
-// The abort signal matters most here: large tables fan out concurrent paginated
-// ListColumns calls, so switching tables quickly would otherwise pile up
-// orphaned in-flight requests against the sidecar.
-export function clientLoader({ params, request }: Route.ClientLoaderArgs) {
+// Columns are deferred (the promise is returned un-awaited) so nested
+// table-to-table navigation keeps the layout and shows a local pending state
+// instead of blocking on the global progress bar. The abort signal matters
+// here: large tables fan out concurrent paginated ListColumns calls, so
+// switching tables quickly would otherwise pile up orphaned requests.
+export function loader({ params, request }: Route.LoaderArgs) {
   return {
-    columns: fetchTableColumnsFromCoral(params.schemaName, params.tableName, request.signal),
+    columns: fetchTableColumnsFromCoral(
+      catalogClientForRequest(request),
+      params.schemaName,
+      params.tableName,
+      request.signal,
+    ),
   }
 }
-
-clientLoader.hydrate = true as const
 
 export default function SchemaTableRoute({ loaderData }: Route.ComponentProps) {
   return <SchemaTableView columns={loaderData.columns} />

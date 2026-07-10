@@ -1,4 +1,4 @@
-import { Suspense, use, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { NavLink, Outlet, useParams, useRouteError } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
@@ -8,7 +8,6 @@ import { Container as ButtonContainer } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
-import { Skeleton } from '@/wax/components/skeleton'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './schema-explorer.css'
@@ -22,22 +21,6 @@ export function findSchemaTable(
   return schema.connectors
     .find((connector) => connector.name === schemaName)
     ?.tables.find((table) => table.name === tableName)
-}
-
-function SkeletonTree() {
-  return (
-    <div className={styles.skeletonContainer}>
-      {Array.from({ length: 5 }).map((_, index) => (
-        <div className={styles.skeletonGroup} key={index}>
-          <Skeleton borderRadius={4} height={20} width={140} />
-          <div className={styles.skeletonChildren}>
-            <Skeleton borderRadius={4} height={16} width={112} />
-            <Skeleton borderRadius={4} height={16} width={132} />
-          </div>
-        </div>
-      ))}
-    </div>
-  )
 }
 
 function schemaMatchesSearch(schema: SchemaGroup, search: string) {
@@ -68,30 +51,13 @@ function tablePath(schemaName: string, tableName: string) {
   return `/schema/${encodeURIComponent(schemaName)}/${encodeURIComponent(tableName)}`
 }
 
-// Header + two-panel scaffold shared by the loading and error states so both
-// look like the loaded page.
+// Header + two-panel scaffold for the error state so it looks like the loaded page.
 function Frame({ children }: { children: React.ReactNode }) {
   return (
     <section aria-label="Schema explorer" className={styles.root}>
       <PageHeader title="Schema explorer" />
       {children}
     </section>
-  )
-}
-
-// Suspense fallback while the schema clientLoader promise resolves.
-function SchemaExplorerSkeleton() {
-  return (
-    <Frame>
-      <div className={styles.body}>
-        <div className={styles.treePanel}>
-          <div className={styles.treeContent}>
-            <SkeletonTree />
-          </div>
-        </div>
-        <div className={styles.detailPanel} />
-      </div>
-    </Frame>
   )
 }
 
@@ -120,19 +86,10 @@ export function SchemaExplorerError() {
   )
 }
 
-// Deferred loader data: stream in the skeleton, then the resolved tree. `use()`
-// unwraps the promise so a rejection propagates to the route ErrorBoundary —
-// the same error path a non-deferred loader would take.
-export function SchemaExplorer({ schema }: { schema: Promise<SchemaResponse> }) {
-  return (
-    <Suspense fallback={<SchemaExplorerSkeleton />}>
-      <SchemaExplorerContent schema={schema} />
-    </Suspense>
-  )
-}
-
-function SchemaExplorerContent({ schema: schemaPromise }: { schema: Promise<SchemaResponse> }) {
-  const schema = use(schemaPromise)
+// The schema is awaited in the server loader (critical data): the global
+// navigation progress bar is the pending UI and failures land in the route
+// ErrorBoundary, so this view only renders the loaded state.
+export function SchemaExplorer({ schema }: { schema: SchemaResponse }) {
   const activeTable = useParams()
   const [search, setSearch] = useState('')
   // Collapsed by default so the initial render is one row per schema, not one per

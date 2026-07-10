@@ -64,30 +64,6 @@ export const treeError = style({
   padding: 12,
 })
 
-export const skeletonContainer = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-  padding: 12,
-})
-
-export const skeletonGroup = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-})
-
-export const skeletonChildren = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 6,
-  marginInlineStart: 18,
-})
-
-// Tree rows render as bare wax buttons (Button.Container variant="bare"); the
-// layout differs from the button default (left-aligned, icon/label gap), and the
-// bare variant has no hover background, so add the tree hover here. `:not(:disabled)`
-// bumps specificity above the button's own `:hover` rule so this reliably wins.
 export const treeRow = style({
   borderRadius: 4,
   gap: 6,

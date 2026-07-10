@@ -1,15 +1,18 @@
 import { create } from '@bufbuild/protobuf'
+import type { Client } from '@connectrpc/connect'
 
 import {
   CatalogItemKind,
   ListCatalogRequestSchema,
   ListColumnsRequestSchema,
+  type CatalogService,
   type ListColumnsResponse,
   type TableSummary,
 } from '@/generated/coral/v1/catalog_pb'
 
 import { WORKSPACE } from './constants'
-import { getCatalogClient } from './coral-clients'
+
+export type CatalogClient = Client<typeof CatalogService>
 
 export interface ColumnDef {
   description?: string
@@ -41,8 +44,11 @@ export interface SchemaResponse {
 const COLUMN_PAGE_LIMIT = 200
 const COLUMN_PAGE_CONCURRENCY = 6
 
-export async function fetchSchemaFromCoral(signal?: AbortSignal): Promise<SchemaResponse> {
-  const tableSummaries = await listTables(signal)
+export async function fetchSchemaFromCoral(
+  catalogClient: CatalogClient,
+  signal?: AbortSignal,
+): Promise<SchemaResponse> {
+  const tableSummaries = await listTables(catalogClient, signal)
   if (tableSummaries.length === 0) return { connectors: [] }
 
   const schemaMap = new Map<string, TableDef[]>()
@@ -70,8 +76,10 @@ export async function fetchSchemaFromCoral(signal?: AbortSignal): Promise<Schema
   }
 }
 
-async function listTables(signal?: AbortSignal): Promise<TableSummary[]> {
-  const catalogClient = await getCatalogClient()
+async function listTables(
+  catalogClient: CatalogClient,
+  signal?: AbortSignal,
+): Promise<TableSummary[]> {
   const response = await catalogClient.listCatalog(
     create(ListCatalogRequestSchema, {
       kind: CatalogItemKind.TABLE,
@@ -84,11 +92,12 @@ async function listTables(signal?: AbortSignal): Promise<TableSummary[]> {
 }
 
 export async function fetchTableColumnsFromCoral(
+  catalogClient: CatalogClient,
   schemaName: string,
   tableName: string,
   signal?: AbortSignal,
 ): Promise<ColumnDef[]> {
-  const firstPage = await listColumnsPage(schemaName, tableName, 0, signal)
+  const firstPage = await listColumnsPage(catalogClient, schemaName, tableName, 0, signal)
   const columns = columnsFromResponse(firstPage)
   const pagination = firstPage.pagination
   if (!pagination?.hasMore) return columns
@@ -98,14 +107,14 @@ export async function fetchTableColumnsFromCoral(
     const remainingPages = await mapWithConcurrency(
       pageOffsets(nextOffset, pagination.totalCount, COLUMN_PAGE_LIMIT),
       COLUMN_PAGE_CONCURRENCY,
-      (offset) => listColumnsPage(schemaName, tableName, offset, signal),
+      (offset) => listColumnsPage(catalogClient, schemaName, tableName, offset, signal),
     )
     return columns.concat(remainingPages.flatMap(columnsFromResponse))
   }
 
   let offset = pagination.nextOffset
   while (offset > 0) {
-    const page = await listColumnsPage(schemaName, tableName, offset, signal)
+    const page = await listColumnsPage(catalogClient, schemaName, tableName, offset, signal)
     columns.push(...columnsFromResponse(page))
     if (!page.pagination?.hasMore) break
     offset = page.pagination.nextOffset
@@ -114,12 +123,12 @@ export async function fetchTableColumnsFromCoral(
 }
 
 async function listColumnsPage(
+  catalogClient: CatalogClient,
   schemaName: string,
   tableName: string,
   offset: number,
   signal?: AbortSignal,
 ): Promise<ListColumnsResponse> {
-  const catalogClient = await getCatalogClient()
   return catalogClient.listColumns(
     create(ListColumnsRequestSchema, {
       pagination: {
