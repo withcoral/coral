@@ -14,8 +14,7 @@ use crate::search::maintenance::{
     RebuildSearchIndexResponse, SearchMaintenanceResult, SearchProviderClearRequest,
     SearchProviderMaintenance, SearchProviderRebuildRequest,
 };
-use crate::search::observed::ObservedValuesDrainBudget;
-use crate::search::observed::provider::ObservedValuesProvider;
+use crate::search::observed::{ObservedValuesDrainBudget, ObservedValuesProjection};
 use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceManager;
@@ -23,7 +22,7 @@ use crate::workspaces::WorkspaceManager;
 #[derive(Clone)]
 pub(crate) struct SearchManager {
     catalog: CatalogMetadataProvider,
-    observed: ObservedValuesProvider,
+    observed_projection: ObservedValuesProjection,
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
 }
@@ -39,11 +38,11 @@ impl SearchManager {
     ) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
-        let observed = ObservedValuesProvider::new(layout);
+        let observed_projection = ObservedValuesProjection::new(layout);
         Self {
             catalog: catalog.clone(),
-            observed: observed.clone(),
-            engine: UniversalSearchEngine::new(catalog, observed),
+            observed_projection,
+            engine: UniversalSearchEngine::new(catalog),
             workspaces: workspace_manager,
         }
     }
@@ -114,7 +113,7 @@ impl SearchManager {
 
     pub(crate) async fn drain_before_shutdown(&self) -> Result<(), SearchManagerError> {
         let workspaces = self.workspaces.list_workspaces().await?;
-        let observed = self.observed.clone();
+        let observed_projection = self.observed_projection.clone();
         run_blocking_search_operation(move || {
             let deadline = Instant::now() + SHUTDOWN_DRAIN_BUDGET;
             for workspace in workspaces {
@@ -126,7 +125,7 @@ impl SearchManager {
                     );
                     break;
                 }
-                match observed.drain_queue(
+                match observed_projection.drain_queue(
                     &workspace.name,
                     ObservedValuesDrainBudget::new(MANUAL_DRAIN_MAX_JOBS, remaining_budget),
                 ) {
@@ -155,6 +154,7 @@ impl SearchManager {
         })
         .await
     }
+
     fn rebuild_catalog_index(
         &self,
         request: &RebuildSearchIndexRequest,

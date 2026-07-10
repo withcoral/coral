@@ -2,7 +2,6 @@
 
 use crate::query::QueryAttribution;
 use crate::search::catalog::provider::CatalogMetadataProvider;
-use crate::search::observed::provider::ObservedValuesProvider;
 use crate::search::result::{
     ProviderStatus, SearchProviderKind, SearchProviderState, SearchRequest, SearchResponse,
     SearchResult, SearchTruncation,
@@ -11,12 +10,11 @@ use crate::search::result::{
 #[derive(Clone)]
 pub(crate) struct UniversalSearchEngine {
     catalog: CatalogMetadataProvider,
-    observed: ObservedValuesProvider,
 }
 
 impl UniversalSearchEngine {
-    pub(crate) fn new(catalog: CatalogMetadataProvider, observed: ObservedValuesProvider) -> Self {
-        Self { catalog, observed }
+    pub(crate) fn new(catalog: CatalogMetadataProvider) -> Self {
+        Self { catalog }
     }
 
     pub(crate) fn search(
@@ -31,10 +29,12 @@ impl UniversalSearchEngine {
             "running Universal Search"
         );
         let catalog = self.catalog.search(request, attribution);
-        let observed = self.observed.search(request);
-        let provider_has_more = providers_have_more(&[&catalog.status, &observed.status]);
+        let provider_has_more = catalog
+            .status
+            .coverage
+            .as_ref()
+            .is_some_and(|coverage| coverage.has_more);
         let mut candidates = catalog.candidates;
-        candidates.extend(observed.candidates);
         candidates.sort();
 
         let total_count = candidates.len();
@@ -55,7 +55,12 @@ impl UniversalSearchEngine {
             results,
             provider_statuses: vec![
                 catalog.status,
-                observed.status,
+                ProviderStatus {
+                    provider: SearchProviderKind::ObservedValues,
+                    state: SearchProviderState::NotEnabled,
+                    note: "observed value search is not wired yet".to_string(),
+                    coverage: None,
+                },
                 ProviderStatus {
                     provider: SearchProviderKind::NativeFanout,
                     state: SearchProviderState::NotEnabled,
@@ -71,15 +76,6 @@ impl UniversalSearchEngine {
             },
         }
     }
-}
-
-fn providers_have_more(statuses: &[&ProviderStatus]) -> bool {
-    statuses.iter().any(|status| {
-        status
-            .coverage
-            .as_ref()
-            .is_some_and(|coverage| coverage.has_more)
-    })
 }
 
 fn truncation_note(
@@ -101,10 +97,7 @@ fn truncation_note(
 
 #[cfg(test)]
 mod tests {
-    use super::{providers_have_more, truncation_note};
-    use crate::search::result::{
-        ProviderCoverage, ProviderStatus, SearchProviderKind, SearchProviderState,
-    };
+    use super::truncation_note;
 
     #[test]
     fn truncation_note_does_not_report_retrieved_count_as_total_when_provider_has_more() {
@@ -114,28 +107,5 @@ mod tests {
             note,
             "one or more search providers had more matches than were returned"
         );
-    }
-
-    #[test]
-    fn truncation_note_reports_global_fusion_truncation_without_provider_overflow() {
-        let note = truncation_note(true, false, 12, 10);
-
-        assert_eq!(note, "returned 10 of 12 search hints");
-    }
-
-    #[test]
-    fn stale_or_budget_exhausted_provider_does_not_imply_more_results() {
-        let status = ProviderStatus {
-            provider: SearchProviderKind::ObservedValues,
-            state: SearchProviderState::Partial,
-            note: String::new(),
-            coverage: Some(ProviderCoverage {
-                budget_exhausted: true,
-                stale_index: true,
-                ..ProviderCoverage::default()
-            }),
-        };
-
-        assert!(!providers_have_more(&[&status]));
     }
 }
