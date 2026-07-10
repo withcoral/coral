@@ -10,7 +10,7 @@ use axum::Router;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use tokio::net::TcpListener;
@@ -25,6 +25,7 @@ use crate::outbound_url_policy::ConfiguredEndpointUrl;
 
 mod authorize;
 mod callback;
+mod token;
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 25 } else { 5_000 });
@@ -36,7 +37,6 @@ const DEFAULT_OAUTH_SCOPE: &str = "coral:mcp";
 #[derive(Debug, Clone)]
 pub struct OidcAuthConfig {
     bind_addr: SocketAddr,
-    #[expect(dead_code, reason = "used by the OAuth token endpoint descendant")]
     session: SessionTokenConfig,
     providers: BTreeMap<String, OidcProviderConfig>,
     oauth: OAuthServerConfig,
@@ -91,6 +91,7 @@ impl OidcAuthConfig {
             )
             .route("/oauth/clients/{client}", get(client_metadata))
             .route("/oauth/authorize", get(authorize::oauth_authorize))
+            .route("/oauth/token", post(token::oauth_token))
             .route(
                 "/auth/oidc/{provider}/callback",
                 get(callback::oidc_callback),
