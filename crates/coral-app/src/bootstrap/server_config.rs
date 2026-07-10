@@ -1,10 +1,5 @@
 //! Configuration owned by the long-running Coral server surface.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by the descendant coral serve command")
-)]
-
 use std::net::{Ipv4Addr, SocketAddr};
 
 use serde::Deserialize;

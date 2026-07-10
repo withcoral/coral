@@ -92,6 +92,8 @@ enum Command {
     Onboard,
     /// Start the MCP server over stdio
     McpStdio(McpStdioArgs),
+    /// Start the long-running gRPC server
+    Server,
     /// Inspect and manage experimental runtime features
     Features(FeaturesArgs),
     #[cfg(feature = "embedded-ui")]
@@ -535,7 +537,9 @@ impl Command {
             | Command::Function(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
-            Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
+            Command::Features(_) | Command::Completion(_) | Command::Server => {
+                RequiredRuntime::None
+            }
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
         }
@@ -735,6 +739,35 @@ async fn run_ui(
     Ok(())
 }
 
+async fn run_server() -> Result<(), anyhow::Error> {
+    let server = bootstrap::start_standalone_server().await?;
+    let endpoint = server.endpoint_uri().to_string();
+
+    println!("Coral gRPC server listening on {endpoint}");
+    println!("Connect clients with CORAL_ENDPOINT={endpoint}");
+    println!("Press Ctrl-C to stop the server.");
+
+    let signal = wait_for_server_shutdown_signal().await;
+    let shutdown = server.shutdown().await;
+    signal?;
+    shutdown?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => signal,
+        _ = sigterm.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
+    tokio::signal::ctrl_c().await
+}
+
 async fn run_no_runtime_command(
     command: Command,
     feature_overrides: &coral_app::features::FeatureOverrides,
@@ -747,6 +780,7 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
+        Command::Server => run_server().await.map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args, feature_overrides.clone())
             .await
@@ -859,6 +893,9 @@ async fn run_app_command(
             unreachable!("no-runtime commands are routed without an app client")
         }
         Command::Features(_) => {
+            unreachable!("no-runtime commands are routed without an app client")
+        }
+        Command::Server => {
             unreachable!("no-runtime commands are routed without an app client")
         }
         #[cfg(feature = "embedded-ui")]
@@ -1635,14 +1672,21 @@ mod tests {
     };
 
     #[test]
-    fn server_command_is_not_available() {
-        let error = Cli::try_parse_from(["coral", "server", "--help"])
-            .expect_err("dev server command should not be exposed");
+    fn server_command_requires_no_app_client_runtime() {
+        let cli = Cli::try_parse_from(["coral", "server"]).expect("server should parse");
 
-        assert!(
-            error.to_string().contains("unrecognized subcommand"),
-            "unexpected parse error: {error}"
-        );
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
+        assert!(matches!(cli.command, super::Command::Server));
+    }
+
+    #[test]
+    fn server_command_rejects_command_line_bind_overrides() {
+        for args in [
+            ["coral", "server", "--bind", "127.0.0.1"],
+            ["coral", "server", "--port", "14555"],
+        ] {
+            Cli::try_parse_from(args).expect_err("server bind overrides should be rejected");
+        }
     }
 
     #[cfg(feature = "embedded-ui")]

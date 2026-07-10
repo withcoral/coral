@@ -486,6 +486,20 @@ Use `--no-open` to start the same loopback server without launching a browser:
 coral ui --no-open
 ```
 
+## `coral server`
+
+Start a long-running native gRPC server. Coral prints the selected endpoint and
+a `CORAL_ENDPOINT` hint for clients, then runs until you press `Ctrl-C` or send
+`SIGTERM` on Unix.
+
+```shellscript
+coral server
+```
+
+The bind address comes from `[server].bind_addr`. Without a `[server]` section,
+Coral uses an ephemeral port on `127.0.0.1`. See
+[Configuration](/reference/configuration#server).
+
 ## `coral mcp-stdio`
 
 Expose the local Coral runtime as an MCP stdio server.
