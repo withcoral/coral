@@ -723,50 +723,114 @@ impl ConfigStore {
 }
 
 impl ConfigStore {
+    /// Lists installed functions without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock while using function artifacts
+    /// associated with the returned inventory.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "function runtime loading consumes inventory in the next stack branch"
+        )
+    )]
+    pub(crate) fn list_workspace_functions_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledFunction>, AppError> {
+        let config = self.load_config_unlocked()?;
+        Ok(config.functions.workspace_functions(workspace_name))
+    }
+
+    #[cfg(test)]
     pub(crate) fn list_workspace_functions(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledFunction>, AppError> {
-        let config = self.load_config()?;
-        Ok(config.functions.workspace_functions(workspace_name))
+        let _state_lock = self.state_lock_shared()?;
+        self.list_workspace_functions_unlocked(workspace_name)
     }
 
+    /// Loads one installed function without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock while using the associated
+    /// function artifact.
+    pub(crate) fn get_function_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<InstalledFunction, AppError> {
+        let config = self.load_config_unlocked()?;
+        config
+            .functions
+            .get_function(workspace_name, function_name)
+            .ok_or_else(|| AppError::FunctionNotFound(function_name.to_string()))
+    }
+
+    #[cfg(test)]
     pub(crate) fn get_function(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
     ) -> Result<InstalledFunction, AppError> {
-        let config = self.load_config()?;
-        config
-            .functions
-            .get_function(workspace_name, function_name)
-            .ok_or_else(|| AppError::InvalidInput(format!("function '{function_name}' not found")))
+        let _state_lock = self.state_lock_shared()?;
+        self.get_function_unlocked(workspace_name, function_name)
     }
 
-    pub(crate) fn upsert_function(
+    /// Upserts one installed function without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn upsert_function_unlocked(
         &self,
         workspace_name: &WorkspaceName,
         function: InstalledFunction,
     ) -> Result<(), AppError> {
-        self.update_config(|config| {
+        self.update_config_unlocked(|config| {
             config.functions.upsert_function(workspace_name, function);
             Ok(())
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn upsert_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function: InstalledFunction,
+    ) -> Result<(), AppError> {
+        let _state_lock = self.state_lock_exclusive()?;
+        self.upsert_function_unlocked(workspace_name, function)
+    }
+
+    /// Removes one installed function without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn remove_function_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<(), AppError> {
+        self.update_config_unlocked(|config| {
+            let removed = config
+                .functions
+                .remove_function(workspace_name, function_name);
+            if removed.is_none() {
+                return Err(AppError::FunctionNotFound(function_name.to_string()));
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn remove_function(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
     ) -> Result<(), AppError> {
-        self.update_config(|config| {
-            config
-                .functions
-                .remove_function(workspace_name, function_name);
-            Ok(())
-        })
+        let _state_lock = self.state_lock_exclusive()?;
+        self.remove_function_unlocked(workspace_name, function_name)
     }
 }
+
 #[expect(
     clippy::indexing_slicing,
     reason = "toml_edit indexing creates or accesses document paths while rebuilding the config table"
@@ -1431,7 +1495,7 @@ origin = "bundled"
         );
         assert!(matches!(
             store.get_function(&missing_workspace, &function_name),
-            Err(AppError::InvalidInput(_))
+            Err(AppError::FunctionNotFound(_))
         ));
         store
             .upsert_function(&missing_workspace, installed_function("review_queue"))
@@ -1448,7 +1512,7 @@ origin = "bundled"
             .expect("remove function definition");
         assert!(matches!(
             store.get_function(&missing_workspace, &function_name),
-            Err(AppError::InvalidInput(_))
+            Err(AppError::FunctionNotFound(_))
         ));
     }
 

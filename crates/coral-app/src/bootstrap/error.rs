@@ -2,8 +2,8 @@
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
-    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_FUNCTION_NOT_FOUND,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -21,6 +21,9 @@ pub enum AppError {
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested function was not found in config.
+    #[error("function '{0}' not found")]
+    FunctionNotFound(String),
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -157,6 +160,7 @@ pub(crate) fn status_with_bounded_detail(code: Code, detail: impl Into<String>) 
 pub(crate) fn app_status(error: AppError) -> Status {
     let not_found_reason = match &error {
         AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::FunctionNotFound(_) => Some(CORAL_ERROR_REASON_FUNCTION_NOT_FOUND),
         AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
         _ => None,
     };
@@ -243,7 +247,9 @@ fn grpc_code(status: StatusCode) -> Code {
 fn app_code(error: &AppError) -> Code {
     match error {
         AppError::Unauthenticated(_) => Code::Unauthenticated,
-        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::SourceNotFound(_)
+        | AppError::FunctionNotFound(_)
+        | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
@@ -316,6 +322,28 @@ mod tests {
         assert!(
             info.metadata.is_empty(),
             "SOURCE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+        );
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_function_not_found() {
+        let status = app_status(AppError::FunctionNotFound("review_queue".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("function-not-found status must carry an ErrorInfo detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_FUNCTION_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert!(
+            info.metadata.is_empty(),
+            "FUNCTION_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
             info.metadata
         );
     }
