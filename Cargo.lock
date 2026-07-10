@@ -727,6 +727,8 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.1.0",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -735,6 +737,7 @@ dependencies = [
  "pin-project-lite",
  "serde_core",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -1411,6 +1414,23 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "coral-mcp-http"
+version = "0.5.2"
+dependencies = [
+ "axum",
+ "coral-api",
+ "coral-client",
+ "coral-mcp",
+ "rmcp",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tower",
 ]
 
 [[package]]
