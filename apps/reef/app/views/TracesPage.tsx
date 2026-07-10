@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { animations } from '@/wax/animations'
 import { Button } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
@@ -230,7 +231,7 @@ export function TracesPage() {
       {error && <DisconnectedBanner message={error} />}
       {loading && traces.length === 0 ? (
         <div className={s.loadingState}>
-          <Icon name="Loader" className={s.spinner} color="tertiary" />
+          <Icon name="Loader" className={animations.spinAnimation} color="tertiary" />
           <Typography.Body>Loading traces…</Typography.Body>
         </div>
       ) : filtered.length === 0 ? (

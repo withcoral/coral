@@ -1,16 +1,7 @@
-import { keyframes, style, styleVariants } from '@vanilla-extract/css'
+import { style, styleVariants } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/theme.css'
 import { theme } from '@/wax/theme/theme.css'
-
-const spin = keyframes({
-  from: { transform: 'rotate(0deg)' },
-  to: { transform: 'rotate(360deg)' },
-})
-
-export const spinAnimation = style({
-  animation: `${spin} 1s linear infinite`,
-})
 
 export const root = style({
   display: 'flex',

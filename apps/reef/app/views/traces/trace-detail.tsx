@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import classNames from 'classnames'
 
+import { animations } from '@/wax/animations'
 import { Button, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
@@ -823,7 +824,7 @@ export function TraceDetail({
   if (loading && !detail && !summary)
     return (
       <div className={s.detailEmpty}>
-        <Icon name="Loader" className={s.spinner} color="tertiary" />
+        <Icon name="Loader" className={animations.spinAnimation} color="tertiary" />
         <Typography.Body>Loading trace…</Typography.Body>
       </div>
     )
@@ -944,7 +945,7 @@ export function TraceDetail({
                 />
               ) : (
                 <div className={s.detailEmpty}>
-                  <Icon name="Loader" className={s.spinner} color="tertiary" />
+                  <Icon name="Loader" className={animations.spinAnimation} color="tertiary" />
                 </div>
               ))}
             {activeExtraTab?.content}

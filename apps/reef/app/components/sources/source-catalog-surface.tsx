@@ -2,6 +2,7 @@ import classNames from 'classnames'
 import { useMemo } from 'react'
 import type { Ref } from 'react'
 
+import { animations } from '@/wax/animations'
 import { Button, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
@@ -105,7 +106,7 @@ export function SourceCatalogSurface(props: SourceCatalogSurfaceProps) {
         <div className={classNames(styles.resultsContent, styles.resultsContentVariant[variant])}>
           {loading ? (
             <div className={styles.loadingState}>
-              <Icon name="Loader" size="16" color="tertiary" className={styles.spinAnimation} />
+              <Icon name="Loader" size="16" color="tertiary" className={animations.spinAnimation} />
               <Typography.BodySmall variant="tertiary">Loading sources…</Typography.BodySmall>
             </div>
           ) : null}
