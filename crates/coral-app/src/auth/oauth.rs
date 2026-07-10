@@ -18,6 +18,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::provider::{OidcProviderConfig, ProviderConfigFile};
+use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenConfig;
 use super::state_store::{InMemoryStateStore, StateStore};
 use crate::outbound_url_policy::ConfiguredEndpointUrl;
@@ -79,6 +80,7 @@ impl OidcAuthConfig {
         let state = AuthState {
             config: Arc::new(self),
             store: Arc::new(InMemoryStateStore::new()),
+            provider_client: OidcProviderClient::new().map_err(|error| error.to_string())?,
         };
         let router = Router::new()
             .route(
@@ -160,6 +162,8 @@ struct AuthState {
     config: Arc<OidcAuthConfig>,
     #[expect(dead_code, reason = "used by OAuth authorization descendants")]
     store: Arc<dyn StateStore>,
+    #[expect(dead_code, reason = "used by OIDC authorization descendants")]
+    provider_client: OidcProviderClient,
 }
 
 #[derive(Debug, Clone)]
