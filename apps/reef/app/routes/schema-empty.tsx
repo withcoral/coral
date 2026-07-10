@@ -1,5 +1,1 @@
-import { TableDetailEmpty } from '@/views/schema-explorer'
-
-export default function SchemaIndexRoute() {
-  return <TableDetailEmpty />
-}
+export { TableDetailEmpty as default } from '@/views/schema-explorer/schema-empty'

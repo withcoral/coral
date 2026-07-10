@@ -1,25 +1,18 @@
-import classNames from 'classnames'
-import { Suspense, useMemo, useState } from 'react'
-import { Await, NavLink, Outlet, useAsyncError, useParams, useRevalidator } from 'react-router'
+import { Suspense, use, useMemo, useState } from 'react'
+import { NavLink, Outlet, useParams, useRouteError } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
-import type { ColumnDef, SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
+import type { SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
 import { PageHeader } from '@/views/traces/page-header'
 import { Container as ButtonContainer } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { Pill } from '@/wax/components/pill'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Skeleton } from '@/wax/components/skeleton'
-import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './schema-explorer.css'
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return String(error)
-}
+import { formatError, useRouteRetry } from './shared'
 
 export function findSchemaTable(
   schema: SchemaResponse,
@@ -75,8 +68,8 @@ function tablePath(schemaName: string, tableName: string) {
   return `/schema/${encodeURIComponent(schemaName)}/${encodeURIComponent(tableName)}`
 }
 
-// Header + two-panel scaffold shared by the loaded view and the loading/error
-// states so all three look the same.
+// Header + two-panel scaffold shared by the loading and error states so both
+// look like the loaded page.
 function Frame({ children }: { children: React.ReactNode }) {
   return (
     <section aria-label="Schema explorer" className={styles.root}>
@@ -87,7 +80,7 @@ function Frame({ children }: { children: React.ReactNode }) {
 }
 
 // Suspense fallback while the schema clientLoader promise resolves.
-export function SchemaExplorerSkeleton() {
+function SchemaExplorerSkeleton() {
   return (
     <Frame>
       <div className={styles.body}>
@@ -102,10 +95,11 @@ export function SchemaExplorerSkeleton() {
   )
 }
 
-// Await errorElement when the schema clientLoader promise rejects.
-function SchemaLoadError() {
-  const error = useAsyncError()
-  const { revalidate } = useRevalidator()
+// Route ErrorBoundary for /schema: the schema is this page's critical data, so
+// a failed load errors the whole page (re-exported by the route module).
+export function SchemaExplorerError() {
+  const error = useRouteError()
+  const retry = useRouteRetry()
   return (
     <Frame>
       <div className={styles.body}>
@@ -114,7 +108,7 @@ function SchemaLoadError() {
             <div className={styles.treeError}>
               <ErrorBanner
                 message={formatError(error)}
-                onRetry={() => void revalidate()}
+                onRetry={retry}
                 title="Failed to load schema"
               />
             </div>
@@ -126,20 +120,19 @@ function SchemaLoadError() {
   )
 }
 
-// Deferred loader data: stream in the skeleton, then the resolved tree. SPA mode
-// forbids HydrateFallback on non-root routes, so loading is handled with
-// Suspense/Await rather than a route-level fallback.
+// Deferred loader data: stream in the skeleton, then the resolved tree. `use()`
+// unwraps the promise so a rejection propagates to the route ErrorBoundary —
+// the same error path a non-deferred loader would take.
 export function SchemaExplorer({ schema }: { schema: Promise<SchemaResponse> }) {
   return (
     <Suspense fallback={<SchemaExplorerSkeleton />}>
-      <Await errorElement={<SchemaLoadError />} resolve={schema}>
-        {(resolved: SchemaResponse) => <SchemaExplorerContent schema={resolved} />}
-      </Await>
+      <SchemaExplorerContent schema={schema} />
     </Suspense>
   )
 }
 
-function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
+function SchemaExplorerContent({ schema: schemaPromise }: { schema: Promise<SchemaResponse> }) {
+  const schema = use(schemaPromise)
   const activeTable = useParams()
   const [search, setSearch] = useState('')
   // Collapsed by default so the initial render is one row per schema, not one per
@@ -172,10 +165,8 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
       <PageHeader
         title={
           <>
-            <Typography.BodyStrong as="span" variant="secondary">
-              Schema explorer
-            </Typography.BodyStrong>
-            <Typography.BodySmall as="span" variant="tertiary">
+            <Typography.BodyStrong variant="secondary">Schema explorer</Typography.BodyStrong>
+            <Typography.BodySmall variant="tertiary">
               {filteredSchemas.length} {filteredSchemas.length === 1 ? 'schema' : 'schemas'} /{' '}
               {filteredTableCount} {filteredTableCount === 1 ? 'table' : 'tables'}
             </Typography.BodySmall>
@@ -232,11 +223,10 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
                             name={expanded ? 'ChevronDown' : 'ChevronRight'}
                             size="14"
                           />
-                          <Typography.BodyStrong as="span" className={styles.connectorName}>
+                          <Typography.BodyStrong className={styles.connectorName}>
                             {connector.name}
                           </Typography.BodyStrong>
                           <Typography.BodySmall
-                            as="span"
                             className={styles.connectorTableCount}
                             variant="tertiary"
                           >
@@ -261,7 +251,7 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
                                 variant="bare"
                               >
                                 <Icon color="secondary" name="Table2" size="14" />
-                                <Typography.BodyStrong as="span" className={styles.tableName}>
+                                <Typography.BodyStrong className={styles.tableName}>
                                   {table.name}
                                 </Typography.BodyStrong>
                               </ButtonContainer>
@@ -282,140 +272,5 @@ function SchemaExplorerContent({ schema }: { schema: SchemaResponse }) {
         </div>
       </div>
     </section>
-  )
-}
-
-// Rendered at /schema (index) before a table is selected.
-export function TableDetailEmpty() {
-  return (
-    <div className={styles.detailEmpty}>
-      <Typography.Body variant="secondary">
-        Select a table from the schema tree to inspect its columns.
-      </Typography.Body>
-    </div>
-  )
-}
-
-// Detail-panel scaffold for a selected table: title, description, required
-// filters, and a "Columns" section whose body is supplied by the child route.
-export function TableDetailLayout({
-  schemaName,
-  tableName,
-  table,
-  children,
-}: {
-  schemaName: string
-  tableName: string
-  table?: TableDef
-  children: React.ReactNode
-}) {
-  return (
-    <div className={styles.detailContent}>
-      <div className={styles.detailHeader}>
-        <div>
-          <Typography.HeadingSmall as="h2">
-            {schemaName}.{tableName}
-          </Typography.HeadingSmall>
-          {table?.description ? (
-            <Typography.BodySmall as="p" className={styles.description}>
-              {table.description}
-            </Typography.BodySmall>
-          ) : null}
-        </div>
-        {table && table.requiredFilters.length > 0 ? (
-          <Tooltip
-            content={`The following filters are required: ${table.requiredFilters.join(', ')}`}
-            side="top"
-          >
-            <div
-              aria-label={`Required filters: ${table.requiredFilters.join(', ')}`}
-              className={styles.requiredFilterGroup}
-              tabIndex={0}
-            >
-              {table.requiredFilters.map((filter) => (
-                <Pill color="orange" key={filter}>
-                  {filter}
-                </Pill>
-              ))}
-            </div>
-          </Tooltip>
-        ) : null}
-      </div>
-
-      <div className={styles.section}>
-        <Typography.BodySmallStrong>Columns</Typography.BodySmallStrong>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-export function ColumnsPending() {
-  return (
-    <div className={styles.loadingState}>
-      <Icon color="secondary" name="Loader" size="18" />
-      <Typography.BodySmall variant="tertiary">Loading columns</Typography.BodySmall>
-    </div>
-  )
-}
-
-// Await errorElement when the columns clientLoader promise rejects.
-export function ColumnsLoadError() {
-  const error = useAsyncError()
-  const { revalidate } = useRevalidator()
-  return (
-    <ErrorBanner
-      message={formatError(error)}
-      onRetry={() => void revalidate()}
-      title="Failed to load columns"
-    />
-  )
-}
-
-export function ColumnsTable({ columns }: { columns: ColumnDef[] }) {
-  if (columns.length === 0) {
-    return (
-      <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
-        No columns reported for this table.
-      </Typography.BodySmall>
-    )
-  }
-
-  return (
-    <table className={styles.dataGrid}>
-      <thead className={styles.dataGridHead}>
-        <tr>
-          <th className={styles.dataGridHeadCell}>name</th>
-          <th className={styles.dataGridHeadCell}>type</th>
-          <th className={styles.dataGridHeadCell}>nullable</th>
-          <th className={styles.dataGridHeadCell}>description</th>
-        </tr>
-      </thead>
-      <tbody>
-        {columns.map((column) => (
-          <tr
-            className={classNames(styles.dataGridRow, { [styles.virtualRow]: column.virtual })}
-            key={column.name}
-          >
-            <td className={styles.dataGridCellMono}>
-              {column.name}
-              {column.filterable ? (
-                <Tooltip
-                  content="Required filter: queries for this table must include a filter on this field."
-                  side="top"
-                >
-                  <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
-                    *
-                  </span>
-                </Tooltip>
-              ) : null}
-            </td>
-            <td className={styles.dataGridCellMono}>{column.type}</td>
-            <td className={styles.dataGridCellMono}>{column.nullable ? 'yes' : 'no'}</td>
-            <td className={styles.dataGridCellText}>{column.description ?? '-'}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   )
 }

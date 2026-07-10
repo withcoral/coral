@@ -1,14 +1,5 @@
-import { Suspense } from 'react'
-import { Await, useOutletContext } from 'react-router'
-
-import { fetchTableColumnsFromCoral, type SchemaResponse } from '@/lib/schema-explorer'
-import {
-  ColumnsLoadError,
-  ColumnsPending,
-  ColumnsTable,
-  findSchemaTable,
-  TableDetailLayout,
-} from '@/views/schema-explorer'
+import { fetchTableColumnsFromCoral } from '@/lib/schema-explorer'
+import { SchemaTableError, SchemaTableView } from '@/views/schema-explorer/schema-table'
 
 import type { Route } from './+types/schema-table'
 
@@ -24,19 +15,8 @@ export function clientLoader({ params, request }: Route.ClientLoaderArgs) {
 
 clientLoader.hydrate = true as const
 
-export default function SchemaTableRoute({ params, loaderData }: Route.ComponentProps) {
-  // The parent schema layout resolves its schema before rendering this Outlet,
-  // so table metadata (description, required filters) is available synchronously.
-  const schema = useOutletContext<SchemaResponse>()
-  const table = findSchemaTable(schema, params.schemaName, params.tableName)
-
-  return (
-    <TableDetailLayout schemaName={params.schemaName} tableName={params.tableName} table={table}>
-      <Suspense fallback={<ColumnsPending />}>
-        <Await errorElement={<ColumnsLoadError />} resolve={loaderData.columns}>
-          {(columns) => <ColumnsTable columns={columns} />}
-        </Await>
-      </Suspense>
-    </TableDetailLayout>
-  )
+export default function SchemaTableRoute({ loaderData }: Route.ComponentProps) {
+  return <SchemaTableView columns={loaderData.columns} />
 }
+
+export { SchemaTableError as ErrorBoundary }

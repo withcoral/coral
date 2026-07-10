@@ -8,7 +8,8 @@ import {
   type TableSummary,
 } from '@/generated/coral/v1/catalog_pb'
 
-import { getCatalogClient, WORKSPACE } from './coral-clients'
+import { WORKSPACE } from './constants'
+import { getCatalogClient } from './coral-clients'
 
 export interface ColumnDef {
   description?: string
