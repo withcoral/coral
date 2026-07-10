@@ -198,14 +198,42 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         udf: UdfRuntimeSqlDefinition,
     ) -> Result<UdfRuntimeSignature, CoreError> {
-        if udf.sql().trim().is_empty() {
-            return Err(CoreError::InvalidInput(format!(
-                "udf '{}' SQL body cannot be empty",
-                udf.name
-            )));
+        let mut results = Self::infer_udf_signatures(sources, runtime, vec![udf]).await?;
+        results.pop().ok_or_else(|| {
+            CoreError::InvalidInput("UDF signature inference returned no result".to_string())
+        })?
+    }
+
+    /// Infers typed signatures for multiple UDFs through one source runtime.
+    ///
+    /// The outer result reports source runtime construction failures. Each
+    /// inner result reports validation for the UDF at the same input position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the shared source runtime cannot be built.
+    pub async fn infer_udf_signatures(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        udfs: Vec<UdfRuntimeSqlDefinition>,
+    ) -> Result<Vec<Result<UdfRuntimeSignature, CoreError>>, CoreError> {
+        if udfs.is_empty() {
+            return Ok(Vec::new());
         }
+
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
-        runtime::udfs::infer_udf_signature(&query_runtime, &udf).await
+        let mut results = Vec::with_capacity(udfs.len());
+        for udf in udfs {
+            if udf.sql().trim().is_empty() {
+                results.push(Err(CoreError::InvalidInput(format!(
+                    "udf '{}' SQL body cannot be empty",
+                    udf.name
+                ))));
+                continue;
+            }
+            results.push(runtime::udfs::infer_udf_signature(&query_runtime, &udf).await);
+        }
+        Ok(results)
     }
 
     /// Explains one `SQL` statement with logical and physical plan renderings.

@@ -580,6 +580,36 @@ async fn infer_udf_signature_rejects_conflicting_argument_types() {
 }
 
 #[tokio::test]
+async fn infer_udf_signatures_returns_per_function_results() {
+    let results = CoralQuery::infer_udf_signatures(
+        &[],
+        test_runtime(),
+        vec![
+            udf_sql("typed_value", "select cast($value as VARCHAR) as value"),
+            udf_sql("ambiguous_value", "select $value as value"),
+        ],
+    )
+    .await
+    .expect("shared runtime should build");
+    let mut results = results.into_iter();
+
+    let signature = results
+        .next()
+        .expect("typed result")
+        .expect("typed udf should validate");
+    assert_eq!(
+        argument_types(&signature),
+        [("value", ManifestDataType::Utf8)]
+    );
+    let error = results
+        .next()
+        .expect("ambiguous result")
+        .expect_err("ambiguous udf should fail independently");
+    assert!(error.to_string().contains("has no inferred type"));
+    assert!(results.next().is_none());
+}
+
+#[tokio::test]
 async fn published_udf_table_function_executes_udf_sql() {
     let (_temp, source) = events_source("published_udf_events");
     let runtime = test_runtime().with_udfs(vec![min_id_udf("published_udf_events")]);
