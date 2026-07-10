@@ -71,4 +71,5 @@ pub(crate) enum ObservedValuesEnqueueResult {
     Enqueued { job_id: i64 },
     StaleGeneration,
     QueueFull,
+    StorageLimitReached,
 }

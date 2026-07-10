@@ -167,6 +167,14 @@ fn run_observed_values_writer(
                     "dropping observed-values source-scan observation because durable queue is full"
                 );
             }
+            Ok(ObservedValuesEnqueueResult::StorageLimitReached) => {
+                tracing::debug!(
+                    workspace = %write.workspace_name.as_str(),
+                    source = %job.source_name,
+                    surface = %job.surface_name,
+                    "dropping observed-values source-scan observation because workspace search storage is full"
+                );
+            }
             Err(error) => {
                 tracing::debug!(
                     workspace = %write.workspace_name.as_str(),
