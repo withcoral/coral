@@ -221,13 +221,13 @@ impl SearchManager {
         let mut storage_cleanup = None;
         for outcome in provider_outcomes {
             results.push(outcome.result);
-            if let Some(cleanup) = outcome.storage_cleanup {
-                if storage_cleanup.replace(cleanup).is_some() {
-                    return Err(AppError::Internal(
-                        "multiple providers attempted shared search storage cleanup".to_string(),
-                    )
-                    .into());
-                }
+            if let Some(cleanup) = outcome.storage_cleanup
+                && storage_cleanup.replace(cleanup).is_some()
+            {
+                return Err(AppError::Internal(
+                    "multiple providers attempted shared search storage cleanup".to_string(),
+                )
+                .into());
             }
         }
         let storage_cleanup = storage_cleanup.ok_or_else(|| {
