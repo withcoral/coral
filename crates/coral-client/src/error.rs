@@ -3,6 +3,20 @@
 /// Errors surfaced while bootstrapping a Coral client.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    /// A bearer token was empty or could not be encoded as gRPC metadata.
+    #[error("invalid bearer token: {0}")]
+    InvalidBearerToken(String),
+    /// Sending authorization metadata to the endpoint would expose it over plaintext.
+    #[error(
+        "authorization metadata requires an HTTPS endpoint, or an HTTP loopback endpoint for local development"
+    )]
+    InsecureAuthorizationEndpoint,
+    /// Endpoint credentials could leak through logs or authority handling.
+    #[error("endpoint URLs must not include credentials")]
+    EndpointCredentials,
+    /// Caller-supplied request metadata was invalid.
+    #[error("invalid client metadata: {0}")]
+    InvalidMetadata(String),
     /// Connecting the generated gRPC client failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),

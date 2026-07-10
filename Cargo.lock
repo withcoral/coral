@@ -1335,14 +1335,16 @@ dependencies = [
  "opentelemetry_sdk",
  "schemars",
  "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tonic",
+  "serde_json",
+  "thiserror",
+  "tokio",
+  "tokio-stream",
+  "tonic",
  "tonic-types",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -5044,6 +5046,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -6112,9 +6115,11 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "rustls-native-certs",
  "socket2",
  "sync_wrapper",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tower",
  "tower-layer",

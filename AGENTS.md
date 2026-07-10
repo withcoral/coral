@@ -6,7 +6,7 @@
 - `crates/coral-app`: local server composition, state, workspaces, source
   lifecycle, and workspace-scoped catalog discovery behavior.
 - `crates/coral-cli`: terminal adapter.
-- `crates/coral-client`: intentionally thin local transport bootstrap plus
+- `crates/coral-client`: intentionally thin transport bootstrap plus
   Arrow IPC decode/render helpers.
 - `crates/coral-engine`: engine-side backend compilation, runtime registration,
   and query execution.
