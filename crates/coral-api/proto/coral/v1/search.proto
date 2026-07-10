@@ -41,8 +41,8 @@ message RebuildSearchIndexRequest {
 
 // Search index maintenance response.
 message RebuildSearchIndexResponse {
-  // Per-provider maintenance results.
-  repeated SearchMaintenanceProviderResult provider_results = 1;
+  // Maintenance results for the providers selected by the request.
+  repeated SearchMaintenanceResult results = 1;
 }
 
 // Search data removal request.
@@ -51,16 +51,16 @@ message ClearSearchDataRequest {
   Workspace workspace = 1;
   // Data scope to remove.
   SearchDataScope scope = 2;
-  // Removal target. PR 4A supports workspace-scoped clears only.
+  // Removal target.
   SearchClearTarget target = 3;
 }
 
 // Search data removal response.
 message ClearSearchDataResponse {
-  // Per-provider maintenance results.
-  repeated SearchMaintenanceProviderResult provider_results = 1;
-  // Best-effort SQLite compaction status after row deletion.
-  SearchCompactionStatus compaction = 2;
+  // Maintenance results for the affected providers.
+  repeated SearchMaintenanceResult results = 1;
+  // Best-effort local storage cleanup after data removal.
+  SearchStorageCleanupResult storage_cleanup = 2;
 }
 
 // Search index provider selection for maintenance.
@@ -69,43 +69,33 @@ enum SearchIndexProvider {
   SEARCH_INDEX_PROVIDER_UNSPECIFIED = 0;
   // Catalog metadata provider.
   SEARCH_INDEX_PROVIDER_CATALOG = 1;
-  // Local observed-value provider.
-  SEARCH_INDEX_PROVIDER_OBSERVED_VALUES = 2;
-  // All available index providers.
-  SEARCH_INDEX_PROVIDER_ALL = 3;
 }
 
 // Search data scope for destructive maintenance.
 enum SearchDataScope {
   // Unknown data scope.
   SEARCH_DATA_SCOPE_UNSPECIFIED = 0;
-  // Local observed-value memory only.
-  SEARCH_DATA_SCOPE_OBSERVED = 1;
-  // All app-owned local search data for the target.
+  // All local search data for the target.
   SEARCH_DATA_SCOPE_ALL = 2;
 }
 
 // Target for destructive search-data maintenance.
 message SearchClearTarget {
-  // Workspace or source target selected for the clear operation.
+  // Workspace target selected for the clear operation.
   oneof target {
     // Clear the selected scope for the whole workspace.
     bool workspace = 1;
-    // Reserved for source-scoped clear in a later PR.
-    string source_name = 2;
   }
 }
 
-// Provider-local maintenance result.
-message SearchMaintenanceProviderResult {
+// Outcome of one provider maintenance step.
+message SearchMaintenanceResult {
   // Provider that handled this maintenance step.
   SearchProvider provider = 1;
-  // Provider state after the maintenance step.
-  SearchProviderState state = 2;
+  // Outcome of the maintenance step.
+  SearchMaintenanceState state = 2;
   // Human-readable note.
   string note = 3;
-  // Structured provider-local maintenance coverage.
-  SearchProviderCoverage coverage = 4;
   // Provider-specific maintenance detail.
   oneof detail {
     // Catalog rebuild detail.
@@ -113,6 +103,22 @@ message SearchMaintenanceProviderResult {
     // Catalog clear detail.
     CatalogClearResult catalog_clear = 11;
   }
+}
+
+// State of one maintenance step.
+enum SearchMaintenanceState {
+  // Unknown maintenance state.
+  SEARCH_MAINTENANCE_STATE_UNSPECIFIED = 0;
+  // The requested maintenance work completed.
+  SEARCH_MAINTENANCE_STATE_COMPLETED = 1;
+  // No work was needed because the maintained state was already current.
+  SEARCH_MAINTENANCE_STATE_NOOP = 2;
+  // The maintenance step was intentionally skipped.
+  SEARCH_MAINTENANCE_STATE_SKIPPED = 3;
+  // Only part of the requested maintenance work completed.
+  SEARCH_MAINTENANCE_STATE_PARTIAL = 4;
+  // The maintenance step failed without failing the enclosing request.
+  SEARCH_MAINTENANCE_STATE_FAILED = 5;
 }
 
 // Catalog rebuild detail.
@@ -133,14 +139,12 @@ message CatalogClearResult {
   uint32 deleted_document_count = 1;
 }
 
-// Best-effort SQLite compaction status after destructive maintenance.
-message SearchCompactionStatus {
-  // Whether `PRAGMA wal_checkpoint(TRUNCATE)` completed.
-  bool wal_checkpoint_truncate_completed = 1;
-  // Whether `VACUUM` completed.
-  bool vacuum_completed = 2;
-  // Human-readable compaction note.
-  string note = 3;
+// Best-effort local storage cleanup after destructive maintenance.
+message SearchStorageCleanupResult {
+  // Outcome of the cleanup step.
+  SearchMaintenanceState state = 1;
+  // Human-readable cleanup note.
+  string note = 2;
 }
 
 // Result truncation metadata.

@@ -1,7 +1,7 @@
 //! Implements the gRPC `SearchService`.
 
 use coral_api::v1::search_clear_target::Target as ProtoSearchClearTargetKind;
-use coral_api::v1::search_maintenance_provider_result::Detail as ProtoMaintenanceDetail;
+use coral_api::v1::search_maintenance_result::Detail as ProtoMaintenanceDetail;
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::search_service_server::SearchService as SearchServiceApi;
 use coral_api::v1::{
@@ -11,13 +11,15 @@ use coral_api::v1::{
     ClearSearchDataResponse as ProtoClearSearchDataResponse, ColumnHint,
     RebuildSearchIndexRequest as ProtoRebuildSearchIndexRequest,
     RebuildSearchIndexResponse as ProtoRebuildSearchIndexResponse,
-    SearchCompactionStatus as ProtoSearchCompactionStatus, SearchDataScope as ProtoSearchDataScope,
-    SearchFieldRole as ProtoSearchFieldRole, SearchIndexProvider as ProtoSearchIndexProvider,
-    SearchMaintenanceProviderResult as ProtoSearchMaintenanceProviderResult,
-    SearchProvider as ProtoSearchProvider, SearchProviderCoverage, SearchProviderState,
-    SearchProviderStatus, SearchRequest as ProtoSearchRequest,
-    SearchResponse as ProtoSearchResponse, SearchResult as ProtoSearchResult,
-    SearchResultTruncation, SearchSurfaceKind as ProtoSearchSurfaceKind, SearchTableColumnPreview,
+    SearchDataScope as ProtoSearchDataScope, SearchFieldRole as ProtoSearchFieldRole,
+    SearchIndexProvider as ProtoSearchIndexProvider,
+    SearchMaintenanceResult as ProtoSearchMaintenanceResult,
+    SearchMaintenanceState as ProtoSearchMaintenanceState, SearchProvider as ProtoSearchProvider,
+    SearchProviderCoverage, SearchProviderState, SearchProviderStatus,
+    SearchRequest as ProtoSearchRequest, SearchResponse as ProtoSearchResponse,
+    SearchResult as ProtoSearchResult, SearchResultTruncation,
+    SearchStorageCleanupResult as ProtoSearchStorageCleanupResult,
+    SearchSurfaceKind as ProtoSearchSurfaceKind, SearchTableColumnPreview,
     SearchTableColumnPreviewColumn,
 };
 use tokio::task;
@@ -31,8 +33,8 @@ use crate::search::maintenance::{
     ClearSearchDataResponse as DomainClearSearchDataResponse,
     RebuildSearchIndexRequest as DomainRebuildSearchIndexRequest,
     RebuildSearchIndexResponse as DomainRebuildSearchIndexResponse, SearchClearTarget,
-    SearchCompactionStatus, SearchDataScope, SearchIndexProvider, SearchMaintenanceDetail,
-    SearchMaintenanceProviderResult,
+    SearchDataScope, SearchIndexProvider, SearchMaintenanceDetail, SearchMaintenanceResult,
+    SearchMaintenanceState, SearchStorageCleanupResult,
 };
 use crate::search::manager::SearchManager;
 use crate::search::result::{
@@ -172,10 +174,10 @@ fn rebuild_response_to_proto(
     response: DomainRebuildSearchIndexResponse,
 ) -> ProtoRebuildSearchIndexResponse {
     ProtoRebuildSearchIndexResponse {
-        provider_results: response
-            .provider_results
+        results: response
+            .results
             .into_iter()
-            .map(maintenance_provider_result_to_proto)
+            .map(maintenance_result_to_proto)
             .collect(),
     }
 }
@@ -184,23 +186,20 @@ fn clear_response_to_proto(
     response: DomainClearSearchDataResponse,
 ) -> ProtoClearSearchDataResponse {
     ProtoClearSearchDataResponse {
-        provider_results: response
-            .provider_results
+        results: response
+            .results
             .into_iter()
-            .map(maintenance_provider_result_to_proto)
+            .map(maintenance_result_to_proto)
             .collect(),
-        compaction: Some(compaction_status_to_proto(response.compaction)),
+        storage_cleanup: Some(storage_cleanup_to_proto(response.storage_cleanup)),
     }
 }
 
-fn maintenance_provider_result_to_proto(
-    result: SearchMaintenanceProviderResult,
-) -> ProtoSearchMaintenanceProviderResult {
-    ProtoSearchMaintenanceProviderResult {
+fn maintenance_result_to_proto(result: SearchMaintenanceResult) -> ProtoSearchMaintenanceResult {
+    ProtoSearchMaintenanceResult {
         provider: provider_kind_to_proto(result.provider) as i32,
-        state: provider_state_to_proto(result.state) as i32,
+        state: maintenance_state_to_proto(result.state) as i32,
         note: result.note,
-        coverage: Some(provider_coverage_to_proto(&result.coverage)),
         detail: result.detail.as_ref().map(maintenance_detail_to_proto),
     }
 }
@@ -231,11 +230,19 @@ fn catalog_clear_to_proto(result: CatalogClearMaintenanceResult) -> ProtoCatalog
     }
 }
 
-fn compaction_status_to_proto(status: SearchCompactionStatus) -> ProtoSearchCompactionStatus {
-    ProtoSearchCompactionStatus {
-        wal_checkpoint_truncate_completed: status.wal_checkpoint_truncate_completed,
-        vacuum_completed: status.vacuum_completed,
-        note: status.note,
+fn storage_cleanup_to_proto(result: SearchStorageCleanupResult) -> ProtoSearchStorageCleanupResult {
+    ProtoSearchStorageCleanupResult {
+        state: maintenance_state_to_proto(result.state) as i32,
+        note: result.note,
+    }
+}
+
+fn maintenance_state_to_proto(state: SearchMaintenanceState) -> ProtoSearchMaintenanceState {
+    match state {
+        SearchMaintenanceState::Completed => ProtoSearchMaintenanceState::Completed,
+        SearchMaintenanceState::Noop => ProtoSearchMaintenanceState::Noop,
+        SearchMaintenanceState::Partial => ProtoSearchMaintenanceState::Partial,
+        SearchMaintenanceState::Failed => ProtoSearchMaintenanceState::Failed,
     }
 }
 
@@ -252,8 +259,6 @@ fn index_provider_from_proto(
 ) -> Result<SearchIndexProvider, Status> {
     match provider {
         ProtoSearchIndexProvider::Catalog => Ok(SearchIndexProvider::Catalog),
-        ProtoSearchIndexProvider::ObservedValues => Ok(SearchIndexProvider::ObservedValues),
-        ProtoSearchIndexProvider::All => Ok(SearchIndexProvider::All),
         ProtoSearchIndexProvider::Unspecified => Err(app_status(AppError::InvalidInput(
             "search index provider is required".to_string(),
         ))),
@@ -270,7 +275,6 @@ fn proto_data_scope(value: i32) -> Result<ProtoSearchDataScope, Status> {
 
 fn data_scope_from_proto(scope: ProtoSearchDataScope) -> Result<SearchDataScope, Status> {
     match scope {
-        ProtoSearchDataScope::Observed => Ok(SearchDataScope::Observed),
         ProtoSearchDataScope::All => Ok(SearchDataScope::All),
         ProtoSearchDataScope::Unspecified => Err(app_status(AppError::InvalidInput(
             "search data scope is required".to_string(),
@@ -286,14 +290,6 @@ fn clear_target_from_proto(
         Some(ProtoSearchClearTargetKind::Workspace(false)) => Err(app_status(
             AppError::InvalidInput("search clear workspace target must be true".to_string()),
         )),
-        Some(ProtoSearchClearTargetKind::SourceName(source_name))
-            if !source_name.trim().is_empty() =>
-        {
-            Ok(SearchClearTarget::Source(source_name))
-        }
-        Some(ProtoSearchClearTargetKind::SourceName(_)) => Err(app_status(AppError::InvalidInput(
-            "search clear source_name target must not be empty".to_string(),
-        ))),
         None => Err(app_status(AppError::InvalidInput(
             "search clear target is required".to_string(),
         ))),

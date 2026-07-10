@@ -17,9 +17,9 @@ use crate::search::catalog::sqlite_index::{
 };
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult, SearchClearTarget,
-    SearchCompactionStatus, SearchDataScope, SearchMaintenanceDetail,
-    SearchMaintenanceProviderResult, SearchProviderClearOutcome, SearchProviderClearRequest,
-    SearchProviderMaintenance, SearchProviderRebuildRequest,
+    SearchDataScope, SearchMaintenanceDetail, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProviderClearOutcome, SearchProviderClearRequest, SearchProviderMaintenance,
+    SearchProviderRebuildRequest, SearchStorageCleanupResult,
 };
 use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
@@ -31,7 +31,6 @@ use crate::search::sqlite_store::{
     SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
 };
 use crate::state::AppStateLayout;
-use crate::workspaces::WorkspaceName;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
@@ -92,14 +91,7 @@ impl CatalogMetadataProvider {
     }
 
     fn load_catalog(&self, request: &SearchRequest) -> Result<CatalogInfo, AppError> {
-        self.load_catalog_for_workspace(&request.workspace_name)
-    }
-
-    fn load_catalog_for_workspace(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<CatalogInfo, AppError> {
-        self.catalog_loader.load_catalog(workspace_name)
+        self.catalog_loader.load_catalog(&request.workspace_name)
     }
 
     fn prepare_projection(
@@ -200,8 +192,8 @@ impl SearchProviderMaintenance for CatalogMetadataProvider {
     fn rebuild_index(
         &self,
         request: SearchProviderRebuildRequest<'_>,
-    ) -> Result<SearchMaintenanceProviderResult, SearchManagerError> {
-        let catalog = self.load_catalog_for_workspace(request.workspace_name)?;
+    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        let catalog = self.catalog_loader.load_catalog(request.workspace_name)?;
         let snapshot = CatalogSearchSnapshot::from_catalog(&catalog).index_snapshot();
         let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
             .map_err(|error| search_sqlite_app_error(&error))?;
@@ -229,22 +221,17 @@ impl SearchProviderMaintenance for CatalogMetadataProvider {
         }
         match request.target {
             SearchClearTarget::Workspace => {
-                let store =
-                    SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
-                        .map_err(|error| search_sqlite_app_error(&error))?;
+                let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
+                    .map_err(|error| search_sqlite_app_error(&error))?;
                 let result = store
                     .clear_catalog_workspace()
                     .map_err(|error| search_sqlite_app_error(&error))?;
                 let compaction = store.compact_after_clear();
                 Ok(SearchProviderClearOutcome {
-                    provider_result: catalog_clear_provider_result(result.deleted_document_count),
-                    compaction: search_compaction_status(compaction),
+                    result: catalog_clear_provider_result(result.deleted_document_count),
+                    storage_cleanup: search_storage_cleanup_result(&compaction),
                 })
             }
-            SearchClearTarget::Source(source_name) => Err(AppError::InvalidInput(format!(
-                "source-scoped catalog search-data clear is not implemented yet for source '{source_name}'"
-            ))
-            .into()),
         }
     }
 }
@@ -255,7 +242,7 @@ fn catalog_rebuild_provider_result(
     projection_changed: bool,
     rebuild_performed: bool,
     force: bool,
-) -> SearchMaintenanceProviderResult {
+) -> SearchMaintenanceResult {
     let note = if rebuild_performed && force {
         "force rebuilt catalog search projection"
     } else if rebuild_performed {
@@ -264,24 +251,14 @@ fn catalog_rebuild_provider_result(
         "catalog search projection already current"
     }
     .to_string();
-    SearchMaintenanceProviderResult {
+    SearchMaintenanceResult {
         provider: SearchProviderKind::CatalogMetadata,
-        state: if new_document_count == 0 {
-            SearchProviderState::Empty
+        state: if rebuild_performed {
+            SearchMaintenanceState::Completed
         } else {
-            SearchProviderState::ResultsFound
+            SearchMaintenanceState::Noop
         },
         note,
-        coverage: ProviderCoverage {
-            eligible_units: new_document_count,
-            searched_units: new_document_count,
-            failed_units: 0,
-            returned_count: new_document_count,
-            has_more: false,
-            budget_exhausted: false,
-            timed_out: false,
-            stale_index: false,
-        },
         detail: Some(SearchMaintenanceDetail::CatalogRebuild(
             CatalogRebuildMaintenanceResult {
                 old_document_count,
@@ -293,21 +270,15 @@ fn catalog_rebuild_provider_result(
     }
 }
 
-fn catalog_clear_provider_result(deleted_document_count: u32) -> SearchMaintenanceProviderResult {
-    SearchMaintenanceProviderResult {
+fn catalog_clear_provider_result(deleted_document_count: u32) -> SearchMaintenanceResult {
+    SearchMaintenanceResult {
         provider: SearchProviderKind::CatalogMetadata,
-        state: SearchProviderState::Empty,
-        note: "cleared catalog search projection".to_string(),
-        coverage: ProviderCoverage {
-            eligible_units: deleted_document_count,
-            searched_units: deleted_document_count,
-            failed_units: 0,
-            returned_count: 0,
-            has_more: false,
-            budget_exhausted: false,
-            timed_out: false,
-            stale_index: false,
+        state: if deleted_document_count == 0 {
+            SearchMaintenanceState::Noop
+        } else {
+            SearchMaintenanceState::Completed
         },
+        note: "cleared catalog search projection".to_string(),
         detail: Some(SearchMaintenanceDetail::CatalogClear(
             CatalogClearMaintenanceResult {
                 deleted_document_count,
@@ -316,19 +287,53 @@ fn catalog_clear_provider_result(deleted_document_count: u32) -> SearchMaintenan
     }
 }
 
-fn search_compaction_status(result: SqliteSearchCompactionResult) -> SearchCompactionStatus {
-    SearchCompactionStatus {
-        wal_checkpoint_truncate_completed: result.wal_checkpoint_truncate_completed,
-        vacuum_completed: result.vacuum_completed,
-        note: result.note,
+fn search_storage_cleanup_result(
+    result: &SqliteSearchCompactionResult,
+) -> SearchStorageCleanupResult {
+    let (state, note) = match (
+        result.wal_checkpoint_truncate_completed,
+        result.vacuum_completed,
+    ) {
+        (true, true) => (
+            SearchMaintenanceState::Completed,
+            "local search storage cleanup completed",
+        ),
+        (true, false) | (false, true) => (
+            SearchMaintenanceState::Partial,
+            "local search storage cleanup partially completed",
+        ),
+        (false, false) => (
+            SearchMaintenanceState::Failed,
+            "local search storage cleanup did not complete",
+        ),
+    };
+    if state != SearchMaintenanceState::Completed {
+        tracing::warn!(
+            wal_checkpoint_truncate_completed = result.wal_checkpoint_truncate_completed,
+            vacuum_completed = result.vacuum_completed,
+            detail = %result.note,
+            "local search storage cleanup did not fully complete"
+        );
+    }
+    SearchStorageCleanupResult {
+        state,
+        note: note.to_string(),
     }
 }
 
 fn search_sqlite_app_error(error: &SqliteSearchError) -> AppError {
     if error.is_lock_contention() {
-        AppError::Unavailable(format!("SQLite search maintenance is busy: {error}"))
+        AppError::Unavailable(format!("search maintenance storage is busy: {error}"))
+    } else if error.is_storage_exhaustion() {
+        AppError::ResourceExhausted(format!("search maintenance storage is exhausted: {error}"))
+    } else if matches!(
+        error,
+        SqliteSearchError::UnsupportedCapability { .. }
+            | SqliteSearchError::UnsupportedSchemaVersion { .. }
+    ) {
+        AppError::FailedPrecondition(format!("search maintenance is not supported: {error}"))
     } else {
-        AppError::FailedPrecondition(format!("SQLite search maintenance failed: {error}"))
+        AppError::Internal(format!("search maintenance storage failed: {error}"))
     }
 }
 
@@ -758,13 +763,14 @@ mod tests {
 
     use super::{
         CatalogProjection, MAX_COLUMN_HINTS_PER_SURFACE, catalog_provider_note,
-        catalog_search_outcome,
+        catalog_search_outcome, search_sqlite_app_error,
     };
+    use crate::bootstrap::AppError;
     use crate::search::catalog::sqlite_index::{
         CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
     };
     use crate::search::result::{SearchProviderState, SearchRequest};
-    use crate::search::sqlite_store::SqliteSearchStore;
+    use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
     use crate::workspaces::WorkspaceName;
 
     #[test]
@@ -776,6 +782,35 @@ mod tests {
             note,
             "Catalog metadata returned 3 search hints from cached SQLite projection because refresh is currently locked"
         );
+    }
+
+    #[test]
+    fn maintenance_error_mapping_preserves_retry_and_failure_categories() {
+        assert!(matches!(
+            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_BUSY)),
+            AppError::Unavailable(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_FULL)),
+            AppError::ResourceExhausted(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT)),
+            AppError::Internal(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&SqliteSearchError::UnsupportedCapability {
+                feature: "FTS5",
+                sqlite_version: "fixture".to_string(),
+            }),
+            AppError::FailedPrecondition(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&SqliteSearchError::Io(std::io::Error::other(
+                "fixture storage failure"
+            ))),
+            AppError::Internal(_)
+        ));
     }
 
     #[test]
@@ -818,6 +853,13 @@ mod tests {
                 .note
                 .contains("2 matching column hint(s) exceeded the per-surface cap")
         );
+    }
+
+    fn sqlite_failure(code: i32) -> SqliteSearchError {
+        SqliteSearchError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
     }
 
     fn column_cap_catalog(column_count: usize) -> CatalogInfo {

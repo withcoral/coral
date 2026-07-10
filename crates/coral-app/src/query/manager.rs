@@ -711,6 +711,8 @@ fn app_error_type(error: &AppError) -> &'static str {
         }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
+        AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
+        AppError::Internal(_) => "INTERNAL",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
         AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
