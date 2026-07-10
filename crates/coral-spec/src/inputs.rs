@@ -20,7 +20,7 @@ use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace, TemplatePa
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
 /// The kind of interactive input required by one validated source spec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ManifestInputKind {
     /// A non-secret input persisted in source variables.
     Variable,
@@ -32,7 +32,7 @@ pub enum ManifestInputKind {
 ///
 /// The app and CLI can map this into prompts, persisted variables, or secret
 /// collection flows without depending on protobuf-specific types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestInputSpec {
     /// The source-spec-declared input key.
     pub key: String,
@@ -49,14 +49,14 @@ pub struct ManifestInputSpec {
 }
 
 /// Credential retrieval choices declared for one secret input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestCredentialSpec {
     /// Authored retrieval methods in display order.
     pub methods: Vec<ManifestCredentialMethod>,
 }
 
 /// Supported credential retrieval method kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ManifestCredentialMethodKind {
     /// Collect the secret value through the source configuration path.
     SourceConfig,
@@ -65,7 +65,7 @@ pub enum ManifestCredentialMethodKind {
 }
 
 /// One credential retrieval method declared on a secret input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestCredentialMethod {
     /// Method kind.
     pub kind: ManifestCredentialMethodKind,
@@ -80,7 +80,7 @@ pub struct ManifestCredentialMethod {
 }
 
 /// OAuth credential retrieval configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestOAuthCredentialSpec {
     /// OAuth flow settings.
     pub flow: ManifestOAuthFlowSpec,
@@ -276,7 +276,7 @@ pub enum ManifestOAuthRedirectBindPort {
 }
 
 /// Supported OAuth credential retrieval flow settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestOAuthFlowSpec {
     /// OAuth flow kind.
     pub kind: ManifestOAuthFlowKind,
@@ -285,7 +285,7 @@ pub struct ManifestOAuthFlowSpec {
 }
 
 /// Supported OAuth flow kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ManifestOAuthFlowKind {
     /// OAuth 2.0 authorization-code grant.
     AuthorizationCode,
@@ -304,7 +304,7 @@ pub enum ManifestOAuthPkceMode {
 }
 
 /// OAuth client configuration for credential retrieval.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestOAuthClientSpec {
     /// Client ID resolution configuration.
     pub id: ManifestOAuthClientIdSpec,
@@ -315,7 +315,7 @@ pub struct ManifestOAuthClientSpec {
 }
 
 /// OAuth client ID resolution configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestOAuthClientIdSpec {
     /// Optional manifest-authored default client ID.
     pub default: Option<String>,
@@ -649,7 +649,7 @@ pub(crate) fn validate_oauth_endpoint_templates_with_scope(
     Ok(())
 }
 
-fn validate_oauth_endpoint_templates_for_method(
+pub(crate) fn validate_oauth_endpoint_templates_for_method(
     input_key: &str,
     oauth: &ManifestOAuthCredentialSpec,
     declared: &BTreeMap<&str, &ManifestInputSpec>,
@@ -898,10 +898,50 @@ fn parse_credential_method(
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "used by the next stacked identity-manifest change"
+    )
+)]
+pub(crate) fn parse_identity_oauth_method(
+    identity_name: &str,
+    method_index: usize,
+    value: &Value,
+) -> Result<ManifestOAuthCredentialSpec> {
+    parse_oauth_with_options(
+        &format!("identity '{identity_name}' oauth method"),
+        method_index,
+        value,
+        OAuthClientValidationMode::IdentitySpec,
+    )
+}
+
 fn parse_oauth(
     input_key: &str,
     method_index: usize,
     value: &Value,
+) -> Result<ManifestOAuthCredentialSpec> {
+    parse_oauth_with_options(
+        input_key,
+        method_index,
+        value,
+        OAuthClientValidationMode::SourceCredential,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OAuthClientValidationMode {
+    SourceCredential,
+    IdentitySpec,
+}
+
+fn parse_oauth_with_options(
+    input_key: &str,
+    method_index: usize,
+    value: &Value,
+    client_validation: OAuthClientValidationMode,
 ) -> Result<ManifestOAuthCredentialSpec> {
     let oauth = value.as_object().ok_or_else(|| {
         ManifestError::validation(format!(
@@ -952,7 +992,7 @@ fn parse_oauth(
                 "manifest input '{input_key}' oauth credential method is missing client"
             ))
         })
-        .and_then(|client| parse_oauth_client(input_key, client))?;
+        .and_then(|client| parse_oauth_client(input_key, client, client_validation))?;
     let scopes = oauth
         .get("scopes")
         .map(|scopes| parse_oauth_scopes(input_key, scopes))
@@ -1052,7 +1092,11 @@ fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowS
     Ok(ManifestOAuthFlowSpec { kind, pkce })
 }
 
-fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthClientSpec> {
+fn parse_oauth_client(
+    input_key: &str,
+    value: &Value,
+    validation: OAuthClientValidationMode,
+) -> Result<ManifestOAuthClientSpec> {
     let client = value.as_object().ok_or_else(|| {
         ManifestError::validation(format!(
             "manifest input '{input_key}' oauth.client must be a mapping"
@@ -1079,7 +1123,10 @@ fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthCli
             "manifest input '{input_key}' oauth.client must declare id or dynamic_registration"
         )));
     }
-    if secret.is_some() && id.input.is_none() {
+    if validation == OAuthClientValidationMode::SourceCredential
+        && secret.is_some()
+        && id.input.is_none()
+    {
         return Err(ManifestError::validation(format!(
             "manifest input '{input_key}' confidential oauth client must declare client.id.input"
         )));
@@ -1573,7 +1620,8 @@ mod tests {
         ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationAuthMethod,
         ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
         ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
-        ManifestOAuthScopeDelimiter, collect_source_inputs_value,
+        ManifestOAuthScopeDelimiter, collect_source_inputs_value, parse_identity_oauth_method,
+        parse_oauth,
     };
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
@@ -1767,6 +1815,42 @@ tables: []
         assert_eq!(
             oauth.scopes.as_ref().expect("scopes").scope.delimiter,
             ManifestOAuthScopeDelimiter::Space
+        );
+    }
+
+    #[test]
+    fn identity_oauth_allows_confidential_default_client_without_weakening_sources() {
+        let oauth = serde_json::json!({
+            "flow": {
+                "type": "authorization_code",
+                "pkce": "disabled",
+            },
+            "redirect_uri": "http://127.0.0.1:53682/oauth/callback",
+            "endpoints": {
+                "authorization_url": "https://provider.example.com/oauth/authorize",
+                "token_url": "https://provider.example.com/oauth/token",
+            },
+            "client": {
+                "id": {"default": "default-client"},
+                "secret": {
+                    "input": "CLIENT_SECRET",
+                    "transport": "basic_auth",
+                },
+            },
+        });
+
+        let parsed = parse_identity_oauth_method("demo", 0, &oauth)
+            .expect("identity OAuth may pair a default client ID with a collected secret");
+        assert_eq!(parsed.client.id.default.as_deref(), Some("default-client"));
+        assert!(parsed.client.secret.is_some());
+
+        let error = parse_oauth("API_TOKEN", 0, &oauth)
+            .expect_err("source credentials must retain the client ID input requirement");
+        assert!(
+            error
+                .to_string()
+                .contains("confidential oauth client must declare client.id.input"),
+            "unexpected error: {error}"
         );
     }
 
