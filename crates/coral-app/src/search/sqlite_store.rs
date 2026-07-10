@@ -22,7 +22,7 @@ use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 2;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -32,10 +32,16 @@ struct SearchSqliteMigration {
 // These migrations are intentionally local to the SQLite search sidecar. The
 // schema uses SQLite FTS5/trigram features that are not portable to the shared
 // app database migration stream.
-const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[SearchSqliteMigration {
-    version: 1,
-    sql: include_str!("migrations/0001_catalog_search.sql"),
-}];
+const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
+    SearchSqliteMigration {
+        version: 1,
+        sql: include_str!("migrations/0001_catalog_search.sql"),
+    },
+    SearchSqliteMigration {
+        version: 2,
+        sql: include_str!("migrations/0002_observed_values.sql"),
+    },
+];
 
 #[derive(Debug, Clone)]
 pub(crate) struct SqliteSearchStore {
@@ -83,7 +89,7 @@ impl SqliteSearchStore {
         })
     }
 
-    fn connect(&self) -> Result<Connection, SqliteSearchError> {
+    pub(super) fn connect(&self) -> Result<Connection, SqliteSearchError> {
         let connection = Connection::open(&self.path)?;
         configure_connection(&connection)?;
         Ok(connection)
@@ -397,10 +403,12 @@ fn migrate_if_needed(connection: &mut Connection) -> Result<(), SqliteSearchErro
         });
     }
 
+    // Repair mode deliberately reruns every current migration when the version
+    // stamp says "current" but required schema objects are missing. Keep every
+    // migration idempotent: use IF NOT EXISTS and conflict-safe metadata writes.
     let repair_current_version = user_version == SEARCH_SQLITE_SCHEMA_VERSION;
     for migration in SEARCH_SQLITE_MIGRATIONS {
-        let should_apply = migration.version > user_version
-            || (repair_current_version && migration.version == user_version);
+        let should_apply = migration.version > user_version || repair_current_version;
         if !should_apply {
             continue;
         }
@@ -437,7 +445,16 @@ fn schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError>
         return Ok(false);
     }
 
-    for table_name in ["search_meta", "catalog_documents", "catalog_documents_fts"] {
+    for table_name in [
+        "search_meta",
+        "catalog_documents",
+        "catalog_documents_fts",
+        "observed_workspace_generations",
+        "observed_source_generations",
+        "observed_values",
+        "observed_values_fts",
+        "observed_queue_jobs",
+    ] {
         let exists: bool = connection.query_row(
             "
             SELECT EXISTS (
@@ -447,6 +464,28 @@ fn schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError>
             )
             ",
             [table_name],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
+    }
+
+    for index_name in [
+        "idx_observed_queue_jobs_workspace_id",
+        "idx_observed_queue_jobs_source",
+        "idx_observed_queue_jobs_pending_scope",
+        "idx_observed_values_source",
+    ] {
+        let exists: bool = connection.query_row(
+            "
+            SELECT EXISTS (
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'index' AND name = ?1
+            )
+            ",
+            [index_name],
             |row| row.get(0),
         )?;
         if !exists {
@@ -481,6 +520,23 @@ mod tests {
         }
 
         assert_eq!(previous_version, SEARCH_SQLITE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn search_sqlite_migrations_are_rerunnable() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let mut connection = rusqlite::Connection::open(&path).expect("raw connection");
+
+        for migration in SEARCH_SQLITE_MIGRATIONS {
+            super::apply_migration(&mut connection, migration).expect("first apply");
+            super::apply_migration(&mut connection, migration).expect("second apply");
+        }
+
+        let user_version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(user_version, SEARCH_SQLITE_SCHEMA_VERSION);
     }
 
     #[test]
