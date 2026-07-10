@@ -29,5 +29,5 @@ pub(super) mod test_config {
     pub(crate) const SESSION: &str = "[auth.session]\nsigning_key_file = 'session.key'\n";
     pub(crate) const AUTHORIZATION_SERVER: &str =
         "[auth.authorization_server]\nissuer = 'http://localhost:9080'\n";
-    pub(crate) const PROVIDER: &str = "[auth.provider]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret_env = 'UNREAD_ENV'\nredirect_uri = 'http://localhost:9080/auth/oidc/callback'\n";
+    pub(crate) const PROVIDER: &str = "[auth.provider]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret = 'provider-secret'\nredirect_uri = 'http://localhost:9080/auth/oidc/callback'\n";
 }

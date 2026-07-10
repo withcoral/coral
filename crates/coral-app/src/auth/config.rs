@@ -1,19 +1,24 @@
 //! Parsing and validation for Coral authentication settings.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
-use url::{Host, Url};
+use serde_json::Value;
+use url::Url;
 use zeroize::Zeroizing;
 
 use super::error::AuthServerError;
 use super::session::SessionTokenIssuer;
 use crate::bootstrap::is_loopback_ip;
+use crate::outbound_url_policy::ConfiguredEndpointUrl;
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
@@ -83,11 +88,20 @@ impl AuthSettings {
         &self.0.authorization_server
     }
 
-    pub(super) fn resolve_session_token_issuer(
-        self,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by the OIDC federation descendant")
+    )]
+    pub(super) fn provider(&self) -> &OidcProviderSettings {
+        &self.0.provider
+    }
+
+    pub(super) fn resolve_runtime_dependencies(
+        mut self,
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<(Self, SessionTokenIssuer), AuthServerError> {
+        self.0.provider.resolve_secret(get_var)?;
         let key = self.0.session.load_signing_key(config_path, get_var)?;
         let issuer = SessionTokenIssuer::new(
             Some(&self.0.authorization_server.issuer),
@@ -96,6 +110,15 @@ impl AuthSettings {
         )
         .map_err(AuthServerError::Config)?;
         Ok((self, issuer))
+    }
+
+    /// Confirms the settings carry everything the running server needs.
+    ///
+    /// Field validation already ran at construction, so this checks only what
+    /// construction cannot: that the provider secret has been resolved from its
+    /// environment variable.
+    pub(super) fn validate_runtime_ready(&self) -> Result<(), AuthServerError> {
+        self.0.provider.require_resolved_secret()
     }
 
     pub(super) fn matches_session_token_issuer(&self, issuer: &SessionTokenIssuer) -> bool {
@@ -236,58 +259,223 @@ impl AuthorizationServerSettings {
     }
 }
 
-#[derive(Default, Deserialize)]
+const DEFAULT_PROVIDER_SCOPES: &[&str] = &["openid", "email", "profile"];
+const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
+    "response_type",
+    "client_id",
+    "redirect_uri",
+    "scope",
+    "state",
+    "nonce",
+    "code_challenge",
+    "code_challenge_method",
+];
+
+/// Validated settings for one upstream OIDC provider.
+#[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct OidcProviderSettings {
-    issuer: String,
-    client_id: String,
-    redirect_uri: String,
-    client_secret: Option<SecretMarker>,
-    client_secret_env: Option<SecretMarker>,
+pub(super) struct OidcProviderSettings {
+    #[serde(rename = "type")]
+    provider_type: Option<String>,
+    pub(super) issuer: String,
+    pub(super) client_id: String,
+    client_secret: Option<ProviderSecret>,
+    client_secret_env: Option<String>,
+    pub(super) redirect_uri: String,
+    pub(super) scopes: Vec<String>,
+    pub(super) principal_claim: String,
+    pub(super) display_name_claim: String,
+    pub(super) auth_params: BTreeMap<String, String>,
+    pub(super) required_claims: BTreeMap<String, Value>,
 }
 
 impl OidcProviderSettings {
-    fn validate(&mut self, authorization_server_issuer: &str) -> Result<(), AuthServerError> {
+    fn validate(
+        &mut self,
+        authorization_server_issuer: &str,
+    ) -> Result<(), AuthServerError> {
         if self.client_secret.is_some() == self.client_secret_env.is_some() {
             return Err(config_error(
                 "auth.provider must configure exactly one of client_secret or client_secret_env",
             ));
         }
-        self.issuer = required("auth.provider.issuer", &self.issuer)?;
-        self.issuer = validate_issuer("OIDC provider issuer", &self.issuer, false)?;
-        self.client_id = required("auth.provider.client_id", &self.client_id)?;
-        self.redirect_uri = required("auth.provider.redirect_uri", &self.redirect_uri)?;
-        let redirect_uri = validate_endpoint("OIDC provider redirect URI", &self.redirect_uri)?;
+        if let Some(provider_type) = &mut self.provider_type {
+            *provider_type = provider_type.trim().to_string();
+            if provider_type != "oidc" {
+                return Err(invalid_provider("type must be `oidc`"));
+            }
+        }
+
+        self.issuer = provider_required("issuer", &self.issuer)?;
+        let issuer = provider_endpoint("issuer", &self.issuer)?;
+        if issuer.as_url().query().is_some() {
+            return Err(invalid_provider("issuer must not include a query"));
+        }
+        self.client_id = provider_required("client_id", &self.client_id)?;
+        self.redirect_uri = provider_required("redirect_uri", &self.redirect_uri)?;
+        let redirect_uri = provider_endpoint("redirect_uri", &self.redirect_uri)?;
         // The upstream IdP sends the browser back to a callback route under
         // this server's origin, so a redirect URI pointing anywhere else can
         // only fail later, at the IdP or in the browser — far from Coral's own
         // logs.
-        let issuer = Url::parse(authorization_server_issuer).map_err(|error| {
-            config_error(format!(
-                "auth.authorization_server.issuer is not a valid URL: {error}"
-            ))
-        })?;
-        if redirect_uri.origin() != issuer.origin() {
-            return Err(config_error(format!(
-                "auth.provider.redirect_uri must share the origin of auth.authorization_server.issuer ({})",
-                issuer.origin().ascii_serialization()
+        let served_origin = Url::parse(authorization_server_issuer)
+            .map_err(|error| {
+                config_error(format!(
+                    "auth.authorization_server.issuer is not a valid URL: {error}"
+                ))
+            })?
+            .origin();
+        if redirect_uri.as_url().origin() != served_origin {
+            return Err(invalid_provider(format!(
+                "redirect_uri must share the origin of auth.authorization_server.issuer ({})",
+                served_origin.ascii_serialization()
             )));
+        }
+
+        if let Some(secret) = &mut self.client_secret {
+            *secret = ProviderSecret::from_trimmed(secret.as_str())?;
+        }
+        if let Some(env_name) = &mut self.client_secret_env {
+            *env_name = env_name.trim().to_string();
+            if env_name.is_empty() {
+                return Err(invalid_provider("provider secret must be a nonempty string"));
+            }
+            if env_name.bytes().any(|byte| matches!(byte, b'=' | b'\0')) {
+                return Err(invalid_provider("client_secret_env is invalid"));
+            }
+        }
+
+        if self.scopes.is_empty() {
+            self.scopes = DEFAULT_PROVIDER_SCOPES
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+        }
+        if self.scopes.iter().any(|scope| !valid_scope_token(scope)) {
+            return Err(invalid_provider(
+                "scopes must contain valid OAuth scope tokens",
+            ));
+        }
+        if !self.scopes.iter().any(|scope| scope == "openid") {
+            return Err(invalid_provider("scopes must include `openid`"));
+        }
+
+        self.principal_claim = provider_claim("principal_claim", &self.principal_claim, "sub")?;
+        self.display_name_claim =
+            provider_claim("display_name_claim", &self.display_name_claim, "email")?;
+        for key in self.required_claims.keys() {
+            validate_provider_key("required_claims", key)?;
+        }
+        for key in self.auth_params.keys() {
+            validate_provider_key("auth_params", key)?;
+            if RESERVED_PROVIDER_AUTH_PARAMS
+                .iter()
+                .any(|reserved| key.eq_ignore_ascii_case(reserved))
+            {
+                return Err(invalid_provider(format!(
+                    "auth_params must not include reserved parameter `{key}`"
+                )));
+            }
         }
         Ok(())
     }
+
+    fn resolve_secret(
+        &mut self,
+        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<(), AuthServerError> {
+        if self.client_secret.is_some() {
+            return Ok(());
+        }
+        let env_name = self
+            .client_secret_env
+            .as_deref()
+            .expect("validated provider has one secret source");
+        let value = Zeroizing::new(
+            get_var(env_name)
+                .map_err(|_error| invalid_provider("client_secret_env could not be read"))?
+                .ok_or_else(|| invalid_provider("client_secret_env is unset or empty"))?,
+        );
+        self.client_secret = Some(ProviderSecret::from_trimmed(&value)?);
+        self.client_secret_env = None;
+        Ok(())
+    }
+
+    fn require_resolved_secret(&self) -> Result<(), AuthServerError> {
+        if self.client_secret.is_some() && self.client_secret_env.is_none() {
+            Ok(())
+        } else {
+            Err(invalid_provider(
+                "client_secret_env must be resolved before server construction",
+            ))
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by the OIDC federation descendant")
+    )]
+    pub(super) fn client_secret(&self) -> &str {
+        self.client_secret
+            .as_ref()
+            .expect("runtime-ready provider has a resolved client secret")
+            .as_str()
+    }
 }
 
-struct SecretMarker;
+impl fmt::Debug for OidcProviderSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OidcProviderSettings")
+            .field("provider_type", &self.provider_type)
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret)
+            .field("client_secret_env", &self.client_secret_env)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .field("principal_claim", &self.principal_claim)
+            .field("display_name_claim", &self.display_name_claim)
+            .field("auth_params", &self.auth_params)
+            .field("required_claims", &self.required_claims)
+            .finish()
+    }
+}
 
-impl<'de> Deserialize<'de> for SecretMarker {
+#[derive(Clone)]
+struct ProviderSecret(Arc<Zeroizing<String>>);
+
+impl ProviderSecret {
+    fn from_trimmed(value: &str) -> Result<Self, AuthServerError> {
+        let value = value.trim();
+        if value.is_empty() {
+            Err(invalid_provider("client secret must not be empty"))
+        } else {
+            Ok(Self(Arc::new(Zeroizing::new(value.to_string()))))
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderSecret {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let invalid = || D::Error::custom("provider secret must be a nonempty string");
         let value = String::deserialize(deserializer)
             .map(Zeroizing::new)
             .map_err(|_error| invalid())?;
-        (!value.trim().is_empty())
-            .then_some(Self)
-            .ok_or_else(invalid)
+        if value.trim().is_empty() {
+            return Err(invalid());
+        }
+        Ok(Self(Arc::new(value)))
+    }
+}
+
+impl fmt::Debug for ProviderSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted>")
     }
 }
 
@@ -317,40 +505,64 @@ fn required(label: &str, value: &str) -> Result<String, AuthServerError> {
     }
 }
 
-fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, AuthServerError> {
-    let url = validate_endpoint(label, raw)?;
-    if url.query().is_some() {
-        return Err(config_error(format!("{label} must not include a query")));
+fn provider_required(field: &str, value: &str) -> Result<String, AuthServerError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(invalid_provider(format!("{field} is required")))
+    } else {
+        Ok(value.to_string())
     }
-    if root_only && !matches!(url.path(), "" | "/") {
-        return Err(config_error(format!("{label} must mount at the root")));
-    }
-    Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
-fn validate_endpoint(label: &str, raw: &str) -> Result<Url, AuthServerError> {
-    let url = Url::parse(raw.trim())
-        .map_err(|error| config_error(format!("{label} is not a valid URL: {error}")))?;
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(config_error(format!(
-            "{label} must not include credentials"
-        )));
-    }
-    if url.fragment().is_some() {
-        return Err(config_error(format!("{label} must not include a fragment")));
-    }
-    let loopback = match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(ip)) => is_loopback_ip(ip.into()),
-        Some(Host::Ipv6(ip)) => is_loopback_ip(ip.into()),
-        None => return Err(config_error(format!("{label} must include a host"))),
+fn provider_endpoint(field: &str, value: &str) -> Result<ConfiguredEndpointUrl, AuthServerError> {
+    ConfiguredEndpointUrl::parse(value)
+        .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))
+}
+
+fn valid_scope_token(scope: &str) -> bool {
+    !scope.is_empty()
+        && scope
+            .bytes()
+            .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+}
+
+fn provider_claim(field: &str, value: &str, default: &str) -> Result<String, AuthServerError> {
+    let value = if value.trim().is_empty() {
+        default
+    } else {
+        value.trim()
     };
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return Err(config_error(format!(
-            "{label} requires https or loopback http"
+    validate_provider_key(field, value)?;
+    Ok(value.to_string())
+}
+
+fn validate_provider_key(field: &str, key: &str) -> Result<(), AuthServerError> {
+    if key.is_empty() || key.trim() != key {
+        return Err(invalid_provider(format!(
+            "{field} keys must be nonempty and have no surrounding whitespace"
         )));
     }
-    Ok(url)
+    Ok(())
+}
+
+fn invalid_provider(message: impl fmt::Display) -> AuthServerError {
+    AuthServerError::Config(format!("invalid auth configuration: auth.provider.{message}"))
+}
+
+fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, AuthServerError> {
+    let url = validate_endpoint(label, raw)?;
+    if url.as_url().query().is_some() {
+        return Err(config_error(format!("{label} must not include a query")));
+    }
+    if root_only && !matches!(url.as_url().path(), "" | "/") {
+        return Err(config_error(format!("{label} must mount at the root")));
+    }
+    Ok(url.as_url().as_str().trim_end_matches('/').to_string())
+}
+
+fn validate_endpoint(label: &str, raw: &str) -> Result<ConfiguredEndpointUrl, AuthServerError> {
+    ConfiguredEndpointUrl::parse(raw.trim())
+        .map_err(|error| config_error(format!("{label} is invalid: {error}")))
 }
 
 fn config_error(message: impl AsRef<str>) -> AuthServerError {
@@ -383,6 +595,7 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+    use serde_json::json;
 
     use super::*;
 
@@ -417,6 +630,121 @@ mod tests {
         );
 
         assert!(AuthSettings::from_toml("unowned = true").unwrap().is_none());
+    }
+
+    #[test]
+    fn retains_validated_provider_values_and_secure_defaults() {
+        let raw = valid("")
+            .replace(
+                "issuer = 'https://accounts.example.test'",
+                "issuer = ' https://accounts.example.test/tenant/ '",
+            )
+            .replace("client_id = 'upstream-client'", "client_id = ' client-id '")
+            .replace(
+                "client_secret = 'provider-secret'",
+                "client_secret = ' inline-secret '",
+            )
+            .replace(
+                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                "redirect_uri = ' http://localhost:9080/callback '\nprincipal_claim = ' '\ndisplay_name_claim = ' email '",
+            );
+        let settings = AuthSettings::from_toml(&raw)
+            .expect("valid config")
+            .expect("auth settings");
+        let provider = settings.provider();
+        assert_eq!(provider.issuer, "https://accounts.example.test/tenant/");
+        assert_eq!(provider.client_id, "client-id");
+        assert_eq!(provider.client_secret(), "inline-secret");
+        assert_eq!(provider.redirect_uri, "http://localhost:9080/callback");
+        assert_eq!(provider.scopes, ["openid", "email", "profile"]);
+        assert_eq!(provider.principal_claim, "sub");
+        assert_eq!(provider.display_name_claim, "email");
+        let debug = format!("{provider:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("inline-secret"));
+    }
+
+    #[test]
+    fn resolves_provider_env_secret_and_retains_options() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        let key =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("P-256 signing key");
+        fs::write(temp.path().join("session.key"), key.as_ref()).expect("session key");
+        let raw = valid("")
+            .replace(
+                "client_secret = 'provider-secret'",
+                "client_secret_env = ' PROVIDER_SECRET '",
+            )
+            .replace(
+                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'groups']\nprincipal_claim = 'uid'\ndisplay_name_claim = 'name'",
+            )
+            + "\n[auth.provider.auth_params]\nprompt = 'select_account'\n\
+               [auth.provider.required_claims]\nhd = 'example.test'\n";
+        let settings = AuthSettings::from_toml(&raw)
+            .expect("valid config")
+            .expect("auth settings");
+        let (settings, _issuer) = settings
+            .resolve_runtime_dependencies(&config_path, &|name| {
+                Ok((name == "PROVIDER_SECRET").then(|| " env-secret ".to_string()))
+            })
+            .expect("resolved runtime");
+        let provider = settings.provider();
+        assert_eq!(provider.client_secret(), "env-secret");
+        assert_eq!(provider.scopes, ["openid", "groups"]);
+        assert_eq!(provider.principal_claim, "uid");
+        assert_eq!(provider.display_name_claim, "name");
+        assert_eq!(
+            provider.auth_params.get("prompt").map(String::as_str),
+            Some("select_account")
+        );
+        assert_eq!(
+            provider.required_claims.get("hd"),
+            Some(&json!("example.test"))
+        );
+        let debug = format!("{provider:?}");
+        assert!(!debug.contains("env-secret"));
+    }
+
+    #[test]
+    fn rejects_invalid_provider_fields() {
+        let invalid = [
+            valid("").replace(
+                "issuer = 'https://accounts.example.test'",
+                "type = 'oauth'\nissuer = 'https://accounts.example.test'",
+            ),
+            valid("").replace(
+                "https://accounts.example.test",
+                "http://accounts.example.test",
+            ),
+            valid("").replace(
+                "https://accounts.example.test",
+                "https://accounts.example.test?q=1",
+            ),
+            valid("").replace(
+                "http://localhost:9080/auth/oidc/callback",
+                "http://remote.test/callback",
+            ),
+            valid("").replace(
+                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['email']",
+            ),
+            valid("").replace(
+                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'two scopes']",
+            ),
+        ];
+        for raw in invalid {
+            assert!(AuthSettings::from_toml(&raw).is_err(), "{raw}");
+        }
+
+        let reserved = valid("") + "\n[auth.provider.auth_params]\nCLIENT_ID = 'override'\n";
+        assert!(reject(&reserved).contains("reserved parameter `CLIENT_ID`"));
+        let invalid_claim =
+            valid("") + "\n[auth.provider.required_claims]\n' spaced ' = true\n";
+        assert!(reject(&invalid_claim).contains("required_claims"));
     }
 
     #[test]
@@ -462,13 +790,13 @@ mod tests {
             ),
             (
                 valid("").replace(
-                    "client_secret_env = 'UNREAD_ENV'",
-                    "client_secret_env = 'UNREAD_ENV'\nclient_secret = 'inline'",
+                    "client_secret = 'provider-secret'",
+                    "client_secret = 'provider-secret'\nclient_secret_env = 'PROVIDER_SECRET'",
                 ),
                 "exactly one",
             ),
             (
-                valid("").replace("client_secret_env = 'UNREAD_ENV'\n", ""),
+                valid("").replace("client_secret = 'provider-secret'\n", ""),
                 "exactly one",
             ),
             (
@@ -506,7 +834,7 @@ mod tests {
             .expect("valid config")
             .expect("auth settings");
         let (settings, issuer) = settings
-            .resolve_session_token_issuer(&config_path, &|_| Ok(None))
+            .resolve_runtime_dependencies(&config_path, &|_| Ok(None))
             .expect("file key");
         assert!(settings.matches_session_token_issuer(&issuer));
         assert_eq!(issuer.issuer, "http://localhost:9080");
@@ -520,7 +848,7 @@ mod tests {
             .expect("valid config")
             .expect("auth settings");
         settings
-            .resolve_session_token_issuer(&config_path, &|name| {
+            .resolve_runtime_dependencies(&config_path, &|name| {
                 Ok((name == "SESSION_KEY").then(|| encoded.clone()))
             })
             .expect("environment key");
@@ -540,7 +868,7 @@ mod tests {
             .expect("valid config")
             .expect("auth settings");
         settings
-            .resolve_session_token_issuer(&config_path, &|name| {
+            .resolve_runtime_dependencies(&config_path, &|name| {
                 Ok((name == DEFAULT_SIGNING_KEY_ENV).then(|| encoded_key.clone()))
             })
             .expect("default environment key");
@@ -569,7 +897,7 @@ mod tests {
         let Err(missing_file) = AuthSettings::from_toml(&valid(""))
             .expect("valid config")
             .expect("auth settings")
-            .resolve_session_token_issuer(&config_path, &|_| Ok(None))
+            .resolve_runtime_dependencies(&config_path, &|_| Ok(None))
         else {
             panic!("expected missing signing key file");
         };
@@ -586,7 +914,7 @@ mod tests {
         let settings = AuthSettings::from_toml(&env_config)
             .expect("valid config")
             .expect("auth settings");
-        let Err(invalid_base64) = settings.resolve_session_token_issuer(&config_path, &|_| {
+        let Err(invalid_base64) = settings.resolve_runtime_dependencies(&config_path, &|_| {
             Ok(Some("visible-secret".to_string()))
         }) else {
             panic!("expected invalid environment key");
@@ -603,7 +931,7 @@ mod tests {
     #[test]
     fn configuration_errors_do_not_leak_secrets() {
         for secret in ["client_secret_env = ''", "client_secret = 42"] {
-            let raw = valid("").replace("client_secret_env = 'UNREAD_ENV'", secret);
+            let raw = valid("").replace("client_secret = 'provider-secret'", secret);
             let error = reject(&raw);
             assert!(error.contains("provider secret must be a nonempty string"));
             assert!(!error.contains("42"));

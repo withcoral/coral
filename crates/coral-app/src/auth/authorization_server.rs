@@ -31,7 +31,8 @@ impl CoralAuthorizationServer {
     /// Builds the Coral authorization server from validated auth settings.
     ///
     /// [`AuthSettings`] can only be produced by [`AuthSettings::from_toml`],
-    /// so the settings arrive already validated and are not rechecked here.
+    /// so the settings arrive already validated and are not rechecked here;
+    /// only runtime readiness (a resolved provider secret) is confirmed.
     ///
     /// `config_path` is used only to resolve a relative session signing-key
     /// path. Config parsing and the `config.toml` filesystem read remain the
@@ -39,23 +40,25 @@ impl CoralAuthorizationServer {
     ///
     /// # Errors
     ///
-    /// Returns an error when the session signing key cannot be resolved or the
-    /// session-token key material is invalid.
+    /// Returns an error when the settings fail revalidation, the session
+    /// signing key cannot be resolved, or the session-token key material is
+    /// invalid.
     pub fn from_settings(
         config_path: &Path,
         settings: AuthSettings,
     ) -> Result<Self, AuthServerError> {
         let (settings, session_tokens) = settings
-            .resolve_session_token_issuer(config_path, &|name| {
+            .resolve_runtime_dependencies(config_path, &|name| {
                 crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
             })?;
         Self::from_resolved_settings(settings, session_tokens)
     }
 
     pub(crate) fn from_resolved_settings(
-        settings: AuthSettings,
+        mut settings: AuthSettings,
         session_tokens: SessionTokenIssuer,
     ) -> Result<Self, AuthServerError> {
+        settings.validate_runtime_ready()?;
         if !settings.matches_session_token_issuer(&session_tokens) {
             return Err(AuthServerError::SessionIssuerMismatch);
         }
@@ -89,13 +92,12 @@ impl CoralAuthorizationServer {
                 get(authorization_server_metadata),
             )
             .with_state(state);
-        let listener =
-            TcpListener::bind(bind_addr)
-                .await
-                .map_err(|source| AuthServerError::Bind {
-                    address: bind_addr,
-                    source,
-                })?;
+        let listener = TcpListener::bind(bind_addr)
+            .await
+            .map_err(|source| AuthServerError::Bind {
+                address: bind_addr,
+                source,
+            })?;
         let endpoint_uri = format!(
             "http://{}",
             listener.local_addr().map_err(AuthServerError::LocalAddr)?
@@ -264,9 +266,6 @@ mod tests {
             .expect("prepared from snapshot");
     }
 
-    /// `AuthSettings` has no public constructor other than `from_toml`, so the
-    /// unsafe-bind guard cannot be bypassed by building a value directly; the
-    /// parsing boundary is the only place it needs to hold.
     #[test]
     fn rejects_unsafe_bind_at_the_only_construction_site() {
         let raw = format!(
@@ -276,11 +275,7 @@ mod tests {
             panic!("expected unsafe bind to be rejected");
         };
 
-        assert!(
-            error
-                .to_string()
-                .contains("allow_insecure_remote_http_bind")
-        );
+        assert!(error.to_string().contains("allow_insecure_remote_http_bind"));
     }
 
     #[test]
