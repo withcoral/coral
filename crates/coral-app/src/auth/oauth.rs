@@ -23,6 +23,8 @@ use super::session::SessionTokenConfig;
 use super::state_store::{InMemoryStateStore, StateStore};
 use crate::outbound_url_policy::ConfiguredEndpointUrl;
 
+mod authorize;
+
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 25 } else { 5_000 });
 const CLI_CLIENT: &str = "coral-cli";
@@ -35,7 +37,6 @@ pub struct OidcAuthConfig {
     bind_addr: SocketAddr,
     #[expect(dead_code, reason = "used by the OAuth token endpoint descendant")]
     session: SessionTokenConfig,
-    #[expect(dead_code, reason = "used by the OIDC federation descendant")]
     providers: BTreeMap<String, OidcProviderConfig>,
     oauth: OAuthServerConfig,
 }
@@ -88,6 +89,7 @@ impl OidcAuthConfig {
                 get(authorization_server_metadata),
             )
             .route("/oauth/clients/{client}", get(client_metadata))
+            .route("/oauth/authorize", get(authorize::oauth_authorize))
             .with_state(state);
         let listener = TcpListener::bind(bind_addr)
             .await
@@ -160,9 +162,7 @@ impl Drop for RunningOidcAuthServer {
 #[derive(Clone)]
 struct AuthState {
     config: Arc<OidcAuthConfig>,
-    #[expect(dead_code, reason = "used by OAuth authorization descendants")]
     store: Arc<dyn StateStore>,
-    #[expect(dead_code, reason = "used by OIDC authorization descendants")]
     provider_client: OidcProviderClient,
 }
 
@@ -204,7 +204,7 @@ async fn client_metadata(
         _ => &client,
     };
     Ok(json_response(&serde_json::json!({
-        "client_id": format!("{}/oauth/clients/{client}", oauth.issuer),
+        "client_id": oauth_client_id(oauth, &client),
         "redirect_uris": redirect_uris,
         "client_name": name,
         "token_endpoint_auth_method": "none",
@@ -212,6 +212,10 @@ async fn client_metadata(
         "response_types": ["code"],
         "scope": oauth.scope,
     })))
+}
+
+fn oauth_client_id(oauth: &OAuthServerConfig, client: &str) -> String {
+    format!("{}/oauth/clients/{client}", oauth.issuer)
 }
 
 fn json_response(value: &serde_json::Value) -> impl IntoResponse + use<> {
@@ -377,7 +381,17 @@ impl OAuthClientConfigFile {
             if uri.trim() != uri {
                 return Err(config_error("redirect URI has surrounding whitespace"));
             }
-            validate_endpoint("OAuth client redirect URI", uri)?;
+            let url = validate_endpoint("OAuth client redirect URI", uri)?;
+            if url.as_url().query_pairs().any(|(key, _value)| {
+                matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "code" | "state" | "error" | "error_description"
+                )
+            }) {
+                return Err(config_error(
+                    "OAuth client redirect URI must not contain OAuth response parameters",
+                ));
+            }
         }
         Ok(self.redirect_uris)
     }
