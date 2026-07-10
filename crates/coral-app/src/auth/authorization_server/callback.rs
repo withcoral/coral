@@ -179,7 +179,7 @@ mod tests {
     };
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
-    use crate::auth::state_store::{InMemoryStateStore, StateStore};
+    use crate::auth::state_store::{InMemoryStateStore, StateStore, StateStoreError};
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -313,16 +313,17 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/token"))
-            .respond_with(
-                ResponseTemplate::new(token_status)
-                    .set_body_json(json!({"id_token": id_token(&claims)})),
-            )
+            .respond_with(ResponseTemplate::new(token_status).set_body_json(
+                json!({"id_token": id_token(&claims), "detail": "internal-provider-body"}),
+            ))
             .mount(server)
             .await;
         Mock::given(method("GET"))
             .and(path("/jwks"))
             .respond_with(
-                ResponseTemplate::new(jwks_status).set_body_json(json!({"keys": [rsa_key()]})),
+                ResponseTemplate::new(jwks_status).set_body_json(
+                    json!({"keys": [rsa_key()], "detail": "internal-provider-body"}),
+                ),
             )
             .mount(server)
             .await;
@@ -466,5 +467,93 @@ mod tests {
         for secret in [VERIFIER, PROVIDER_SECRET, PROVIDER_CODE] {
             assert!(!location.contains(secret));
         }
+    }
+
+    async fn assert_provider_failure(token_status: u16, jwks_status: u16, nonce: &str) {
+        let server = MockServer::start().await;
+        mount_provider(&server, token_status, jwks_status, nonce).await;
+        let store = Arc::new(InMemoryStateStore::new());
+        seed(store.as_ref(), OIDC_STATE).await;
+        let response = callback(
+            state(&server.uri(), store),
+            &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
+        )
+        .await;
+        let values = redirect_query(&response);
+        assert!(values.contains(&("error".into(), "server_error".into())));
+        assert!(!values.iter().any(|(key, _value)| key == "code"));
+        assert_security(&response);
+        let location = response.headers()[header::LOCATION]
+            .to_str()
+            .expect("location");
+        for secret in [
+            VERIFIER,
+            PROVIDER_SECRET,
+            PROVIDER_CODE,
+            "internal-provider-body",
+        ] {
+            assert!(!location.contains(secret));
+        }
+    }
+
+    #[tokio::test]
+    async fn exchange_jwks_and_nonce_failures_are_equally_sanitized() {
+        assert_provider_failure(500, 200, NONCE).await;
+        assert_provider_failure(200, 500, NONCE).await;
+        assert_provider_failure(200, 200, "wrong-nonce").await;
+    }
+
+    struct FailCodeStore(InMemoryStateStore);
+
+    #[async_trait::async_trait]
+    impl StateStore for FailCodeStore {
+        async fn store_authorization_session(
+            &self,
+            state: &str,
+            session: OAuthAuthorizationSessionRecord,
+        ) -> Result<(), StateStoreError> {
+            self.0.store_authorization_session(state, session).await
+        }
+        async fn take_authorization_session(
+            &self,
+            state: &str,
+        ) -> Result<Option<OAuthAuthorizationSessionRecord>, StateStoreError> {
+            self.0.take_authorization_session(state).await
+        }
+        async fn store_authorization_code(
+            &self,
+            _code: &str,
+            _authorization: OAuthAuthorizationCodeRecord,
+        ) -> Result<(), StateStoreError> {
+            Err(StateStoreError::CapacityExceeded { max_entries: 0 })
+        }
+        async fn take_authorization_code_for_request(
+            &self,
+            code: &str,
+            client_id: &str,
+            redirect_uri: &str,
+            challenge: &str,
+        ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
+            self.0
+                .take_authorization_code_for_request(code, client_id, redirect_uri, challenge)
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn code_store_capacity_failure_exposes_no_client_code() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, NONCE).await;
+        let store = Arc::new(FailCodeStore(InMemoryStateStore::new()));
+        seed(store.as_ref(), OIDC_STATE).await;
+        let response = callback(
+            state(&server.uri(), store),
+            &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
+        )
+        .await;
+        let values = redirect_query(&response);
+        assert!(values.contains(&("error".into(), "server_error".into())));
+        assert!(!values.iter().any(|(key, _value)| key == "code"));
+        assert_security(&response);
     }
 }
