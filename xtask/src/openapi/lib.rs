@@ -1,9 +1,4 @@
-//! Standalone `OpenAPI` reference hydration utilities.
-
-#![allow(
-    unused_crate_dependencies,
-    reason = "This package includes a CLI binary and integration-test dependencies in addition to the library target."
-)]
+//! `OpenAPI` reference hydration for the `openapi-hydrate` xtask subcommand.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
@@ -20,23 +15,23 @@ use thiserror::Error;
 use url::Url;
 
 /// Maximum number of bytes accepted for the root `OpenAPI` descriptor.
-pub const ROOT_DESCRIPTOR_MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const ROOT_DESCRIPTOR_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Maximum number of bytes accepted for a referenced external descriptor.
-pub const EXTERNAL_REF_MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const EXTERNAL_REF_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Timeout for HTTPS fetches.
-pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// User-Agent sent for HTTPS fetches.
-pub const USER_AGENT: &str = "openapi";
+pub(crate) const USER_AGENT: &str = "openapi";
 
 /// Maximum number of external documents fetched at the same time.
-pub const MAX_CONCURRENT_FETCHES: usize = 32;
+pub(crate) const MAX_CONCURRENT_FETCHES: usize = 32;
 
 /// Errors returned by `OpenAPI` hydration.
 #[derive(Debug, Error)]
-pub enum OpenApiToolsError {
+pub(crate) enum OpenApiToolsError {
     /// The input location or base URI is invalid.
     #[error("invalid location or base URI `{location}`: {message}")]
     InvalidLocation {
@@ -173,7 +168,7 @@ struct RefTarget {
 /// Returns [`OpenApiToolsError`] if the descriptor cannot be parsed, if a
 /// reachable reference cannot be loaded or resolved, or if final dereferencing
 /// fails.
-pub fn hydrate_openapi(input: &[u8], base_uri: &str) -> Result<Value, OpenApiToolsError> {
+pub(crate) fn hydrate_openapi(input: &[u8], base_uri: &str) -> Result<Value, OpenApiToolsError> {
     let root_uri = normalize_base_uri(base_uri)?;
     let document_url = parse_document_url(&root_uri)?;
     let root_dir = root_directory_from_url(&document_url)?;
@@ -191,7 +186,7 @@ pub fn hydrate_openapi(input: &[u8], base_uri: &str) -> Result<Value, OpenApiToo
 ///
 /// Returns [`OpenApiToolsError`] if the location cannot be read, fetched,
 /// parsed, or dereferenced.
-pub fn hydrate_openapi_from_location(location: &str) -> Result<Value, OpenApiToolsError> {
+pub(crate) fn hydrate_openapi_from_location(location: &str) -> Result<Value, OpenApiToolsError> {
     if let Ok(mut url) = Url::parse(location) {
         return match url.scheme() {
             "https" => {
@@ -1074,3 +1069,7 @@ components:
         assert!((maximum - 18_446_744_073_709_552_000.0).abs() < f64::EPSILON);
     }
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod integration_tests;

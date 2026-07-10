@@ -4,15 +4,13 @@
     clippy::indexing_slicing,
     clippy::needless_raw_string_hashes,
     missing_docs,
-    unused_crate_dependencies,
-    reason = "Integration tests use fixture-shaped JSON assertions and exercise public binary/library surfaces."
+    reason = "Tests use fixture-shaped JSON assertions."
 )]
 
 use std::fs;
 use std::path::Path;
 
-use openapi::{OpenApiToolsError, hydrate_openapi, hydrate_openapi_from_location};
-use serde_json::Value;
+use super::{OpenApiToolsError, hydrate_openapi, hydrate_openapi_from_location};
 use tempfile::TempDir;
 use url::Url;
 
@@ -465,69 +463,6 @@ paths:
         error,
         OpenApiToolsError::LocalFileConfinementViolation { .. }
     ));
-}
-
-#[test]
-fn cli_hydrate_prints_pretty_json() {
-    let fixture = Fixture::new();
-    fixture.write(
-        "openapi.yaml",
-        r#"
-openapi: 3.1.0
-info: {title: Test, version: "1"}
-paths:
-  /pets:
-    get:
-      responses:
-        "200": {description: ok}
-"#,
-    );
-
-    let output = assert_cmd::Command::cargo_bin("openapi")
-        .expect("binary exists")
-        .args([
-            "hydrate",
-            &fixture.path("openapi.yaml").display().to_string(),
-        ])
-        .output()
-        .expect("command runs");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
-    assert!(stdout.contains('\n'));
-    let parsed: Value = serde_json::from_str(&stdout).expect("stdout is JSON");
-    assert_eq!(
-        parsed["paths"]["/pets"]["get"]["responses"]["200"]["description"],
-        "ok"
-    );
-}
-
-#[test]
-fn cli_failed_ref_exits_nonzero_with_useful_error() {
-    let fixture = Fixture::new();
-    fixture.write(
-        "openapi.yaml",
-        r#"
-openapi: 3.1.0
-info: {title: Test, version: "1"}
-paths:
-  /pets:
-    $ref: missing.yaml
-"#,
-    );
-
-    let output = assert_cmd::Command::cargo_bin("openapi")
-        .expect("binary exists")
-        .args([
-            "hydrate",
-            &fixture.path("openapi.yaml").display().to_string(),
-        ])
-        .output()
-        .expect("command runs");
-
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains("missing.yaml"), "{stderr}");
 }
 
 struct Fixture {

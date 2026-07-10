@@ -15,8 +15,6 @@
   input discovery, and normalized source-definition models.
 - `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
   of app bootstrap, query runtime, and adapter surfaces.
-- `crates/tools/openapi`: Coral-independent OpenAPI descriptor tooling,
-  including the standalone `openapi-tools hydrate` CLI.
 - `apps/desktop`: Electron shell around Reef and the local Coral sidecar.
 - `apps/docs`: Mintlify documentation site.
 - `apps/reef`: React Router/Wax frontend shell. It is validated independently

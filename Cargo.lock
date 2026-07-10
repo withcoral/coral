@@ -3971,23 +3971,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "openapi"
-version = "0.5.2"
-dependencies = [
- "assert_cmd",
- "clap",
- "jsonschema",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror",
- "url",
- "urlencoding",
-]
-
-[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7040,14 +7023,21 @@ name = "xtask"
 version = "0.5.2"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "base64",
  "clap",
  "coral-spec",
  "insta",
+ "jsonschema",
  "pulldown-cmark",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "url",
+ "urlencoding",
  "uuid",
  "walkdir",
 ]
