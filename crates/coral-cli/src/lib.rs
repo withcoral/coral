@@ -1223,7 +1223,7 @@ async fn run_source_add(
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use coral_api::v1::{Function, FunctionResultColumn};
+    use coral_api::v1::{Function, TableFunctionResultColumn};
 
     use super::{Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary};
 
@@ -1292,9 +1292,9 @@ mod tests {
                 "updated_at",
             ]
             .into_iter()
-            .map(|name| FunctionResultColumn {
+            .map(|name| TableFunctionResultColumn {
                 name: name.to_string(),
-                ..FunctionResultColumn::default()
+                ..TableFunctionResultColumn::default()
             })
             .collect(),
             ..Function::default()

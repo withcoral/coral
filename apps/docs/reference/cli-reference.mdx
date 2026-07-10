@@ -273,18 +273,14 @@ Example function:
 name: open_prs
 schema: functions
 description: All open PRs in the specified repo
-arguments:
-  owner:
-    data_type: Utf8
-  repo:
-    data_type: Utf8
 */
 
 select number, title, html_url as url
-from github.pulls(owner => $owner, repo => $repo, state => 'open')
+from github.pulls
+where owner = $owner and repo = $repo and state = 'open'
 ```
 
-The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. Each `$argument` used in the SQL body must be declared under `arguments`.
+The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. Coral infers each required argument and its type from `$argument` uses in the SQL body. If the surrounding SQL does not provide enough type evidence, add an explicit cast such as `cast($limit as BIGINT)`.
 
 ### `coral functions list`
 
@@ -294,7 +290,7 @@ List configured functions.
 coral functions list
 ```
 
-The output is inventory-only and does not re-run runtime validation, so it stays fast. Coral shows each function's table-function target and declared result columns from the installed function YAML.
+Coral replans the installed artifacts against the current workspace and lists the runtime-ready functions. It shows each function's table-function target and the result columns inferred from the planned SQL. An artifact that is missing, invalid, or no longer plans successfully is skipped with a warning.
 
 If a function publishes a SQL table function and declares required inputs, call it with named arguments:
 
