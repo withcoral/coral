@@ -22,10 +22,10 @@ use coral_spec::{
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ParsedTemplate,
 };
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
+use crate::hash::sha256_hex;
 use crate::sources::SourceName;
 use crate::state::{AppStateLayout, V4ProjectionCatalogFile, V4ProjectionCatalogOrigin};
 use crate::storage::fs;
@@ -1227,12 +1227,6 @@ fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), AppErro
     let bytes = serde_yaml::to_string(value)?;
     fs::write_atomic(path, bytes.as_bytes())?;
     Ok(())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
 }
 
 pub(crate) fn new_materialization_suffix(prefix: &str) -> String {
