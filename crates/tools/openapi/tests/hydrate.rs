@@ -11,7 +11,7 @@
 use std::fs;
 use std::path::Path;
 
-use openapi_tools::{OpenApiToolsError, hydrate_openapi, hydrate_openapi_from_location};
+use openapi::{hydrate_openapi, hydrate_openapi_from_location, OpenApiToolsError};
 use serde_json::Value;
 use tempfile::TempDir;
 use url::Url;
@@ -72,8 +72,8 @@ properties:
         "limit"
     );
     assert_eq!(
-        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-            ["properties"]["name"]["type"],
+        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["properties"]["name"]["type"],
         "string"
     );
 }
@@ -114,8 +114,8 @@ properties:
             .expect("hydrate succeeds");
 
     assert_eq!(
-        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-            ["properties"]["category"]["type"],
+        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["properties"]["category"]["type"],
         "string"
     );
 }
@@ -183,8 +183,8 @@ paths:
     let hydrated = hydrate_openapi(&bytes, &base).expect("hydrate succeeds");
 
     assert_eq!(
-        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-            ["type"],
+        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["type"],
         "object"
     );
 }
@@ -216,8 +216,8 @@ paths:
             .expect("hydrate succeeds");
 
     assert_eq!(
-        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-            ["type"],
+        hydrated["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["type"],
         "object"
     );
 }
@@ -483,7 +483,7 @@ paths:
 "#,
     );
 
-    let output = assert_cmd::Command::cargo_bin("openapi-tools")
+    let output = assert_cmd::Command::cargo_bin("openapi")
         .expect("binary exists")
         .args([
             "hydrate",
@@ -516,7 +516,7 @@ paths:
 "#,
     );
 
-    let output = assert_cmd::Command::cargo_bin("openapi-tools")
+    let output = assert_cmd::Command::cargo_bin("openapi")
         .expect("binary exists")
         .args([
             "hydrate",

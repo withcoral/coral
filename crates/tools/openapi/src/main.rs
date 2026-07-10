@@ -1,4 +1,4 @@
-//! `openapi-tools` command-line entrypoint.
+//! `openapi` command-line entrypoint.
 
 #![allow(
     unused_crate_dependencies,
@@ -9,7 +9,7 @@ use std::io::{self, Write as _};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use openapi_tools::hydrate_openapi_from_location;
+use openapi::hydrate_openapi_from_location;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "OpenAPI document utilities")]

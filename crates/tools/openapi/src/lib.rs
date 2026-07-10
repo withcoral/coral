@@ -29,7 +29,7 @@ pub const EXTERNAL_REF_MAX_BYTES: u64 = 16 * 1024 * 1024;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// User-Agent sent for HTTPS fetches.
-pub const USER_AGENT: &str = "openapi-tools";
+pub const USER_AGENT: &str = "openapi";
 
 /// Maximum number of external documents fetched at the same time.
 pub const MAX_CONCURRENT_FETCHES: usize = 32;

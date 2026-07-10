@@ -1,5 +1,5 @@
 [package]
-name = "openapi-tools"
+name = "openapi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,10 +7,10 @@ rust-version.workspace = true
 publish = false
 
 [lib]
-name = "openapi_tools"
+name = "openapi"
 
 [[bin]]
-name = "openapi-tools"
+name = "openapi"
 path = "src/main.rs"
 
 [lints]
