@@ -7,6 +7,8 @@
 
 #[path = "grpc/catalog_discovery_tests.rs"]
 mod catalog_discovery_tests;
+#[path = "grpc/function_lifecycle_tests.rs"]
+mod function_lifecycle_tests;
 #[path = "grpc/harness.rs"]
 mod harness;
 #[path = "grpc/oauth_refresh_tests.rs"]

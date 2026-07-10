@@ -3,14 +3,15 @@
 use coral_api::v1::function_service_server::FunctionService as FunctionServiceApi;
 use coral_api::v1::{
     AddFunctionRequest, AddFunctionResponse, DeleteFunctionRequest, DeleteFunctionResponse,
-    Function, FunctionArgument, FunctionPublish, FunctionTableFunctionPublish,
-    ListFunctionsRequest, ListFunctionsResponse, TableFunctionResultColumn,
+    Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady,
+    FunctionTableFunctionPublish, ListFunctionsRequest, ListFunctionsResponse,
+    TableFunctionResultColumn, function,
 };
-use coral_engine::{UdfRuntimeDefinition, UdfRuntimePublish, UdfRuntimeTableFunctionPublish};
+use coral_engine::{UdfRuntimeDefinition, UdfRuntimeTableFunctionPublish};
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
-use crate::functions::manager::{FunctionListing, FunctionManager};
+use crate::functions::manager::{FunctionListing, FunctionRuntimeStatus};
 use crate::functions::model::FunctionName;
 use crate::query::manager::QueryManager;
 use crate::transport::{
@@ -20,14 +21,12 @@ use crate::workspaces::WorkspaceName;
 
 #[derive(Clone)]
 pub(crate) struct FunctionService {
-    functions: FunctionManager,
     queries: QueryManager,
 }
 
 impl FunctionService {
-    pub(crate) fn new(function_manager: FunctionManager, query_manager: QueryManager) -> Self {
+    pub(crate) fn new(query_manager: QueryManager) -> Self {
         Self {
-            functions: function_manager,
             queries: query_manager,
         }
     }
@@ -40,7 +39,6 @@ impl FunctionServiceApi for FunctionService {
         request: Request<AddFunctionRequest>,
     ) -> Result<Response<AddFunctionResponse>, Status> {
         let span = grpc_span(&request);
-        let functions = self.functions.clone();
         let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();
@@ -49,7 +47,8 @@ impl FunctionServiceApi for FunctionService {
                 .validate_udf_sql(&workspace_name, &inner.sql)
                 .await
                 .map_err(query_status)?;
-            functions
+            queries
+                .function_manager()
                 .install_validated_user_function(&workspace_name, &inner.sql, &runtime_function)
                 .map_err(app_status)?;
             Ok(Response::new(AddFunctionResponse {
@@ -85,12 +84,13 @@ impl FunctionServiceApi for FunctionService {
         request: Request<DeleteFunctionRequest>,
     ) -> Result<Response<DeleteFunctionResponse>, Status> {
         let span = grpc_span(&request);
-        let functions = self.functions.clone();
+        let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let function_name = FunctionName::parse(&inner.name).map_err(app_status)?;
-            functions
+            queries
+                .function_manager()
                 .remove_user_function(&workspace_name, &function_name)
                 .map_err(app_status)?;
             Ok(Response::new(DeleteFunctionResponse {}))
@@ -100,44 +100,52 @@ impl FunctionServiceApi for FunctionService {
 }
 
 fn function_listing_to_proto(workspace_name: &WorkspaceName, listing: FunctionListing) -> Function {
-    runtime_function_to_proto(workspace_name, listing.definition)
+    match listing.runtime {
+        FunctionRuntimeStatus::Ready(definition) => {
+            runtime_function_to_proto(workspace_name, definition)
+        }
+        FunctionRuntimeStatus::Invalid(reason) => Function {
+            name: listing.name.to_string(),
+            workspace: Some(workspace_to_proto(workspace_name)),
+            runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
+                reason,
+            })),
+        },
+    }
 }
 
 fn runtime_function_to_proto(
     workspace_name: &WorkspaceName,
     function: UdfRuntimeDefinition,
 ) -> Function {
+    let name = function.name;
     Function {
         workspace: Some(workspace_to_proto(workspace_name)),
-        name: function.name,
-        description: function.description,
-        arguments: function
-            .arguments
-            .into_iter()
-            .map(|argument| FunctionArgument {
-                name: argument.name,
-                data_type: argument.data_type.as_manifest_str().to_string(),
-            })
-            .collect(),
-        publish: Some(function_publish_to_proto(function.publish)),
-        result_columns: function
-            .result_columns
-            .into_iter()
-            .map(|column| TableFunctionResultColumn {
-                name: column.name,
-                data_type: column.data_type.to_string(),
-                nullable: column.nullable,
-                description: String::new(),
-            })
-            .collect(),
-    }
-}
-
-fn function_publish_to_proto(publish: UdfRuntimePublish) -> FunctionPublish {
-    FunctionPublish {
-        table_function: Some(function_table_function_publish_to_proto(
-            publish.table_function,
-        )),
+        name,
+        runtime: Some(function::Runtime::Ready(FunctionRuntimeReady {
+            description: function.description,
+            arguments: function
+                .arguments
+                .into_iter()
+                .map(|argument| FunctionArgument {
+                    name: argument.name,
+                    data_type: argument.data_type.as_manifest_str().to_string(),
+                })
+                .collect(),
+            table_function: Some(function_table_function_publish_to_proto(
+                function.publish.table_function,
+            )),
+            result_columns: function
+                .result_columns
+                .into_iter()
+                .map(|column| TableFunctionResultColumn {
+                    name: column.name,
+                    data_type: column.data_type.to_string(),
+                    nullable: column.nullable,
+                    description: String::new(),
+                })
+                .collect(),
+        })),
     }
 }
 
@@ -148,5 +156,32 @@ fn function_table_function_publish_to_proto(
         schema_name: publish.schema,
         name: publish.name,
         description: publish.description,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_function_listing_keeps_inventory_identity_and_error() {
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let listing = FunctionListing {
+            name: FunctionName::parse("review_queue").expect("function"),
+            runtime: FunctionRuntimeStatus::Invalid("function file is missing".to_string()),
+        };
+
+        let function = function_listing_to_proto(&workspace, listing);
+
+        assert_eq!(function.name, "review_queue");
+        assert!(matches!(
+            function.runtime,
+            Some(function::Runtime::Invalid(FunctionRuntimeInvalid { reason }))
+                if reason == "function file is missing"
+        ));
+        assert_eq!(
+            function.workspace.expect("workspace").name,
+            workspace.as_str()
+        );
     }
 }
