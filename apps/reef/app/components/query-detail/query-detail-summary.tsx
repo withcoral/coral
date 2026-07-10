@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { highlightSQL } from '@/lib/sql-highlight'
+import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './query-detail-summary.css'
@@ -59,7 +60,7 @@ export function QueryDetailSummary({
           </div>
         ) : null}
       </header>
-      <div className={styles.scrollBody}>
+      <ScrollArea className={styles.scrollBody} constrainWidth fade="none" fillContent>
         <div className={styles.content}>
           <div className={styles.sqlBlock}>
             <pre>
@@ -75,7 +76,7 @@ export function QueryDetailSummary({
           ) : null}
           {children}
         </div>
-      </div>
+      </ScrollArea>
     </div>
   )
 }

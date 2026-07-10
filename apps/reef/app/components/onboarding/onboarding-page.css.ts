@@ -105,7 +105,7 @@ export const inlineLink = style({
   },
 })
 
-export const catalogFrame = style({
+export const mainFrame = style({
   alignSelf: 'center',
   background: theme.surface.mainContent,
   border: `1px solid ${theme.stroke.secondary}`,

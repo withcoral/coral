@@ -73,10 +73,8 @@ export const statusBadge = style({
 })
 
 export const scrollBody = style({
-  display: 'flex',
   flex: 1,
   minHeight: 0,
-  overflow: 'auto',
 })
 
 export const content = style({
@@ -92,6 +90,7 @@ export const sqlBlock = style({
   backgroundColor: theme.surface.main,
   border: `1px solid ${theme.stroke.primary}`,
   borderRadius: 8,
+  flexShrink: 0,
   overflow: 'hidden',
   position: 'relative',
 })
