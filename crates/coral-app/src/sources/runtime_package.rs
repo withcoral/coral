@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use coral_engine::RuntimeSourceComponent;
+use coral_engine::{QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
@@ -19,6 +19,56 @@ use coral_spec::{
 };
 
 use crate::bootstrap::AppError;
+use crate::sources::catalog::InstalledSourceManifest;
+use crate::sources::materialization::{
+    incompatible_materialization_error, load_v4_materialization,
+};
+use crate::sources::model::InstalledSource;
+use crate::state::AppStateLayout;
+use crate::workspaces::WorkspaceName;
+
+pub(crate) fn query_source_from_installed_manifest(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source: &InstalledSource,
+    installed: &InstalledSourceManifest,
+    resolved_secrets: BTreeMap<String, String>,
+) -> Result<QuerySource, AppError> {
+    let source_spec = &installed.source_spec;
+    if let Some(v4) = source_spec.as_v4() {
+        let materialized = load_v4_materialization(
+            layout,
+            workspace_name,
+            &source.name,
+            &installed.manifest_yaml,
+            v4,
+        )?;
+        let components = runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
+            incompatible_materialization_error(
+                &source.name,
+                format!("failed to assemble runtime package: {error}"),
+            )
+        })?;
+        return QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: source_spec.schema_name().to_string(),
+                authored_version: source_spec.source_version().map(ToString::to_string),
+                description: source_spec.description().to_string(),
+                declared_inputs: source_spec.declared_inputs().to_vec(),
+                test_queries: source_spec.test_queries().to_vec(),
+                components,
+            },
+            source.variables.clone(),
+            resolved_secrets,
+        )
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()));
+    }
+    Ok(QuerySource::from_manifest(
+        source_spec,
+        source.variables.clone(),
+        resolved_secrets,
+    ))
+}
 
 pub(crate) fn runtime_components_for_v4_source(
     manifest: &V4SourceManifest,

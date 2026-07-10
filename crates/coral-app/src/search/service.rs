@@ -9,6 +9,7 @@ use coral_api::v1::{
     CatalogRebuildResult as ProtoCatalogRebuildResult,
     ClearSearchDataRequest as ProtoClearSearchDataRequest,
     ClearSearchDataResponse as ProtoClearSearchDataResponse, ColumnHint,
+    ObservedValue as ProtoObservedValue,
     RebuildSearchIndexRequest as ProtoRebuildSearchIndexRequest,
     RebuildSearchIndexResponse as ProtoRebuildSearchIndexResponse,
     SearchDataScope as ProtoSearchDataScope, SearchFieldRole as ProtoSearchFieldRole,
@@ -37,8 +38,8 @@ use crate::search::maintenance::{
 };
 use crate::search::manager::SearchManager;
 use crate::search::result::{
-    CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchFieldRole,
-    SearchManagerError, SearchPayload, SearchProviderKind,
+    CatalogMetadataResult, ColumnHintResult, ObservedValueResult, ProviderCoverage, ProviderStatus,
+    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind,
     SearchProviderState as DomainProviderState, SearchRequest, SearchResponse, SearchSurfaceKind,
     TableColumnPreview as DomainTableColumnPreview,
 };
@@ -73,9 +74,9 @@ impl SearchServiceApi for SearchService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let request = SearchRequest::new(workspace_name, &request.query, request.limit)
                 .map_err(search_status)?;
-            let response = search
-                .search(&request, &attribution)
-                .map_err(search_status)?;
+            let response =
+                run_blocking_search_operation(move || search.search(&request, &attribution))
+                    .await?;
             Ok(Response::new(search_response_to_proto(response)))
         })
         .await
@@ -290,6 +291,9 @@ fn search_payload_to_proto(
             Payload::CatalogMetadata(catalog_metadata_to_proto(workspace_name, result))
         }
         SearchPayload::ColumnHint(result) => Payload::ColumnHint(column_hint_to_proto(result)),
+        SearchPayload::ObservedValue(result) => {
+            Payload::ObservedValue(observed_value_to_proto(result))
+        }
     }
 }
 
@@ -335,6 +339,19 @@ fn column_hint_to_proto(result: ColumnHintResult) -> ColumnHint {
         description: result.description,
         matched_fields: result.matched_fields,
         field_role: field_role_to_proto(result.field_role) as i32,
+    }
+}
+
+fn observed_value_to_proto(result: ObservedValueResult) -> ProtoObservedValue {
+    ProtoObservedValue {
+        value: result.value,
+        schema_name: result.schema_name,
+        surface_name: result.surface_name,
+        column_name: result.column_name,
+        surface_kind: surface_kind_to_proto(result.surface_kind) as i32,
+        field_path: result.field_path,
+        observed_count: result.observed_count,
+        last_observed_at: result.last_observed_at,
     }
 }
 

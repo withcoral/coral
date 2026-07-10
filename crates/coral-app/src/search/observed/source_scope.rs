@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::hash::sha256_hex;
+use crate::search::observed::ObservedValuesLiveScope;
 use crate::search::observed::sqlite_queue::{ObservedValuesGeneration, ObservedValuesSurfaceKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -38,6 +39,15 @@ pub(super) struct ObservedSourceSurfaceScope {
 impl ObservedSourceSurfaceScope {
     pub(super) fn key(&self) -> SurfaceKey {
         self.surface_key.clone()
+    }
+
+    pub(super) fn live_scope(&self) -> ObservedValuesLiveScope {
+        ObservedValuesLiveScope {
+            source_name: self.observed_source_name.clone(),
+            source_scope_id: self.source_scope_id.clone(),
+            surface_kind: self.surface_key.surface_kind,
+            surface_name: self.surface_key.surface_name.clone(),
+        }
     }
 }
 

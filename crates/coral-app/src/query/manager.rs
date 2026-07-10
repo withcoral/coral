@@ -8,7 +8,7 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
+    SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -27,11 +27,8 @@ use crate::query::input_resolver::{
 use crate::search::observed::SearchObservationHandle;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
-};
 use crate::sources::model::InstalledSource;
-use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::sources::runtime_package::query_source_from_installed_manifest;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 use crate::workspaces::WorkspaceName;
@@ -374,26 +371,7 @@ impl QueryManager {
         source: &InstalledSource,
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
-        let source_spec = installed.source_spec;
-        let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
-            let materialized = load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
-                &installed.manifest_yaml,
-                v4,
-            )?;
-            Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                    incompatible_materialization_error(
-                        &source.name,
-                        format!("failed to assemble runtime package: {error}"),
-                    )
-                })?,
-            )
-        } else {
-            None
-        };
+        let source_spec = &installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
@@ -428,23 +406,13 @@ impl QueryManager {
                 resolved_secrets.insert(secret_name, value.clone());
             }
         }
-        let query_source = if let Some(components) = v4_runtime_components {
-            QuerySource::from_runtime_components(
-                RuntimeSourcePackage {
-                    source_name: source_spec.schema_name().to_string(),
-                    authored_version: source_spec.source_version().map(ToString::to_string),
-                    description: source_spec.description().to_string(),
-                    declared_inputs: source_spec.declared_inputs().to_vec(),
-                    test_queries: source_spec.test_queries().to_vec(),
-                    components,
-                },
-                source.variables.clone(),
-                resolved_secrets,
-            )
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-        } else {
-            QuerySource::from_manifest(&source_spec, source.variables.clone(), resolved_secrets)
-        };
+        let query_source = query_source_from_installed_manifest(
+            &self.layout,
+            workspace_name,
+            source,
+            &installed,
+            resolved_secrets,
+        )?;
         Ok((
             LoadedQuerySource {
                 source: source.clone(),

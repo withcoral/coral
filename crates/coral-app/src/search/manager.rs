@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::bootstrap::AppError;
 use crate::query::QueryAttribution;
 use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::provider::CatalogMetadataProvider;
@@ -11,7 +12,11 @@ use crate::search::maintenance::{
     RebuildSearchIndexResponse, SearchMaintenanceResult, SearchProviderClearRequest,
     SearchProviderMaintenance, SearchProviderRebuildRequest,
 };
-use crate::search::observed::{ObservedValuesDrainBudget, ObservedValuesProjection};
+use crate::search::observed::provider::ObservedValuesProvider;
+use crate::search::observed::{
+    ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad, ObservedValuesLiveScopeLoader,
+    ObservedValuesRetrievalPolicy,
+};
 use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -19,23 +24,28 @@ use crate::workspaces::WorkspaceName;
 #[derive(Clone)]
 pub(crate) struct SearchManager {
     catalog: CatalogMetadataProvider,
-    observed_projection: ObservedValuesProjection,
+    observed: ObservedValuesProvider,
+    observed_scope_loader: ObservedValuesLiveScopeLoader,
     engine: UniversalSearchEngine,
     config_store: ConfigStore,
 }
 
 const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
 const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(1);
+const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
 
 impl SearchManager {
     pub(crate) fn new(layout: AppStateLayout, config_store: ConfigStore) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
-        let observed_projection = ObservedValuesProjection::new(layout);
+        let observed = ObservedValuesProvider::new(layout.clone());
+        let observed_scope_loader =
+            ObservedValuesLiveScopeLoader::new(layout, config_store.clone());
         Self {
             catalog: catalog.clone(),
-            observed_projection,
-            engine: UniversalSearchEngine::new(catalog),
+            observed: observed.clone(),
+            observed_scope_loader,
+            engine: UniversalSearchEngine::new(catalog, observed),
             config_store,
         }
     }
@@ -46,7 +56,10 @@ impl SearchManager {
         attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
         self.require_workspace(&request.workspace_name)?;
-        Ok(self.engine.search(request, attribution))
+        let observed_policy = self.observed_retrieval_policy(&request.workspace_name);
+        Ok(self
+            .engine
+            .search(request, attribution, observed_policy.as_ref()))
     }
 
     pub(crate) fn rebuild_index(
@@ -91,7 +104,7 @@ impl SearchManager {
                 );
                 break;
             }
-            match self.observed_projection.drain_queue(
+            match self.observed.drain_queue(
                 &workspace.name,
                 ObservedValuesDrainBudget::new(MANUAL_DRAIN_MAX_JOBS, remaining_budget),
             ) {
@@ -129,6 +142,17 @@ impl SearchManager {
         Ok(())
     }
 
+    fn observed_retrieval_policy(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<ObservedValuesRetrievalPolicy, AppError> {
+        let load = self.observed_scope_loader.load(workspace_name)?;
+        Ok(observed_retrieval_policy_from_load(
+            load,
+            OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS,
+        ))
+    }
+
     fn rebuild_catalog_index(
         &self,
         request: &RebuildSearchIndexRequest,
@@ -138,4 +162,14 @@ impl SearchManager {
             force: request.force,
         })
     }
+}
+fn observed_retrieval_policy_from_load(
+    load: ObservedValuesLiveScopeLoad,
+    stale_after_last_observed_days: u32,
+) -> ObservedValuesRetrievalPolicy {
+    ObservedValuesRetrievalPolicy::with_load_failures(
+        load.live_scopes,
+        load.failed_sources,
+        stale_after_last_observed_days,
+    )
 }

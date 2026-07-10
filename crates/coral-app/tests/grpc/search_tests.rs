@@ -45,9 +45,9 @@ async fn search_service_returns_structured_shell_response() {
     let observed_status = assert_provider_state(
         &response,
         SearchProvider::ObservedValues,
-        SearchProviderState::NotEnabled,
+        SearchProviderState::Empty,
     );
-    assert_no_coverage(observed_status);
+    assert_empty_provider_coverage(observed_status);
     let native_status = assert_provider_state(
         &response,
         SearchProvider::NativeFanout,
@@ -157,7 +157,7 @@ async fn search_returns_catalog_metadata_for_search_functions_and_column_hints()
     assert_provider_state(
         &response,
         SearchProvider::ObservedValues,
-        SearchProviderState::NotEnabled,
+        SearchProviderState::Empty,
     );
     assert_provider_state(
         &response,
