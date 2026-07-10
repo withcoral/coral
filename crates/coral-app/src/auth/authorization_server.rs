@@ -1,6 +1,7 @@
 //! HTTP lifecycle for Coral's authorization server.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -146,10 +147,8 @@ impl CoralAuthorizationServer {
                     address: bind_addr,
                     source,
                 })?;
-        let endpoint_uri = format!(
-            "http://{}",
-            listener.local_addr().map_err(AuthServerError::LocalAddr)?
-        );
+        let local_addr = listener.local_addr().map_err(AuthServerError::LocalAddr)?;
+        let endpoint_uri = format!("http://{local_addr}");
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             axum::serve(listener, router)
@@ -159,6 +158,7 @@ impl CoralAuthorizationServer {
                 .await
         });
         Ok(RunningCoralAuthorizationServer {
+            local_addr,
             endpoint_uri,
             shutdown_tx: Some(shutdown_tx),
             task: Some(task),
@@ -173,12 +173,19 @@ impl CoralAuthorizationServer {
 /// leaves the task detached, so a caller that drops and immediately rebinds the
 /// same fixed address can still lose the race and see `EADDRINUSE`.
 pub struct RunningCoralAuthorizationServer {
+    local_addr: SocketAddr,
     endpoint_uri: String,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
 }
 
 impl RunningCoralAuthorizationServer {
+    /// Returns the listener address, including an OS-assigned port.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
     /// Returns the cleartext listener endpoint, including an assigned port.
     #[must_use]
     pub fn endpoint_uri(&self) -> &str {
@@ -413,6 +420,7 @@ mod tests {
     #[tokio::test]
     async fn aborts_task_when_shutdown_times_out() {
         let server = RunningCoralAuthorizationServer {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             endpoint_uri: String::new(),
             shutdown_tx: None,
             task: Some(tokio::spawn(std::future::pending::<std::io::Result<()>>())),
