@@ -137,6 +137,9 @@ pub(crate) struct ObservedDrainMaintenanceResult {
     pub(crate) fts_rows_written: u32,
     pub(crate) remaining_queue_depth: u32,
     pub(crate) budget_exhausted: bool,
+    pub(crate) stale_rows_purged: u32,
+    pub(crate) evicted_rows: u32,
+    pub(crate) storage_limit_reached: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

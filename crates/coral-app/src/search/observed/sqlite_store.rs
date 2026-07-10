@@ -203,27 +203,39 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let deleted_fts_count = transaction.execute(
-            "DELETE FROM observed_values_fts WHERE workspace = ?1 AND source_name = ?2",
-            params![workspace_name.as_str(), source_name],
-        )?;
-        let deleted_value_count = transaction.execute(
-            "DELETE FROM observed_values WHERE workspace = ?1 AND source_name = ?2",
-            params![workspace_name.as_str(), source_name],
-        )?;
-        let deleted_queue_job_count = transaction.execute(
-            "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND source_name = ?2",
-            params![workspace_name.as_str(), source_name],
-        )?;
-        increment_source_generation(&transaction, workspace_name, source_name)?;
+        let result =
+            clear_observed_source_in_transaction(&transaction, workspace_name, source_name)?;
         transaction.commit()?;
-        Ok(ObservedValuesClearResult {
-            values: u32::try_from(deleted_value_count).unwrap_or(u32::MAX),
-            fts_rows: u32::try_from(deleted_fts_count).unwrap_or(u32::MAX),
-            queue_jobs: u32::try_from(deleted_queue_job_count).unwrap_or(u32::MAX),
-        })
+        Ok(result)
     }
+}
 
+pub(crate) fn clear_observed_source_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    source_name: &str,
+) -> Result<ObservedValuesClearResult, SqliteSearchError> {
+    let deleted_fts_count = transaction.execute(
+        "DELETE FROM observed_values_fts WHERE workspace = ?1 AND source_name = ?2",
+        params![workspace_name.as_str(), source_name],
+    )?;
+    let deleted_value_count = transaction.execute(
+        "DELETE FROM observed_values WHERE workspace = ?1 AND source_name = ?2",
+        params![workspace_name.as_str(), source_name],
+    )?;
+    let deleted_queue_job_count = transaction.execute(
+        "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND source_name = ?2",
+        params![workspace_name.as_str(), source_name],
+    )?;
+    increment_source_generation(transaction, workspace_name, source_name)?;
+    Ok(ObservedValuesClearResult {
+        values: u32::try_from(deleted_value_count).unwrap_or(u32::MAX),
+        fts_rows: u32::try_from(deleted_fts_count).unwrap_or(u32::MAX),
+        queue_jobs: u32::try_from(deleted_queue_job_count).unwrap_or(u32::MAX),
+    })
+}
+
+impl SqliteObservedValuesStore {
     pub(crate) fn drain_queue(
         &self,
         workspace_name: &WorkspaceName,

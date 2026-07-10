@@ -106,8 +106,7 @@ message SearchClearTarget {
   oneof target {
     // Clear the selected scope for the whole workspace.
     bool workspace = 1;
-    // Clear observed-value data for one source. SEARCH_DATA_SCOPE_ALL with a
-    // source target is not currently supported.
+    // Clear the selected local search-data scope for one source.
     string source_name = 2;
   }
 }
@@ -187,6 +186,12 @@ message ObservedDrainResult {
   uint32 remaining_queue_depth = 6;
   // Whether the drain stopped because its budget expired.
   bool budget_exhausted = 7;
+  // Canonical observed-value rows removed by ordinary retention maintenance.
+  uint32 stale_rows_purged = 8;
+  // Oldest canonical observed-value rows evicted to enforce the storage ceiling.
+  uint32 evicted_rows = 9;
+  // Whether observed-value storage remains above its configured ceiling.
+  bool storage_limit_reached = 10;
 }
 
 // Observed-value FTS rebuild detail.

@@ -310,6 +310,9 @@ fn observed_drain_to_proto(result: ObservedDrainMaintenanceResult) -> ProtoObser
         fts_rows_written: result.fts_rows_written,
         remaining_queue_depth: result.remaining_queue_depth,
         budget_exhausted: result.budget_exhausted,
+        stale_rows_purged: result.stale_rows_purged,
+        evicted_rows: result.evicted_rows,
+        storage_limit_reached: result.storage_limit_reached,
     }
 }
 

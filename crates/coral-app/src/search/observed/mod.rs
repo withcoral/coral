@@ -20,6 +20,7 @@ pub(crate) use policy::{
 };
 pub(crate) use publisher::SearchObservationHandle;
 pub(crate) use sqlite_projection::ObservedValuesDrainBudget;
+pub(crate) use sqlite_store::{ObservedValuesClearResult, clear_observed_source_in_transaction};
 
 #[cfg(test)]
 pub(crate) use sqlite_queue::{ObservedValuesQueueJob, ObservedValuesSurfaceKind};
