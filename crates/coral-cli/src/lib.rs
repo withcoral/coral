@@ -159,9 +159,10 @@ struct SearchIndexArgs {
 
 #[derive(Debug, Subcommand)]
 enum SearchIndexCommand {
-    /// Rebuild all local search indexes.
+    /// Rebuild one or all local search indexes.
     ///
-    /// Coral skips the rebuild when the index is already up to date unless you pass `--force`.
+    /// Catalog rebuilds are skipped when already current unless you pass `--force`.
+    /// The observed-value projection is always rebuilt when selected.
     Rebuild(SearchRebuildArgs),
     /// Drain app-owned local search queues into queryable projections.
     Drain(SearchDrainArgs),
@@ -175,9 +176,9 @@ enum SearchIndexCommand {
 #[derive(Debug, Args)]
 struct SearchRebuildArgs {
     /// Search index provider to rebuild
-    #[arg(long, value_enum, default_value = "catalog")]
+    #[arg(long, value_enum, default_value = "all")]
     provider: SearchRebuildProvider,
-    /// Rebuild even when the stored projection fingerprint is current
+    /// Rebuild the catalog projection even when its fingerprint is current
     #[arg(long)]
     force: bool,
 }

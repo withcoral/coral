@@ -87,11 +87,13 @@ Manage Coral's local search indexes.
 
 ### `coral search-index rebuild`
 
-Rebuild all local search indexes. Coral skips a rebuild when an index is already
-up to date unless you pass `--force`.
+Rebuild one or all local search indexes. Coral skips a catalog rebuild when its
+projection is already current unless you pass `--force`. The observed-value
+projection is always rebuilt when selected.
 
 ```shellscript
 coral search-index rebuild
+coral search-index rebuild --provider catalog
 coral search-index rebuild --provider observed-values
 coral search-index rebuild --provider all
 coral search-index rebuild --force
@@ -101,8 +103,8 @@ coral search-index rebuild --force
 
 | Option       | Type | Default   | Description                                                   |
 | ------------ | ---- | --------- | ------------------------------------------------------------- |
-| `--provider` | enum | `catalog` | Search index provider to rebuild: `catalog`, `observed-values`, or `all` |
-| `--force`    | flag | `false`   | Rebuild even when the stored projection fingerprint is current |
+| `--provider` | enum | `all`     | Search index provider to rebuild: `catalog`, `observed-values`, or `all` |
+| `--force`    | flag | `false`   | Rebuild the catalog projection even when its fingerprint is current |
 
 ### `coral search-index drain`
 
