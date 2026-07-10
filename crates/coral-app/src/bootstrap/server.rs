@@ -41,6 +41,7 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
+use super::health::AggregateHealthService;
 use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
@@ -581,7 +582,7 @@ async fn start_server(
     let search_service = SearchService::new(search.clone());
     let feedback_service = FeedbackService::new(feedback);
     let task_service = TaskService::new(task);
-    let mut routes = Routes::default()
+    let mut application_routes = Routes::default()
         .add_service(
             SourceServiceServer::new(source_service)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -603,15 +604,20 @@ async fn start_server(
                 .max_encoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE),
         );
     if let Some(trace_service) = trace_service {
-        routes = routes.add_service(
+        application_routes = application_routes.add_service(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
         );
     }
-    let routes = routes
-        .into_axum_router()
-        .layer(GrpcRequestContextLayer::new(user_principal_provider))
-        .into();
+    let routes = Routes::from(
+        application_routes
+            .into_axum_router()
+            .layer(GrpcRequestContextLayer::new(user_principal_provider)),
+    )
+    // Process liveness must not depend on principal selection.
+    .add_service(tonic_health::pb::health_server::HealthServer::new(
+        AggregateHealthService,
+    ));
 
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
