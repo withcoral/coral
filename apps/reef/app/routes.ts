@@ -16,7 +16,7 @@ export default [
       index('routes/schema-empty.tsx'),
       route(':schemaName/:tableName', 'routes/schema-table.tsx'),
     ]),
-    route('traces', 'routes/traces.tsx'),
+    route('traces', 'routes/traces.tsx', [route(':traceId', 'routes/trace-detail.tsx')]),
     ...(isDesktopApp ? [route('settings', 'routes/settings.tsx')] : []),
   ]),
 ] satisfies RouteConfig

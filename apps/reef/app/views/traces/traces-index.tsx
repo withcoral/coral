@@ -1,70 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Outlet, useLocation, useNavigate, useRevalidator } from 'react-router'
 
-import { animations } from '@/wax/animations'
 import { Button } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
-import { listTraces } from '@/lib/coral-traces-client'
-import type { TraceSummary } from '@/generated/coral/v1/traces_pb'
 
-import * as s from './traces-page.css'
-import { PageHeader } from './traces/page-header'
-import { StatusBar } from './traces/status-bar'
-import { TraceDetail } from './traces/trace-detail'
-import { TraceList } from './traces/trace-list'
-import { formatTraceError, isQueryTrace } from './traces/trace-utils'
+import * as s from './traces.css'
+import { PageHeader } from './page-header'
+import { StatusBar } from './status-bar'
+import { TraceList } from './trace-list'
+import type { TraceSummaryData } from './trace-utils'
 
-const MAX_QUERY_TRACES = 80
-const TRACE_LIST_PAGE_SIZE = 100
-const MAX_TRACE_LIST_PAGES = 2
 const TRACE_LIST_REFRESH_MS = 30_000
 
-function useTraceList(enabled: boolean) {
-  const [traces, setTraces] = useState<TraceSummary[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const refreshInFlight = useRef(false)
-
-  const refresh = useCallback(async (quiet = false) => {
-    if (refreshInFlight.current) return
-    refreshInFlight.current = true
-    if (!quiet) setLoading(true)
-    try {
-      const queryTraces: TraceSummary[] = []
-      let pageToken = ''
-
-      for (
-        let page = 0;
-        page < MAX_TRACE_LIST_PAGES && queryTraces.length < MAX_QUERY_TRACES;
-        page += 1
-      ) {
-        const response = await listTraces(TRACE_LIST_PAGE_SIZE, pageToken)
-        queryTraces.push(...response.traces.filter(isQueryTrace))
-        pageToken = response.nextPageToken
-        if (!pageToken) break
-      }
-
-      setError(null)
-      setTraces(queryTraces.slice(0, MAX_QUERY_TRACES))
-    } catch (err) {
-      setError(formatTraceError(err instanceof Error ? err.message : String(err)))
-    } finally {
-      refreshInFlight.current = false
-      if (!quiet) setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!enabled) return
-    void refresh()
-    const interval = window.setInterval(() => void refresh(true), TRACE_LIST_REFRESH_MS)
-    return () => window.clearInterval(interval)
-  }, [enabled, refresh])
-
-  return { error, loading, traces }
+export interface TracesOutletContext {
+  traces: TraceSummaryData[]
 }
 
 function HeaderActions({
@@ -136,13 +88,39 @@ function DisconnectedBanner({ message }: { message: string }) {
   )
 }
 
-export function TracesPage() {
-  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
-  const { error, loading, traces } = useTraceList(selectedTraceId === null)
+export function TracesIndex({
+  endpointLabel,
+  loadError,
+  referenceTimeMs: loadedReferenceTimeMs,
+  traces: loadedTraces,
+}: {
+  endpointLabel: string
+  loadError: string | null
+  referenceTimeMs: number
+  traces: TraceSummaryData[]
+}) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const revalidator = useRevalidator()
+  const revalidationInFlight = useRef(false)
+  const lastSuccessfulList = useRef({
+    referenceTimeMs: loadedReferenceTimeMs,
+    traces: loadedTraces,
+  })
+  if (!loadError) {
+    lastSuccessfulList.current = {
+      referenceTimeMs: loadedReferenceTimeMs,
+      traces: loadedTraces,
+    }
+  }
+  const { referenceTimeMs, traces } = loadError
+    ? lastSuccessfulList.current
+    : { referenceTimeMs: loadedReferenceTimeMs, traces: loadedTraces }
   const [searchText, setSearchText] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const searchVisible = searchOpen || searchText.trim().length > 0
+  const listIsActive = location.pathname === '/traces'
 
   const filtered = traces.filter((trace) => {
     const needle = searchText.trim().toLowerCase()
@@ -153,12 +131,12 @@ export function TracesPage() {
   useEffect(() => setActiveIndex(null), [searchText])
 
   useEffect(() => {
-    if (selectedTraceId !== null) return
+    if (!listIsActive) return
     const handler = (event: KeyboardEvent) => {
       const target = event.target
       const inEditable =
         target instanceof HTMLElement &&
-        (target.isContentEditable || target.matches('textarea, [role="textbox"]'))
+        (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
       if (inEditable) return
 
       if (event.key === 'ArrowDown') {
@@ -177,12 +155,15 @@ export function TracesPage() {
         )
           return
         event.preventDefault()
-        setSelectedTraceId(filtered[activeIndex].traceId)
+        navigate({
+          pathname: `/traces/${encodeURIComponent(filtered[activeIndex].traceId)}`,
+          search: location.search,
+        })
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [activeIndex, filtered, selectedTraceId])
+  }, [activeIndex, filtered, listIsActive, location.search, navigate])
 
   useEffect(() => {
     if (activeIndex === null) return
@@ -192,31 +173,19 @@ export function TracesPage() {
     document.querySelector(`[data-trace-row-id="${escaped}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex, filtered])
 
-  if (selectedTraceId) {
-    const selectedIndex = filtered.findIndex((trace) => trace.traceId === selectedTraceId)
-    const newerTraceId = selectedIndex > 0 ? filtered[selectedIndex - 1].traceId : null
-    const olderTraceId =
-      selectedIndex >= 0 && selectedIndex < filtered.length - 1
-        ? filtered[selectedIndex + 1].traceId
-        : null
-    const initialSummary =
-      selectedIndex >= 0
-        ? filtered[selectedIndex]
-        : traces.find((trace) => trace.traceId === selectedTraceId)
+  useEffect(() => {
+    if (!listIsActive) return
+    const interval = window.setInterval(() => {
+      if (revalidator.state !== 'idle' || revalidationInFlight.current) return
+      revalidationInFlight.current = true
+      void revalidator.revalidate().finally(() => {
+        revalidationInFlight.current = false
+      })
+    }, TRACE_LIST_REFRESH_MS)
+    return () => window.clearInterval(interval)
+  }, [listIsActive, revalidator])
 
-    return (
-      <TraceDetail
-        initialSummary={initialSummary}
-        newerTraceId={newerTraceId}
-        olderTraceId={olderTraceId}
-        onClose={() => setSelectedTraceId(null)}
-        onSelectTrace={setSelectedTraceId}
-        traceId={selectedTraceId}
-      />
-    )
-  }
-
-  const connected = !error
+  const connected = !loadError
   return (
     <section className={s.root} aria-label="Coral traces">
       <PageHeader title="Query stream" isSearching={searchVisible}>
@@ -228,13 +197,8 @@ export function TracesPage() {
           setSearchText={setSearchText}
         />
       </PageHeader>
-      {error && <DisconnectedBanner message={error} />}
-      {loading && traces.length === 0 ? (
-        <div className={s.loadingState}>
-          <Icon name="Loader" className={animations.spinAnimation} color="tertiary" />
-          <Typography.Body>Loading traces…</Typography.Body>
-        </div>
-      ) : filtered.length === 0 ? (
+      {loadError && <DisconnectedBanner message={loadError} />}
+      {filtered.length === 0 ? (
         searchText.trim() ? (
           <EmptyPage
             action={
@@ -249,24 +213,30 @@ export function TracesPage() {
         ) : (
           <EmptyPage
             description={
-              error && traces.length === 0
-                ? error
+              loadError && traces.length === 0
+                ? loadError
                 : 'Make sure tracing is enabled, then run a SQL query to see it here in real-time.'
             }
-            iconName={error && traces.length === 0 ? 'CircleAlert' : 'Activity'}
-            title={error && traces.length === 0 ? 'Tracing unavailable' : 'No queries yet'}
+            iconName={loadError && traces.length === 0 ? 'CircleAlert' : 'Activity'}
+            title={loadError && traces.length === 0 ? 'Tracing unavailable' : 'No queries yet'}
           />
         )
       ) : (
         <div className={s.queryScroll}>
           <TraceList
             activeTraceId={activeIndex !== null ? filtered[activeIndex]?.traceId : null}
+            referenceTimeMs={referenceTimeMs}
             traces={filtered}
-            onSelect={setSelectedTraceId}
           />
         </div>
       )}
-      <StatusBar connected={connected} count={filtered.length} totalCount={traces.length} />
+      <StatusBar
+        connected={connected}
+        count={filtered.length}
+        endpointLabel={endpointLabel}
+        totalCount={traces.length}
+      />
+      <Outlet context={{ traces: filtered } satisfies TracesOutletContext} />
     </section>
   )
 }

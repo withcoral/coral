@@ -11,6 +11,7 @@ export const root = style({
   flexDirection: 'column',
   height: '100%',
   minHeight: 0,
+  position: 'relative',
 })
 
 export const header = style({
@@ -124,6 +125,7 @@ export const fullRow = style({
   display: 'flex',
   paddingInline: 24,
   textAlign: 'left',
+  textDecoration: 'none',
   width: '100%',
   selectors: {
     '&:hover': { backgroundColor: theme.surface.onMainContentSubtle },
@@ -131,6 +133,14 @@ export const fullRow = style({
     '&:focus': { outline: 'none' },
     '&:focus-visible': { outline: 'none' },
   },
+})
+
+export const detailOverlay = style({
+  backgroundColor: theme.surface.mainContent,
+  display: 'flex',
+  inset: 0,
+  position: 'absolute',
+  zIndex: 1,
 })
 export const statusDot = style({
   borderRadius: '50%',
@@ -225,6 +235,7 @@ export const loadingState = style({
 })
 export const detailRoot = style({
   display: 'flex',
+  flex: 1,
   flexDirection: 'column',
   height: '100%',
   minHeight: 0,
