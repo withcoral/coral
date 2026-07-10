@@ -35,15 +35,15 @@ pub(crate) fn source_sql_publish_targets_for_schemas(
     selected_sources: &[QuerySource],
     schemas: &BTreeSet<String>,
 ) -> SqlPublishTargets {
-    let schema_sources = selected_sources
-        .iter()
-        .filter(|source| schemas.contains(source.source_name()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if schema_sources.is_empty() {
-        return HashSet::new();
+    let mut targets = HashSet::new();
+    for source in selected_sources {
+        for component in source.components() {
+            if schemas.contains(component.source_name()) {
+                record_source_component_sql_targets(component, &mut targets);
+            }
+        }
     }
-    source_sql_publish_targets(&schema_sources)
+    targets
 }
 
 pub(crate) fn unchecked_source_publish_schemas(
@@ -127,34 +127,62 @@ mod tests {
     use std::collections::BTreeMap;
 
     use coral_engine::{
-        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeTableFunctionPublish,
+        RuntimeSourcePackage, UdfRuntimeImplementation, UdfRuntimePublish,
+        UdfRuntimeTableFunctionPublish,
     };
     use coral_spec::{parse_function_sql, parse_source_manifest_yaml};
 
     use super::*;
 
     fn functions_source() -> QuerySource {
-        let manifest = parse_source_manifest_yaml(
+        http_source("functions", "review_queue")
+    }
+
+    fn http_source(schema: &str, table: &str) -> QuerySource {
+        let manifest = parse_source_manifest_yaml(&format!(
             r"
-name: functions
+name: {schema}
 version: 0.1.0
 dsl_version: 3
 backend: http
 base_url: https://example.com
 tables:
-  - name: review_queue
-    description: Existing review queue
+  - name: {table}
+    description: Existing table
     request:
       method: GET
-      path: /review-queue
-    response: {}
+      path: /{table}
+    response: {{}}
     columns:
       - name: id
         type: Int64
-",
-        )
+"
+        ))
         .expect("source manifest");
         QuerySource::new(manifest, BTreeMap::new(), BTreeMap::new())
+    }
+
+    fn multi_schema_source() -> QuerySource {
+        let primary = http_source("logical", "primary_table");
+        let secondary = http_source("secondary", "review_queue");
+        QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "logical".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: primary
+                    .components()
+                    .iter()
+                    .chain(secondary.components())
+                    .cloned()
+                    .collect(),
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("multi-schema source")
     }
 
     fn runtime_function() -> UdfRuntimeDefinition {
@@ -199,5 +227,16 @@ select 1 as id
             unchecked_source_publish_schemas(&runtime_function(), &BTreeSet::new()),
             BTreeSet::from(["functions".to_string()])
         );
+    }
+
+    #[test]
+    fn schema_filter_checks_secondary_source_components() {
+        let targets = source_sql_publish_targets_for_schemas(
+            &[multi_schema_source()],
+            &BTreeSet::from(["secondary".to_string()]),
+        );
+
+        assert!(targets.contains(&SqlPublishTarget::new("secondary", "review_queue")));
+        assert!(!targets.contains(&SqlPublishTarget::new("logical", "primary_table")));
     }
 }
