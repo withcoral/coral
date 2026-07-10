@@ -6,11 +6,8 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::sqlite_projection;
-#[cfg(test)]
-use crate::search::observed::sqlite_projection::ObservedValuesRebuildResult;
 use crate::search::observed::sqlite_projection::{
     MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedValuesDrainBudget, ObservedValuesDrainResult,
-    ObservedValuesSearchHits,
 };
 use crate::search::observed::sqlite_queue::{
     ObservedValuesEnqueueResult, ObservedValuesEpoch, ObservedValuesQueueJob,
@@ -123,26 +120,6 @@ impl SqliteObservedValuesStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn rebuild_fts(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<ObservedValuesRebuildResult, SqliteSearchError> {
-        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
-        let mut connection = store.connect()?;
-        sqlite_projection::rebuild_observed_fts(&mut connection, workspace_name)
-    }
-
-    pub(crate) fn search(
-        &self,
-        workspace_name: &WorkspaceName,
-        terms: &[String],
-        limit: usize,
-    ) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
-        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
-        let connection = store.connect()?;
-        sqlite_projection::search_observed_values(&connection, workspace_name, terms, limit)
-    }
-
     pub(crate) fn pending_queue_job_count(
         &self,
         workspace_name: &WorkspaceName,
@@ -150,6 +127,21 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
         let count = pending_queue_job_count(&connection, workspace_name)?;
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projected_value_count(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<usize, SqliteSearchError> {
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
+        let connection = store.connect()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM observed_values WHERE workspace = ?1",
+            params![workspace_name.as_str()],
+            |row| row.get(0),
+        )?;
         Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
@@ -840,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_queue_projects_observed_values_into_searchable_fts() {
+    fn drain_queue_projects_observed_values_into_canonical_and_fts_rows() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -865,48 +857,12 @@ mod tests {
         assert_eq!(result.canonical_rows_upserted, 1);
         assert_eq!(result.fts_rows_written, 1);
         assert_eq!(result.remaining_queue_depth, 0);
-        let hits = store
-            .search(&workspace, &[String::from("payment")], 10)
-            .expect("search observed values");
-        assert_eq!(hits.value_count, 1);
-        assert_eq!(hits.hits.len(), 1);
-        let hit = hits.hits.first().expect("observed hit");
-        assert_eq!(hit.source_name, "github");
-        assert_eq!(hit.surface_name, "issues");
-        assert_eq!(hit.column_name, "title");
-        assert_eq!(hit.display_value, "Payment outage");
-        assert_eq!(hit.observation_count, 1);
-    }
-
-    #[test]
-    fn search_finds_short_observed_values_without_trigram_match() {
-        let temp = tempdir().expect("tempdir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let workspace = WorkspaceName::default();
-        let store = SqliteObservedValuesStore::new(layout);
-        let generation = store
-            .capture_epoch(&workspace, "github")
-            .expect("generation");
-        store
-            .enqueue_if_current(
-                &workspace,
-                &test_job_with("scope", "issues", "OK"),
-                generation,
-            )
-            .expect("enqueue");
-        store
-            .drain_queue(&workspace, drain_budget())
-            .expect("drain queue");
-
-        let hits = store
-            .search(&workspace, &[String::from("ok")], 10)
-            .expect("short search observed values");
-
-        assert_eq!(hits.value_count, 1);
-        assert_eq!(hits.hits.len(), 1);
-        let hit = hits.hits.first().expect("observed hit");
-        assert_eq!(hit.display_value, "OK");
+        assert_eq!(
+            store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            1
+        );
     }
 
     #[test]
@@ -1051,49 +1007,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rebuild_fts_recreates_observed_search_index_from_canonical_rows() {
-        let temp = tempdir().expect("tempdir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let workspace = WorkspaceName::default();
-        let store = SqliteObservedValuesStore::new(layout.clone());
-        let generation = store
-            .capture_epoch(&workspace, "github")
-            .expect("generation");
-        store
-            .enqueue_if_current(
-                &workspace,
-                &test_job_with("scope", "issues", "Invoice timeout"),
-                generation,
-            )
-            .expect("enqueue");
-        store
-            .drain_queue(&workspace, drain_budget())
-            .expect("drain queue");
-        clear_observed_fts_for_test(&layout, &workspace);
-        assert!(
-            store
-                .search(&workspace, &[String::from("invoice")], 10)
-                .expect("search without fts")
-                .hits
-                .is_empty()
-        );
-
-        let result = store.rebuild_fts(&workspace).expect("rebuild fts");
-
-        assert_eq!(result.canonical_rows_scanned, 1);
-        assert_eq!(result.fts_rows_rebuilt, 1);
-        assert_eq!(
-            store
-                .search(&workspace, &[String::from("invoice")], 10)
-                .expect("search rebuilt fts")
-                .hits
-                .len(),
-            1
-        );
-    }
-
     fn test_job() -> ObservedValuesQueueJob {
         test_job_with("scope", "issues", "Bug")
     }
@@ -1148,16 +1061,5 @@ mod tests {
                 params![workspace.as_str(), source_name],
             )
             .expect("increment source generation");
-    }
-
-    fn clear_observed_fts_for_test(layout: &AppStateLayout, workspace: &WorkspaceName) {
-        let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
-        let connection = backing.connect_for_test().expect("connection");
-        connection
-            .execute(
-                "DELETE FROM observed_values_fts WHERE workspace = ?1",
-                params![workspace.as_str()],
-            )
-            .expect("clear fts");
     }
 }
