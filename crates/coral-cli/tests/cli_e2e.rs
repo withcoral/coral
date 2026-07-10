@@ -916,6 +916,7 @@ async fn search_index_rebuild_calls_app_maintenance_rpc() {
     let requests = server.rebuild_search_index_requests();
     assert_eq!(requests.len(), 1, "expected one rebuild call");
     assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].provider, SearchIndexProvider::All as i32);
     assert!(requests[0].force);
 
     server.shutdown().await;
