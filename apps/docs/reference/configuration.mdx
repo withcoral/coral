@@ -71,6 +71,16 @@ Source specs imported from files and source credential material remain scoped
 to the source installation in a workspace. Reusable global source specs and
 reusable credential references are not config objects today.
 
+## Server
+
+The long-running `coral server` command reads its native gRPC bind address from
+`[server]`:
+
+```toml
+[server]
+bind_addr = "127.0.0.1:14555"
+```
+
 ## Runtime features
 
 Experimental runtime features are configured under `[features]`.

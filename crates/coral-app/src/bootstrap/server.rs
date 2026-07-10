@@ -3,8 +3,7 @@
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::future::{Future, Ready};
-use std::net::Ipv4Addr;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -42,6 +41,7 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::AggregateHealthService;
+use super::server_config::ServerSettings;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
@@ -91,11 +91,17 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
     fn get(&self, path: &str) -> Option<StaticAsset>;
 }
 
+#[derive(Clone)]
+enum ServerModeSelection {
+    Explicit(ServerMode),
+    ConfiguredStandaloneGrpc,
+}
+
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
-    mode: ServerMode,
+    mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
@@ -113,7 +119,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            mode: ServerMode::EphemeralGrpc,
+            mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
@@ -128,8 +134,22 @@ impl ServerConfig {
     }
 
     pub(crate) fn with_mode(mut self, mode: ServerMode) -> Self {
-        self.mode = mode;
+        self.mode = ServerModeSelection::Explicit(mode);
         self
+    }
+
+    pub(crate) fn with_configured_standalone_grpc(mut self) -> Self {
+        self.mode = ServerModeSelection::ConfiguredStandaloneGrpc;
+        self
+    }
+
+    fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
+        match &self.mode {
+            ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
+            ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
+                bind: ServerSettings::load(layout)?.bind_addr,
+            }),
+        }
     }
 
     pub(crate) fn add_engine_extensions_provider(
@@ -210,6 +230,14 @@ impl ServerBuilder {
     /// Creates a standalone native gRPC server bound to an explicit address.
     pub fn standalone_grpc(bind: SocketAddr) -> Self {
         Self::new().with_mode(ServerMode::StandaloneGrpc { bind })
+    }
+
+    #[must_use]
+    /// Creates a standalone gRPC server using `[server].bind_addr`.
+    pub fn configured_standalone_grpc() -> Self {
+        Self {
+            config: ServerConfig::new().with_configured_standalone_grpc(),
+        }
     }
 
     #[must_use]
@@ -305,7 +333,8 @@ impl ServerBuilder {
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
-        let layout = env.app_state_layout(self.config.config_dir)?;
+        let layout = env.app_state_layout(self.config.config_dir.clone())?;
+        let mode = self.config.resolved_mode(&layout)?;
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -399,7 +428,7 @@ impl ServerBuilder {
             },
             trace_components,
             self.config.user_principal_provider,
-            self.config.mode,
+            mode,
         )
         .await
     }
@@ -1060,6 +1089,55 @@ enabled = false
             .expect("start explicit loopback server");
 
         assert!(server.endpoint_uri().starts_with("http://127.0.0.1:"));
+        server.shutdown().await.expect("shutdown server");
+    }
+
+    #[test]
+    fn configured_standalone_grpc_resolves_configured_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server]\nbind_addr = '127.0.0.2:14555'\n",
+        )
+        .expect("write config");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let builder = ServerBuilder::configured_standalone_grpc();
+
+        let ServerMode::StandaloneGrpc { bind } = builder
+            .config
+            .resolved_mode(&layout)
+            .expect("resolve configured bind")
+        else {
+            panic!("configured server must use standalone gRPC mode");
+        };
+        assert_eq!(bind, SocketAddr::from(([127, 0, 0, 2], 14555)));
+    }
+
+    #[tokio::test]
+    async fn configured_standalone_grpc_starts_with_configured_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        let port = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("reserve loopback port")
+            .local_addr()
+            .expect("reserved address")
+            .port();
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!("[server]\nbind_addr = '127.0.0.1:{port}'\n"),
+        )
+        .expect("write config");
+
+        let server = ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start configured standalone server");
+
+        assert_eq!(server.endpoint_uri(), format!("http://127.0.0.1:{port}"));
         server.shutdown().await.expect("shutdown server");
     }
 
