@@ -11,6 +11,8 @@ mod catalog_discovery_tests;
 mod function_lifecycle_tests;
 #[path = "grpc/harness.rs"]
 mod harness;
+#[path = "grpc/health_service_tests.rs"]
+mod health_service_tests;
 #[path = "grpc/oauth_refresh_tests.rs"]
 mod oauth_refresh_tests;
 #[path = "grpc/resilience_tests.rs"]

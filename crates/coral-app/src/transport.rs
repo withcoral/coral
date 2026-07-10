@@ -73,8 +73,8 @@ impl Extractor for MetadataExtractor<'_> {
 /// read typed context from the request.
 ///
 /// The wrapper also authenticates the inbound metadata once before dispatching
-/// to a service handler, so every registered gRPC route is covered by the same
-/// principal-selection path.
+/// to a service handler, so every application gRPC route in the layered tree is
+/// covered by the same principal-selection path.
 #[derive(Clone)]
 pub(crate) struct GrpcRequestContextLayer {
     user_principal_provider: Arc<dyn UserPrincipalProvider>,

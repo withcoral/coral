@@ -5,6 +5,7 @@ use std::{cmp::Reverse, collections::HashSet, path::PathBuf};
 mod consts;
 mod env;
 mod error;
+mod health;
 mod server;
 
 use crate::state::AppStateLayout;
