@@ -1230,6 +1230,7 @@ version = "0.7.1"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
+ "async-trait",
  "axum",
  "base64",
  "chrono",
