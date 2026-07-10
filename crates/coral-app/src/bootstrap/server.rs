@@ -161,6 +161,11 @@ impl ServerConfig {
 pub enum ServerMode {
     /// Native gRPC for CLI, MCP, and local client callers.
     NativeGrpc,
+    /// Native gRPC bound to an explicit address for the long-running server.
+    RemoteGrpc {
+        /// Address to bind. Non-loopback addresses require authentication.
+        bind: SocketAddr,
+    },
     /// Loopback gRPC-Web server that also serves embedded UI assets.
     EmbeddedUi {
         /// Port to bind on `127.0.0.1`.
@@ -174,8 +179,20 @@ impl ServerMode {
     fn bind_addr(&self) -> SocketAddr {
         match self {
             Self::NativeGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Self::RemoteGrpc { bind } => *bind,
             Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
         }
+    }
+
+    fn validate_bind(&self) -> Result<(), AppError> {
+        if let Self::RemoteGrpc { bind } = self
+            && !bind.ip().is_loopback()
+        {
+            return Err(AppError::FailedPrecondition(
+                "non-loopback gRPC bind requires configured server authentication".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -198,6 +215,12 @@ impl ServerBuilder {
     /// Creates a builder for a native gRPC local server.
     pub fn native_grpc() -> Self {
         Self::new().with_mode(ServerMode::NativeGrpc)
+    }
+
+    #[must_use]
+    /// Creates a native gRPC server bound to an explicit address.
+    pub fn remote_grpc(bind: SocketAddr) -> Self {
+        Self::new().with_mode(ServerMode::RemoteGrpc { bind })
     }
 
     #[must_use]
@@ -292,6 +315,7 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
+        self.config.mode.validate_bind()?;
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
@@ -615,7 +639,9 @@ async fn start_server(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let task = match mode {
-        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
+        ServerMode::NativeGrpc | ServerMode::RemoteGrpc { .. } => {
+            start_grpc_server(listener, shutdown_rx, routes)
+        }
         ServerMode::EmbeddedUi { assets, .. } => {
             start_grpc_web_server(listener, shutdown_rx, routes, assets)
         }
@@ -834,7 +860,7 @@ mod tests {
     )]
 
     use std::borrow::Cow;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1031,6 +1057,44 @@ enabled = false
                 .pending_queue_job_count(&workspace)
                 .expect("pending queue depth"),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_grpc_binds_the_requested_loopback_address() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::remote_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start explicit loopback server");
+
+        assert!(server.endpoint_uri().starts_with("http://127.0.0.1:"));
+        server.shutdown().await.expect("shutdown server");
+    }
+
+    #[tokio::test]
+    async fn remote_grpc_rejects_non_loopback_before_state_creation() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("must-not-be-created");
+        let result = ServerBuilder::remote_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .with_config_dir(&config_dir)
+            .start()
+            .await;
+        let Err(error) = result else {
+            panic!("unauthenticated non-loopback bind must fail");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires configured server authentication")
+        );
+        assert!(
+            !config_dir.exists(),
+            "validation must run before state setup"
         );
     }
 
