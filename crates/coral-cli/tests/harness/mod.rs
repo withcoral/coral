@@ -586,6 +586,9 @@ pub(crate) struct MockServerConfig {
     list_workspaces: MockResult<ListWorkspacesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
     delete_source: MockResult<()>,
+    add_function: MockResult<AddFunctionResponse>,
+    list_functions: MockResult<ListFunctionsResponse>,
+    delete_function: MockResult<()>,
 }
 
 impl Default for MockServerConfig {
@@ -621,6 +624,11 @@ impl Default for MockServerConfig {
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
+            add_function: MockResult::ok(AddFunctionResponse { function: None }),
+            list_functions: MockResult::ok(ListFunctionsResponse {
+                functions: Vec::new(),
+            }),
+            delete_function: MockResult::ok(()),
         }
     }
 }
@@ -643,6 +651,16 @@ impl MockServerConfig {
 
     pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
         self.execute_sql_override = Some(MockResult::ok(response));
+        self
+    }
+
+    pub(crate) fn with_add_function(mut self, response: AddFunctionResponse) -> Self {
+        self.add_function = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_list_functions(mut self, response: ListFunctionsResponse) -> Self {
+        self.list_functions = MockResult::ok(response);
         self
     }
 
@@ -1011,6 +1029,7 @@ struct MockSourceService {
 
 #[derive(Clone)]
 struct MockFunctionService {
+    config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
 }
 
@@ -1025,9 +1044,11 @@ impl FunctionService for MockFunctionService {
             .lock()
             .expect("add_function capture")
             .push(request.into_inner());
-        Err(Status::unimplemented(
-            "mock function add is not implemented",
-        ))
+        self.config
+            .add_function
+            .clone()
+            .into_tonic_result()
+            .map(Response::new)
     }
 
     async fn list_functions(
@@ -1039,9 +1060,11 @@ impl FunctionService for MockFunctionService {
             .lock()
             .expect("list_functions capture")
             .push(request.into_inner());
-        Ok(Response::new(ListFunctionsResponse {
-            functions: Vec::new(),
-        }))
+        self.config
+            .list_functions
+            .clone()
+            .into_tonic_result()
+            .map(Response::new)
     }
 
     async fn delete_function(
@@ -1053,9 +1076,11 @@ impl FunctionService for MockFunctionService {
             .lock()
             .expect("remove_function capture")
             .push(request.into_inner());
-        Err(Status::unimplemented(
-            "mock function delete is not implemented",
-        ))
+        self.config
+            .delete_function
+            .clone()
+            .into_tonic_result()
+            .map(|()| Response::new(DeleteFunctionResponse {}))
     }
 }
 
@@ -1319,6 +1344,7 @@ impl MockServer {
                     captured: workspace_captured,
                 }))
                 .add_service(FunctionServiceServer::new(MockFunctionService {
+                    config: Arc::clone(&config),
                     captured: function_captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
@@ -1444,6 +1470,22 @@ impl MockServer {
             .list_functions
             .lock()
             .expect("list_functions capture")
+            .clone()
+    }
+
+    pub(crate) fn add_function_requests(&self) -> Vec<AddFunctionRequest> {
+        self.captured
+            .add_function
+            .lock()
+            .expect("add_function capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_function_requests(&self) -> Vec<DeleteFunctionRequest> {
+        self.captured
+            .remove_function
+            .lock()
+            .expect("remove_function capture")
             .clone()
     }
 

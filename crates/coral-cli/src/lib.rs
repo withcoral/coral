@@ -30,8 +30,8 @@ use clap::{
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
     AddFunctionRequest, CreateWorkspaceRequest, DeleteFunctionRequest, DeleteWorkspaceRequest,
-    ExecuteSqlRequest, Function, ListFunctionsRequest, ListWorkspacesRequest, SearchRequest,
-    Workspace,
+    ExecuteSqlRequest, Function, FunctionRuntimeReady, ListFunctionsRequest, ListWorkspacesRequest,
+    SearchRequest, Workspace, function,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -957,16 +957,22 @@ async fn run_function(
                 .into_inner()
                 .functions;
             if functions.is_empty() {
-                println!("No runtime-ready functions.");
+                println!("No installed functions.");
             } else {
-                let rows = functions.into_iter().map(|function| {
+                let rows = functions.iter().map(|function| {
                     [
                         function.name.clone(),
-                        function_publish_summary(&function),
-                        function_columns_summary(&function),
+                        function_status_summary(function),
+                        function_arguments_summary(function),
+                        function_publish_summary(function),
+                        function_columns_summary(function),
                     ]
                 });
-                print_text_table(["Function", "Publish", "Columns"], rows);
+                print_text_table(
+                    ["Function", "Status", "Arguments", "Publish", "Columns"],
+                    rows,
+                );
+                print_function_invalid_details(&functions);
             }
         }
         FunctionCommand::Add { file } => {
@@ -1001,32 +1007,77 @@ async fn run_function(
     Ok(())
 }
 
-fn function_publish_summary(function: &Function) -> String {
-    let Some(publish) = function.publish.as_ref() else {
-        return "-".to_string();
-    };
-    let mut targets = Vec::new();
-    if let Some(target) = publish.table_function.as_ref() {
-        targets.push(format!("sql: {}.{}", target.schema_name, target.name));
-    }
-    if targets.is_empty() {
-        "-".to_string()
-    } else {
-        targets.join(", ")
+fn function_status_summary(function: &Function) -> String {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(_)) => "ready".to_string(),
+        Some(function::Runtime::Invalid(_)) | None => "invalid".to_string(),
     }
 }
 
-fn function_columns_summary(function: &Function) -> String {
-    if function.result_columns.is_empty() {
+fn print_function_invalid_details(functions: &[Function]) {
+    let mut invalid_functions = functions.iter().filter_map(|function| {
+        function_invalid_reason(function).map(|reason| (function.name.as_str(), reason))
+    });
+    let Some((first_name, first_reason)) = invalid_functions.next() else {
+        return;
+    };
+
+    println!("\nInvalid functions:");
+    for (name, reason) in std::iter::once((first_name, first_reason)).chain(invalid_functions) {
+        println!("  {name}:");
+        for line in reason.lines() {
+            println!("    {line}");
+        }
+    }
+}
+
+fn function_invalid_reason(function: &Function) -> Option<&str> {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(_)) => None,
+        Some(function::Runtime::Invalid(invalid)) => Some(invalid.reason.as_str()),
+        None => Some("runtime status unavailable"),
+    }
+}
+
+fn function_publish_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    ready.table_function.as_ref().map_or_else(
+        || "-".to_string(),
+        |target| format!("sql: {}.{}", target.schema_name, target.name),
+    )
+}
+
+fn function_arguments_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    if ready.arguments.is_empty() {
         return "-".to_string();
     }
-    let visible_columns = function
+    ready
+        .arguments
+        .iter()
+        .map(|argument| format!("{}: {}", argument.name, argument.data_type))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn function_columns_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    if ready.result_columns.is_empty() {
+        return "-".to_string();
+    }
+    let visible_columns = ready
         .result_columns
         .iter()
         .map(|column| column.name.as_str())
         .take(4)
         .collect::<Vec<_>>();
-    let hidden_count = function
+    let hidden_count = ready
         .result_columns
         .len()
         .saturating_sub(visible_columns.len());
@@ -1035,6 +1086,13 @@ fn function_columns_summary(function: &Function) -> String {
         write!(summary, ", +{hidden_count}").expect("writing to String should not fail");
     }
     summary
+}
+
+fn function_runtime_ready(function: &Function) -> Option<&FunctionRuntimeReady> {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(ready)) => Some(ready),
+        Some(function::Runtime::Invalid(_)) | None => None,
+    }
 }
 
 fn function_name_arg(name: &str) -> Result<String, anyhow::Error> {
@@ -1223,9 +1281,14 @@ async fn run_source_add(
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use coral_api::v1::{Function, TableFunctionResultColumn};
+    use coral_api::v1::{
+        Function, FunctionRuntimeInvalid, FunctionRuntimeReady, TableFunctionResultColumn, function,
+    };
 
-    use super::{Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary};
+    use super::{
+        Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary,
+        function_status_summary,
+    };
 
     #[test]
     fn server_command_is_not_available() {
@@ -1283,20 +1346,23 @@ mod tests {
     #[test]
     fn function_columns_summary_shows_hidden_column_count() {
         let mut function = Function {
-            result_columns: [
-                "number",
-                "title",
-                "html_url",
-                "state",
-                "author",
-                "updated_at",
-            ]
-            .into_iter()
-            .map(|name| TableFunctionResultColumn {
-                name: name.to_string(),
-                ..TableFunctionResultColumn::default()
-            })
-            .collect(),
+            runtime: Some(function::Runtime::Ready(FunctionRuntimeReady {
+                result_columns: [
+                    "number",
+                    "title",
+                    "html_url",
+                    "state",
+                    "author",
+                    "updated_at",
+                ]
+                .into_iter()
+                .map(|name| TableFunctionResultColumn {
+                    name: name.to_string(),
+                    ..TableFunctionResultColumn::default()
+                })
+                .collect(),
+                ..FunctionRuntimeReady::default()
+            })),
             ..Function::default()
         };
 
@@ -1305,13 +1371,19 @@ mod tests {
             "number, title, html_url, state, +2"
         );
 
-        function.result_columns.truncate(4);
+        match function.runtime.as_mut() {
+            Some(function::Runtime::Ready(ready)) => ready.result_columns.truncate(4),
+            Some(function::Runtime::Invalid(_)) | None => panic!("ready function"),
+        }
         assert_eq!(
             function_columns_summary(&function),
             "number, title, html_url, state"
         );
 
-        function.result_columns.clear();
+        match function.runtime.as_mut() {
+            Some(function::Runtime::Ready(ready)) => ready.result_columns.clear(),
+            Some(function::Runtime::Invalid(_)) | None => panic!("ready function"),
+        }
         assert_eq!(function_columns_summary(&function), "-");
     }
 
@@ -1331,6 +1403,23 @@ mod tests {
             .expect_err("limit above the server cap should fail before contacting the server");
         Cli::try_parse_from(["coral", "search", "--limit", "50", "github"])
             .expect("server maximum should parse");
+    }
+
+    #[test]
+    fn function_status_summary_stays_on_one_line() {
+        let function = Function {
+            runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
+                reason: "source 'github' is not installed".to_string(),
+            })),
+            ..Function::default()
+        };
+
+        assert_eq!(function_status_summary(&function), "invalid");
+        let ready = Function {
+            runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
+            ..Function::default()
+        };
+        assert_eq!(function_status_summary(&ready), "ready");
     }
 
     #[test]

@@ -17,8 +17,10 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    AddFunctionResponse, DiscoverSourcesResponse, ExecuteSqlResponse, Function, FunctionArgument,
+    FunctionRuntimeInvalid, FunctionRuntimeReady, ListFunctionsResponse, ListSourcesResponse,
+    ListWorkspacesResponse, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    function,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -180,10 +182,131 @@ async fn functions_list_uses_workspace_flag() {
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert_eq!(stdout.trim(), "No runtime-ready functions.");
+    assert_eq!(stdout.trim(), "No installed functions.");
     let requests = server.list_functions_requests();
     assert_eq!(requests.len(), 1, "expected one list_functions call");
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_list_renders_runtime_details() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_functions(
+        ListFunctionsResponse {
+            functions: vec![
+                Function {
+                    name: "github_issues".to_string(),
+                    runtime: Some(function::Runtime::Ready(FunctionRuntimeReady {
+                        arguments: vec![
+                            FunctionArgument {
+                                name: "owner".to_string(),
+                                data_type: "Utf8".to_string(),
+                            },
+                            FunctionArgument {
+                                name: "repo".to_string(),
+                                data_type: "Utf8".to_string(),
+                            },
+                        ],
+                        ..FunctionRuntimeReady::default()
+                    })),
+                    ..Function::default()
+                },
+                Function {
+                    name: "broken_function".to_string(),
+                    runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
+                        reason: "could not plan function\nsource is unavailable\nHint: reinstall the source"
+                            .to_string(),
+                    })),
+                    ..Function::default()
+                },
+            ],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["functions", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Arguments"),
+        "missing arguments header: {stdout}"
+    );
+    assert!(
+        stdout.contains("owner: Utf8, repo: Utf8"),
+        "missing inferred arguments: {stdout}"
+    );
+    let invalid_row = stdout
+        .lines()
+        .find(|line| line.starts_with("broken_function"))
+        .expect("invalid function row");
+    assert!(invalid_row.contains("invalid"), "invalid status: {stdout}");
+    assert!(
+        !invalid_row.contains("could not plan function"),
+        "validation reason leaked into table: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "Invalid functions:\n  broken_function:\n    could not plan function\n    source is unavailable\n    Hint: reinstall the source"
+        ),
+        "missing indented validation reason: {stdout}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_add_sends_file_to_selected_workspace() {
+    let temp = tempdir().expect("temp dir");
+    let function_file = temp.path().join("echo_value.sql");
+    let sql = "/* name: echo_value */ select 1 as value\n";
+    std::fs::write(&function_file, sql).expect("write function");
+    let server = MockServer::start_with_config(MockServerConfig::default().with_add_function(
+        AddFunctionResponse {
+            function: Some(Function {
+                name: "echo_value".to_string(),
+                runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
+                ..Function::default()
+            }),
+        },
+    ))
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "add", "--file"])
+        .arg(&function_file)
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&assert.get_output().stdout).trim(),
+        "Added function echo_value"
+    );
+    let requests = server.add_function_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].sql, sql);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_remove_uses_selected_workspace() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "remove", "echo_value"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&assert.get_output().stdout).trim(),
+        "Removed function echo_value"
+    );
+    let requests = server.delete_function_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].name, "echo_value");
 
     server.shutdown().await;
 }

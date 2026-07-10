@@ -290,7 +290,7 @@ List configured functions.
 coral functions list
 ```
 
-Coral replans the installed artifacts against the current workspace and lists the runtime-ready functions. It shows each function's table-function target and the result columns inferred from the planned SQL. An artifact that is missing, invalid, or no longer plans successfully is skipped with a warning.
+The list includes every installed function. Runtime-ready entries show their inferred arguments, table-function target, and result-column preview. An artifact that is missing, invalid, or no longer plans successfully stays visible with an `invalid` status and an actionable reason below the table.
 
 If a function publishes a SQL table function and declares required inputs, call it with named arguments:
 
