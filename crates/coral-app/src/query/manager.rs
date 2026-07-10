@@ -1681,6 +1681,10 @@ pagination:
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "covers function validation, catalog publication, listing, and execution together"
+    )]
     async fn user_function_publishes_table_function_and_executes_against_installed_source() {
         let fake_home = tempfile::tempdir().expect("fake home");
         let data_dir = fake_home.path().join("fixture-data");
@@ -1786,6 +1790,8 @@ where type = $kind
         let function = functions.first().expect("function");
         let column = function
             .definition
+            .as_ref()
+            .expect("runtime-ready function")
             .result_columns
             .first()
             .expect("text result column");

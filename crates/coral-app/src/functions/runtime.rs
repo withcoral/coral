@@ -11,17 +11,42 @@ pub(crate) async fn infer_runtime_function(
     runtime_config: QueryRuntimeConfig,
     spec: &FunctionSpec,
 ) -> Result<UdfRuntimeDefinition, AppError> {
-    let mut runtime_function = runtime_function_without_signature(spec);
-    let sql_definition = runtime_sql_definition(&runtime_function);
-    let signature =
-        CoralQuery::infer_udf_signature(selected_sources, runtime_config, sql_definition)
+    let runtime_function = runtime_function_without_signature(spec);
+    let mut results =
+        infer_runtime_functions(selected_sources, runtime_config, vec![runtime_function]).await?;
+    results.pop().ok_or_else(|| {
+        AppError::FailedPrecondition("function runtime validation returned no result".to_string())
+    })?
+}
+
+pub(crate) async fn infer_runtime_functions(
+    selected_sources: &[QuerySource],
+    runtime_config: QueryRuntimeConfig,
+    runtime_functions: Vec<UdfRuntimeDefinition>,
+) -> Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError> {
+    let sql_definitions = runtime_functions
+        .iter()
+        .map(runtime_sql_definition)
+        .collect();
+    let signatures =
+        CoralQuery::infer_udf_signatures(selected_sources, runtime_config, sql_definitions)
             .await
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("function failed runtime validation: {error}"))
-            })?;
-    runtime_function.arguments = signature.arguments;
-    runtime_function.result_columns = signature.result_columns;
-    Ok(runtime_function)
+            .map_err(|error| runtime_validation_error(&error))?;
+
+    Ok(runtime_functions
+        .into_iter()
+        .zip(signatures)
+        .map(|(mut function, signature)| {
+            let signature = signature.map_err(|error| runtime_validation_error(&error))?;
+            function.arguments = signature.arguments;
+            function.result_columns = signature.result_columns;
+            Ok(function)
+        })
+        .collect())
+}
+
+fn runtime_validation_error(error: &coral_engine::CoreError) -> AppError {
+    AppError::FailedPrecondition(format!("function failed runtime validation: {error}"))
 }
 
 pub(crate) fn runtime_function_without_signature(spec: &FunctionSpec) -> UdfRuntimeDefinition {
