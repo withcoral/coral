@@ -1,30 +1,19 @@
 ---
 title: "Installation"
-description: "Install Coral"
+description: "Install the Coral CLI"
 ---
 
-Coral ships as a macOS desktop app and a single local CLI. The CLI binary is
-used for source management, SQL queries, and the MCP stdio server; Coral
-Desktop bundles that CLI as its local sidecar.
+Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
 
 <Note>
-  Coral publishes a macOS desktop app plus macOS, Linux, and x86_64 Windows CLI
-  artifacts. Windows CLI support currently targets native Windows 10/11 on
-  `x86_64-pc-windows-msvc`; ARM64 Windows is not released.
+  Coral publishes macOS, Linux, and x86_64 Windows artifacts. Windows support
+  currently targets native Windows 10/11 on `x86_64-pc-windows-msvc`; ARM64
+  Windows is not released.
 </Note>
 
 ## Install Coral
 
 <Tabs>
-  <Tab title="Desktop app">
-    Download the signed macOS desktop app:
-
-    [Download Coral Desktop for macOS](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-mac-universal.dmg)
-
-    Coral Desktop bundles the matching Coral CLI sidecar for that release and
-    checks for desktop updates automatically.
-  </Tab>
-
   <Tab title="Homebrew">
     ```shellscript
     brew install withcoral/tap/coral
@@ -145,15 +134,6 @@ Desktop bundles that CLI as its local sidecar.
 ## Upgrade
 
 <Tabs>
-  <Tab title="Desktop app">
-    Coral Desktop checks for updates at startup. To check manually, open
-    **Coral > Check for Updates...** from the app menu.
-
-    You can also download and install the latest DMG again:
-
-    [Download Coral Desktop for macOS](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-mac-universal.dmg)
-  </Tab>
-
   <Tab title="Homebrew">
     ```shellscript
     brew upgrade withcoral/tap/coral
@@ -185,14 +165,6 @@ Desktop bundles that CLI as its local sidecar.
 ## Uninstall
 
 <Tabs>
-  <Tab title="Desktop app">
-    Move Coral from `/Applications` to the Trash. To remove local Coral state:
-
-    ```shellscript
-    rm -rf ~/.config/coral
-    ```
-  </Tab>
-
   <Tab title="Homebrew">
     ```shellscript
     brew uninstall withcoral/tap/coral
