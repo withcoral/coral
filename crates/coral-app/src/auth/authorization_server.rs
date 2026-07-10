@@ -9,7 +9,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -27,6 +27,7 @@ mod authorize;
 mod callback;
 mod query;
 mod response;
+mod token;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -135,6 +136,7 @@ impl CoralAuthorizationServer {
                 get(authorization_server_metadata),
             )
             .route("/oauth/authorize", get(authorize::oauth_authorize))
+            .route("/oauth/token", post(token::oauth_token))
             .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
             .with_state(state);
         let listener =
@@ -219,13 +221,6 @@ impl Drop for RunningCoralAuthorizationServer {
 #[derive(Clone)]
 struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the OAuth token endpoint in a descendant PR"
-        )
-    )]
     session_tokens: SessionTokenIssuer,
     state_store: Arc<dyn StateStore>,
     provider_client: OidcProviderClient,
