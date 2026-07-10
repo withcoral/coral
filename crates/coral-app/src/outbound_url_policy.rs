@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use url::{Host, Url};
+use zeroize::Zeroizing;
 
 use crate::bootstrap::is_loopback_ip;
 
@@ -238,7 +239,7 @@ pub(crate) async fn read_bounded_body(
         return Err(OutboundUrlPolicyError::BodyTooLarge { limit });
     }
 
-    let mut body = Vec::new();
+    let mut body = Zeroizing::new(Vec::new());
     while let Some(chunk) = response
         .chunk()
         .await
@@ -246,7 +247,7 @@ pub(crate) async fn read_bounded_body(
     {
         append_bounded_chunk(&mut body, &chunk, limit)?;
     }
-    Ok(body)
+    Ok(std::mem::take(&mut *body))
 }
 
 #[derive(Clone)]

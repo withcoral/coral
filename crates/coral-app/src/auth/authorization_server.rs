@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
+use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
 use super::state_store::{InMemoryStateStore, StateStore};
 
@@ -88,6 +89,8 @@ impl CoralAuthorizationServer {
             settings: self.settings,
             session_tokens: self.session_tokens,
             state_store: self.state_store,
+            provider_client: OidcProviderClient::new()
+                .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
         };
         let router = Router::new()
             .route(
@@ -187,6 +190,8 @@ struct AuthorizationServerHttpState {
         reason = "used by the OAuth authorization endpoint in a descendant PR"
     )]
     state_store: Arc<dyn StateStore>,
+    #[expect(dead_code, reason = "used by OIDC authorization descendants")]
+    provider_client: OidcProviderClient,
 }
 
 async fn authorization_server_metadata(

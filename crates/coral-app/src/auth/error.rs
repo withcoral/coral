@@ -20,6 +20,12 @@ pub enum AuthServerError {
     /// resolved from.
     #[error("resolved session-token issuer does not match authorization-server settings")]
     SessionIssuerMismatch,
+    /// The upstream OIDC provider client could not be constructed.
+    ///
+    /// Carries the client's own message rather than its type, which is crate
+    /// internal.
+    #[error("failed to initialize the OIDC provider client: {0}")]
+    ProviderClient(String),
     /// The TCP listener could not bind.
     #[error("failed to bind authorization server to {address}")]
     Bind {

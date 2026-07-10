@@ -1,6 +1,7 @@
 mod authorization_server;
 mod config;
 mod error;
+mod provider_client;
 #[cfg_attr(
     not(test),
     expect(
