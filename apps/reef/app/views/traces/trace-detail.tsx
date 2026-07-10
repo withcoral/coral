@@ -7,12 +7,11 @@ import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
+import { QueryDetailSummary } from '@/components/query-detail'
 import { TraceStatus } from '@/generated/coral/v1/traces_pb'
 
 import * as s from './traces.css'
 import { HttpSpanDetail } from './http-span-detail'
-import { PageHeader } from './page-header'
-import { SqlCode } from './sql-code'
 import { traceLocation } from './trace-location'
 import type { TracesOutletContext } from './traces-index'
 import { useTimelineTree, type TimelineRow } from './use-timeline-tree'
@@ -66,15 +65,6 @@ export interface ExtraDetailTab {
 
 function useProMode() {
   return new URLSearchParams(useLocation().search).has('pro')
-}
-
-function StatCard({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className={s.statCard}>
-      <Typography.Body variant="tertiary">{label}</Typography.Body>
-      <Typography.BodyLargeStrong>{value}</Typography.BodyLargeStrong>
-    </div>
-  )
 }
 
 function WaterfallBar({
@@ -807,30 +797,9 @@ function TraceDetailContent({
   const activeExtraTab = resolvedExtraTabs.find((tab) => tab.id === activeTab)
 
   return (
-    <div className={s.detailRoot}>
-      <KeyboardShortcut handler={handlePreviousSpanShortcut} shortcut="ArrowUp" />
-      <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
-      <PageHeader
-        title={
-          <>
-            <Button.TextButton onClick={onClose} size="22" variant="linkSubtle">
-              <Typography.BodyStrong as="span" variant="tertiary">
-                Query stream
-              </Typography.BodyStrong>
-            </Button.TextButton>
-            <Typography.BodyStrong as="span" variant="tertiary">
-              /
-            </Typography.BodyStrong>
-            <Typography.BodyStrong as="span" variant="secondary">
-              Query details
-            </Typography.BodyStrong>
-          </>
-        }
-      >
-        <div className={s.detailHeaderActions}>
-          <span className={s.statusBadge} data-tone={statusTone(summary.status)}>
-            {statusLabel(summary.status)}
-          </span>
+    <QueryDetailSummary
+      actions={
+        <>
           <KeyboardShortcut
             handler={handleNewerTraceShortcut}
             shortcut="$mod+ArrowUp"
@@ -875,38 +844,54 @@ function TraceDetailContent({
               variant="bare"
             />
           </KeyboardShortcut>
-        </div>
-      </PageHeader>
-      <div className={s.scrollBody}>
-        <div className={s.content}>
-          <div className={s.sqlBlock}>
-            <pre>
-              <SqlCode sql={summary.query || 'No SQL recorded for this trace.'} />
-            </pre>
-          </div>
-          <div className={s.statGrid}>
-            <StatCard label="Duration" value={formatDurationFromNanos(summary.durationNanos)} />
-            <StatCard label="Rows" value={formatRows(summary)} />
-            <StatCard label="Table scans" value={detail ? sources.length : '—'} />
-            <StatCard label="API requests" value={detail ? httpSpans.length : '—'} />
-          </div>
-          <DetailTabs activeTab={activeTab} extraTabs={resolvedExtraTabs} onTab={setActiveTab} />
-          <div className={s.tabContent}>
-            {activeTab === 'timeline' &&
-              (detail ? (
-                <TimelineWaterfall
-                  expandedHttpSpanId={expandedHttpSpanId}
-                  onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
-                  onNavigableSpanIdsChange={setNavigableSpanIds}
-                  spans={detail.spans}
-                  summary={summary}
-                />
-              ) : null)}
-            {activeExtraTab?.content}
-          </div>
-        </div>
+        </>
+      }
+      shortcuts={
+        <>
+          <KeyboardShortcut handler={handlePreviousSpanShortcut} shortcut="ArrowUp" />
+          <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
+        </>
+      }
+      sql={summary.query || 'No SQL recorded for this trace.'}
+      stats={[
+        { label: 'Duration', value: formatDurationFromNanos(summary.durationNanos) },
+        { label: 'Rows', value: formatRows(summary) },
+        { label: 'Table scans', value: detail ? sources.length : '—' },
+        { label: 'API requests', value: detail ? httpSpans.length : '—' },
+      ]}
+      statusLabel={statusLabel(summary.status)}
+      statusTone={statusTone(summary.status)}
+      title={
+        <>
+          <Button.TextButton onClick={onClose} size="22" variant="linkSubtle">
+            <Typography.BodyStrong as="span" variant="tertiary">
+              Query stream
+            </Typography.BodyStrong>
+          </Button.TextButton>
+          <Typography.BodyStrong as="span" variant="tertiary">
+            /
+          </Typography.BodyStrong>
+          <Typography.BodyStrong as="span" variant="secondary">
+            Query details
+          </Typography.BodyStrong>
+        </>
+      }
+    >
+      <DetailTabs activeTab={activeTab} extraTabs={resolvedExtraTabs} onTab={setActiveTab} />
+      <div className={s.tabContent}>
+        {activeTab === 'timeline' &&
+          (detail ? (
+            <TimelineWaterfall
+              expandedHttpSpanId={expandedHttpSpanId}
+              onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
+              onNavigableSpanIdsChange={setNavigableSpanIds}
+              spans={detail.spans}
+              summary={summary}
+            />
+          ) : null)}
+        {activeExtraTab?.content}
       </div>
-    </div>
+    </QueryDetailSummary>
   )
 }
 
