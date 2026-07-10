@@ -62,6 +62,7 @@ pub mod telemetry;
 mod transport;
 mod workspaces;
 
+pub use auth::{OidcAuthConfig, RunningOidcAuthServer};
 pub use bootstrap::{
     AppError, McpHttpServeConfig, RunningServer, ServerBuilder, ServerMode, StaticAsset,
     StaticAssetsProvider,
