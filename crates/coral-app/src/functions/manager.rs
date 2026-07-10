@@ -1,6 +1,6 @@
 //! Owns user-installed function files and workspace inventory.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use coral_engine::{QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
@@ -40,10 +40,13 @@ enum FunctionArtifactContent {
 pub(crate) struct FunctionListing {
     /// Stable installed inventory name.
     pub(crate) name: FunctionName,
-    /// Runtime definition when enough artifact metadata could be read.
-    pub(crate) definition: Option<UdfRuntimeDefinition>,
-    /// Validation failure when the function is not runtime-ready.
-    pub(crate) runtime_error: Option<String>,
+    /// Current runtime state for this installed function.
+    pub(crate) runtime: FunctionRuntimeStatus,
+}
+
+pub(crate) enum FunctionRuntimeStatus {
+    Ready(UdfRuntimeDefinition),
+    Invalid(String),
 }
 
 enum FunctionCandidate {
@@ -136,7 +139,7 @@ impl FunctionManager {
             AppError::InvalidInput(format!("function validation failed: {error}"))
         })?;
         let function_name = FunctionName::parse(spec.name())?;
-        let mut sql_publish_targets = initial_sql_publish_targets(&spec, selected_sources);
+        let mut sql_publish_targets = initial_sql_publish_targets(selected_sources);
         self.record_installed_function_sql_publish_targets(
             workspace_name,
             &function_name,
@@ -169,16 +172,12 @@ impl FunctionManager {
             .await?;
         let mut definitions = Vec::new();
         for listing in listings {
-            match (listing.definition, listing.runtime_error) {
-                (Some(definition), None) => definitions.push(definition),
-                (_, Some(error)) => tracing::warn!(
+            match listing.runtime {
+                FunctionRuntimeStatus::Ready(definition) => definitions.push(definition),
+                FunctionRuntimeStatus::Invalid(error) => tracing::warn!(
                     function = %listing.name,
                     detail = %error,
                     "skipping function during runtime publication"
-                ),
-                (None, None) => tracing::warn!(
-                    function = %listing.name,
-                    "skipping function without a runtime definition"
                 ),
             }
         }
@@ -196,25 +195,15 @@ impl FunctionManager {
             return Ok(Vec::new());
         }
 
-        let mut seen_names = HashSet::new();
         let mut checked_source_schemas = BTreeSet::new();
-        let mut sql_publish_targets = HashSet::new();
+        let mut sql_publish_targets = SqlPublishTargets::default();
         let mut candidates = Vec::with_capacity(artifacts.len());
         for artifact in artifacts {
-            if !seen_names.insert(artifact.name.clone()) {
-                candidates.push(FunctionCandidate::Listing(invalid_listing(
-                    artifact.name.clone(),
-                    None,
-                    format!("function '{}' is installed more than once", artifact.name),
-                )));
-                continue;
-            }
             let spec = match parse_function_artifact(&artifact) {
                 Ok(spec) => spec,
                 Err(error) => {
                     candidates.push(FunctionCandidate::Listing(invalid_listing(
                         artifact.name,
-                        None,
                         error,
                     )));
                     continue;
@@ -254,18 +243,14 @@ impl FunctionManager {
             .into_iter()
             .map(|candidate| match candidate {
                 FunctionCandidate::Listing(listing) => Ok(listing),
-                FunctionCandidate::Pending { name, definition } => match inferred.next() {
+                FunctionCandidate::Pending { name, .. } => match inferred.next() {
                     Some(Ok(definition)) => {
                         match record_sql_publish_target(&definition, &mut sql_publish_targets) {
                             Ok(()) => Ok(ready_listing(name, definition)),
-                            Err(error) => {
-                                Ok(invalid_listing(name, Some(definition), error.to_string()))
-                            }
+                            Err(error) => Ok(invalid_listing(name, error.to_string())),
                         }
                     }
-                    Some(Err(error)) => {
-                        Ok(invalid_listing(name, Some(definition), error.to_string()))
-                    }
+                    Some(Err(error)) => Ok(invalid_listing(name, error.to_string())),
                     None => Err(AppError::FailedPrecondition(
                         "function runtime validation returned too few results".to_string(),
                     )),
@@ -343,23 +328,21 @@ impl FunctionManager {
         replacing_function: &FunctionName,
         publish_targets: &mut SqlPublishTargets,
     ) -> Result<(), AppError> {
-        let mut seen_names = HashSet::new();
         for artifact in self.load_function_artifacts(workspace_name)? {
             if artifact.name == *replacing_function {
                 continue;
             }
-            if !seen_names.insert(artifact.name.clone()) {
-                return Err(AppError::FailedPrecondition(format!(
-                    "function '{}' is installed more than once",
-                    artifact.name
-                )));
-            }
-            let spec = parse_function_artifact(&artifact).map_err(|error| {
-                AppError::FailedPrecondition(format!(
-                    "installed function '{}': {error}",
-                    artifact.name
-                ))
-            })?;
+            let spec = match parse_function_artifact(&artifact) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    tracing::warn!(
+                        function = %artifact.name,
+                        detail = %error,
+                        "ignoring invalid installed function during publish collision validation"
+                    );
+                    continue;
+                }
+            };
             let runtime_function = runtime_function_without_signature(&spec);
             record_sql_publish_target(&runtime_function, publish_targets)?;
         }
@@ -387,20 +370,14 @@ fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, 
 fn ready_listing(name: FunctionName, definition: UdfRuntimeDefinition) -> FunctionListing {
     FunctionListing {
         name,
-        definition: Some(definition),
-        runtime_error: None,
+        runtime: FunctionRuntimeStatus::Ready(definition),
     }
 }
 
-fn invalid_listing(
-    name: FunctionName,
-    definition: Option<UdfRuntimeDefinition>,
-    error: String,
-) -> FunctionListing {
+fn invalid_listing(name: FunctionName, error: String) -> FunctionListing {
     FunctionListing {
         name,
-        definition,
-        runtime_error: Some(error),
+        runtime: FunctionRuntimeStatus::Invalid(error),
     }
 }
 
@@ -544,11 +521,9 @@ select 1 as id
 
         assert_eq!(listed.len(), 1);
         let listed_function = listed.first().expect("one listed function");
-        assert!(listed_function.runtime_error.is_none());
-        let definition = listed_function
-            .definition
-            .as_ref()
-            .expect("runtime-ready definition");
+        let FunctionRuntimeStatus::Ready(definition) = &listed_function.runtime else {
+            panic!("function should be runtime-ready");
+        };
         assert_eq!(definition.result_columns.len(), 1);
         assert_eq!(
             definition
@@ -602,12 +577,10 @@ select 1 as id
 
         let listing = listed.first().expect("installed function remains visible");
         assert_eq!(listing.name, installed.name);
-        assert!(
-            listing
-                .runtime_error
-                .as_deref()
-                .is_some_and(|error| error.contains("has no inferred type"))
-        );
+        let FunctionRuntimeStatus::Invalid(error) = &listing.runtime else {
+            panic!("function should be runtime-invalid");
+        };
+        assert!(error.contains("has no inferred type"));
     }
 
     #[tokio::test]
@@ -629,15 +602,35 @@ select 1 as id
 
         let listing = listed.first().expect("installed function remains visible");
         assert_eq!(listing.name, installed.name);
-        assert!(
-            listing
-                .runtime_error
-                .as_deref()
-                .is_some_and(|error| error.contains("declares name 'renamed'"))
-        );
+        let FunctionRuntimeStatus::Invalid(error) = &listing.runtime else {
+            panic!("function should be runtime-invalid");
+        };
+        assert!(error.contains("declares name 'renamed'"));
         manager
             .remove_user_function(&workspace, &installed.name)
             .expect("inventory name remains removable");
+    }
+
+    #[tokio::test]
+    async fn validate_function_ignores_unrelated_missing_artifact() {
+        let (_temp, layout, _config_store, manager) = fixture();
+        let workspace = workspace();
+        let installed =
+            install_fixture_function(&manager, &workspace, &function_sql("missing_artifact"));
+        std::fs::remove_file(layout.function_file(&workspace, &installed.name))
+            .expect("remove existing artifact");
+
+        let validated = manager
+            .validate_user_function_sql(
+                &workspace,
+                &[],
+                || Ok(QueryRuntimeConfig::default()),
+                &function_sql("new_function"),
+            )
+            .await
+            .expect("unrelated broken artifact should not block validation");
+
+        assert_eq!(validated.name, "new_function");
     }
 
     #[tokio::test]

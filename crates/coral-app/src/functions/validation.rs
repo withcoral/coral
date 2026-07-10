@@ -1,16 +1,12 @@
 use std::collections::{BTreeSet, HashSet};
 
 use coral_engine::{QuerySource, RuntimeSourceComponent, UdfRuntimeDefinition};
-use coral_spec::FunctionSpec;
 
 use crate::bootstrap::AppError;
 
 pub(crate) type SqlPublishTargets = HashSet<SqlPublishTarget>;
 
-pub(crate) fn initial_sql_publish_targets(
-    _spec: &FunctionSpec,
-    selected_sources: &[QuerySource],
-) -> SqlPublishTargets {
+pub(crate) fn initial_sql_publish_targets(selected_sources: &[QuerySource]) -> SqlPublishTargets {
     source_sql_publish_targets(selected_sources)
 }
 
@@ -130,7 +126,7 @@ mod tests {
         RuntimeSourcePackage, UdfRuntimeImplementation, UdfRuntimePublish,
         UdfRuntimeTableFunctionPublish,
     };
-    use coral_spec::{parse_function_sql, parse_source_manifest_yaml};
+    use coral_spec::parse_source_manifest_yaml;
 
     use super::*;
 
@@ -206,17 +202,7 @@ tables:
 
     #[test]
     fn functions_schema_still_checks_source_publish_targets() {
-        let spec = parse_function_sql(
-            r"/*
-name: review_queue
-schema: functions
-*/
-select 1 as id
-",
-        )
-        .expect("function spec");
-
-        let targets = initial_sql_publish_targets(&spec, &[functions_source()]);
+        let targets = initial_sql_publish_targets(&[functions_source()]);
 
         assert!(targets.contains(&SqlPublishTarget::new("functions", "review_queue")));
     }

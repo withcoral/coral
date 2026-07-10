@@ -1788,10 +1788,11 @@ where type = $kind
             .expect("functions");
         assert_eq!(functions.len(), 1);
         let function = functions.first().expect("function");
-        let column = function
-            .definition
-            .as_ref()
-            .expect("runtime-ready function")
+        let crate::functions::manager::FunctionRuntimeStatus::Ready(definition) = &function.runtime
+        else {
+            panic!("function should be runtime-ready");
+        };
+        let column = definition
             .result_columns
             .first()
             .expect("text result column");
