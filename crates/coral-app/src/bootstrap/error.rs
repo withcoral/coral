@@ -15,6 +15,9 @@ use crate::state::db::DbError;
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// The request did not present valid authentication.
+    #[error("unauthenticated: {0}")]
+    Unauthenticated(String),
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
@@ -153,6 +156,10 @@ fn truncate_status_detail(detail: String) -> String {
     format!("{truncated}{MARKER}")
 }
 
+pub(crate) fn status_with_bounded_detail(code: Code, detail: impl Into<String>) -> Status {
+    Status::new(code, truncate_status_detail(detail.into()))
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "used directly as a map_err adapter across tonic service handlers"
@@ -177,7 +184,7 @@ pub(crate) fn app_status(error: AppError) -> Status {
             details,
         );
     }
-    Status::new(app_code(&error), truncate_status_detail(error.to_string()))
+    status_with_bounded_detail(app_code(&error), error.to_string())
 }
 
 pub(crate) fn core_status(error: CoreError) -> Status {
@@ -245,6 +252,7 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
+        AppError::Unauthenticated(_) => Code::Unauthenticated,
         AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
@@ -305,6 +313,15 @@ mod tests {
                 .contains("cannot resolve source identities")
         );
         assert!(!status.message().contains("Re-add"));
+    }
+
+    #[test]
+    fn app_status_maps_unauthenticated_and_truncates_detail() {
+        let status = app_status(AppError::Unauthenticated("x".repeat(20 * 1024)));
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
+        assert!(status.message().ends_with("… (truncated)"));
     }
 
     #[test]

@@ -1,6 +1,9 @@
 //! Shared gRPC transport helpers for app-owned services.
 
 use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, grpc_response_status_code,
@@ -17,20 +20,32 @@ use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Service, http};
+use tonic::metadata::MetadataMap;
 use tonic::{Code, Request, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
+use tower::Layer;
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::bootstrap::{AppError, app_status, core_status};
+use crate::bootstrap::{AppError, app_status, core_status, status_with_bounded_detail};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
+use crate::identity::{
+    SingleUserPrincipalProvider, UserPrincipalProvider, UserPrincipalProviderError,
+    UserPrincipalProviderErrorKind,
+};
 use crate::query::manager::QueryManagerError;
+use crate::request_context::RequestContext;
 use crate::workspaces::WorkspaceName;
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
+
+const USER_PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
+struct GrpcServerSpan(tracing::Span);
 
 impl Extractor for MetadataExtractor<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -49,31 +64,33 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
-/// Wraps a generated tonic service and stores inbound request context on the request.
-///
-/// Tonic preserves `http::Request` extensions when it decodes the protobuf
-/// message into a `tonic::Request`, but generated server wrappers do not insert
-/// `tonic::GrpcMethod` the way generated clients do. This keeps the method
-/// data and Coral request metadata at the transport boundary and lets handlers
-/// read typed context from the request.
+/// Compatibility wrapper used until the next stack unit installs one layer
+/// around the complete route tree.
 #[derive(Clone)]
 pub(crate) struct GrpcMethodAnnotatedService<S> {
-    inner: S,
+    inner: GrpcRequestContextService<S>,
 }
 
 impl<S> GrpcMethodAnnotatedService<S> {
     pub(crate) fn new(inner: S) -> Self {
-        Self { inner }
+        let layer = GrpcRequestContextLayer::new(Arc::new(SingleUserPrincipalProvider));
+        Self {
+            inner: layer.layer(inner),
+        }
     }
 }
 
-impl<S, B> Service<http::Request<B>> for GrpcMethodAnnotatedService<S>
+impl<S, B, ResBody> Service<http::Request<B>> for GrpcMethodAnnotatedService<S>
 where
-    S: Service<http::Request<B>>,
+    S: Service<http::Request<B>, Response = http::Response<ResBody>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    B: Send + 'static,
+    ResBody: Default + Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = S::Future;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(
         &mut self,
@@ -82,8 +99,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        annotate_request_context(&mut request);
+    fn call(&mut self, request: http::Request<B>) -> Self::Future {
         self.inner.call(request)
     }
 }
@@ -95,9 +111,155 @@ where
     const NAME: &'static str = S::NAME;
 }
 
+/// Tower layer that installs Coral request context for gRPC route trees.
+///
+/// Tonic preserves `http::Request` extensions when it decodes the protobuf
+/// message into a `tonic::Request`, but generated server wrappers do not insert
+/// `tonic::GrpcMethod` the way generated clients do. This keeps the method
+/// data and Coral request metadata at the transport boundary and lets handlers
+/// read typed context from the request.
+///
+/// The wrapper also authenticates the inbound metadata once before dispatching
+/// to a service handler, so every registered gRPC route is covered by the same
+/// principal-selection path.
+#[derive(Clone)]
+pub(crate) struct GrpcRequestContextLayer {
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+}
+
+impl GrpcRequestContextLayer {
+    pub(crate) fn new(user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
+        Self {
+            user_principal_provider,
+        }
+    }
+}
+
+impl<S> Layer<S> for GrpcRequestContextLayer {
+    type Service = GrpcRequestContextService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        GrpcRequestContextService {
+            inner,
+            user_principal_provider: Arc::clone(&self.user_principal_provider),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct GrpcRequestContextService<S> {
+    inner: S,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+}
+
+impl<S, B, ResBody> Service<http::Request<B>> for GrpcRequestContextService<S>
+where
+    S: Service<http::Request<B>, Response = http::Response<ResBody>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    B: Send + 'static,
+    ResBody: Default + Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
+        annotate_request_context(&mut request);
+        let method_metadata = request.extensions().get::<GrpcServerMethod>().map_or_else(
+            || GrpcMethodMetadata::new("coral.v1.UnknownService", "Unknown"),
+            |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
+        );
+        let request_metadata = MetadataMap::from_headers(request.headers().clone());
+        let user_principal_provider = Arc::clone(&self.user_principal_provider);
+        let span = grpc_span_for_metadata(&method_metadata, &request_metadata);
+        request
+            .extensions_mut()
+            .insert(GrpcServerSpan(span.clone()));
+
+        let mut inner = self.inner.clone();
+        std::mem::swap(&mut self.inner, &mut inner);
+
+        let instrumented_span = span.clone();
+        Box::pin(
+            async move {
+                match principal_for_request(
+                    user_principal_provider.as_ref(),
+                    &request_metadata,
+                    USER_PRINCIPAL_PROVIDER_TIMEOUT,
+                )
+                .await
+                {
+                    Ok(principal) => {
+                        request
+                            .extensions_mut()
+                            .insert(RequestContext::new(principal));
+                        inner.call(request).await
+                    }
+                    Err(error) => {
+                        let status = user_principal_provider_status(&error);
+                        record_grpc_status(&span, status.code(), Some(&status));
+                        Ok(status.into_http())
+                    }
+                }
+            }
+            .instrument(instrumented_span),
+        )
+    }
+}
+
+async fn principal_for_request(
+    provider: &dyn UserPrincipalProvider,
+    metadata: &MetadataMap,
+    timeout: Duration,
+) -> Result<crate::identity::UserPrincipal, UserPrincipalProviderError> {
+    tokio::time::timeout(timeout, provider.principal_for_metadata(metadata))
+        .await
+        .unwrap_or_else(|_| {
+            Err(UserPrincipalProviderError::unavailable(
+                "user principal provider timed out",
+            ))
+        })
+}
+
+fn user_principal_provider_status(error: &UserPrincipalProviderError) -> Status {
+    let (code, prefix) = match error.kind() {
+        UserPrincipalProviderErrorKind::Unauthenticated => {
+            (Code::Unauthenticated, "unauthenticated")
+        }
+        UserPrincipalProviderErrorKind::Unavailable => (Code::Unavailable, "unavailable"),
+        UserPrincipalProviderErrorKind::Internal => (Code::Internal, "internal"),
+    };
+    status_with_bounded_detail(code, format!("{prefix}: {}", error.client_message()))
+}
+
+impl<S> tonic::server::NamedService for GrpcRequestContextService<S>
+where
+    S: tonic::server::NamedService,
+{
+    const NAME: &'static str = S::NAME;
+}
+
 /// Creates a span parented to the trace context extracted from a gRPC request.
 pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
+    if let Some(span) = request.extensions().get::<GrpcServerSpan>() {
+        return span.0.clone();
+    }
     let metadata = grpc_method(request);
+    grpc_span_for_metadata(&metadata, request.metadata())
+}
+
+fn grpc_span_for_metadata(
+    metadata: &GrpcMethodMetadata,
+    request_metadata: &MetadataMap,
+) -> tracing::Span {
     let span_name = format!("{}/{}", metadata.service, metadata.method);
     let span = tracing::info_span!(
         "grpc",
@@ -115,7 +277,7 @@ pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
         grpc.code = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request.metadata()));
+    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request_metadata));
     span
 }
 
@@ -491,12 +653,18 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
+        GrpcMethodMetadata, GrpcRequestContextLayer, GrpcServerMethod, grpc_method, query_status,
         query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
-        table_to_proto, workspace_name_from_proto, workspace_to_proto,
+        table_to_proto, user_principal_provider_status, workspace_name_from_proto,
+        workspace_to_proto,
     };
     use crate::bootstrap::AppError;
+    use crate::identity::{
+        SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
+        UserPrincipalProviderError,
+    };
     use crate::query::manager::QueryManagerError;
+    use crate::request_context::RequestContext;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
@@ -535,6 +703,32 @@ mod tests {
     }
 
     #[test]
+    fn user_principal_provider_status_preserves_failure_class() {
+        let cases = [
+            (
+                UserPrincipalProviderError::unauthenticated("bad token"),
+                Code::Unauthenticated,
+                "unauthenticated: bad token",
+            ),
+            (
+                UserPrincipalProviderError::unavailable("key service offline"),
+                Code::Unavailable,
+                "unavailable: key service offline",
+            ),
+            (
+                UserPrincipalProviderError::internal("invalid principal selection"),
+                Code::Internal,
+                "internal: invalid principal selection",
+            ),
+        ];
+        for (error, code, message) in cases {
+            let status = user_principal_provider_status(&error);
+            assert_eq!(status.code(), code);
+            assert_eq!(status.message(), message);
+        }
+    }
+
+    #[test]
     fn grpc_server_method_derives_from_uri_path() {
         assert_eq!(
             GrpcServerMethod::from_path("/coral.v1.QueryService/ExecuteSql"),
@@ -561,6 +755,74 @@ mod tests {
             grpc_method(&request),
             GrpcMethodMetadata::new("coral.v1.QueryService", "ExecuteSql")
         );
+    }
+
+    #[derive(Debug)]
+    struct FixedUserPrincipalProvider {
+        principal: UserPrincipal,
+    }
+
+    #[tonic::async_trait]
+    impl UserPrincipalProvider for FixedUserPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            _metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
+            Ok(self.principal.clone())
+        }
+    }
+
+    async fn principal_inserted_by(
+        provider: std::sync::Arc<dyn UserPrincipalProvider>,
+    ) -> UserPrincipal {
+        use std::sync::{Arc, Mutex};
+        use tonic::codegen::http;
+        use tower::{Layer as _, Service as _};
+
+        let observed_context = Arc::new(Mutex::new(None));
+        let observed_context_for_service = Arc::clone(&observed_context);
+        let service = tower::service_fn(move |request: http::Request<()>| {
+            let observed_context = Arc::clone(&observed_context_for_service);
+            async move {
+                *observed_context.lock().expect("observed context lock") =
+                    request.extensions().get::<RequestContext>().cloned();
+                Ok::<_, std::convert::Infallible>(http::Response::new(()))
+            }
+        });
+        let mut service = GrpcRequestContextLayer::new(provider).layer(service);
+        let request = http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .body(())
+            .expect("http request");
+
+        service.call(request).await.expect("service response");
+
+        observed_context
+            .lock()
+            .expect("observed context lock")
+            .clone()
+            .expect("request context")
+            .principal()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn request_context_layer_inserts_local_principal() {
+        let principal =
+            principal_inserted_by(std::sync::Arc::new(SingleUserPrincipalProvider)).await;
+
+        assert_eq!(principal, UserPrincipal::local());
+    }
+
+    #[tokio::test]
+    async fn request_context_layer_honors_injected_provider() {
+        let expected_principal = UserPrincipal::for_user("saul").expect("valid user");
+        let principal = principal_inserted_by(std::sync::Arc::new(FixedUserPrincipalProvider {
+            principal: expected_principal.clone(),
+        }))
+        .await;
+
+        assert_eq!(principal, expected_principal);
     }
 
     #[test]
