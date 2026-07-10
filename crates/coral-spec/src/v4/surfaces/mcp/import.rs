@@ -254,6 +254,13 @@ surfaces:
 
         let ir = import_catalog(&catalog);
         let operation = operation(&ir, "search_items");
+        assert!(
+            operation
+                .inputs
+                .iter()
+                .all(|input| !input.exclude_from_lookup_keys),
+            "MCP inputs never participate in REST lookup-key exclusions"
+        );
         let query = operation
             .inputs
             .iter()

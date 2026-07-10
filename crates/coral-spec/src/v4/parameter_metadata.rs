@@ -816,6 +816,64 @@ pagination:
     }
 
     #[test]
+    fn pagination_override_internalizes_stale_lookup_key_candidate() {
+        let mut ir = semantic_ir(vec![rest_operation(
+            "widgets_list",
+            "/widgets",
+            vec![query_input("cursor"), query_input("state")],
+            PaginationSpec::default(),
+        )]);
+        let overrides = parse_parameter_metadata_overrides_yaml(
+            r"
+pagination:
+  - name: cursor
+    match:
+      operation_ids: [widgets_list]
+    mode: cursor_query
+    cursor_param: cursor
+    response_cursor_path: [next_cursor]
+",
+        )
+        .expect("parse overrides");
+
+        apply_parameter_metadata_overrides(&mut ir, &overrides).expect("apply overrides");
+        assert!(
+            !input_excluded(&ir, "cursor"),
+            "pagination overrides should not rewrite persisted import-time lookup-key metadata"
+        );
+
+        for mode in [
+            ProjectionPaginationInputSyncMode::RecomputeRestInputExposure,
+            ProjectionPaginationInputSyncMode::PreserveExistingExposure,
+        ] {
+            let mut projections = projection_catalog(vec![
+                projection_input("cursor", "cursor", SqlInputExposure::Filter),
+                projection_input("state", "state", SqlInputExposure::Filter),
+            ]);
+            sync_projection_pagination_inputs(std::slice::from_ref(&ir), &mut projections, mode);
+
+            assert_eq!(
+                projection_input_exposure(&projections, "cursor"),
+                SqlInputExposure::Internal,
+                "{mode:?}"
+            );
+            assert!(
+                !projection_input_lookup_key(&projections, "cursor"),
+                "{mode:?}"
+            );
+            assert_eq!(
+                projection_input_exposure(&projections, "state"),
+                SqlInputExposure::Filter,
+                "{mode:?}"
+            );
+            assert!(
+                projection_input_lookup_key(&projections, "state"),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
     fn sync_projection_inputs_applies_lookup_key_exclusions() {
         let mut ir = semantic_ir(vec![rest_operation(
             "widgets_list",

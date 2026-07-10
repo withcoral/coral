@@ -10,9 +10,9 @@ use coral_spec::v4::{
     MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
     ProjectionCatalog, ProjectionPaginationInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr,
     SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
-    apply_lookup_key_inference, apply_parameter_metadata_overrides, generate_projection_catalog,
-    import_mcp_surface, import_openapi_surface, normalize_mcp_tool_catalog,
-    normalize_source_document, openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
+    apply_parameter_metadata_overrides, generate_projection_catalog, import_mcp_surface,
+    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
+    openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
     sync_projection_pagination_inputs, validate_materialized_source,
     validate_openapi_base_url_template,
 };
@@ -662,7 +662,7 @@ fn write_materialization(
     let mut diagnostics = Vec::new();
     let mut first_surface_error = None;
     for surface in &manifest.surfaces {
-        let mut materialized_surface = match materialize_surface(manifest, surface, inputs) {
+        let materialized_surface = match materialize_surface(manifest, surface, inputs) {
             Ok(materialized_surface) => materialized_surface,
             Err(error) => {
                 let message = format!(
@@ -683,7 +683,6 @@ fn write_materialization(
                 continue;
             }
         };
-        apply_lookup_key_inference(&mut materialized_surface.semantic_ir);
         let surface_dir = temp_dir.join("surfaces").join(&surface.id);
         write_surface_artifacts(&surface_dir, &materialized_surface)?;
         materialized_surfaces.push(MaterializedSurface {

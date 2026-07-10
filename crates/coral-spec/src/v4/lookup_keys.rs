@@ -1,14 +1,17 @@
 //! Heuristic inference of lookup key joinability for REST surfaces.
 //!
-//! At materialization time Coral guesses which query parameters are NOT
+//! During OpenAPI import Coral guesses which REST query parameters are NOT
 //! complete exact lookups and stamps that fact into the semantic IR. Excluded
 //! parameters stay pushdown filters; they just cannot anchor dependent joins
-//! (`FilterSpec.lookup_key` stays false). The heuristic excludes aggressively:
-//! a wrong exclusion only makes a join fall back to the regular plan, while a
-//! wrong inclusion lets the dependent-join optimizer trust incomplete or fuzzy
-//! result sets and produce wrong rows.
+//! (`FilterSpec.lookup_key` stays false). MCP pagination is handled separately
+//! by MCP import/projection code, and MCP inputs do not use lookup-key
+//! exclusions. The heuristic excludes aggressively: a wrong exclusion only
+//! makes a join fall back to the regular plan, while a wrong inclusion lets the
+//! dependent-join optimizer trust incomplete or fuzzy result sets and produce
+//! wrong rows.
 
-use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, SemanticIr};
+use crate::PaginationSpec;
+use crate::v4::ir::{IrInputLocation, IrOperationInput};
 use crate::v4::projections::pagination_query_param_names;
 
 /// Normalized parameter names that only shape response presentation and never
@@ -43,38 +46,22 @@ const SEARCH_NAME_LEXICON: &[&str] = &[
     "filter", "filters", "keyword", "keywords", "q", "query", "search",
 ];
 
-/// Infers per-input lookup key exclusions into the semantic IR. Non-REST
-/// inputs are reset to `false`; projection derivation never treats them as
-/// lookup keys.
-pub fn apply_lookup_key_inference(ir: &mut SemanticIr) {
-    for operation in &mut ir.operations {
-        let pagination_params = match &operation.execution {
-            IrExecutionAttachment::Rest(rest) => {
-                Some(pagination_query_param_names(&rest.pagination))
-            }
-            IrExecutionAttachment::Mcp(_) => None,
-        };
-
-        let Some(pagination_params) = pagination_params else {
-            for input in &mut operation.inputs {
-                input.exclude_from_lookup_keys = false;
-            }
+pub(in crate::v4) fn infer_rest_lookup_key_exclusions(
+    inputs: &mut [IrOperationInput],
+    pagination: &PaginationSpec,
+) {
+    let pagination_params = pagination_query_param_names(pagination);
+    for input in inputs {
+        input.exclude_from_lookup_keys = false;
+        if input.location != IrInputLocation::Query {
             continue;
-        };
-
-        for input in &mut operation.inputs {
-            input.exclude_from_lookup_keys = false;
-            if input.location != IrInputLocation::Query {
-                continue;
-            }
-            // Pagination-owned parameters are internal today, but a later
-            // pagination override can remap the scheme and surface them as
-            // filters. Detection has proven they are windowing, so record that
-            // in the IR instead of relying on their exposure.
-            if pagination_params.contains(input.name.as_str()) || !joinable_param_name(&input.name)
-            {
-                input.exclude_from_lookup_keys = true;
-            }
+        }
+        // Pagination-owned parameters are internal today, but a later
+        // pagination override can remap the scheme and surface them as
+        // filters. Detection has proven they are windowing, so record that
+        // in the IR instead of relying on their exposure.
+        if pagination_params.contains(input.name.as_str()) || !joinable_param_name(&input.name) {
+            input.exclude_from_lookup_keys = true;
         }
     }
 }
@@ -101,16 +88,10 @@ fn normalized_param_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::v4::ir::{
-        HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-        IrOperationOutput, IrScalarType, McpExecutionAttachment, OutputCardinality,
-        RestExecutionAttachment, RestResponseAttachment, SemanticIr,
-    };
-    use crate::v4::manifest::SurfaceType;
-    use crate::v4::{OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-    use crate::{PaginationMode, PaginationSpec, ResponseSpec};
+    use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
+    use crate::{PaginationMode, PaginationSpec};
 
-    use super::apply_lookup_key_inference;
+    use super::infer_rest_lookup_key_exclusions;
 
     #[test]
     fn infers_exclusions_for_presentation_and_search_params() {
@@ -119,27 +100,17 @@ mod tests {
             page_param: Some("page".to_string()),
             ..PaginationSpec::default()
         };
-        let mut ir = semantic_ir(vec![
-            rest_operation(
-                "widgets_list",
-                &[
-                    "order_by",
-                    "sort ",
-                    "sort_field",
-                    "q",
-                    "search",
-                    "state",
-                    "category",
-                    "page",
-                ],
-                page_pagination,
-            ),
-            rest_operation(
-                "gadgets_list",
-                &["filter", "since"],
-                PaginationSpec::default(),
-            ),
+        let mut widgets = query_inputs(&[
+            "order_by",
+            "sort ",
+            "sort_field",
+            "q",
+            "search",
+            "state",
+            "category",
+            "page",
         ]);
+        let mut gadgets = query_inputs(&["filter", "since"]);
 
         // `order_by`/`sort_field` are exact presentation hits after name
         // normalization, `q`/`search`/`filter` are search-like, and
@@ -147,27 +118,18 @@ mod tests {
         // pagination remap cannot surface it as a lookup key. Padded `sort `
         // is still excluded because no generated side file has to represent
         // the raw padded name. `state`/`category`/`since` remain joinable.
-        apply_lookup_key_inference(&mut ir);
-        assert!(input_excluded(&ir, "widgets_list", "order_by"));
-        assert!(input_excluded(&ir, "widgets_list", "sort "));
-        assert!(input_excluded(&ir, "widgets_list", "sort_field"));
-        assert!(input_excluded(&ir, "widgets_list", "q"));
-        assert!(input_excluded(&ir, "widgets_list", "search"));
-        assert!(input_excluded(&ir, "widgets_list", "page"));
-        assert!(input_excluded(&ir, "gadgets_list", "filter"));
-        assert!(!input_excluded(&ir, "widgets_list", "state"));
-        assert!(!input_excluded(&ir, "widgets_list", "category"));
-        assert!(!input_excluded(&ir, "gadgets_list", "since"));
-    }
-
-    #[test]
-    fn resets_lookup_key_exclusions_for_mcp_inputs() {
-        let mut ir = semantic_ir(vec![mcp_operation("items_search", "query")]);
-        assert!(input_excluded(&ir, "items_search", "query"));
-
-        apply_lookup_key_inference(&mut ir);
-
-        assert!(!input_excluded(&ir, "items_search", "query"));
+        infer_rest_lookup_key_exclusions(&mut widgets, &page_pagination);
+        infer_rest_lookup_key_exclusions(&mut gadgets, &PaginationSpec::default());
+        assert!(input_excluded(&widgets, "order_by"));
+        assert!(input_excluded(&widgets, "sort "));
+        assert!(input_excluded(&widgets, "sort_field"));
+        assert!(input_excluded(&widgets, "q"));
+        assert!(input_excluded(&widgets, "search"));
+        assert!(input_excluded(&widgets, "page"));
+        assert!(input_excluded(&gadgets, "filter"));
+        assert!(!input_excluded(&widgets, "state"));
+        assert!(!input_excluded(&widgets, "category"));
+        assert!(!input_excluded(&gadgets, "since"));
     }
 
     #[test]
@@ -177,32 +139,18 @@ mod tests {
             cursor_param: Some("cursor".to_string()),
             ..PaginationSpec::default()
         };
-        let mut ir = semantic_ir(vec![
-            rest_operation("paginated", &["cursor"], pagination),
-            rest_operation("ordinary", &["cursor"], PaginationSpec::default()),
-        ]);
+        let mut paginated = query_inputs(&["cursor"]);
+        let mut ordinary = query_inputs(&["cursor"]);
 
-        apply_lookup_key_inference(&mut ir);
+        infer_rest_lookup_key_exclusions(&mut paginated, &pagination);
+        infer_rest_lookup_key_exclusions(&mut ordinary, &PaginationSpec::default());
 
-        assert!(input_excluded(&ir, "paginated", "cursor"));
-        assert!(!input_excluded(&ir, "ordinary", "cursor"));
+        assert!(input_excluded(&paginated, "cursor"));
+        assert!(!input_excluded(&ordinary, "cursor"));
     }
 
-    fn semantic_ir(operations: Vec<IrOperation>) -> SemanticIr {
-        SemanticIr {
-            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-            source_name: "demo".to_string(),
-            surface_id: "rest".to_string(),
-            surface_type: SurfaceType::OpenApi,
-            importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
-            operations,
-            types: Vec::new(),
-            diagnostics: Vec::new(),
-        }
-    }
-
-    fn rest_operation(id: &str, query_params: &[&str], pagination: PaginationSpec) -> IrOperation {
-        let inputs = query_params
+    fn query_inputs(query_params: &[&str]) -> Vec<IrOperationInput> {
+        query_params
             .iter()
             .map(|name| IrOperationInput {
                 name: (*name).to_string(),
@@ -213,75 +161,11 @@ mod tests {
                 description: String::new(),
                 exclude_from_lookup_keys: false,
             })
-            .collect();
-        IrOperation {
-            id: id.to_string(),
-            method_name: "GET".to_string(),
-            description: String::new(),
-            deprecated: false,
-            read_only: true,
-            naming: None,
-            inputs,
-            output: IrOperationOutput {
-                cardinality: OutputCardinality::List,
-                type_ref: "row".to_string(),
-                row_path: Vec::new(),
-            },
-            entity: None,
-            execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
-                method: HttpMethod::Get,
-                path_template: format!("/{id}"),
-                parameters: Vec::new(),
-                request_body: None,
-                response: RestResponseAttachment {
-                    status_code: 200,
-                    media_type: "application/json".to_string(),
-                    response: ResponseSpec::default(),
-                },
-                pagination,
-            })),
-            diagnostics: Vec::new(),
-        }
+            .collect()
     }
 
-    fn mcp_operation(id: &str, input_name: &str) -> IrOperation {
-        IrOperation {
-            id: id.to_string(),
-            method_name: "tools/call".to_string(),
-            description: String::new(),
-            deprecated: false,
-            read_only: true,
-            naming: None,
-            inputs: vec![IrOperationInput {
-                name: input_name.to_string(),
-                location: IrInputLocation::ToolArg,
-                required: false,
-                data_type: IrScalarType::String,
-                default_value: None,
-                description: String::new(),
-                exclude_from_lookup_keys: true,
-            }],
-            output: IrOperationOutput {
-                cardinality: OutputCardinality::List,
-                type_ref: "row".to_string(),
-                row_path: Vec::new(),
-            },
-            entity: None,
-            execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
-                tool_name: id.to_string(),
-                pagination: None,
-                offset_pagination: None,
-            }),
-            diagnostics: Vec::new(),
-        }
-    }
-
-    fn input_excluded(ir: &SemanticIr, operation_id: &str, input_name: &str) -> bool {
-        ir.operations
-            .iter()
-            .find(|operation| operation.id == operation_id)
-            .expect("operation")
-            .inputs
+    fn input_excluded(inputs: &[IrOperationInput], input_name: &str) -> bool {
+        inputs
             .iter()
             .find(|input| input.name == input_name)
             .expect("input")

@@ -8,6 +8,7 @@ use crate::v4::ir::{
     IrOperationNaming, IrScalarType, OutputCardinality, RestExecutionAttachment,
     RestParameterBinding, RestRequestBody,
 };
+use crate::v4::lookup_keys::infer_rest_lookup_key_exclusions;
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
@@ -39,11 +40,15 @@ impl OpenApiImporter<'_> {
         let naming = openapi_operation_naming(op_obj, raw_operation_id, &operation_id);
         let method = parse_http_method(method_name);
         let mut diagnostics = Vec::new();
-        let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
+        let mut parameters =
+            self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
         let pagination = detect_pagination(&parameters, &pagination_context);
+        // All REST inputs must be present before lookup-key exclusion inference:
+        // the same vector becomes both operation inputs and parameter bindings.
+        infer_rest_lookup_key_exclusions(&mut parameters, &pagination);
         let rest_parameters = parameters
             .iter()
             .map(|input| RestParameterBinding {

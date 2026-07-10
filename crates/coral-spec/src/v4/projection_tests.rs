@@ -150,16 +150,15 @@ fn lookup_key_exclusions_control_joinability_not_exposure() {
     assert!(!filter_lookup_key(&catalog, "state"));
     assert!(!filter_lookup_key(&catalog, "order_by"));
 
-    // Absent metadata keeps filters joinable: the generator version gate
-    // ensures v8 artifacts always carry generated metadata, so this default
-    // only covers transitional states.
+    // Generated metadata is present immediately after OpenAPI import, before
+    // app materialization writes the semantic IR artifact.
     let catalog = items_api_catalog(None);
     assert_eq!(
         exposure(&catalog, "list_items", "state"),
         SqlInputExposure::Filter
     );
     assert!(filter_lookup_key(&catalog, "state"));
-    assert!(filter_lookup_key(&catalog, "order_by"));
+    assert!(!filter_lookup_key(&catalog, "order_by"));
 }
 
 #[test]

@@ -40,7 +40,6 @@ pub use ir::{
     McpExecutionAttachment, OutputCardinality, RestExecutionAttachment, RestParameterBinding,
     RestRequestBody, RestResponseAttachment, SemanticIr,
 };
-pub use lookup_keys::apply_lookup_key_inference;
 pub use manifest::{
     McpRuntimeConfig, OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
     V4SourceCommon, V4SourceManifest, V4Surface, validate_openapi_base_url_template,
