@@ -257,7 +257,12 @@ fn is_explicit_loopback(url: &Url) -> bool {
     match url.host() {
         Some(Host::Domain(host)) => host.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
         Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => {
+            address.is_loopback()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|address| address.is_loopback())
+        }
         None => false,
     }
 }
@@ -372,6 +377,7 @@ mod tests {
             "http://localhost:14554/callback",
             "http://127.42.0.1:14554/callback",
             "http://[::1]:14554/callback",
+            "http://[::ffff:127.0.0.1]:14554/callback",
         ] {
             ConfiguredEndpointUrl::parse(endpoint).expect(endpoint);
         }

@@ -1,4 +1,5 @@
 mod oauth;
+mod provider;
 #[expect(clippy::allow_attributes, reason = "stacked session core")]
 #[allow(dead_code, reason = "stacked session core")]
 pub(crate) mod session;

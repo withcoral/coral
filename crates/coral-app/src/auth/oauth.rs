@@ -11,16 +11,16 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use serde::de::{Error as _, IgnoredAny};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
+use serde::de::IgnoredAny;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use url::{Host, Url};
 
+use super::provider::{OidcProviderConfig, ProviderConfigFile};
 use super::session::SessionTokenConfig;
 use super::state_store::{InMemoryStateStore, StateStore};
-use crate::state::AppStateLayout;
+use crate::outbound_url_policy::ConfiguredEndpointUrl;
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 25 } else { 5_000 });
@@ -32,7 +32,10 @@ const DEFAULT_OAUTH_SCOPE: &str = "coral:mcp";
 #[derive(Debug, Clone)]
 pub struct OidcAuthConfig {
     bind_addr: SocketAddr,
-    _session: SessionTokenConfig,
+    #[expect(dead_code, reason = "used by the OAuth token endpoint descendant")]
+    session: SessionTokenConfig,
+    #[expect(dead_code, reason = "used by the OIDC federation descendant")]
+    providers: BTreeMap<String, OidcProviderConfig>,
     oauth: OAuthServerConfig,
 }
 
@@ -41,7 +44,14 @@ impl OidcAuthConfig {
     /// # Errors
     /// Returns an error when config I/O, parsing, or validation fails.
     pub fn load(config_dir_override: Option<PathBuf>) -> Result<Option<Self>, String> {
-        let layout = AppStateLayout::discover(config_dir_override)
+        Self::load_with(config_dir_override, &crate::bootstrap::env_var)
+    }
+
+    fn load_with(
+        config_dir_override: Option<PathBuf>,
+        get_var: &impl Fn(&str) -> Result<Option<String>, std::env::VarError>,
+    ) -> Result<Option<Self>, String> {
+        let layout = crate::bootstrap::discover_app_state_layout(config_dir_override)
             .map_err(|error| format!("failed to locate Coral config: {error}"))?;
         let config_path = layout.config_file();
         match std::fs::symlink_metadata(config_path) {
@@ -58,7 +68,7 @@ impl OidcAuthConfig {
         };
         let session = SessionTokenConfig::load(&layout)?
             .ok_or_else(|| config_error("auth.session is required when [auth] is configured"))?;
-        auth.build(session)
+        auth.build(session, get_var)
     }
 
     /// Starts this HTTP listener on loopback or behind a TLS-terminating reverse proxy.
@@ -68,7 +78,7 @@ impl OidcAuthConfig {
         let bind_addr = self.bind_addr;
         let state = AuthState {
             config: Arc::new(self),
-            _store: Arc::new(InMemoryStateStore::new()),
+            store: Arc::new(InMemoryStateStore::new()),
         };
         let router = Router::new()
             .route(
@@ -148,7 +158,8 @@ impl Drop for RunningOidcAuthServer {
 #[derive(Clone)]
 struct AuthState {
     config: Arc<OidcAuthConfig>,
-    _store: Arc<dyn StateStore>,
+    #[expect(dead_code, reason = "used by OAuth authorization descendants")]
+    store: Arc<dyn StateStore>,
 }
 
 #[derive(Debug, Clone)]
@@ -223,7 +234,11 @@ struct AuthConfigFile {
 }
 
 impl AuthConfigFile {
-    fn build(self, session: SessionTokenConfig) -> Result<Option<OidcAuthConfig>, String> {
+    fn build(
+        self,
+        session: SessionTokenConfig,
+        get_var: &impl Fn(&str) -> Result<Option<String>, std::env::VarError>,
+    ) -> Result<Option<OidcAuthConfig>, String> {
         let Some(oauth_file) = self.oauth else {
             return if self.providers.is_empty() {
                 Ok(None)
@@ -238,8 +253,14 @@ impl AuthConfigFile {
                 "auth.providers must configure at least one OIDC provider",
             ));
         }
+        let mut providers = BTreeMap::new();
         for (name, provider) in self.providers {
-            provider.validate(&name)?;
+            if !valid_path_segment(&name) {
+                return Err(config_error(
+                    "auth.providers keys must be non-empty path segments",
+                ));
+            }
+            providers.insert(name.clone(), provider.build(&name, get_var)?);
         }
         let oauth = oauth_file.build()?;
         if session.issuer != oauth.issuer {
@@ -267,7 +288,8 @@ impl AuthConfigFile {
         }
         Ok(Some(OidcAuthConfig {
             bind_addr,
-            _session: session,
+            session,
+            providers,
             oauth,
         }))
     }
@@ -357,60 +379,6 @@ impl OAuthClientConfigFile {
     }
 }
 
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ProviderConfigFile {
-    issuer: Option<String>,
-    client_id: Option<String>,
-    redirect_uri: Option<String>,
-    client_secret: Option<SecretMarker>,
-    client_secret_env: Option<SecretMarker>,
-}
-
-struct SecretMarker;
-
-impl<'de> Deserialize<'de> for SecretMarker {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let invalid = || D::Error::custom("provider secret must be a nonempty string");
-        let value = String::deserialize(deserializer)
-            .map(zeroize::Zeroizing::new)
-            .map_err(|_error| invalid())?;
-        (!value.trim().is_empty())
-            .then_some(Self)
-            .ok_or_else(invalid)
-    }
-}
-
-impl ProviderConfigFile {
-    fn validate(self, name: &str) -> Result<(), String> {
-        if !valid_path_segment(name) {
-            return Err(config_error(
-                "auth.providers keys must be non-empty path segments",
-            ));
-        }
-        if self.client_secret.is_some() == self.client_secret_env.is_some() {
-            return Err(config_error(format!(
-                "auth.providers.{name} must configure exactly one of client_secret or client_secret_env"
-            )));
-        }
-        let issuer = required(
-            &format!("auth.providers.{name}.issuer"),
-            self.issuer.as_deref(),
-        )?;
-        validate_issuer("OIDC provider issuer", &issuer, false)?;
-        required(
-            &format!("auth.providers.{name}.client_id"),
-            self.client_id.as_deref(),
-        )?;
-        let redirect_uri = required(
-            &format!("auth.providers.{name}.redirect_uri"),
-            self.redirect_uri.as_deref(),
-        )?;
-        validate_endpoint("OIDC provider redirect URI", &redirect_uri)?;
-        Ok(())
-    }
-}
-
 fn required(label: &str, value: Option<&str>) -> Result<String, String> {
     value
         .map(str::trim)
@@ -429,38 +397,18 @@ fn valid_path_segment(value: &str) -> bool {
 
 fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, String> {
     let url = validate_endpoint(label, raw)?;
-    if url.query().is_some() {
+    if url.as_url().query().is_some() {
         return Err(config_error(format!("{label} must not include a query")));
     }
-    if root_only && !matches!(url.path(), "" | "/") {
+    if root_only && !matches!(url.as_url().path(), "" | "/") {
         return Err(config_error("auth.oauth.issuer must mount at the root"));
     }
-    Ok(url.as_str().trim_end_matches('/').to_string())
+    Ok(raw.trim_end_matches('/').to_string())
 }
 
-fn validate_endpoint(label: &str, raw: &str) -> Result<Url, String> {
-    let url = Url::parse(raw.trim())
-        .map_err(|error| config_error(format!("{label} is not a valid URL: {error}")))?;
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(config_error(format!(
-            "{label} must not include credentials"
-        )));
-    }
-    if url.fragment().is_some() {
-        return Err(config_error(format!("{label} must not include a fragment")));
-    }
-    let loopback = match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(ip)) => is_loopback_ip(ip.into()),
-        Some(Host::Ipv6(ip)) => is_loopback_ip(ip.into()),
-        None => return Err(config_error(format!("{label} must include a host"))),
-    };
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return Err(config_error(format!(
-            "{label} requires https or loopback http"
-        )));
-    }
-    Ok(url)
+fn validate_endpoint(label: &str, raw: &str) -> Result<ConfiguredEndpointUrl, String> {
+    ConfiguredEndpointUrl::parse(raw.trim())
+        .map_err(|error| config_error(format!("{label} is invalid: {error}")))
 }
 
 fn is_loopback_ip(ip: IpAddr) -> bool {
@@ -483,12 +431,12 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::{CLI_REDIRECT_URI, OidcAuthConfig, RunningOidcAuthServer, validate_endpoint};
+    use super::{CLI_REDIRECT_URI, OidcAuthConfig, RunningOidcAuthServer};
 
     const SESSION: &str = "[auth.session]\nissuer = 'http://localhost:9080'\naudience = 'http://localhost:1457'\nsigning_key_file = 'session.key'\n";
     const OAUTH: &str =
         "[auth.oauth]\nissuer = 'http://localhost:9080'\nresource = 'http://localhost:1457'\n";
-    const PROVIDER: &str = "[auth.providers.test]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret_env = 'UNREAD_ENV'\nredirect_uri = 'http://localhost:9080/auth/oidc/test/callback'\n";
+    const PROVIDER: &str = "[auth.providers.test]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret = 'test-secret'\nredirect_uri = 'http://localhost:9080/auth/oidc/test/callback'\n";
 
     fn config(auth: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -547,6 +495,36 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "This test isolates CORAL_CONFIG_DIR access in a subprocess."
+    )]
+    fn load_honors_config_dir_env_unless_explicitly_overridden() {
+        const RUN_FLAG: &str = "CORAL_RUN_OIDC_CONFIG_DIR_TEST";
+        if std::env::var_os(RUN_FLAG).is_some() {
+            assert!(OidcAuthConfig::load(None).expect("env config").is_some());
+            let explicit = tempfile::tempdir().expect("explicit config dir");
+            assert!(
+                OidcAuthConfig::load(Some(explicit.path().to_path_buf()))
+                    .expect("explicit config")
+                    .is_none()
+            );
+            return;
+        }
+
+        let env_config = oauth("");
+        let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
+            .env(RUN_FLAG, "1")
+            .env("CORAL_CONFIG_DIR", env_config.path())
+            .arg("--exact")
+            .arg("auth::oauth::tests::load_honors_config_dir_env_unless_explicitly_overridden")
+            .arg("--nocapture")
+            .status()
+            .expect("run subprocess");
+        assert!(status.success(), "subprocess should pass");
+    }
+
+    #[test]
     fn validates_configuration_fail_closed_without_leaking_secrets() {
         let missing_session = tempfile::tempdir().expect("tempdir");
         fs::write(missing_session.path().join("config.toml"), "[auth]\n").expect("config");
@@ -569,15 +547,6 @@ mod tests {
         fs::write(&path, invalid).expect("config");
         assert!(reject(&dir).contains("allow_insecure_remote_http_bind"));
 
-        for secret in ["client_secret_env = ''", "client_secret = 42"] {
-            let invalid = raw.replace("client_secret_env = 'UNREAD_ENV'", secret);
-            fs::write(&path, invalid).expect("config");
-            let error = reject(&dir);
-            assert!(error.contains("provider secret must be a nonempty string"));
-            assert!(!error.contains("42"));
-        }
-
-        validate_endpoint("test URL", "http://[::ffff:127.0.0.1]/").expect("mapped loopback");
         let malformed = "[auth]\nclient_secret = 'SUPER_SECRET' trailing-garbage\n";
         fs::write(&path, malformed).expect("config");
         assert!(!reject(&dir).contains("SUPER_SECRET"));
