@@ -33,6 +33,9 @@ impl ObservedValuesProjection {
                 queue_jobs_processed = result.queue_jobs_processed,
                 stale_jobs_skipped = result.stale_jobs_skipped,
                 failed_jobs = result.failed_jobs,
+                stale_rows_purged = result.stale_rows_purged,
+                evicted_rows = result.evicted_rows,
+                storage_limit_reached = result.storage_limit_reached,
                 "observed-value queue drain budget expired"
             );
         }

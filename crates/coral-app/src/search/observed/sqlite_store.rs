@@ -1,10 +1,13 @@
 //! `SQLite` observed-values queue and governance operations.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
+use crate::search::observed::governance::{
+    ObservedValuesStoragePolicy, maintain_observed_values, storage_limit_reached,
+};
 use crate::search::observed::sqlite_projection;
 use crate::search::observed::sqlite_projection::{
     MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedValuesDrainBudget, ObservedValuesDrainResult,
@@ -24,6 +27,7 @@ const MAX_PENDING_QUEUE_JOBS_PER_WORKSPACE: i64 = 2;
 #[derive(Debug, Clone)]
 pub(crate) struct SqliteObservedValuesStore {
     layout: AppStateLayout,
+    policy: ObservedValuesStoragePolicy,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -35,7 +39,15 @@ pub(crate) struct ObservedValuesClearResult {
 
 impl SqliteObservedValuesStore {
     pub(crate) fn new(layout: AppStateLayout) -> Self {
-        Self { layout }
+        Self {
+            layout,
+            policy: ObservedValuesStoragePolicy::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_policy(layout: AppStateLayout, policy: ObservedValuesStoragePolicy) -> Self {
+        Self { layout, policy }
     }
 
     #[cfg(test)]
@@ -77,8 +89,13 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let result =
-            enqueue_if_current_in_transaction(&transaction, workspace_name, job, captured_epoch)?;
+        let result = enqueue_if_current_in_transaction(
+            &transaction,
+            workspace_name,
+            job,
+            captured_epoch,
+            self.policy,
+        )?;
         transaction.commit()?;
         Ok(result)
     }
@@ -116,7 +133,22 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         configure_drain_busy_timeout(&connection, budget)?;
-        sqlite_projection::drain_observed_queue(&mut connection, workspace_name, budget)
+        let started_at = Instant::now();
+        let mut result =
+            sqlite_projection::drain_observed_queue(&mut connection, workspace_name, budget)?;
+        let maintenance_budget = budget.time_budget.saturating_sub(started_at.elapsed());
+        let governance = maintain_observed_values(
+            &mut connection,
+            workspace_name,
+            self.policy,
+            maintenance_budget,
+        )?;
+        result.stale_rows_purged = governance.stale_rows_purged;
+        result.evicted_rows = governance.evicted_rows;
+        result.storage_limit_reached = governance.storage_limit_reached;
+        result.budget_exhausted |= maintenance_budget.is_zero()
+            && (governance.storage_limit_reached || result.remaining_queue_depth > 0);
+        Ok(result)
     }
 
     #[cfg(test)]
@@ -215,10 +247,14 @@ fn enqueue_if_current_in_transaction(
     workspace_name: &WorkspaceName,
     job: &ObservedValuesQueueJob,
     captured_epoch: ObservedValuesEpoch,
+    policy: ObservedValuesStoragePolicy,
 ) -> Result<ObservedValuesEnqueueResult, SqliteSearchError> {
     let current_epoch = read_epoch(transaction, workspace_name, &job.owner_source_name)?;
     if current_epoch != captured_epoch {
         return Ok(ObservedValuesEnqueueResult::StaleEpoch);
+    }
+    if storage_limit_reached(transaction, policy)? {
+        return Ok(ObservedValuesEnqueueResult::StorageLimitReached);
     }
     if pending_queue_job_id(transaction, workspace_name, job, captured_epoch)?.is_none()
         && pending_queue_job_count(transaction, workspace_name)?
@@ -481,6 +517,7 @@ mod tests {
 
     use rusqlite::{TransactionBehavior, params};
 
+    use super::super::governance::ObservedValuesStoragePolicy;
     use super::super::sqlite_projection::{
         MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedValuesDrainBudget,
     };
@@ -656,6 +693,7 @@ mod tests {
             &workspace,
             &test_job(),
             captured_epoch,
+            ObservedValuesStoragePolicy::default(),
         )
         .expect("enqueue in transaction");
         assert!(matches!(
@@ -832,6 +870,37 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_applies_workspace_storage_backpressure() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: 1,
+                wal_headroom_bytes: 0,
+                ..ObservedValuesStoragePolicy::default()
+            },
+        );
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+
+        let result = store
+            .enqueue_if_current(&workspace, &test_job(), generation)
+            .expect("enqueue result");
+
+        assert_eq!(result, ObservedValuesEnqueueResult::StorageLimitReached);
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("queue count"),
+            0
+        );
+    }
+
+    #[test]
     fn drain_queue_projects_observed_values_into_canonical_and_fts_rows() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -862,6 +931,91 @@ mod tests {
                 .projected_value_count(&workspace)
                 .expect("projected value count"),
             1
+        );
+    }
+
+    #[test]
+    fn ordinary_drain_purges_stale_observed_rows() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let initial_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = initial_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        initial_store
+            .enqueue_if_current(&workspace, &test_job(), generation)
+            .expect("enqueue");
+        initial_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("initial drain");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        connection
+            .execute(
+                "UPDATE observed_values SET last_observed_at = '2020-01-01T00:00:00.000Z' WHERE workspace = ?1",
+                params![workspace.as_str()],
+            )
+            .expect("age observed row");
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                stale_after_days: 30,
+                ..ObservedValuesStoragePolicy::default()
+            },
+        );
+
+        let result = governed_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("maintenance drain");
+
+        assert_eq!(result.stale_rows_purged, 1);
+        assert_eq!(
+            governed_store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            0
+        );
+    }
+
+    #[test]
+    fn ordinary_drain_bounds_eviction_when_workspace_is_over_limit() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let initial_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = initial_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        initial_store
+            .enqueue_if_current(&workspace, &test_job(), generation)
+            .expect("enqueue");
+        initial_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("initial drain");
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: 1,
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 1,
+            },
+        );
+
+        let result = governed_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("governance drain");
+
+        assert_eq!(result.evicted_rows, 1);
+        assert!(result.storage_limit_reached);
+        assert_eq!(
+            governed_store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            0
         );
     }
 

@@ -1,6 +1,7 @@
 //! Observed-values collection and governance for Universal Search.
 
 mod collector;
+mod governance;
 mod projection;
 mod publisher;
 mod sensitive;
