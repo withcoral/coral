@@ -48,6 +48,7 @@ mod credentials;
 mod episode;
 pub mod features;
 mod feedback;
+mod hash;
 mod identity;
 mod query;
 mod search;
