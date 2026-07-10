@@ -125,6 +125,7 @@ impl SessionTokenIssuer {
         }
         let raw = std::fs::read_to_string(config_path)
             .map_err(|error| file_error("read config file", config_path, &error))?;
+        let raw = Zeroizing::new(raw);
         let file: ConfigFile =
             toml::from_str(&raw).map_err(|error| config_error(error.message()))?;
         let Some(session) = file.auth.and_then(|auth| auth.session) else {
