@@ -8,14 +8,10 @@ use crate::bootstrap::AppError;
 pub(crate) type SqlPublishTargets = HashSet<SqlPublishTarget>;
 
 pub(crate) fn initial_sql_publish_targets(
-    spec: &FunctionSpec,
+    _spec: &FunctionSpec,
     selected_sources: &[QuerySource],
 ) -> SqlPublishTargets {
-    if spec.schema() == "functions" {
-        HashSet::new()
-    } else {
-        source_sql_publish_targets(selected_sources)
-    }
+    source_sql_publish_targets(selected_sources)
 }
 
 pub(crate) fn record_sql_publish_target(
@@ -55,10 +51,10 @@ pub(crate) fn unchecked_source_publish_schemas(
     checked: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     let schema = &function.publish.table_function.schema;
-    if schema != "functions" && !checked.contains(schema) {
-        BTreeSet::from([schema.clone()])
-    } else {
+    if checked.contains(schema) {
         BTreeSet::new()
+    } else {
+        BTreeSet::from([schema.clone()])
     }
 }
 
@@ -123,5 +119,85 @@ impl SqlPublishTarget {
 
     fn display_name(&self) -> String {
         format!("{}.{}", self.schema, self.name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use coral_engine::{
+        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeTableFunctionPublish,
+    };
+    use coral_spec::{parse_function_sql, parse_source_manifest_yaml};
+
+    use super::*;
+
+    fn functions_source() -> QuerySource {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: functions
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: review_queue
+    description: Existing review queue
+    request:
+      method: GET
+      path: /review-queue
+    response: {}
+    columns:
+      - name: id
+        type: Int64
+",
+        )
+        .expect("source manifest");
+        QuerySource::new(manifest, BTreeMap::new(), BTreeMap::new())
+    }
+
+    fn runtime_function() -> UdfRuntimeDefinition {
+        UdfRuntimeDefinition {
+            name: "review_queue".to_string(),
+            description: String::new(),
+            arguments: Vec::new(),
+            implementation: UdfRuntimeImplementation::CoralSql {
+                query: "select 1 as id".to_string(),
+            },
+            publish: UdfRuntimePublish {
+                table_function: UdfRuntimeTableFunctionPublish {
+                    schema: "functions".to_string(),
+                    name: "review_queue".to_string(),
+                    description: String::new(),
+                },
+            },
+            result_columns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn functions_schema_still_checks_source_publish_targets() {
+        let spec = parse_function_sql(
+            r"/*
+name: review_queue
+schema: functions
+*/
+select 1 as id
+",
+        )
+        .expect("function spec");
+
+        let targets = initial_sql_publish_targets(&spec, &[functions_source()]);
+
+        assert!(targets.contains(&SqlPublishTarget::new("functions", "review_queue")));
+    }
+
+    #[test]
+    fn functions_schema_is_not_treated_as_prechecked() {
+        assert_eq!(
+            unchecked_source_publish_schemas(&runtime_function(), &BTreeSet::new()),
+            BTreeSet::from(["functions".to_string()])
+        );
     }
 }
