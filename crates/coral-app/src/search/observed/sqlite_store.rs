@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
+use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::governance::{
     ObservedValuesStoragePolicy, evict_oldest_observed_values_for_projection,
     maintain_observed_values, maintain_observed_values_with_eviction_limit,
@@ -13,6 +14,7 @@ use crate::search::observed::governance::{
 use crate::search::observed::sqlite_projection;
 use crate::search::observed::sqlite_projection::{
     MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedValuesDrainBudget, ObservedValuesDrainResult,
+    ObservedValuesRebuildResult, ObservedValuesSearchHits,
 };
 use crate::search::observed::sqlite_queue::{
     ObservedValuesEnqueueResult, ObservedValuesEpoch, ObservedValuesQueueJob,
@@ -202,7 +204,35 @@ impl SqliteObservedValuesStore {
         Ok(result)
     }
 
-    #[cfg(test)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "policy-aware rebuild is staged for the final maintenance API PR"
+        )
+    )]
+    pub(crate) fn rebuild_fts(
+        &self,
+        workspace_name: &WorkspaceName,
+        policy: &ObservedValuesRetrievalPolicy,
+    ) -> Result<ObservedValuesRebuildResult, SqliteSearchError> {
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
+        let mut connection = store.connect()?;
+        sqlite_projection::rebuild_observed_fts(&mut connection, workspace_name, policy)
+    }
+
+    pub(crate) fn search(
+        &self,
+        workspace_name: &WorkspaceName,
+        terms: &[String],
+        limit: usize,
+        policy: &ObservedValuesRetrievalPolicy,
+    ) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
+        let connection = store.connect()?;
+        sqlite_projection::search_observed_values(&connection, workspace_name, terms, limit, policy)
+    }
+
     pub(crate) fn pending_queue_job_count(
         &self,
         workspace_name: &WorkspaceName,
@@ -578,6 +608,9 @@ mod tests {
     };
     use super::super::sqlite_projection::{
         MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedValuesDrainBudget,
+    };
+    use super::super::{
+        ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
     };
     use super::{
         SqliteObservedValuesStore, clear_source_in_transaction, enqueue_if_current_in_transaction,
@@ -959,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_queue_projects_observed_values_into_canonical_and_fts_rows() {
+    fn drain_queue_projects_observed_values_into_searchable_fts() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -984,12 +1017,22 @@ mod tests {
         assert_eq!(result.canonical_rows_upserted, 1);
         assert_eq!(result.fts_rows_written, 1);
         assert_eq!(result.remaining_queue_depth, 0);
-        assert_eq!(
-            store
-                .projected_value_count(&workspace)
-                .expect("projected value count"),
-            1
-        );
+        let hits = store
+            .search(
+                &workspace,
+                &[String::from("payment")],
+                10,
+                &test_policy(&[("scope", "issues")]),
+            )
+            .expect("search observed values");
+        assert_eq!(hits.value_count, 1);
+        assert_eq!(hits.hits.len(), 1);
+        let hit = hits.hits.first().expect("observed hit");
+        assert_eq!(hit.source_name, "github");
+        assert_eq!(hit.surface_name, "issues");
+        assert_eq!(hit.column_name, "title");
+        assert_eq!(hit.display_value, "Payment outage");
+        assert_eq!(hit.observation_count, 1);
     }
 
     #[test]
@@ -1681,6 +1724,130 @@ mod tests {
     }
 
     #[test]
+    fn search_finds_short_observed_values_without_trigram_match() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("scope", "issues", "OK"),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+
+        let hits = store
+            .search(
+                &workspace,
+                &[String::from("ok")],
+                10,
+                &test_policy(&[("scope", "issues")]),
+            )
+            .expect("short search observed values");
+
+        assert_eq!(hits.value_count, 1);
+        assert_eq!(hits.hits.len(), 1);
+        let hit = hits.hits.first().expect("observed hit");
+        assert_eq!(hit.display_value, "OK");
+    }
+
+    #[test]
+    fn search_filters_observed_values_by_live_source_scope() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("live-scope", "issues", "Payment outage"),
+                generation,
+            )
+            .expect("enqueue live");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("old-scope", "issues", "Payment backlog"),
+                generation,
+            )
+            .expect("enqueue stale scope");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+
+        let hits = store
+            .search(
+                &workspace,
+                &[String::from("payment")],
+                10,
+                &test_policy(&[("live-scope", "issues")]),
+            )
+            .expect("search observed values");
+
+        assert_eq!(hits.value_count, 1);
+        assert_eq!(hits.hits.len(), 1);
+        let hit = hits.hits.first().expect("observed hit");
+        assert_eq!(hit.display_value, "Payment outage");
+    }
+
+    #[test]
+    fn search_filters_values_stale_by_last_observed_at_without_purging() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("scope", "issues", "Fresh payment"),
+                generation,
+            )
+            .expect("enqueue fresh");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("old-scope", "issues", "Ancient payment"),
+                generation,
+            )
+            .expect("enqueue old");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+        mark_observed_value_stale_for_test(&layout, &workspace, "ancient-payment");
+
+        let hits = store
+            .search(
+                &workspace,
+                &[String::from("payment")],
+                10,
+                &test_policy(&[("scope", "issues"), ("old-scope", "issues")]),
+            )
+            .expect("search observed values");
+
+        assert_eq!(hits.value_count, 1);
+        assert_eq!(hits.hits.len(), 1);
+        let hit = hits.hits.first().expect("observed hit");
+        assert_eq!(hit.display_value, "Fresh payment");
+        assert_eq!(canonical_value_count_for_test(&layout, &workspace), 2);
+    }
+
+    #[test]
     fn drain_queue_keeps_failed_payload_for_retry() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -1822,6 +1989,237 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rebuild_fts_recreates_observed_search_index_from_canonical_rows() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with("scope", "issues", "Invoice timeout"),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+        clear_observed_fts_for_test(&layout, &workspace);
+        assert!(
+            store
+                .search(
+                    &workspace,
+                    &[String::from("invoice")],
+                    10,
+                    &test_policy(&[("scope", "issues")]),
+                )
+                .expect("search without fts")
+                .hits
+                .is_empty()
+        );
+
+        let result = store
+            .rebuild_fts(&workspace, &test_policy(&[("scope", "issues")]))
+            .expect("rebuild fts");
+
+        assert_eq!(result.canonical_rows_scanned, 1);
+        assert_eq!(result.fts_rows_rebuilt, 1);
+        assert_eq!(
+            store
+                .search(
+                    &workspace,
+                    &[String::from("invoice")],
+                    10,
+                    &test_policy(&[("scope", "issues")]),
+                )
+                .expect("search rebuilt fts")
+                .hits
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rebuild_fts_purges_non_live_canonical_rows() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        for (scope, value) in [
+            ("live-scope", "Payment current"),
+            ("removed-scope", "Payment removed"),
+        ] {
+            store
+                .enqueue_if_current(
+                    &workspace,
+                    &test_job_with(scope, "issues", value),
+                    generation,
+                )
+                .expect("enqueue");
+            store
+                .drain_queue(&workspace, drain_budget())
+                .expect("drain queue");
+        }
+
+        let result = store
+            .rebuild_fts(&workspace, &test_policy(&[("live-scope", "issues")]))
+            .expect("rebuild fts");
+
+        assert_eq!(result.canonical_rows_scanned, 1);
+        assert_eq!(result.fts_rows_rebuilt, 1);
+        assert_eq!(canonical_value_count_for_test(&layout, &workspace), 1);
+        let hits = store
+            .search(
+                &workspace,
+                &[String::from("payment")],
+                10,
+                &test_policy(&[("live-scope", "issues")]),
+            )
+            .expect("search observed values");
+        assert_eq!(hits.hits.len(), 1);
+        let hit = hits.hits.first().expect("observed hit");
+        assert_eq!(hit.display_value, "Payment current");
+    }
+
+    #[test]
+    fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let github_generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("github generation");
+        let jira_generation = store
+            .capture_epoch(&workspace, "jira")
+            .expect("jira generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_for_owner("github", "live-scope", "issues", "Payment current"),
+                github_generation,
+            )
+            .expect("enqueue github");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain github");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_for_owner("jira", "unknown-scope", "issues", "Payment blocked"),
+                jira_generation,
+            )
+            .expect("enqueue jira");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain jira");
+
+        let result = store
+            .rebuild_fts(
+                &workspace,
+                &test_policy_with_failed_sources(&[("live-scope", "issues")], &["jira"]),
+            )
+            .expect("rebuild fts");
+
+        assert_eq!(result.canonical_rows_scanned, 1);
+        assert_eq!(result.fts_rows_rebuilt, 1);
+        assert_eq!(canonical_value_count_for_test(&layout, &workspace), 2);
+    }
+
+    #[test]
+    fn rebuild_fts_skips_stale_purge_when_too_many_rows_would_be_deleted() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        for index in 0..10 {
+            store
+                .enqueue_if_current(
+                    &workspace,
+                    &test_job_with("scope", "issues", &format!("Payment ancient {index}")),
+                    generation,
+                )
+                .expect("enqueue");
+            store
+                .drain_queue(&workspace, drain_budget())
+                .expect("drain queue");
+        }
+        mark_all_observed_values_stale_for_test(&layout, &workspace);
+
+        let result = store
+            .rebuild_fts(&workspace, &test_policy(&[("scope", "issues")]))
+            .expect("rebuild fts");
+
+        assert_eq!(result.canonical_rows_scanned, 0);
+        assert_eq!(result.fts_rows_rebuilt, 0);
+        assert_eq!(canonical_value_count_for_test(&layout, &workspace), 10);
+    }
+
+    #[test]
+    fn search_may_return_more_than_limit_before_provider_diversification() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        for (scope, surface, value) in [
+            ("scope-1", "issues", "Payment alpha"),
+            ("scope-2", "issues", "Payment beta"),
+            ("scope-3", "issues", "Payment gamma"),
+            ("scope-4", "pulls", "OK"),
+        ] {
+            store
+                .enqueue_if_current(
+                    &workspace,
+                    &test_job_with(scope, surface, value),
+                    generation,
+                )
+                .expect("enqueue");
+            store
+                .drain_queue(&workspace, drain_budget())
+                .expect("drain queue");
+        }
+
+        let hits = store
+            .search(
+                &workspace,
+                &[String::from("payment"), String::from("ok")],
+                3,
+                &test_policy(&[
+                    ("scope-1", "issues"),
+                    ("scope-2", "issues"),
+                    ("scope-3", "issues"),
+                    ("scope-4", "pulls"),
+                ]),
+            )
+            .expect("search observed values");
+
+        assert_eq!(hits.value_count, 4);
+        assert!(hits.retrieval_limited);
+        assert!(
+            hits.hits.len() > 3,
+            "store should leave provider diversification with the full candidate fan-in: {:?}",
+            hits.hits
+        );
+    }
+
     fn test_job() -> ObservedValuesQueueJob {
         test_job_with("scope", "issues", "Bug")
     }
@@ -1831,9 +2229,18 @@ mod tests {
         surface_name: &str,
         display_value: &str,
     ) -> ObservedValuesQueueJob {
+        test_job_for_owner("github", source_scope_id, surface_name, display_value)
+    }
+
+    fn test_job_for_owner(
+        owner_source_name: &str,
+        source_scope_id: &str,
+        surface_name: &str,
+        display_value: &str,
+    ) -> ObservedValuesQueueJob {
         ObservedValuesQueueJob {
-            owner_source_name: "github".to_string(),
-            source_name: "github".to_string(),
+            owner_source_name: owner_source_name.to_string(),
+            source_name: owner_source_name.to_string(),
             source_scope_id: source_scope_id.to_string(),
             surface_kind: ObservedValuesSurfaceKind::Table,
             surface_name: surface_name.to_string(),
@@ -1976,10 +2383,45 @@ mod tests {
     }
 
     fn payload_json(display_value: &str) -> String {
+        let value_key = display_value.to_ascii_lowercase().replace(' ', "-");
         format!(
-            r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"{}","value_key":"key"}}]}}"#,
+            r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"{}","value_key":"{value_key}"}}]}}"#,
             display_value.to_ascii_lowercase()
         )
+    }
+
+    fn test_policy(scopes: &[(&str, &str)]) -> ObservedValuesRetrievalPolicy {
+        ObservedValuesRetrievalPolicy::new(test_live_scopes(scopes), 365)
+    }
+
+    fn test_policy_with_failed_sources(
+        scopes: &[(&str, &str)],
+        failed_sources: &[&str],
+    ) -> ObservedValuesRetrievalPolicy {
+        ObservedValuesRetrievalPolicy::with_load_failures(
+            test_live_scopes(scopes),
+            failed_sources
+                .iter()
+                .map(|owner_source_name| ObservedValuesLiveScopeLoadFailure {
+                    owner_source_name: (*owner_source_name).to_string(),
+                    message: "failed to load".to_string(),
+                })
+                .collect(),
+            365,
+        )
+    }
+
+    fn test_live_scopes(scopes: &[(&str, &str)]) -> Vec<ObservedValuesLiveScope> {
+        scopes
+            .iter()
+            .map(|(scope, surface)| ObservedValuesLiveScope {
+                owner_source_name: "github".to_string(),
+                source_name: "github".to_string(),
+                source_scope_id: (*scope).to_string(),
+                surface_kind: ObservedValuesSurfaceKind::Table,
+                surface_name: (*surface).to_string(),
+            })
+            .collect()
     }
 
     fn drain_budget() -> ObservedValuesDrainBudget {
@@ -2026,5 +2468,62 @@ mod tests {
                 params![workspace.as_str(), source_name],
             )
             .expect("increment source generation");
+    }
+
+    fn clear_observed_fts_for_test(layout: &AppStateLayout, workspace: &WorkspaceName) {
+        let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        connection
+            .execute(
+                "DELETE FROM observed_values_fts WHERE workspace = ?1",
+                params![workspace.as_str()],
+            )
+            .expect("clear fts");
+    }
+
+    fn mark_observed_value_stale_for_test(
+        layout: &AppStateLayout,
+        workspace: &WorkspaceName,
+        value_key: &str,
+    ) {
+        let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        connection
+            .execute(
+                "
+                UPDATE observed_values
+                SET last_observed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-366 days')
+                WHERE workspace = ?1 AND value_key = ?2
+                ",
+                params![workspace.as_str(), value_key],
+            )
+            .expect("mark stale value");
+    }
+
+    fn mark_all_observed_values_stale_for_test(layout: &AppStateLayout, workspace: &WorkspaceName) {
+        let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        connection
+            .execute(
+                "
+                UPDATE observed_values
+                SET last_observed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-366 days')
+                WHERE workspace = ?1
+                ",
+                params![workspace.as_str()],
+            )
+            .expect("mark stale values");
+    }
+
+    fn canonical_value_count_for_test(layout: &AppStateLayout, workspace: &WorkspaceName) -> i64 {
+        let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = ?1",
+                params![workspace.as_str()],
+                |row| row.get(0),
+            )
+            .expect("canonical count")
     }
 }
