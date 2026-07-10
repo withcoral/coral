@@ -566,13 +566,6 @@ impl QueryManager {
         Ok(runtime)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "function lifecycle service callers land upstack in the split stack"
-        )
-    )]
     pub(crate) async fn list_functions(
         &self,
         workspace_name: &WorkspaceName,
@@ -600,21 +593,10 @@ impl QueryManager {
             .map_err(QueryManagerError::App)
     }
 
-    #[expect(
-        dead_code,
-        reason = "function lifecycle service callers land upstack in the split stack"
-    )]
     pub(crate) fn function_manager(&self) -> FunctionManager {
         self.function_manager.clone()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "function lifecycle service callers land upstack in the split stack"
-        )
-    )]
     pub(crate) async fn validate_udf_sql(
         &self,
         workspace_name: &WorkspaceName,
