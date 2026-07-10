@@ -9,13 +9,10 @@ use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::engine::UniversalSearchEngine;
 use crate::search::maintenance::{
     ClearSearchDataRequest, ClearSearchDataResponse, RebuildSearchIndexRequest,
-    RebuildSearchIndexResponse, SearchIndexProvider, SearchMaintenanceProviderResult,
+    RebuildSearchIndexResponse, SearchIndexProvider, SearchMaintenanceResult,
     SearchProviderClearRequest, SearchProviderMaintenance, SearchProviderRebuildRequest,
 };
-use crate::search::result::{
-    ProviderCoverage, SearchManagerError, SearchProviderKind, SearchProviderState, SearchRequest,
-    SearchResponse,
-};
+use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceManager;
 
@@ -68,21 +65,12 @@ impl SearchManager {
         &self,
         request: &RebuildSearchIndexRequest,
     ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
-        let provider_results = match request.provider {
-            SearchIndexProvider::Catalog => vec![self.rebuild_catalog_index(request)?],
-            SearchIndexProvider::ObservedValues => vec![skipped_rebuild_provider_result(
-                SearchProviderKind::ObservedValues,
-                "observed-value search index rebuild is not implemented yet",
-            )],
-            SearchIndexProvider::All => vec![
-                self.rebuild_catalog_index(request)?,
-                skipped_rebuild_provider_result(
-                    SearchProviderKind::ObservedValues,
-                    "observed-value search index rebuild is not implemented yet",
-                ),
-            ],
+        let result = match request.provider {
+            SearchIndexProvider::Catalog => self.rebuild_catalog_index(request)?,
         };
-        Ok(RebuildSearchIndexResponse { provider_results })
+        Ok(RebuildSearchIndexResponse {
+            results: vec![result],
+        })
     }
 
     pub(crate) async fn clear_data(
@@ -107,15 +95,15 @@ impl SearchManager {
             target: &request.target,
         })?;
         Ok(ClearSearchDataResponse {
-            provider_results: vec![outcome.provider_result],
-            compaction: outcome.compaction,
+            results: vec![outcome.result],
+            storage_cleanup: outcome.storage_cleanup,
         })
     }
 
     fn rebuild_catalog_index(
         &self,
         request: &RebuildSearchIndexRequest,
-    ) -> Result<SearchMaintenanceProviderResult, SearchManagerError> {
+    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
         self.catalog.rebuild_index(SearchProviderRebuildRequest {
             workspace_name: &request.workspace_name,
             force: request.force,
@@ -132,17 +120,4 @@ where
     task::spawn_blocking(move || span.in_scope(operation))
         .await
         .map_err(AppError::from)?
-}
-
-fn skipped_rebuild_provider_result(
-    provider: SearchProviderKind,
-    note: &'static str,
-) -> SearchMaintenanceProviderResult {
-    SearchMaintenanceProviderResult {
-        provider,
-        state: SearchProviderState::Skipped,
-        note: note.to_string(),
-        coverage: ProviderCoverage::default(),
-        detail: None,
-    }
 }

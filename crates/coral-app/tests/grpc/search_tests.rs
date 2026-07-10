@@ -5,9 +5,10 @@
 
 use coral_api::v1::{
     ClearSearchDataRequest, RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope,
-    SearchFieldRole, SearchIndexProvider, SearchProvider, SearchProviderState, SearchRequest,
-    SearchSurfaceKind, TableFunctionKind, ValidateSourceRequest, Workspace, catalog_item,
-    search_clear_target, search_maintenance_provider_result, search_result,
+    SearchFieldRole, SearchIndexProvider, SearchMaintenanceState, SearchProvider,
+    SearchProviderState, SearchRequest, SearchSurfaceKind, TableFunctionKind,
+    ValidateSourceRequest, Workspace, catalog_item, search_clear_target, search_maintenance_result,
+    search_result,
 };
 use coral_client::default_workspace;
 use serde_json::json;
@@ -233,21 +234,10 @@ async fn rebuild_search_index_forces_catalog_projection_refresh() {
     assert!(first_detail.new_document_count > 0);
     assert!(first_detail.projection_changed);
     assert!(first_detail.rebuild_performed);
-    let first_coverage = catalog_rebuild_provider_result(&first)
-        .coverage
-        .as_ref()
-        .expect("catalog rebuild coverage");
     assert_eq!(
-        first_coverage.eligible_units,
-        first_detail.new_document_count
-    );
-    assert_eq!(
-        first_coverage.searched_units,
-        first_detail.new_document_count
-    );
-    assert!(
-        !first_coverage.stale_index,
-        "successful rebuilds should not report stale index state"
+        SearchMaintenanceState::try_from(catalog_rebuild_result(&first).state)
+            .expect("maintenance state"),
+        SearchMaintenanceState::Completed
     );
 
     let forced = harness
@@ -274,76 +264,11 @@ async fn rebuild_search_index_forces_catalog_projection_refresh() {
         forced_detail.rebuild_performed,
         "force should rebuild even when the fingerprint is current"
     );
-    let forced_coverage = catalog_rebuild_provider_result(&forced)
-        .coverage
-        .as_ref()
-        .expect("forced catalog rebuild coverage");
-    assert!(
-        !forced_coverage.stale_index,
-        "forced rebuilds should not report stale index state"
-    );
-}
-
-#[tokio::test]
-async fn rebuild_search_index_all_rebuilds_catalog_and_skips_unimplemented_providers() {
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
-        .await;
-
-    let response = harness
-        .search_client()
-        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
-            workspace: Some(default_workspace()),
-            provider: SearchIndexProvider::All as i32,
-            force: false,
-        }))
-        .await
-        .expect("rebuild all search indexes")
-        .into_inner();
-
-    assert_eq!(response.provider_results.len(), 2);
-    let catalog_detail = catalog_rebuild_detail(&response);
-    assert!(catalog_detail.new_document_count > 0);
-
-    let observed = rebuild_provider_result(&response, SearchProvider::ObservedValues);
     assert_eq!(
-        SearchProviderState::try_from(observed.state).expect("observed provider state"),
-        SearchProviderState::Skipped
+        SearchMaintenanceState::try_from(catalog_rebuild_result(&forced).state)
+            .expect("maintenance state"),
+        SearchMaintenanceState::Completed
     );
-    assert!(
-        observed.detail.is_none(),
-        "skipped providers should not invent provider-specific detail"
-    );
-    assert!(
-        observed.note.contains("not implemented yet"),
-        "skipped provider should explain why it did not run: {}",
-        observed.note
-    );
-}
-
-#[tokio::test]
-async fn rebuild_search_index_observed_values_reports_skipped_provider() {
-    let harness = GrpcHarness::new().await;
-
-    let response = harness
-        .search_client()
-        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
-            workspace: Some(default_workspace()),
-            provider: SearchIndexProvider::ObservedValues as i32,
-            force: false,
-        }))
-        .await
-        .expect("rebuild observed-value search index")
-        .into_inner();
-
-    assert_eq!(response.provider_results.len(), 1);
-    let observed = rebuild_provider_result(&response, SearchProvider::ObservedValues);
-    assert_eq!(
-        SearchProviderState::try_from(observed.state).expect("observed provider state"),
-        SearchProviderState::Skipped
-    );
-    assert!(observed.detail.is_none());
 }
 
 #[tokio::test]
@@ -377,9 +302,17 @@ async fn clear_search_data_removes_catalog_projection_and_next_search_recreates_
 
     let clear_detail = catalog_clear_detail(&clear);
     assert!(clear_detail.deleted_document_count > 0);
-    let compaction = clear.compaction.as_ref().expect("compaction status");
-    assert!(compaction.wal_checkpoint_truncate_completed);
-    assert!(compaction.vacuum_completed);
+    let cleanup = clear
+        .storage_cleanup
+        .as_ref()
+        .expect("storage cleanup result");
+    assert_eq!(
+        SearchMaintenanceState::try_from(cleanup.state).expect("cleanup state"),
+        SearchMaintenanceState::Completed
+    );
+    assert!(!cleanup.note.contains("SQLite"));
+    assert!(!cleanup.note.contains("WAL"));
+    assert!(!cleanup.note.contains("VACUUM"));
 
     let response = harness
         .search_client()
@@ -576,29 +509,22 @@ fn assert_empty_provider_coverage(status: &coral_api::v1::SearchProviderStatus) 
 fn catalog_rebuild_detail(
     response: &coral_api::v1::RebuildSearchIndexResponse,
 ) -> &coral_api::v1::CatalogRebuildResult {
-    let result = catalog_rebuild_provider_result(response);
+    let result = catalog_rebuild_result(response);
     match result.detail.as_ref() {
-        Some(search_maintenance_provider_result::Detail::CatalogRebuild(detail)) => detail,
-        Some(search_maintenance_provider_result::Detail::CatalogClear(_)) | None => {
+        Some(search_maintenance_result::Detail::CatalogRebuild(detail)) => detail,
+        Some(search_maintenance_result::Detail::CatalogClear(_)) | None => {
             panic!("expected catalog rebuild detail")
         }
     }
 }
 
-fn catalog_rebuild_provider_result(
+fn catalog_rebuild_result(
     response: &coral_api::v1::RebuildSearchIndexResponse,
-) -> &coral_api::v1::SearchMaintenanceProviderResult {
-    rebuild_provider_result(response, SearchProvider::CatalogMetadata)
-}
-
-fn rebuild_provider_result(
-    response: &coral_api::v1::RebuildSearchIndexResponse,
-    provider: SearchProvider,
-) -> &coral_api::v1::SearchMaintenanceProviderResult {
+) -> &coral_api::v1::SearchMaintenanceResult {
     response
-        .provider_results
+        .results
         .iter()
-        .find(|result| result.provider == provider as i32)
+        .find(|result| result.provider == SearchProvider::CatalogMetadata as i32)
         .expect("provider result")
 }
 
@@ -606,11 +532,11 @@ fn catalog_clear_detail(
     response: &coral_api::v1::ClearSearchDataResponse,
 ) -> &coral_api::v1::CatalogClearResult {
     response
-        .provider_results
+        .results
         .iter()
         .find_map(|result| match result.detail.as_ref()? {
-            search_maintenance_provider_result::Detail::CatalogClear(detail) => Some(detail),
-            search_maintenance_provider_result::Detail::CatalogRebuild(_) => None,
+            search_maintenance_result::Detail::CatalogClear(detail) => Some(detail),
+            search_maintenance_result::Detail::CatalogRebuild(_) => None,
         })
         .expect("catalog clear detail")
 }

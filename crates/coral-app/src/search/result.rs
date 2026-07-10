@@ -96,6 +96,13 @@ pub(crate) enum SearchProviderState {
     ResultsFound,
     Empty,
     NotEnabled,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "provider-skip execution is introduced by a later branch in the search stack"
+        )
+    )]
     Skipped,
     Partial,
     Error,

@@ -1,8 +1,6 @@
 //! Transport-neutral Universal Search maintenance models.
 
-use crate::search::result::{
-    ProviderCoverage, SearchManagerError, SearchProviderKind, SearchProviderState,
-};
+use crate::search::result::{SearchManagerError, SearchProviderKind};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
@@ -14,7 +12,7 @@ pub(crate) struct RebuildSearchIndexRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RebuildSearchIndexResponse {
-    pub(crate) provider_results: Vec<SearchMaintenanceProviderResult>,
+    pub(crate) results: Vec<SearchMaintenanceResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,15 +24,15 @@ pub(crate) struct ClearSearchDataRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClearSearchDataResponse {
-    pub(crate) provider_results: Vec<SearchMaintenanceProviderResult>,
-    pub(crate) compaction: SearchCompactionStatus,
+    pub(crate) results: Vec<SearchMaintenanceResult>,
+    pub(crate) storage_cleanup: SearchStorageCleanupResult,
 }
 
 pub(crate) trait SearchProviderMaintenance {
     fn rebuild_index(
         &self,
         request: SearchProviderRebuildRequest<'_>,
-    ) -> Result<SearchMaintenanceProviderResult, SearchManagerError>;
+    ) -> Result<SearchMaintenanceResult, SearchManagerError>;
 
     fn clear_data(
         &self,
@@ -57,36 +55,39 @@ pub(crate) struct SearchProviderClearRequest<'a> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SearchProviderClearOutcome {
-    pub(crate) provider_result: SearchMaintenanceProviderResult,
-    pub(crate) compaction: SearchCompactionStatus,
+    pub(crate) result: SearchMaintenanceResult,
+    pub(crate) storage_cleanup: SearchStorageCleanupResult,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SearchIndexProvider {
     Catalog,
-    ObservedValues,
-    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SearchDataScope {
-    Observed,
     All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SearchClearTarget {
     Workspace,
-    Source(String),
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SearchMaintenanceProviderResult {
+pub(crate) struct SearchMaintenanceResult {
     pub(crate) provider: SearchProviderKind,
-    pub(crate) state: SearchProviderState,
+    pub(crate) state: SearchMaintenanceState,
     pub(crate) note: String,
-    pub(crate) coverage: ProviderCoverage,
     pub(crate) detail: Option<SearchMaintenanceDetail>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchMaintenanceState {
+    Completed,
+    Noop,
+    Partial,
+    Failed,
 }
 
 #[derive(Debug, Clone)]
@@ -109,8 +110,7 @@ pub(crate) struct CatalogClearMaintenanceResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SearchCompactionStatus {
-    pub(crate) wal_checkpoint_truncate_completed: bool,
-    pub(crate) vacuum_completed: bool,
+pub(crate) struct SearchStorageCleanupResult {
+    pub(crate) state: SearchMaintenanceState,
     pub(crate) note: String,
 }

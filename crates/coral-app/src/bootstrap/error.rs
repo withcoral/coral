@@ -64,6 +64,12 @@ pub enum AppError {
     /// A required remote dependency was unavailable.
     #[error("unavailable: {0}")]
     Unavailable(String),
+    /// The server exhausted a resource required to complete the request.
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
+    /// An internal server operation failed.
+    #[error("internal error: {0}")]
+    Internal(String),
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -261,8 +267,10 @@ fn app_code(error: &AppError) -> Code {
             Code::FailedPrecondition
         }
         AppError::Unavailable(_) => Code::Unavailable,
+        AppError::ResourceExhausted(_) => Code::ResourceExhausted,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
-        AppError::Io(_)
+        AppError::Internal(_)
+        | AppError::Io(_)
         | AppError::Yaml(_)
         | AppError::TomlDecode(_)
         | AppError::TomlEditDecode(_)
@@ -390,6 +398,22 @@ mod tests {
             "remote descriptor timed out".to_string(),
         ));
         assert_eq!(status.code(), Code::Unavailable);
+    }
+
+    #[test]
+    fn app_status_maps_resource_exhausted() {
+        let status = app_status(AppError::ResourceExhausted(
+            "local storage is full".to_string(),
+        ));
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+    }
+
+    #[test]
+    fn app_status_maps_internal() {
+        let status = app_status(AppError::Internal("storage failure".to_string()));
+
+        assert_eq!(status.code(), Code::Internal);
     }
 
     #[test]

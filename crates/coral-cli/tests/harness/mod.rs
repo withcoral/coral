@@ -32,16 +32,16 @@ use coral_api::v1::{
     GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
     ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
     ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse,
-    ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse, QueryPlan,
-    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
-    SearchCatalogResponse, SearchCompactionStatus, SearchFieldRole, SearchMaintenanceProviderResult,
+    ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
+    QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
+    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
     SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
-    SearchResult, SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    import_source_response, search_maintenance_provider_result, search_result,
-    source_input_spec::Input as ProtoSourceInput,
+    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
+    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
+    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, import_source_response, search_maintenance_result,
+    search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -447,21 +447,11 @@ fn mock_search_response() -> SearchResponse {
 
 fn mock_rebuild_search_index_response() -> RebuildSearchIndexResponse {
     RebuildSearchIndexResponse {
-        provider_results: vec![SearchMaintenanceProviderResult {
+        results: vec![SearchMaintenanceResult {
             provider: SearchProvider::CatalogMetadata as i32,
-            state: SearchProviderState::ResultsFound as i32,
+            state: SearchMaintenanceState::Completed as i32,
             note: "force rebuilt catalog search projection".to_string(),
-            coverage: Some(SearchProviderCoverage {
-                eligible_units: 2,
-                searched_units: 3,
-                failed_units: 0,
-                returned_count: 3,
-                has_more: false,
-                budget_exhausted: false,
-                timed_out: false,
-                stale_index: false,
-            }),
-            detail: Some(search_maintenance_provider_result::Detail::CatalogRebuild(
+            detail: Some(search_maintenance_result::Detail::CatalogRebuild(
                 CatalogRebuildResult {
                     old_document_count: 2,
                     new_document_count: 3,
@@ -475,30 +465,19 @@ fn mock_rebuild_search_index_response() -> RebuildSearchIndexResponse {
 
 fn mock_clear_search_data_response() -> ClearSearchDataResponse {
     ClearSearchDataResponse {
-        provider_results: vec![SearchMaintenanceProviderResult {
+        results: vec![SearchMaintenanceResult {
             provider: SearchProvider::CatalogMetadata as i32,
-            state: SearchProviderState::Empty as i32,
+            state: SearchMaintenanceState::Completed as i32,
             note: "cleared catalog search projection".to_string(),
-            coverage: Some(SearchProviderCoverage {
-                eligible_units: 3,
-                searched_units: 3,
-                failed_units: 0,
-                returned_count: 0,
-                has_more: false,
-                budget_exhausted: false,
-                timed_out: false,
-                stale_index: false,
-            }),
-            detail: Some(search_maintenance_provider_result::Detail::CatalogClear(
+            detail: Some(search_maintenance_result::Detail::CatalogClear(
                 CatalogClearResult {
                     deleted_document_count: 3,
                 },
             )),
         }],
-        compaction: Some(SearchCompactionStatus {
-            wal_checkpoint_truncate_completed: true,
-            vacuum_completed: true,
-            note: "WAL checkpoint/truncate and VACUUM completed".to_string(),
+        storage_cleanup: Some(SearchStorageCleanupResult {
+            state: SearchMaintenanceState::Completed as i32,
+            note: "local search storage cleanup completed".to_string(),
         }),
     }
 }
@@ -699,6 +678,14 @@ impl Default for MockServerConfig {
 }
 
 impl MockServerConfig {
+    pub(crate) fn with_rebuild_search_index(
+        mut self,
+        response: RebuildSearchIndexResponse,
+    ) -> Self {
+        self.rebuild_search_index = MockResult::ok(response);
+        self
+    }
+
     pub(crate) fn with_discover_sources(mut self, response: DiscoverSourcesResponse) -> Self {
         self.discover_sources = MockResult::ok(response);
         self
