@@ -256,10 +256,11 @@ test('creates and validates a DSL v4 source', async ({ network, page, review }) 
   await review.pause()
 
   await review.chapter(
-    'Import and validate',
+    'Import and generate projections',
     'Submit the generated manifest and show validation results',
   )
-  await page.getByRole('button', { name: 'Import & validate' }).click()
+  await page.getByPlaceholder('Paste token').fill('ghp_test_token')
+  await page.getByRole('button', { name: 'Import and generate projections' }).click()
 
   await expect(page.getByRole('heading', { name: 'Validated github_openapi_v4' })).toBeVisible()
   await expect(page.getByText('github_openapi_v4.search_issues_and_pull_requests')).toBeVisible()

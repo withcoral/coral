@@ -184,6 +184,10 @@ export function sourceCreateHandlers() {
       if (!message.manifestYaml.includes('github_openapi_v4')) {
         throw new Error('expected ImportSource manifest to include the source name')
       }
+      const token = message.secrets.find((secret) => secret.key === 'GITHUB_TOKEN')?.value
+      if (token !== 'ghp_test_token') {
+        throw new Error(`expected ImportSource to send GITHUB_TOKEN=ghp_test_token, got ${token}`)
+      }
       return grpcWebStreamResponse(ImportSourceResponseSchema, importDslV4Responses)
     }),
     http.post(validateUrl, async ({ request }) => {
