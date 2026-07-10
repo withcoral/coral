@@ -96,6 +96,30 @@ bind = "127.0.0.1:14556"
 
 The unauthenticated MCP listener is restricted to loopback addresses.
 
+To require Coral session tokens, configure the session issuer, audience, and a
+signing key file. Authenticated MCP metadata must match that session config:
+
+```toml
+[auth.session]
+issuer = "https://auth.example"
+audience = "https://coral.example/mcp"
+signing_key_file = "session.key"
+
+[server.mcp_http]
+enabled = true
+bind = "0.0.0.0:14556"
+allow_insecure_remote_http_bind = true
+resource_url = "https://coral.example/mcp"
+authorization_server = "https://auth.example/"
+scope = "coral:mcp"
+```
+
+The signing key file is resolved relative to Coral's config directory. Session
+authentication applies to both the gRPC server and MCP HTTP listener; gRPC
+health checks remain unauthenticated. The explicit insecure-bind acknowledgement
+is required because Coral serves cleartext HTTP on that socket. Put it behind TLS
+termination and prevent clients from reaching the listener directly.
+
 ## Runtime features
 
 Experimental runtime features are configured under `[features]`.

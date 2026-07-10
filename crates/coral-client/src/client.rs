@@ -15,7 +15,7 @@ use coral_api::{
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
-use url::Url;
+use url::{Host, Url};
 
 use crate::error::ClientError;
 use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
@@ -139,9 +139,36 @@ impl AppClient {
         .await
     }
 
+    pub(crate) async fn connect_with_loopback_bearer(
+        endpoint_uri: &str,
+        bearer: BearerToken,
+    ) -> Result<Self, ClientError> {
+        let static_metadata =
+            StaticClientMetadata::try_from_pairs([("authorization", bearer.authorization())])?;
+        Self::connect_with_static_metadata_for(
+            endpoint_uri,
+            static_metadata,
+            endpoint_allows_loopback_authorization,
+        )
+        .await
+    }
+
     async fn connect_with_static_metadata(
         endpoint_uri: &str,
         static_metadata: StaticClientMetadata,
+    ) -> Result<Self, ClientError> {
+        Self::connect_with_static_metadata_for(
+            endpoint_uri,
+            static_metadata,
+            endpoint_allows_authorization,
+        )
+        .await
+    }
+
+    async fn connect_with_static_metadata_for(
+        endpoint_uri: &str,
+        static_metadata: StaticClientMetadata,
+        endpoint_allows_authorization: impl FnOnce(&str) -> bool,
     ) -> Result<Self, ClientError> {
         let endpoint = configured_endpoint(endpoint_uri)?;
         if static_metadata.contains_authorization() && !endpoint_allows_authorization(endpoint_uri)
@@ -276,8 +303,26 @@ fn endpoint_allows_authorization(endpoint_uri: &str) -> bool {
     endpoint.scheme() == "https" && endpoint.host().is_some()
 }
 
+fn endpoint_allows_loopback_authorization(endpoint_uri: &str) -> bool {
+    let Ok(endpoint) = Url::parse(endpoint_uri) else {
+        return false;
+    };
+    if endpoint_has_credentials(&endpoint) || endpoint.scheme() != "http" {
+        return false;
+    }
+    endpoint.host().as_ref().is_some_and(host_is_loopback)
+}
+
 fn endpoint_has_credentials(endpoint: &Url) -> bool {
     !endpoint.username().is_empty() || endpoint.password().is_some()
+}
+
+fn host_is_loopback(host: &Host<&str>) -> bool {
+    match host {
+        Host::Domain(_) => false,
+        Host::Ipv4(address) => address.is_loopback(),
+        Host::Ipv6(address) => address.is_loopback(),
+    }
 }
 
 fn grpc_service(
@@ -423,6 +468,34 @@ mod tests {
         ] {
             assert!(
                 !endpoint_allows_authorization(endpoint),
+                "accepted {endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_authorization_endpoints_require_plaintext_loopback() {
+        for endpoint in [
+            "http://127.0.0.1:50051",
+            "http://127.255.255.254",
+            "http://[::1]:50051",
+        ] {
+            assert!(
+                endpoint_allows_loopback_authorization(endpoint),
+                "rejected {endpoint}"
+            );
+        }
+        for endpoint in [
+            "https://localhost:50051",
+            "http://localhost:50051",
+            "http://api.example.com:50051",
+            "http://10.0.0.1:50051",
+            "http://localhost.example.com:50051",
+            "http://localhost@api.example.com:50051",
+            "http://user:password@localhost:50051",
+        ] {
+            assert!(
+                !endpoint_allows_loopback_authorization(endpoint),
                 "accepted {endpoint}"
             );
         }

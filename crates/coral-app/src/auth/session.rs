@@ -126,8 +126,25 @@ impl SessionTokenIssuer {
         let raw = std::fs::read_to_string(config_path)
             .map_err(|error| file_error("read config file", config_path, &error))?;
         let raw = Zeroizing::new(raw);
+        Self::from_config_raw_with(config_path, &raw, get_var)
+    }
+
+    pub(crate) fn from_config_raw(
+        config_path: &Path,
+        raw: &str,
+    ) -> Result<Option<Self>, SessionTokenError> {
+        Self::from_config_raw_with(config_path, raw, &|name| {
+            crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
+        })
+    }
+
+    fn from_config_raw_with(
+        config_path: &Path,
+        raw: &str,
+        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<Option<Self>, SessionTokenError> {
         let file: ConfigFile =
-            toml::from_str(&raw).map_err(|error| config_error(error.message()))?;
+            toml::from_str(raw).map_err(|error| config_error(error.message()))?;
         let Some(session) = file.auth.and_then(|auth| auth.session) else {
             return Ok(None);
         };
@@ -142,6 +159,14 @@ impl SessionTokenIssuer {
             Duration::from_secs(ttl),
         )
         .map(Some)
+    }
+
+    pub(crate) fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    pub(crate) fn audience(&self) -> &str {
+        &self.audience
     }
 
     pub(crate) fn issue_access_token(

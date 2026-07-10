@@ -44,6 +44,18 @@ impl UserPrincipal {
         Ok(Self { user_id })
     }
 
+    pub(crate) fn for_federated(provider: &str, subject: &str) -> Self {
+        let mut identity = Vec::with_capacity(provider.len() + subject.len() + 32);
+        identity.extend_from_slice(b"coral-federated-user-v1\0");
+        identity.extend_from_slice(&(provider.len() as u64).to_be_bytes());
+        identity.extend_from_slice(provider.as_bytes());
+        identity.extend_from_slice(&(subject.len() as u64).to_be_bytes());
+        identity.extend_from_slice(subject.as_bytes());
+        Self {
+            user_id: format!("federated-{}", crate::hash::sha256_hex(&identity)),
+        }
+    }
+
     /// Returns the validated user id.
     #[must_use]
     pub fn user_id(&self) -> &str {
@@ -241,6 +253,19 @@ mod tests {
         let principal = UserPrincipal::for_user("saul").expect("valid user");
 
         assert_eq!(principal.user_id(), "saul");
+    }
+
+    #[test]
+    fn federated_principal_is_stable_and_namespaces_provider_and_subject() {
+        let principal = UserPrincipal::for_federated("oidc", "alice");
+        assert_eq!(principal, UserPrincipal::for_federated("oidc", "alice"));
+        assert_ne!(principal, UserPrincipal::for_federated("saml", "alice"));
+        assert_ne!(principal, UserPrincipal::for_federated("oidc", "bob"));
+        assert_ne!(
+            UserPrincipal::for_federated("ab", "c"),
+            UserPrincipal::for_federated("a", "bc")
+        );
+        UserPrincipal::for_user(principal.user_id()).expect("generated id is path-safe");
     }
 
     #[tokio::test]

@@ -65,13 +65,34 @@ impl OidcAuthConfig {
         let raw = std::fs::read_to_string(config_path)
             .map_err(|e| file_error("read", config_path, &e))?;
         let raw = zeroize::Zeroizing::new(raw);
-        let file: ConfigFile = toml::from_str(&raw).map_err(|e| config_error(e.message()))?;
+        let session = SessionTokenConfig::from_config_raw(config_path, &raw)?;
+        Self::from_config_raw(&raw, session, get_var)
+    }
+
+    pub(crate) fn from_config_raw(
+        raw: &str,
+        session: Option<SessionTokenConfig>,
+        get_var: &impl Fn(&str) -> Result<Option<String>, std::env::VarError>,
+    ) -> Result<Option<Self>, String> {
+        let file: ConfigFile = toml::from_str(raw).map_err(|e| config_error(e.message()))?;
         let Some(auth) = file.auth else {
             return Ok(None);
         };
-        let session = SessionTokenConfig::load(&layout)?
+        let session = session
             .ok_or_else(|| config_error("auth.session is required when [auth] is configured"))?;
         auth.build(session, get_var)
+    }
+
+    pub(crate) fn issuer(&self) -> &str {
+        &self.oauth.issuer
+    }
+
+    pub(crate) fn resource(&self) -> &str {
+        &self.oauth.resource
+    }
+
+    pub(crate) fn scope(&self) -> &str {
+        &self.oauth.scope
     }
 
     /// Starts this HTTP listener on loopback or behind a TLS-terminating reverse proxy.

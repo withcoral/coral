@@ -1,5 +1,7 @@
 use std::net::TcpListener;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use rmcp::ServiceExt as _;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -7,6 +9,8 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use tempfile::TempDir;
 
 use super::*;
+
+const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
@@ -21,8 +25,11 @@ fn grpc_addr(server: &RunningServer) -> SocketAddr {
         .expect("socket address")
 }
 
-async fn assert_catalog_tool(endpoint: String) {
-    let config = StreamableHttpClientTransportConfig::with_uri(endpoint);
+async fn assert_catalog_tool(endpoint: String, bearer: Option<&str>) {
+    let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
+    if let Some(bearer) = bearer {
+        config = config.auth_header(bearer);
+    }
     let client =
         ().serve(StreamableHttpClientTransport::from_config(config))
             .await
@@ -72,11 +79,81 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     .expect("start composite server");
     let grpc_addr = grpc_addr(&server);
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
-    assert_catalog_tool(format!("http://{mcp_addr}/mcp")).await;
+    assert_catalog_tool(format!("http://{mcp_addr}/mcp"), None).await;
     server.shutdown().await.expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
     drop((grpc_rebound, mcp_rebound));
+}
+
+#[tokio::test]
+async fn session_authenticated_companion_forwards_bearer() {
+    let temp = TempDir::new().expect("temp dir");
+    std::fs::write(temp.path().join("session.key"), [b'k'; 32]).expect("session key");
+    write_config(
+        &temp,
+        r"
+[trace_history]
+enabled = false
+
+[server.mcp_http]
+enabled = true
+bind = '127.0.0.1:0'
+resource_url = 'https://coral.example/mcp'
+authorization_server = 'https://auth.example/'
+scope = 'coral:mcp'
+
+[auth.session]
+issuer = 'https://auth.example'
+audience = 'https://coral.example/mcp'
+signing_key_file = 'session.key'
+",
+    );
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+    )
+    .await
+    .expect("start authenticated composite server");
+    let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
+    let base = format!("http://{mcp_addr}");
+
+    let ready = reqwest::get(format!("{base}/readyz"))
+        .await
+        .expect("readiness response");
+    assert_eq!(ready.status(), reqwest::StatusCode::NO_CONTENT);
+    let rejected = reqwest::Client::new()
+        .post(format!("{base}/mcp"))
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer wrong-token")
+        .body(INITIALIZE)
+        .send()
+        .await
+        .expect("rejected request");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time")
+        .as_secs();
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "iss": "https://auth.example",
+            "aud": "https://coral.example/mcp",
+            "sub": "alice",
+            "provider": "oidc",
+            "iat": now,
+            "nbf": now,
+            "exp": now + 300,
+        }),
+        &EncodingKey::from_secret(&[b'k'; 32]),
+    )
+    .expect("session token");
+    assert_catalog_tool(format!("{base}/mcp"), Some(&token)).await;
+    server.shutdown().await.expect("shutdown composite server");
 }
 
 #[tokio::test]

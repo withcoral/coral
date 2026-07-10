@@ -41,7 +41,7 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::AggregateHealthService;
-use super::server_config::{McpHttpServeConfig, ServerSettings};
+use super::server_config::{LoadedServerConfig, ServeCompanionConfig, ServerSettings};
 use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
@@ -96,6 +96,7 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
 enum ServerModeSelection {
     Explicit(ServerMode),
     ConfiguredStandaloneGrpc,
+    Prepared(ServerMode),
 }
 
 /// Server-side bootstrap configuration for the Coral server.
@@ -104,7 +105,7 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    user_principal_provider: Option<Arc<dyn UserPrincipalProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
@@ -122,7 +123,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+            user_principal_provider: None,
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
@@ -150,11 +151,20 @@ impl ServerConfig {
                 ServerSettings::reject_removed_auth(layout)?;
                 Ok(mode.clone())
             }
-            ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
+            ServerModeSelection::Explicit(mode) | ServerModeSelection::Prepared(mode) => {
+                Ok(mode.clone())
+            }
             ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
                 bind: ServerSettings::load(layout)?.bind_addr,
             }),
         }
+    }
+
+    fn resolved_user_principal_provider(&self) -> Arc<dyn UserPrincipalProvider> {
+        self.user_principal_provider.as_ref().map_or_else(
+            || Arc::new(SingleUserPrincipalProvider) as Arc<dyn UserPrincipalProvider>,
+            Arc::clone,
+        )
     }
 
     pub(crate) fn add_engine_extensions_provider(
@@ -271,19 +281,57 @@ impl ServerBuilder {
         self
     }
 
-    /// Resolves the configured MCP HTTP listener without starting a server.
+    /// Prepares the gRPC server and companion configuration for `coral serve`.
+    ///
+    /// Configuration is read once into a fail-closed snapshot. The returned
+    /// gRPC handle remains independent from MCP HTTP and OAuth lifecycle
+    /// management, which belongs to the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if the config directory cannot be determined or
-    /// the MCP HTTP configuration cannot use the selected gRPC mode.
-    pub fn resolve_mcp_http_serve_config(&self) -> Result<Option<McpHttpServeConfig>, AppError> {
+    /// Returns [`AppError`] if configuration cannot be loaded or validated, if
+    /// configured session authentication conflicts with an injected principal
+    /// provider, or if companion serving cannot use the selected gRPC mode.
+    pub fn prepare_for_serve(
+        mut self,
+    ) -> Result<(PreparedGrpcServer, ServeCompanionConfig), AppError> {
         let layout = AppEnvironment::discover().app_state_layout(self.config.config_dir.clone())?;
-        let config = McpHttpServeConfig::load(&layout)?;
-        if config.is_some() {
-            validate_mcp_http_grpc_mode(&self.config.resolved_mode(&layout)?)?;
+        let loaded = LoadedServerConfig::load(&layout)?;
+        let mode = match &self.config.mode {
+            ServerModeSelection::Explicit(mode @ ServerMode::EmbeddedUi { .. }) => {
+                return Err(AppError::FailedPrecondition(format!(
+                    "coral serve requires native gRPC, not {}",
+                    server_mode_name(mode)
+                )));
+            }
+            ServerModeSelection::Explicit(mode) => {
+                loaded.reject_removed_auth()?;
+                mode.clone()
+            }
+            ServerModeSelection::ConfiguredStandaloneGrpc => ServerMode::StandaloneGrpc {
+                bind: loaded.grpc_settings()?.bind_addr,
+            },
+            ServerModeSelection::Prepared(_) => {
+                return Err(AppError::FailedPrecondition(
+                    "server builder has already been prepared for serving".to_string(),
+                ));
+            }
+        };
+        let companions = loaded.companion_config()?;
+        if companions.mcp_http().is_some() {
+            validate_mcp_http_grpc_mode(&mode)?;
         }
-        Ok(config)
+        if let Some(provider) = companions.session_principal_provider() {
+            if self.config.user_principal_provider.is_some() {
+                return Err(AppError::FailedPrecondition(
+                    "configured auth.session cannot be combined with an injected user principal provider"
+                        .to_string(),
+                ));
+            }
+            self.config.user_principal_provider = Some(provider);
+        }
+        self.config.mode = ServerModeSelection::Prepared(mode);
+        Ok((PreparedGrpcServer { builder: self }, companions))
     }
 
     #[must_use]
@@ -311,7 +359,7 @@ impl ServerBuilder {
         mut self,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
     ) -> Self {
-        self.config.user_principal_provider = user_principal_provider;
+        self.config.user_principal_provider = Some(user_principal_provider);
         self
     }
 
@@ -355,6 +403,7 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
         let mode = self.config.resolved_mode(&layout)?;
+        let user_principal_provider = self.config.resolved_user_principal_provider();
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -444,10 +493,37 @@ impl ServerBuilder {
                 task: task_manager,
             },
             trace_components,
-            self.config.user_principal_provider,
+            user_principal_provider,
             mode,
         )
         .await
+    }
+}
+
+/// A gRPC server builder whose long-running serve configuration is resolved.
+///
+/// Companion transports are deliberately not stored here; `coral-serve`
+/// receives them separately and owns their lifecycle.
+pub struct PreparedGrpcServer {
+    builder: ServerBuilder,
+}
+
+impl PreparedGrpcServer {
+    /// Starts only the prepared gRPC server.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the app runtime or gRPC listener cannot start.
+    pub async fn start(self) -> Result<RunningServer, AppError> {
+        self.builder.start().await
+    }
+}
+
+fn server_mode_name(mode: &ServerMode) -> &'static str {
+    match mode {
+        ServerMode::EphemeralGrpc => "ephemeral gRPC",
+        ServerMode::StandaloneGrpc { .. } => "standalone gRPC",
+        ServerMode::EmbeddedUi { .. } => "embedded UI",
     }
 }
 
@@ -1291,11 +1367,11 @@ enabled = false
         )
         .expect("config file");
 
-        let config = ServerBuilder::configured_standalone_grpc()
+        let (_grpc, companions) = ServerBuilder::configured_standalone_grpc()
             .with_config_dir(config_dir)
-            .resolve_mcp_http_serve_config()
-            .expect("resolve MCP HTTP config")
-            .expect("enabled MCP HTTP config");
+            .prepare_for_serve()
+            .expect("resolve MCP HTTP config");
+        let config = companions.mcp_http().expect("enabled MCP HTTP config");
 
         assert_eq!(
             config.bind_addr(),
@@ -1316,21 +1392,23 @@ enabled = false
 
         ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14555)))
             .with_config_dir(config_dir.clone())
-            .resolve_mcp_http_serve_config()
+            .prepare_for_serve()
             .expect("wildcard gRPC bind has a safe loopback route");
 
         let error = ServerBuilder::standalone_grpc(SocketAddr::from(([192, 0, 2, 1], 14555)))
             .with_config_dir(config_dir.clone())
-            .resolve_mcp_http_serve_config()
-            .expect_err("public gRPC address has no safe local route");
+            .prepare_for_serve()
+            .err()
+            .expect("public gRPC address has no safe local route");
 
         assert!(error.to_string().contains("loopback or wildcard gRPC bind"));
 
         let mapped_loopback = SocketAddr::new(Ipv4Addr::LOCALHOST.to_ipv6_mapped().into(), 14555);
         ServerBuilder::standalone_grpc(mapped_loopback)
             .with_config_dir(config_dir)
-            .resolve_mcp_http_serve_config()
-            .expect_err("IPv4-mapped IPv6 must fail closed");
+            .prepare_for_serve()
+            .err()
+            .expect("IPv4-mapped IPv6 must fail closed");
     }
 
     #[tokio::test]
