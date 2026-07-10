@@ -23,6 +23,7 @@ use super::state_store::{InMemoryStateStore, StateStore};
 use crate::outbound_url_policy::{EndpointUrl, ResourceIdentifier};
 
 mod authorize;
+mod callback;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -128,6 +129,7 @@ impl CoralAuthorizationServer {
                 get(authorization_server_metadata),
             )
             .route("/oauth/authorize", get(authorize::oauth_authorize))
+            .route("/auth/oidc/callback", get(callback::oidc_callback))
             .with_state(state);
         let listener =
             TcpListener::bind(bind_addr)
