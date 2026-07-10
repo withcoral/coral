@@ -1,4 +1,5 @@
 #![cfg_attr(not(test), expect(dead_code, reason = "wired by OAuth descendants"))]
+use super::id_token::{ValidatedOidcIdentity, validate_id_token};
 use super::provider::OidcProviderConfig;
 use crate::outbound_url_policy::{ConfiguredEndpointUrl, read_bounded_body};
 use base64::Engine as _;
@@ -54,6 +55,8 @@ pub(super) enum OidcProviderClientError {
     Randomness,
     #[error("OIDC provider token exchange failed")]
     TokenExchange,
+    #[error("OIDC ID token validation failed")]
+    IdTokenValidation,
 }
 impl OidcProviderClient {
     pub(super) fn new() -> Result<Self, OidcProviderClientError> {
@@ -139,6 +142,42 @@ impl OidcProviderClient {
             jwks_uri: discovery.jwks_uri,
             signing_algorithms: discovery.signing_algorithms,
         })
+    }
+    pub(super) async fn validate_code_exchange(
+        &self,
+        provider: &OidcProviderConfig,
+        exchange: OidcCodeExchange,
+        expected_nonce: &str,
+    ) -> Result<ValidatedOidcIdentity, OidcProviderClientError> {
+        let OidcCodeExchange {
+            id_token,
+            jwks_uri,
+            signing_algorithms,
+        } = exchange;
+        let response = self
+            .http
+            .get(jwks_uri.into_url())
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
+        if !response.status().is_success() {
+            return Err(OidcProviderClientError::IdTokenValidation);
+        }
+        let body = read_bounded_body(response, RESPONSE_MAX_BYTES)
+            .await
+            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
+        let jwks = serde_json::from_slice(&body)
+            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
+        let identity = validate_id_token(
+            provider,
+            &id_token,
+            expected_nonce,
+            &signing_algorithms,
+            &jwks,
+        );
+        drop(id_token);
+        identity.map_err(|_error| OidcProviderClientError::IdTokenValidation)
     }
     async fn discover(
         &self,
@@ -263,6 +302,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::auth::id_token::tests::{claims as id_token_claims, rsa_key, token as id_token};
     use crate::auth::provider::ProviderConfigFile;
 
     const CLIENT_SECRET: &str = "client-secret-must-not-leak";
@@ -307,6 +347,18 @@ mod tests {
             &format!("{}/token?tenant=one", server.uri()),
             &format!("{}/jwks", server.uri()),
         )
+    }
+
+    fn validation_exchange(server: &MockServer) -> OidcCodeExchange {
+        OidcCodeExchange {
+            id_token: Zeroizing::new(id_token(&id_token_claims())),
+            jwks_uri: ConfiguredEndpointUrl::parse(&format!(
+                "{}/jwks?source=url-secret",
+                server.uri()
+            ))
+            .expect("JWKS URL"),
+            signing_algorithms: vec!["RS256".into()],
+        }
     }
 
     #[tokio::test]
@@ -577,5 +629,77 @@ mod tests {
             .err()
             .expect("oversized token response");
         assert_eq!(error, OidcProviderClientError::TokenExchange);
+    }
+
+    #[tokio::test]
+    async fn fetches_bounded_jwks_and_returns_only_verified_identity() {
+        let server = MockServer::start().await;
+        let provider = provider("http://localhost/issuer");
+        let exchange = validation_exchange(&server);
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys":[rsa_key()]})))
+            .mount(&server)
+            .await;
+        let identity = OidcProviderClient::new()
+            .expect("client")
+            .validate_code_exchange(&provider, exchange, "expected-nonce")
+            .await
+            .expect("identity");
+        assert_eq!(identity.principal, "subject");
+        assert_eq!(identity.display_name.as_deref(), Some("User"));
+    }
+
+    #[tokio::test]
+    async fn jwks_failures_are_bounded_redirect_safe_and_redacted() {
+        for response in [
+            ResponseTemplate::new(503).set_body_string("status-body-secret"),
+            ResponseTemplate::new(200).set_body_string("json-body-secret"),
+            ResponseTemplate::new(200).set_body_bytes(vec![b'x'; RESPONSE_MAX_BYTES + 1]),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(path("/jwks"))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+            let error = OidcProviderClient::new()
+                .expect("client")
+                .validate_code_exchange(
+                    &provider("http://localhost/issuer"),
+                    validation_exchange(&server),
+                    "nonce-secret",
+                )
+                .await
+                .map(|_| ())
+                .expect_err("invalid JWKS");
+            assert_eq!(
+                format!("{error:?} {error}"),
+                "IdTokenValidation OIDC ID token validation failed"
+            );
+        }
+        let server = MockServer::start().await;
+        Mock::given(path("/jwks"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/leak", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/leak"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        OidcProviderClient::new()
+            .expect("client")
+            .validate_code_exchange(
+                &provider("http://localhost/issuer"),
+                validation_exchange(&server),
+                "nonce-secret",
+            )
+            .await
+            .map(|_| ())
+            .expect_err("redirect refused");
+        server.verify().await;
     }
 }
