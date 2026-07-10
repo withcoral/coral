@@ -99,6 +99,7 @@ strsim = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+tokio-util = "0.7"
 toml = "0.9"
 toml_edit = "0.25.10"
 tonic = { version = "0.14.2", features = ["tls-native-roots", "tls-ring"] }
@@ -125,6 +126,7 @@ coral-cli = { path = "crates/coral-cli" }
 coral-client = { path = "crates/coral-client" }
 coral-engine = { path = "crates/coral-engine" }
 coral-mcp = { path = "crates/coral-mcp" }
+coral-mcp-http = { path = "crates/coral-mcp-http" }
 coral-spec = { path = "crates/coral-spec" }
 coral-telemetry = { path = "crates/coral-telemetry" }
 

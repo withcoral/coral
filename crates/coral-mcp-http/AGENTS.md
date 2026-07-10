@@ -1,0 +1,2 @@
+- This Streamable HTTP adapter owns routing, host protection, health, and lifecycle; keep tools and resources in `coral-mcp`. Keep `/livez` process-only; `/readyz` may probe reachability without requiring authentication.
+- `start_auth_disabled` is loopback-only and may share an unauthenticated `AppClient`; authenticated serving must instead create a bearer-bound client per validated session, with no fallback.
