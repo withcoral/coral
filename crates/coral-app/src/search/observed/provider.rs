@@ -89,7 +89,7 @@ impl ObservedValuesProvider {
             .drain_queue(workspace_name, budget)
             .map_err(|error| observed_sqlite_app_error(&error))?;
         log_storage_drops(workspace_name, &result);
-        log_drain_budget_exhaustion(workspace_name, &result);
+        log_drain_maintenance(workspace_name, &result);
         Ok(observed_drain_provider_result(&result))
     }
 
@@ -121,7 +121,7 @@ impl ObservedValuesProvider {
         ) {
             Ok(drain) => {
                 log_storage_drops(workspace_name, &drain);
-                log_drain_budget_exhaustion(workspace_name, &drain);
+                log_drain_maintenance(workspace_name, &drain);
                 (drain, None)
             }
             Err(error) => {
@@ -157,7 +157,7 @@ impl ObservedValuesProvider {
             )
             .map_err(|error| observed_sqlite_app_error(&error))?;
         log_storage_drops(request.workspace_name, &drain);
-        log_drain_budget_exhaustion(request.workspace_name, &drain);
+        log_drain_maintenance(request.workspace_name, &drain);
         let result = self
             .store
             .rebuild_fts(request.workspace_name, policy)
@@ -446,6 +446,9 @@ fn observed_drain_provider_result(result: &ObservedValuesDrainResult) -> SearchM
                 fts_rows_written: result.fts_rows_written,
                 remaining_queue_depth: result.remaining_queue_depth,
                 budget_exhausted: result.budget_exhausted,
+                stale_rows_purged: result.stale_rows_purged,
+                evicted_rows: result.evicted_rows,
+                storage_limit_reached: result.storage_limit_reached,
             },
         )),
     }
@@ -488,7 +491,9 @@ fn observed_drain_did_no_work(result: &ObservedValuesDrainResult) -> bool {
         && result.evicted_rows == 0
 }
 
-fn observed_clear_provider_result(result: ObservedValuesClearResult) -> SearchMaintenanceResult {
+pub(crate) fn observed_clear_provider_result(
+    result: ObservedValuesClearResult,
+) -> SearchMaintenanceResult {
     let deleted_total = result
         .values
         .saturating_add(result.fts_rows)
@@ -539,6 +544,18 @@ fn observed_drain_note(result: &ObservedValuesDrainResult) -> String {
             result.storage_jobs_dropped
         ));
     }
+    if result.stale_rows_purged > 0 {
+        causes.push(format!(
+            "purged {} stale observed-value row(s)",
+            result.stale_rows_purged
+        ));
+    }
+    if result.evicted_rows > 0 {
+        causes.push(format!(
+            "evicted {} observed-value row(s)",
+            result.evicted_rows
+        ));
+    }
     if result.storage_limit_reached {
         causes.push("storage limit remains reached".to_string());
     }
@@ -578,8 +595,12 @@ fn observed_rebuild_note(drain: &ObservedValuesDrainResult, canonical_rows_scann
     note
 }
 
-fn log_drain_budget_exhaustion(workspace_name: &WorkspaceName, result: &ObservedValuesDrainResult) {
-    if result.budget_exhausted {
+fn log_drain_maintenance(workspace_name: &WorkspaceName, result: &ObservedValuesDrainResult) {
+    if result.budget_exhausted
+        || result.storage_limit_reached
+        || result.stale_rows_purged > 0
+        || result.evicted_rows > 0
+    {
         tracing::debug!(
             workspace = %workspace_name,
             remaining_queue_depth = result.remaining_queue_depth,
@@ -590,7 +611,8 @@ fn log_drain_budget_exhaustion(workspace_name: &WorkspaceName, result: &Observed
             stale_rows_purged = result.stale_rows_purged,
             evicted_rows = result.evicted_rows,
             storage_limit_reached = result.storage_limit_reached,
-            "observed-value drain stopped at a cooperative limit"
+            budget_exhausted = result.budget_exhausted,
+            "observed-value queue drain ran storage maintenance"
         );
     }
 }
@@ -977,8 +999,10 @@ mod tests {
     }
 
     #[test]
-    fn observed_drain_storage_limit_reports_partial() {
+    fn observed_drain_reports_storage_governance() {
         let result = ObservedValuesDrainResult {
+            stale_rows_purged: 2,
+            evicted_rows: 3,
             storage_limit_reached: true,
             ..ObservedValuesDrainResult::default()
         };
@@ -986,6 +1010,12 @@ mod tests {
         let provider_result = observed_drain_provider_result(&result);
 
         assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+        let Some(SearchMaintenanceDetail::ObservedDrain(detail)) = provider_result.detail else {
+            panic!("expected observed drain detail");
+        };
+        assert_eq!(detail.stale_rows_purged, 2);
+        assert_eq!(detail.evicted_rows, 3);
+        assert!(detail.storage_limit_reached);
     }
 
     #[test]

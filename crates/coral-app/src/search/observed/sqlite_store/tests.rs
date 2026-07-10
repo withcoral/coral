@@ -14,7 +14,8 @@ use super::super::{
     ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
 };
 use super::{
-    SqliteObservedValuesStore, clear_source_in_transaction, enqueue_if_current_in_transaction,
+    SqliteObservedValuesStore, clear_observed_source_in_transaction,
+    enqueue_if_current_in_transaction,
 };
 use crate::search::observed::sqlite_queue::{
     ObservedValuesEnqueueResult, ObservedValuesQueueJob, ObservedValuesSurfaceKind,
@@ -122,7 +123,7 @@ fn clear_transaction_committing_first_rejects_in_flight_observation() {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .expect("clear transaction");
-    clear_source_in_transaction(&transaction, &workspace, "github")
+    clear_observed_source_in_transaction(&transaction, &workspace, "github")
         .expect("clear source in transaction");
 
     let (contended_tx, contended_rx) = sync_channel(0);

@@ -1217,6 +1217,36 @@ async fn search_index_clear_calls_app_maintenance_rpc() {
     assert_eq!(requests.len(), 2, "expected second clear call");
     assert_workspace_name(requests[1].workspace.as_ref(), "work");
 
+    server
+        .cmd()
+        .args([
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--source",
+            "searchable",
+            "--workspace",
+            "default",
+            "--yes",
+        ])
+        .assert()
+        .success();
+    let requests = server.clear_search_data_requests();
+    assert_eq!(requests.len(), 3, "expected source clear call");
+    assert_default_workspace(requests[2].workspace.as_ref());
+    assert_eq!(requests[2].scope, SearchDataScope::All as i32);
+    match requests[2]
+        .target
+        .as_ref()
+        .and_then(|target| target.target.as_ref())
+    {
+        Some(search_clear_target::Target::SourceName(source_name)) => {
+            assert_eq!(source_name, "searchable");
+        }
+        other => panic!("expected source clear target, got {other:?}"),
+    }
+
     server.shutdown().await;
 }
 

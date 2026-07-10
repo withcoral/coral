@@ -94,6 +94,50 @@ fn clear_workspace_removes_workspace_documents_and_invalidates_fingerprint() {
 }
 
 #[test]
+fn clear_source_removes_only_source_documents_and_invalidates_fingerprint() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let mut snapshot = catalog_index_snapshot();
+    snapshot.documents.push(document(DocumentInput {
+        doc_id: "catalog:table:slack.messages",
+        doc_kind: CatalogIndexDocumentKind::CatalogTable,
+        source_name: "slack",
+        surface_kind: "table",
+        surface_name: "messages",
+        field_name: "",
+        field_role: "",
+        qualified_name: "slack.messages",
+        title: "messages",
+        description: "Slack messages",
+        searchable_text: "slack messages",
+    }));
+    store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh catalog");
+
+    let result = store
+        .clear_catalog_source("github")
+        .expect("clear source catalog");
+
+    assert_eq!(result.deleted_document_count, 3);
+    assert_eq!(store.catalog_document_count().expect("document count"), 1);
+    assert_eq!(catalog_fts_document_count(&store), 1);
+    let hits = store
+        .search_catalog(&["slack".to_string()], 10)
+        .expect("search remaining source");
+    assert_eq!(hits.hits.len(), 1);
+    assert_eq!(
+        hits.hits.first().expect("remaining hit").source_name,
+        "slack"
+    );
+    assert!(
+        !store
+            .catalog_projection_is_current(&snapshot.fingerprint)
+            .expect("projection invalidated")
+    );
+}
+
+#[test]
 fn forced_rebuild_runs_when_fingerprint_is_unchanged() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);

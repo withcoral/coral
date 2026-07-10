@@ -4,12 +4,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{Connection, ErrorCode};
+use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 use crate::search::catalog::sqlite_index::{
     CatalogClearResult, CatalogIndexSnapshot, CatalogRebuildResult, CatalogRefreshResult,
-    CatalogSearchHits, SqliteCatalogIndex,
+    CatalogSearchHits, SqliteCatalogIndex, clear_catalog_source_documents_in_transaction,
 };
+use crate::search::observed::{ObservedValuesClearResult, clear_observed_source_in_transaction};
 use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
@@ -142,6 +143,31 @@ impl SqliteSearchStore {
     pub(crate) fn clear_catalog_workspace(&self) -> Result<CatalogClearResult, SqliteSearchError> {
         let mut connection = self.connect()?;
         SqliteCatalogIndex::new().clear_workspace(&mut connection, &self.workspace_name)
+    }
+
+    pub(crate) fn clear_catalog_source(
+        &self,
+        source_name: &str,
+    ) -> Result<CatalogClearResult, SqliteSearchError> {
+        let mut connection = self.connect()?;
+        SqliteCatalogIndex::new().clear_source(&mut connection, &self.workspace_name, source_name)
+    }
+
+    pub(crate) fn clear_source_all(
+        &self,
+        source_name: &str,
+    ) -> Result<(CatalogClearResult, ObservedValuesClearResult), SqliteSearchError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let catalog = clear_catalog_source_documents_in_transaction(
+            &transaction,
+            &self.workspace_name,
+            source_name,
+        )?;
+        let observed =
+            clear_observed_source_in_transaction(&transaction, &self.workspace_name, source_name)?;
+        transaction.commit()?;
+        Ok((catalog, observed))
     }
 
     pub(crate) fn compact_after_clear(&self) -> SqliteSearchCompactionResult {
@@ -1136,6 +1162,64 @@ mod tests {
 
         assert!(matches!(outcome, WalCheckpointOutcome::Busy { .. }));
         reader.execute_batch("ROLLBACK").expect("end reader");
+    }
+
+    #[test]
+    fn source_all_clear_rolls_back_catalog_when_observed_clear_fails() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = store.connect_for_test().expect("connect");
+        connection
+            .execute(
+                "INSERT INTO catalog_documents (workspace, doc_id, doc_kind, source_name, title, payload_json, snapshot_fingerprint) VALUES ('default', 'doc', 'catalog_table', 'github', 'Issues', '{}', 'fingerprint')",
+                [],
+            )
+            .expect("seed catalog document");
+        connection
+            .execute(
+                "INSERT INTO observed_values (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0)",
+                [],
+            )
+            .expect("seed observed value");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_observed_delete BEFORE DELETE ON observed_values BEGIN SELECT RAISE(ABORT, 'forced observed clear failure'); END;",
+            )
+            .expect("install failure trigger");
+        drop(connection);
+
+        store
+            .clear_source_all("github")
+            .expect_err("combined clear should fail");
+
+        let connection = store.connect_for_test().expect("reconnect");
+        let catalog_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM catalog_documents WHERE workspace = 'default' AND source_name = 'github'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("catalog count");
+        let observed_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND source_name = 'github'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("observed count");
+        let generation_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM observed_source_generations WHERE workspace = 'default' AND source_name = 'github'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("generation count");
+        assert_eq!(catalog_count, 1);
+        assert_eq!(observed_count, 1);
+        assert_eq!(generation_count, 0);
     }
 
     #[test]
