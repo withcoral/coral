@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use coral_api::{
@@ -33,8 +34,7 @@ use crate::catalog::discovery::{
     ColumnSearchResult, DescribeTableResult,
 };
 use crate::identity::{
-    SingleUserPrincipalProvider, UserPrincipalProvider, UserPrincipalProviderError,
-    UserPrincipalProviderErrorKind,
+    UserPrincipalProvider, UserPrincipalProviderError, UserPrincipalProviderErrorKind,
 };
 use crate::query::manager::QueryManagerError;
 use crate::request_context::RequestContext;
@@ -45,7 +45,46 @@ struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
 const USER_PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
-struct GrpcServerSpan(tracing::Span);
+pub(crate) struct GrpcServerSpan(tracing::Span, Arc<AtomicU8>);
+
+impl GrpcServerSpan {
+    const HANDLER_RECORDED: u8 = 1;
+    const TRANSPORT_FINALIZED: u8 = 2;
+
+    fn new(span: tracing::Span) -> Self {
+        Self(span, Arc::new(AtomicU8::new(0)))
+    }
+
+    fn record_handler_status(&self, code: Code, status: Option<&Status>) {
+        self.1.fetch_or(Self::HANDLER_RECORDED, Ordering::AcqRel);
+        record_grpc_status(&self.0, code, status);
+    }
+
+    fn finalize_transport(&self, code: Code, status: Option<&Status>) {
+        let prior = self.1.fetch_or(Self::TRANSPORT_FINALIZED, Ordering::AcqRel);
+        if prior & (Self::HANDLER_RECORDED | Self::TRANSPORT_FINALIZED) == 0 {
+            record_grpc_status(&self.0, code, status);
+        }
+    }
+}
+
+struct GrpcSpanCompletionGuard(GrpcServerSpan);
+
+impl Drop for GrpcSpanCompletionGuard {
+    fn drop(&mut self) {
+        self.0.finalize_transport(Code::Cancelled, None);
+    }
+}
+
+struct GrpcHandlerCompletionGuard(Option<GrpcServerSpan>);
+
+impl Drop for GrpcHandlerCompletionGuard {
+    fn drop(&mut self) {
+        if let Some(span) = self.0.take() {
+            span.record_handler_status(Code::Cancelled, None);
+        }
+    }
+}
 
 impl Extractor for MetadataExtractor<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -62,53 +101,6 @@ impl Extractor for MetadataExtractor<'_> {
             })
             .collect()
     }
-}
-
-/// Compatibility wrapper used until the next stack unit installs one layer
-/// around the complete route tree.
-#[derive(Clone)]
-pub(crate) struct GrpcMethodAnnotatedService<S> {
-    inner: GrpcRequestContextService<S>,
-}
-
-impl<S> GrpcMethodAnnotatedService<S> {
-    pub(crate) fn new(inner: S) -> Self {
-        let layer = GrpcRequestContextLayer::new(Arc::new(SingleUserPrincipalProvider));
-        Self {
-            inner: layer.layer(inner),
-        }
-    }
-}
-
-impl<S, B, ResBody> Service<http::Request<B>> for GrpcMethodAnnotatedService<S>
-where
-    S: Service<http::Request<B>, Response = http::Response<ResBody>> + Clone + Send + 'static,
-    S::Future: Send + 'static,
-    S::Error: Send + 'static,
-    B: Send + 'static,
-    ResBody: Default + Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, request: http::Request<B>) -> Self::Future {
-        self.inner.call(request)
-    }
-}
-
-impl<S> tonic::server::NamedService for GrpcMethodAnnotatedService<S>
-where
-    S: tonic::server::NamedService,
-{
-    const NAME: &'static str = S::NAME;
 }
 
 /// Tower layer that installs Coral request context for gRPC route trees.
@@ -179,17 +171,16 @@ where
         );
         let request_metadata = MetadataMap::from_headers(request.headers().clone());
         let user_principal_provider = Arc::clone(&self.user_principal_provider);
-        let span = grpc_span_for_metadata(&method_metadata, &request_metadata);
-        request
-            .extensions_mut()
-            .insert(GrpcServerSpan(span.clone()));
+        let span = GrpcServerSpan::new(grpc_span_for_metadata(&method_metadata, &request_metadata));
+        request.extensions_mut().insert(span.clone());
 
         let mut inner = self.inner.clone();
         std::mem::swap(&mut self.inner, &mut inner);
 
-        let instrumented_span = span.clone();
+        let instrumented_span = span.0.clone();
         Box::pin(
             async move {
+                let _completion = GrpcSpanCompletionGuard(span.clone());
                 match principal_for_request(
                     user_principal_provider.as_ref(),
                     &request_metadata,
@@ -201,11 +192,22 @@ where
                         request
                             .extensions_mut()
                             .insert(RequestContext::new(principal));
-                        inner.call(request).await
+                        let result = inner.call(request).await;
+                        match &result {
+                            Ok(response) => {
+                                if let Some(status) = Status::from_header_map(response.headers()) {
+                                    span.finalize_transport(status.code(), Some(&status));
+                                } else {
+                                    span.finalize_transport(Code::Ok, None);
+                                }
+                            }
+                            Err(_error) => span.finalize_transport(Code::Unknown, None),
+                        }
+                        result
                     }
                     Err(error) => {
                         let status = user_principal_provider_status(&error);
-                        record_grpc_status(&span, status.code(), Some(&status));
+                        span.finalize_transport(status.code(), Some(&status));
                         Ok(status.into_http())
                     }
                 }
@@ -248,12 +250,12 @@ where
 }
 
 /// Creates a span parented to the trace context extracted from a gRPC request.
-pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
+pub(crate) fn grpc_span<T>(request: &Request<T>) -> GrpcServerSpan {
     if let Some(span) = request.extensions().get::<GrpcServerSpan>() {
-        return span.0.clone();
+        return span.clone();
     }
     let metadata = grpc_method(request);
-    grpc_span_for_metadata(&metadata, request.metadata())
+    GrpcServerSpan::new(grpc_span_for_metadata(&metadata, request.metadata()))
 }
 
 fn grpc_span_for_metadata(
@@ -332,14 +334,16 @@ fn annotate_request_context<B>(request: &mut http::Request<B>) {
     }
 }
 
-pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
+pub(crate) async fn instrument_grpc<T, F>(span: GrpcServerSpan, future: F) -> Result<T, Status>
 where
     F: Future<Output = Result<T, Status>>,
 {
-    let result = future.instrument(span.clone()).await;
+    let mut completion = GrpcHandlerCompletionGuard(Some(span.clone()));
+    let result = future.instrument(span.0.clone()).await;
+    completion.0 = None;
     match &result {
-        Ok(_) => record_grpc_status(&span, Code::Ok, None),
-        Err(status) => record_grpc_status(&span, status.code(), Some(status)),
+        Ok(_) => span.record_handler_status(Code::Ok, None),
+        Err(status) => span.record_handler_status(status.code(), Some(status)),
     }
     result
 }
@@ -646,17 +650,27 @@ mod tests {
         reason = "proto shape assertions intentionally fail loudly in tests"
     )]
 
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
     use coral_api::{
         grpc_response_status_code,
-        v1::{QueryTestFailure, Workspace, query_test_result},
+        v1::{
+            QueryTestFailure, SubmitFeedbackRequest, SubmitFeedbackResponse, Workspace,
+            feedback_service_client::FeedbackServiceClient,
+            feedback_service_server::{FeedbackService, FeedbackServiceServer},
+            query_test_result,
+        },
     };
-    use tonic::{Code, Request};
+    use tonic::{Code, Request, Response, Status};
+    use tower::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        GrpcMethodMetadata, GrpcRequestContextLayer, GrpcServerMethod, grpc_method, query_status,
-        query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
-        table_to_proto, user_principal_provider_status, workspace_name_from_proto,
-        workspace_to_proto,
+        GrpcMethodMetadata, GrpcRequestContextLayer, GrpcServerMethod, grpc_method, grpc_span,
+        instrument_grpc, principal_for_request, query_status, query_test_result_to_proto,
+        table_function_to_proto, table_summary_to_proto, table_to_proto,
+        user_principal_provider_status, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::identity::{
@@ -772,6 +786,77 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct MetadataUserPrincipalProvider(Arc<Mutex<Vec<tracing::span::Id>>>);
+
+    #[tonic::async_trait]
+    impl UserPrincipalProvider for MetadataUserPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
+            self.0
+                .lock()
+                .expect("provider span ids lock")
+                .push(tracing::Span::current().id().expect("active grpc span"));
+            let user_id = metadata
+                .get("x-test-user")
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| UserPrincipalProviderError::unauthenticated("missing test user"))?;
+            if user_id == "reject" {
+                return Err(UserPrincipalProviderError::unauthenticated(
+                    "rejected test user",
+                ));
+            }
+            UserPrincipal::for_user(user_id)
+                .map_err(|_error| UserPrincipalProviderError::internal("invalid test user"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct PendingUserPrincipalProvider;
+
+    #[tonic::async_trait]
+    impl UserPrincipalProvider for PendingUserPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            _metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
+            std::future::pending().await
+        }
+    }
+
+    #[derive(Clone)]
+    struct FeedbackContextProbe(Arc<Mutex<Vec<(UserPrincipal, tracing::span::Id)>>>);
+
+    #[tonic::async_trait]
+    impl FeedbackService for FeedbackContextProbe {
+        async fn submit_feedback(
+            &self,
+            request: Request<SubmitFeedbackRequest>,
+        ) -> Result<Response<SubmitFeedbackResponse>, Status> {
+            let span = grpc_span(&request);
+            let observed = Arc::clone(&self.0);
+            instrument_grpc(span, async move {
+                let principal = RequestContext::from_request(&request)?.principal().clone();
+                observed.lock().expect("observed handler state lock").push((
+                    principal,
+                    tracing::Span::current().id().expect("active grpc span"),
+                ));
+                Ok(Response::new(SubmitFeedbackResponse { report: None }))
+            })
+            .await
+        }
+    }
+
+    fn feedback_request(user_id: &'static str) -> Request<SubmitFeedbackRequest> {
+        let mut request = Request::new(SubmitFeedbackRequest::default());
+        request
+            .metadata_mut()
+            .insert("x-test-user", user_id.parse().expect("test metadata"));
+        request
+    }
+
     async fn principal_inserted_by(
         provider: std::sync::Arc<dyn UserPrincipalProvider>,
     ) -> UserPrincipal {
@@ -823,6 +908,53 @@ mod tests {
         .await;
 
         assert_eq!(principal, expected_principal);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn grpc_layer_propagates_metadata_context_and_one_server_span() {
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_subscriber::filter::LevelFilter::TRACE);
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let provider_span_ids = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let provider = MetadataUserPrincipalProvider(Arc::clone(&provider_span_ids));
+        let handler = FeedbackContextProbe(Arc::clone(&observed));
+        let server = GrpcRequestContextLayer::new(Arc::new(provider))
+            .layer(FeedbackServiceServer::new(handler));
+        let mut client = FeedbackServiceClient::new(server);
+
+        client
+            .submit_feedback(feedback_request("saul"))
+            .await
+            .expect("authenticated request");
+        let status = client
+            .submit_feedback(feedback_request("reject"))
+            .await
+            .expect_err("rejected request");
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        let observed = observed.lock().expect("observed handler state lock");
+        assert_eq!(observed.len(), 1);
+        assert_eq!(
+            observed[0].0,
+            UserPrincipal::for_user("saul").expect("valid principal")
+        );
+        let provider_span_ids = provider_span_ids.lock().expect("provider span ids lock");
+        assert_eq!(provider_span_ids[0], observed[0].1);
+    }
+
+    #[tokio::test]
+    async fn principal_provider_timeout_is_unavailable() {
+        let error = principal_for_request(
+            &PendingUserPrincipalProvider,
+            &tonic::metadata::MetadataMap::new(),
+            Duration::ZERO,
+        )
+        .await
+        .expect_err("pending provider should time out");
+        let status = user_principal_provider_status(&error);
+
+        assert_eq!(status.code(), Code::Unavailable);
     }
 
     #[test]
