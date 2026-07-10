@@ -212,6 +212,33 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
     }
 }
 
+/// Cloneable factory for constructing an independent MCP handler per session.
+#[derive(Clone)]
+pub struct CoralMcpServerFactory {
+    app: AppClient,
+    options: McpOptions,
+}
+
+impl CoralMcpServerFactory {
+    /// Creates a handler factory with the tools selected by `options`.
+    ///
+    /// The caller must ensure that `app` is authorized for every session
+    /// created by this factory. A transport may share one factory only when
+    /// those sessions share the same authorization context. An authenticated
+    /// transport must use a client bound to the validated session and must not
+    /// fall back to a shared unauthenticated client.
+    #[must_use]
+    pub fn new(app: AppClient, options: McpOptions) -> Self {
+        Self { app, options }
+    }
+
+    /// Constructs a fresh handler for one MCP session.
+    #[must_use]
+    pub fn create(&self) -> impl ServerHandler + Clone + use<> {
+        CoralMcpServer::new(&self.app, self.options.clone())
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
     source: SourceClient,
@@ -225,7 +252,7 @@ pub(crate) struct CoralMcpServer {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct McpStartupContext {
+struct McpStartupContext {
     source_names: Vec<String>,
     query_examples: Vec<McpQueryExample>,
 }
@@ -263,12 +290,12 @@ impl McpStartupContext {
 }
 
 impl CoralMcpServer {
-    pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
+    fn new(app: &AppClient, options: McpOptions) -> Self {
         let startup_context = McpStartupContext::from_options(&options);
         Self::new_with_startup_context(app, options, startup_context)
     }
 
-    pub(crate) fn new_with_startup_context(
+    fn new_with_startup_context(
         app: &AppClient,
         options: McpOptions,
         startup_context: McpStartupContext,
@@ -282,6 +309,18 @@ impl CoralMcpServer {
             task: app.task_client(),
             startup_context,
             options,
+        }
+    }
+
+    fn tool_allowed(&self, tool: ToolName) -> bool {
+        match tool {
+            ToolName::Sql
+            | ToolName::Search
+            | ToolName::ListCatalog
+            | ToolName::DescribeTable
+            | ToolName::ListColumns => true,
+            ToolName::StartTask | ToolName::EndTask => self.options.tasks_enabled,
+            ToolName::Feedback => self.options.feedback_enabled,
         }
     }
 
@@ -603,8 +642,21 @@ impl CoralMcpServer {
         request: CallToolRequestParams,
         task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        match request.name.as_ref().parse::<ToolName>().ok() {
-            Some(ToolName::Sql) => {
+        let Some(tool) = request
+            .name
+            .as_ref()
+            .parse::<ToolName>()
+            .ok()
+            .filter(|tool| self.tool_allowed(*tool))
+        else {
+            return Err(ErrorData::invalid_params(
+                format!("tool '{}' not found", request.name),
+                None,
+            ));
+        };
+
+        match tool {
+            ToolName::Sql => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
                 match self
                     .execute_sql_batch(arguments.queries, task_id_metadata)
@@ -617,20 +669,20 @@ impl CoralMcpServer {
                     }),
                 }
             }
-            Some(ToolName::ListCatalog) => {
+            ToolName::ListCatalog => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::Search) => self.search_tool_result(request.arguments.as_ref()).await,
-            Some(ToolName::DescribeTable) => {
+            ToolName::Search => self.search_tool_result(request.arguments.as_ref()).await,
+            ToolName::DescribeTable => {
                 self.describe_table_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::ListColumns) => {
+            ToolName::ListColumns => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::StartTask) if self.options.tasks_enabled => {
+            ToolName::StartTask => {
                 let arguments = start_task_arguments(request.arguments.as_ref())?;
                 match self.start_task_value(arguments).await {
                     Ok(value) => Ok(ToolCallOutcome::success(value)),
@@ -643,14 +695,14 @@ impl CoralMcpServer {
                     }),
                 }
             }
-            Some(ToolName::EndTask) if self.options.tasks_enabled => {
+            ToolName::EndTask => {
                 let arguments = end_task_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
                     "Task end",
                     self.end_task_value(arguments).await,
                 ))
             }
-            Some(ToolName::Feedback) if self.options.feedback_enabled => {
+            ToolName::Feedback => {
                 let arguments = feedback_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
                     "Feedback submission",
@@ -662,9 +714,6 @@ impl CoralMcpServer {
                     .await,
                 ))
             }
-            None | Some(ToolName::StartTask | ToolName::EndTask | ToolName::Feedback) => Err(
-                ErrorData::invalid_params(format!("tool '{}' not found", request.name), None),
-            ),
         }
     }
 
@@ -773,7 +822,15 @@ impl ServerHandler for CoralMcpServer {
                     feedback_enabled: self.options.feedback_enabled,
                     observed_values_search_enabled: self.options.observed_values_search_enabled,
                 },
-            );
+            )
+            .into_iter()
+            .filter(|tool| {
+                tool.name
+                    .as_ref()
+                    .parse::<ToolName>()
+                    .is_ok_and(|name| self.tool_allowed(name))
+            })
+            .collect();
             Ok(ListToolsResult::with_all_items(tools))
         })
         .await

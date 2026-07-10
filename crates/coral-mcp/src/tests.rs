@@ -14,7 +14,7 @@ use coral_client::{
 };
 use jsonschema::Validator;
 use rmcp::{
-    RoleClient, ServiceExt,
+    RoleClient, ServerHandler, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
@@ -22,7 +22,9 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
 
-use crate::{CoralMcpServer, McpOptions};
+use crate::{CoralMcpServerFactory, McpOptions};
+
+type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -191,7 +193,7 @@ struct TestSession {
     source_client: SourceClient,
     client: RunningService<RoleClient, ()>,
     app_server: RunningServer,
-    mcp_server_task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    mcp_server_task: McpServerTask,
 }
 
 impl TestSession {
@@ -202,11 +204,7 @@ impl TestSession {
             mcp_server_task,
             ..
         } = self;
-        client.cancel().await.expect("cancel client");
-        mcp_server_task
-            .await
-            .expect("join mcp task")
-            .expect("mcp server result");
+        shutdown_mcp_session(client, mcp_server_task).await;
         app_server.shutdown().await.expect("shutdown app server");
     }
 }
@@ -226,20 +224,35 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         .await
         .expect("connect client");
     let source_client = app.source_client();
+    let factory = CoralMcpServerFactory::new(app, options);
+    let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
 
-    let (server_transport, client_transport) = tokio::io::duplex(4096);
-    let mcp_server_task = tokio::spawn(async move {
-        let server = Box::pin(CoralMcpServer::new(&app, options).serve(server_transport)).await?;
-        server.waiting().await?;
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    });
-    let client = ().serve(client_transport).await.expect("start rmcp client");
     TestSession {
         source_client,
         client,
         app_server: server,
         mcp_server_task,
     }
+}
+
+async fn start_mcp_session(
+    server: impl ServerHandler + Clone,
+) -> (RunningService<RoleClient, ()>, McpServerTask) {
+    let (server_transport, client_transport) = tokio::io::duplex(4096);
+    let mcp_server_task = tokio::spawn(async move {
+        let server = Box::pin(server.serve(server_transport)).await?;
+        server.waiting().await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    });
+    let client = ().serve(client_transport).await.expect("start rmcp client");
+    (client, mcp_server_task)
+}
+
+async fn shutdown_mcp_session(client: RunningService<RoleClient, ()>, task: McpServerTask) {
+    client.cancel().await.expect("cancel client");
+    task.await
+        .expect("join mcp task")
+        .expect("mcp server result");
 }
 
 #[tokio::test]
@@ -1431,6 +1444,63 @@ async fn list_catalog_surfaces_table_functions() {
     assert_matches_output_schema(catalog_tool, &functions);
 
     session.shutdown().await;
+}
+
+#[tokio::test]
+async fn factory_shares_client_and_configured_tools_across_sessions() {
+    let temp = TempDir::new().expect("temp dir");
+    let app_server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(app_server.endpoint_uri())
+        .await
+        .expect("connect client");
+    let factory = CoralMcpServerFactory::new(
+        app,
+        McpOptions {
+            feedback_enabled: true,
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    );
+
+    let (first_client, first_task) = start_mcp_session(factory.create()).await;
+    let (second_client, second_task) = start_mcp_session(factory.create()).await;
+
+    for client in [&first_client, &second_client] {
+        let tools = client.list_all_tools().await.expect("tools");
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec![
+                "sql",
+                "search",
+                "list_catalog",
+                "describe_table",
+                "list_columns",
+                "start_task",
+                "end_task",
+                "feedback"
+            ]
+        );
+        let resources = client.list_all_resources().await.expect("resources");
+        assert_eq!(
+            resources
+                .iter()
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["coral://guide", "coral://tables"]
+        );
+    }
+
+    shutdown_mcp_session(first_client, first_task).await;
+    shutdown_mcp_session(second_client, second_task).await;
+    app_server.shutdown().await.expect("shutdown app server");
 }
 
 #[tokio::test]

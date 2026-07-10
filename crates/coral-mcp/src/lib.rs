@@ -8,6 +8,8 @@
 //! - [`run_stdio_with_client`] serves `MCP` messages on stdio using an
 //!   existing [`coral_client::AppClient`], typically bootstrapped by
 //!   `coral-cli`.
+//! - [`CoralMcpServerFactory`] constructs an independent protocol handler for
+//!   each session owned by an alternate transport.
 //!
 //! The exposed MCP surface is intentionally small:
 //!
@@ -34,7 +36,7 @@ use coral_client::AppClient;
 use rmcp::ServiceExt;
 
 pub use error::McpError;
-pub(crate) use server::CoralMcpServer;
+pub use server::CoralMcpServerFactory;
 
 /// A successful SQL query example for MCP initialize instructions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,10 +122,8 @@ pub struct McpOptions {
 /// Returns [`McpError`] if the stdio server cannot complete its `MCP`
 /// lifecycle.
 pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
-    let server = Box::pin(
-        CoralMcpServer::new(&app, options).serve((tokio::io::stdin(), tokio::io::stdout())),
-    )
-    .await?;
+    let handler = CoralMcpServerFactory::new(app, options).create();
+    let server = Box::pin(handler.serve((tokio::io::stdin(), tokio::io::stdout()))).await?;
     let _ = server.waiting().await?;
     Ok(())
 }
