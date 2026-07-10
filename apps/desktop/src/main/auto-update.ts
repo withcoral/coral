@@ -6,6 +6,10 @@ const require = createRequire(import.meta.url)
 const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater }
 
 const STARTUP_UPDATE_CHECK_DELAY_MS = 5000
+// Long-running desktop sessions would otherwise only see new releases after a
+// restart; re-check periodically so a release ships to open apps too. The
+// downloaded update still installs on quit.
+const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 
 let installed = false
 
@@ -76,6 +80,10 @@ export function installAutoUpdater(): void {
   setTimeout(() => {
     void checkForDesktopUpdates({ interactive: false })
   }, STARTUP_UPDATE_CHECK_DELAY_MS)
+  // electron-updater dedupes overlapping checks, so a plain interval is safe.
+  setInterval(() => {
+    void checkForDesktopUpdates({ interactive: false })
+  }, PERIODIC_UPDATE_CHECK_INTERVAL_MS)
 }
 
 export async function checkForDesktopUpdates({ interactive }: { interactive: boolean }): Promise<void> {
