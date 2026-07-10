@@ -14,21 +14,27 @@ use crate::search::maintenance::{
     RebuildSearchIndexResponse, SearchMaintenanceResult, SearchProviderClearRequest,
     SearchProviderMaintenance, SearchProviderRebuildRequest,
 };
-use crate::search::observed::{ObservedValuesDrainBudget, ObservedValuesProjection};
+use crate::search::observed::provider::ObservedValuesProvider;
+use crate::search::observed::{
+    ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad, ObservedValuesLiveScopeLoader,
+    ObservedValuesRetrievalPolicy,
+};
 use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::workspaces::WorkspaceManager;
+use crate::workspaces::{WorkspaceManager, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct SearchManager {
     catalog: CatalogMetadataProvider,
-    observed_projection: ObservedValuesProjection,
+    observed: ObservedValuesProvider,
+    observed_scope_loader: ObservedValuesLiveScopeLoader,
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
 }
 
 const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
 const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(1);
+const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
 
 impl SearchManager {
     pub(crate) fn new(
@@ -38,11 +44,14 @@ impl SearchManager {
     ) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
-        let observed_projection = ObservedValuesProjection::new(layout);
+        let observed = ObservedValuesProvider::new(layout.clone());
+        let observed_scope_loader =
+            ObservedValuesLiveScopeLoader::new(layout, config_store.clone());
         Self {
             catalog: catalog.clone(),
-            observed_projection,
-            engine: UniversalSearchEngine::new(catalog),
+            observed: observed.clone(),
+            observed_scope_loader,
+            engine: UniversalSearchEngine::new(catalog, observed),
             workspaces: workspace_manager,
         }
     }
@@ -58,8 +67,13 @@ impl SearchManager {
         let search = self.clone();
         let request = request.clone();
         let attribution = attribution.clone();
-        run_blocking_search_operation(move || Ok(search.engine.search(&request, &attribution)))
-            .await
+        run_blocking_search_operation(move || {
+            let observed_policy = search.observed_retrieval_policy(&request.workspace_name);
+            Ok(search
+                .engine
+                .search(&request, &attribution, observed_policy.as_ref()))
+        })
+        .await
     }
 
     pub(crate) async fn rebuild_index(
@@ -113,7 +127,7 @@ impl SearchManager {
 
     pub(crate) async fn drain_before_shutdown(&self) -> Result<(), SearchManagerError> {
         let workspaces = self.workspaces.list_workspaces().await?;
-        let observed_projection = self.observed_projection.clone();
+        let observed = self.observed.clone();
         run_blocking_search_operation(move || {
             let deadline = Instant::now() + SHUTDOWN_DRAIN_BUDGET;
             for workspace in workspaces {
@@ -125,7 +139,7 @@ impl SearchManager {
                     );
                     break;
                 }
-                match observed_projection.drain_queue(
+                match observed.drain_queue(
                     &workspace.name,
                     ObservedValuesDrainBudget::new(MANUAL_DRAIN_MAX_JOBS, remaining_budget),
                 ) {
@@ -158,6 +172,17 @@ impl SearchManager {
         .await
     }
 
+    fn observed_retrieval_policy(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<ObservedValuesRetrievalPolicy, AppError> {
+        let load = self.observed_scope_loader.load(workspace_name)?;
+        Ok(observed_retrieval_policy_from_load(
+            load,
+            OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS,
+        ))
+    }
+
     fn rebuild_catalog_index(
         &self,
         request: &RebuildSearchIndexRequest,
@@ -178,4 +203,15 @@ where
     task::spawn_blocking(move || span.in_scope(operation))
         .await
         .map_err(AppError::from)?
+}
+
+fn observed_retrieval_policy_from_load(
+    load: ObservedValuesLiveScopeLoad,
+    stale_after_last_observed_days: u32,
+) -> ObservedValuesRetrievalPolicy {
+    ObservedValuesRetrievalPolicy::with_load_failures(
+        load.live_scopes,
+        load.failed_sources,
+        stale_after_last_observed_days,
+    )
 }
