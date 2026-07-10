@@ -11,9 +11,31 @@ use tempfile::TempDir;
 use super::*;
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+const OAUTH_ISSUER: &str = "http://localhost:9080";
+const OAUTH_RESOURCE: &str = "http://localhost:1457";
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
+}
+
+fn available_addr() -> SocketAddr {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve address");
+    listener.local_addr().expect("reserved address")
+}
+
+fn write_oauth_config(temp: &TempDir, oauth_bind: SocketAddr, mcp_bind: Option<SocketAddr>) {
+    std::fs::write(temp.path().join("session.key"), [b'k'; 32]).expect("session key");
+    let mcp = mcp_bind.map_or_else(String::new, |bind| {
+        format!(
+            "[server.mcp_http]\nenabled = true\nbind = '{bind}'\nresource_url = '{OAUTH_RESOURCE}'\nauthorization_server = '{OAUTH_ISSUER}'\n\n"
+        )
+    });
+    write_config(
+        temp,
+        &format!(
+            "[trace_history]\nenabled = false\n\n{mcp}[auth]\nhttp_bind_addr = '{oauth_bind}'\n\n[auth.session]\nissuer = '{OAUTH_ISSUER}'\naudience = '{OAUTH_RESOURCE}'\nsigning_key_file = 'session.key'\n\n[auth.oauth]\nissuer = '{OAUTH_ISSUER}'\nresource = '{OAUTH_RESOURCE}'\n\n[auth.providers.test]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret = 'test-secret'\nredirect_uri = '{OAUTH_ISSUER}/auth/oidc/test/callback'\n"
+        ),
+    );
 }
 
 fn grpc_addr(server: &RunningServer) -> SocketAddr {
@@ -63,6 +85,26 @@ fn loopback_grpc_endpoint_maps_wildcards_and_rejects_public_addresses() {
     .expect_err("IPv4-mapped IPv6 address must be rejected");
 }
 
+#[test]
+fn shutdown_failures_retain_every_component_in_order() {
+    let failures = ShutdownFailures::from_results(
+        Err(McpHttpError::ShutdownTimedOut),
+        Err(OAuthLifecycleError("OAuth test failure".to_string())),
+        Err(LocalServerError::Unavailable(
+            "gRPC test failure".to_string(),
+        )),
+    )
+    .expect_err("all shutdown failures");
+
+    assert!(failures.mcp.is_some());
+    assert!(failures.oauth.is_some());
+    assert!(failures.grpc.is_some());
+    assert_eq!(
+        failures.to_string(),
+        "MCP HTTP: MCP HTTP server shutdown timed out; OAuth: OAuth test failure; gRPC: unavailable: gRPC test failure"
+    );
+}
+
 #[tokio::test]
 async fn auth_disabled_companion_serves_and_shuts_down() {
     let temp = TempDir::new().expect("temp dir");
@@ -79,11 +121,69 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     .expect("start composite server");
     let grpc_addr = grpc_addr(&server);
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
+    assert!(server.oauth_addr().is_none());
     assert_catalog_tool(format!("http://{mcp_addr}/mcp"), None).await;
     server.shutdown().await.expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
     drop((grpc_rebound, mcp_rebound));
+}
+
+#[tokio::test]
+async fn oauth_and_mcp_companions_serve_and_release_all_listeners() {
+    let temp = TempDir::new().expect("temp dir");
+    write_oauth_config(
+        &temp,
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
+    );
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+    )
+    .await
+    .expect("start composite server");
+    let grpc_addr = grpc_addr(&server);
+    let oauth_addr = server.oauth_addr().expect("OAuth endpoint");
+    let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
+
+    let response = reqwest::get(format!(
+        "http://{oauth_addr}/.well-known/oauth-authorization-server"
+    ))
+    .await
+    .expect("OAuth metadata response");
+    assert!(response.status().is_success());
+    let metadata = response.text().await.expect("OAuth metadata body");
+    assert!(metadata.contains(&format!(r#""issuer":"{OAUTH_ISSUER}""#)));
+
+    server.shutdown().await.expect("shutdown composite server");
+    let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
+    let oauth_rebound = TcpListener::bind(oauth_addr).expect("OAuth port must be released");
+    let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
+    drop((grpc_rebound, oauth_rebound, mcp_rebound));
+}
+
+#[tokio::test]
+async fn oauth_start_failure_releases_the_started_grpc_listener() {
+    let grpc_addr = available_addr();
+    let occupied_oauth = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupy OAuth port");
+    let oauth_addr = occupied_oauth.local_addr().expect("OAuth address");
+    let temp = TempDir::new().expect("temp dir");
+    write_oauth_config(&temp, oauth_addr, None);
+
+    let result = start(
+        ServerBuilder::standalone_grpc(grpc_addr)
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+    )
+    .await;
+    let Err(error) = result else {
+        panic!("occupied OAuth address must fail startup");
+    };
+    assert!(error.to_string().contains("failed to bind OAuth server"));
+    let rebound = TcpListener::bind(grpc_addr).expect("gRPC listener must be released");
+    drop((rebound, occupied_oauth));
 }
 
 #[tokio::test]
@@ -157,19 +257,16 @@ signing_key_file = 'session.key'
 }
 
 #[tokio::test]
-async fn mcp_start_failure_releases_the_started_grpc_listener() {
+async fn mcp_start_failure_releases_started_oauth_and_grpc_listeners() {
     let grpc_probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve gRPC port");
+    let oauth_probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve OAuth port");
     let grpc_addr = grpc_probe.local_addr().expect("gRPC address");
-    drop(grpc_probe);
+    let oauth_addr = oauth_probe.local_addr().expect("OAuth address");
+    drop((grpc_probe, oauth_probe));
     let occupied_mcp = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupy MCP port");
     let mcp_addr = occupied_mcp.local_addr().expect("MCP address");
     let temp = TempDir::new().expect("temp dir");
-    write_config(
-        &temp,
-        &format!(
-            "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '{mcp_addr}'\n"
-        ),
-    );
+    write_oauth_config(&temp, oauth_addr, Some(mcp_addr));
 
     let result = start(
         ServerBuilder::standalone_grpc(grpc_addr)
@@ -181,6 +278,7 @@ async fn mcp_start_failure_releases_the_started_grpc_listener() {
         panic!("occupied MCP address must fail startup");
     };
     assert!(error.to_string().contains("failed to bind MCP HTTP server"));
-    let rebound = TcpListener::bind(grpc_addr).expect("gRPC listener must be released");
-    drop(rebound);
+    let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC listener must be released");
+    let oauth_rebound = TcpListener::bind(oauth_addr).expect("OAuth listener must be released");
+    drop((grpc_rebound, oauth_rebound, occupied_mcp));
 }

@@ -121,12 +121,10 @@ impl OidcAuthConfig {
         let listener = TcpListener::bind(bind_addr)
             .await
             .map_err(|error| format!("failed to bind OAuth server: {error}"))?;
-        let endpoint_uri = format!(
-            "http://{}",
-            listener
-                .local_addr()
-                .map_err(|error| format!("failed to read OAuth server address: {error}"))?
-        );
+        let local_addr = listener
+            .local_addr()
+            .map_err(|error| format!("failed to read OAuth server address: {error}"))?;
+        let endpoint_uri = format!("http://{local_addr}");
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             axum::serve(listener, router)
@@ -136,6 +134,7 @@ impl OidcAuthConfig {
                 .await
         });
         Ok(RunningOidcAuthServer {
+            local_addr,
             endpoint_uri,
             shutdown_tx: Some(shutdown_tx),
             task: Some(task),
@@ -145,12 +144,19 @@ impl OidcAuthConfig {
 
 /// An active OAuth HTTP listener with deterministic graceful shutdown.
 pub struct RunningOidcAuthServer {
+    local_addr: SocketAddr,
     endpoint_uri: String,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
 }
 
 impl RunningOidcAuthServer {
+    /// Returns the listener address, including an OS-assigned port.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
     /// Returns the cleartext listener endpoint, including an assigned port.
     #[must_use]
     pub fn endpoint_uri(&self) -> &str {
@@ -531,6 +537,7 @@ mod tests {
     #[tokio::test]
     async fn aborts_task_when_shutdown_times_out() {
         let server = RunningOidcAuthServer {
+            local_addr: super::DEFAULT_BIND_ADDR,
             endpoint_uri: String::new(),
             shutdown_tx: None,
             task: Some(tokio::spawn(std::future::pending::<std::io::Result<()>>())),
