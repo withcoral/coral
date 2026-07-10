@@ -1,9 +1,19 @@
-import { recipe } from '@vanilla-extract/recipes'
+import { keyframes, style } from '@vanilla-extract/css'
 import type { RecipeVariants } from '@vanilla-extract/recipes'
+import { recipe } from '@vanilla-extract/recipes'
 
 import { staticUtilities, theme } from '@/wax/theme/theme.css'
 
 import { button, disabledClass } from './button.css'
+
+const spinningAnimation = keyframes({
+  from: { transform: 'rotate(0)' },
+  to: { transform: 'rotate(360deg)' },
+})
+
+export const spinning = style({
+  animation: `${spinningAnimation} 2s linear infinite`,
+})
 
 export const iconContainer = recipe({
   base: {
