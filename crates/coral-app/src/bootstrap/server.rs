@@ -56,6 +56,7 @@ use crate::functions::service::FunctionService;
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::request_auth::{AuthValidator, BearerUserPrincipalProvider};
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
@@ -106,6 +107,7 @@ pub(crate) struct ServerConfig {
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
+    auth_validator: Option<Arc<dyn AuthValidator>>,
     enable_stderr_logs: bool,
 }
 
@@ -124,6 +126,7 @@ impl ServerConfig {
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
+            auth_validator: None,
             enable_stderr_logs: false,
         }
     }
@@ -143,13 +146,46 @@ impl ServerConfig {
         self
     }
 
-    fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
-        match &self.mode {
-            ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
-            ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
-                bind: ServerSettings::load(layout)?.bind_addr,
-            }),
-        }
+    fn resolved_startup(
+        &self,
+        layout: &AppStateLayout,
+    ) -> Result<(ServerMode, Arc<dyn UserPrincipalProvider>), AppError> {
+        let is_standalone = matches!(
+            &self.mode,
+            ServerModeSelection::Explicit(ServerMode::StandaloneGrpc { .. })
+                | ServerModeSelection::ConfiguredStandaloneGrpc
+        );
+        let settings = is_standalone
+            .then(|| ServerSettings::load(layout))
+            .transpose()?;
+        let mode = match &self.mode {
+            ServerModeSelection::Explicit(mode) => mode.clone(),
+            ServerModeSelection::ConfiguredStandaloneGrpc => ServerMode::StandaloneGrpc {
+                bind: settings
+                    .as_ref()
+                    .expect("configured standalone mode loads settings")
+                    .bind_addr,
+            },
+        };
+        let configured_auth = settings
+            .as_ref()
+            .map(ServerSettings::auth_validator)
+            .transpose()?
+            .flatten();
+        let auth_validator = if matches!(mode, ServerMode::StandaloneGrpc { .. }) {
+            configured_auth.or_else(|| self.auth_validator.clone())
+        } else {
+            None
+        };
+        let user_principal_provider = Arc::clone(&self.user_principal_provider);
+        let user_principal_provider: Arc<dyn UserPrincipalProvider> = match auth_validator {
+            Some(validator) => Arc::new(BearerUserPrincipalProvider::new(
+                validator,
+                user_principal_provider,
+            )),
+            None => user_principal_provider,
+        };
+        Ok((mode, user_principal_provider))
     }
 
     pub(crate) fn add_engine_extensions_provider(
@@ -158,6 +194,11 @@ impl ServerConfig {
     ) -> Self {
         self.engine_extensions_providers
             .push(engine_extensions_provider);
+        self
+    }
+
+    pub(crate) fn with_auth_validator(mut self, validator: Arc<dyn AuthValidator>) -> Self {
+        self.auth_validator = Some(validator);
         self
     }
 
@@ -266,6 +307,16 @@ impl ServerBuilder {
         self
     }
 
+    /// Installs request authentication for explicit remote-server composition.
+    ///
+    /// Native local gRPC and embedded UI modes intentionally ignore this seam.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_auth_validator(mut self, validator: Arc<dyn AuthValidator>) -> Self {
+        self.config = self.config.with_auth_validator(validator);
+        self
+    }
+
     #[must_use]
     /// Adds an engine extensions provider used for query runtime builds.
     ///
@@ -334,7 +385,7 @@ impl ServerBuilder {
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
-        let mode = self.config.resolved_mode(&layout)?;
+        let (mode, user_principal_provider) = self.config.resolved_startup(&layout)?;
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -427,7 +478,7 @@ impl ServerBuilder {
                 task: task_manager,
             },
             trace_components,
-            self.config.user_principal_provider,
+            user_principal_provider,
             mode,
         )
         .await
@@ -879,6 +930,7 @@ mod tests {
     use std::borrow::Cow;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -894,8 +946,11 @@ mod tests {
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
+    use tonic::metadata::MetadataValue;
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
+    use tonic_health::pb::HealthCheckRequest;
+    use tonic_health::pb::health_client::HealthClient;
 
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
@@ -921,12 +976,26 @@ mod tests {
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
-        AwsEngineExtensionsProvider, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
-        UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError,
+        AuthValidator, AwsEngineExtensionsProvider, NoopEngineExtensionsProvider,
+        SingleUserPrincipalProvider, StaticTokenValidator, UserPrincipal, UserPrincipalProvider,
+        UserPrincipalProviderError,
     };
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    fn list_sources_request(authorizations: &[&str]) -> Request<ListSourcesRequest> {
+        let mut request = Request::new(ListSourcesRequest {
+            workspace: Some(default_workspace()),
+        });
+        for authorization in authorizations {
+            request.metadata_mut().append(
+                "authorization",
+                MetadataValue::try_from(*authorization).expect("authorization metadata"),
+            );
+        }
+        request
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -982,6 +1051,19 @@ enabled = false
             Err(UserPrincipalProviderError::unauthenticated(
                 "rejected user principal",
             ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingAuthValidator {
+        inner: StaticTokenValidator,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl AuthValidator for CountingAuthValidator {
+        fn accepts_bearer(&self, token: &str) -> bool {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.accepts_bearer(token)
         }
     }
 
@@ -1089,6 +1171,64 @@ enabled = false
             .expect("start explicit loopback server");
 
         assert!(server.endpoint_uri().starts_with("http://127.0.0.1:"));
+        coral_client::AppClient::connect(server.endpoint_uri())
+            .await
+            .expect("unauthenticated local AppClient")
+            .source_client()
+            .list_sources(list_sources_request(&[]))
+            .await
+            .expect("local request remains unauthenticated");
+        server.shutdown().await.expect("shutdown server");
+    }
+
+    #[tokio::test]
+    async fn standalone_grpc_static_bearer_gates_coral_services_but_not_liveness() {
+        let temp = TempDir::new().expect("temp dir");
+        let validation_calls = Arc::new(AtomicUsize::new(0));
+        let validator = CountingAuthValidator {
+            inner: StaticTokenValidator::new("correct-._~+/=:").expect("token"),
+            calls: Arc::clone(&validation_calls),
+        };
+        let server = ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .with_auth_validator(Arc::new(validator))
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start authenticated server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source = SourceServiceClient::new(channel.clone());
+
+        for authorizations in [
+            &[][..],
+            &["Basic correct-._~+/=:"][..],
+            &["Bearer wrong-token"][..],
+            &["Bearer correct-._~+/=:", "Bearer correct-._~+/=:"][..],
+        ] {
+            let status = source
+                .list_sources(list_sources_request(authorizations))
+                .await
+                .expect_err("invalid bearer must fail");
+            assert_eq!(status.code(), Code::Unauthenticated);
+            assert_eq!(status.message(), "unauthenticated: authentication required");
+        }
+
+        source
+            .list_sources(list_sources_request(&["bearer correct-._~+/=:"]))
+            .await
+            .expect("correct bearer reaches service");
+        assert_eq!(validation_calls.load(Ordering::Relaxed), 2);
+
+        HealthClient::new(channel)
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
+            .await
+            .expect("liveness is intentionally unauthenticated");
+        assert_eq!(validation_calls.load(Ordering::Relaxed), 2);
         server.shutdown().await.expect("shutdown server");
     }
 
@@ -1107,8 +1247,9 @@ enabled = false
 
         let ServerMode::StandaloneGrpc { bind } = builder
             .config
-            .resolved_mode(&layout)
+            .resolved_startup(&layout)
             .expect("resolve configured bind")
+            .0
         else {
             panic!("configured server must use standalone gRPC mode");
         };
@@ -1220,6 +1361,32 @@ enabled = false
 
         assert!(!has_search_observation_handle(&disabled_server));
         disabled_server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn configured_auth_failure_precedes_state_and_database_setup() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server.auth]\ntoken_env = 'CORAL_TEST_DEFINITELY_MISSING_SERVER_TOKEN'\n",
+        )
+        .expect("config file");
+
+        let result = ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(&config_dir)
+            .start()
+            .await;
+        let Err(error) = result else {
+            panic!("missing configured token must fail");
+        };
+        assert!(error.to_string().contains("server authentication requires"));
+        let entries = std::fs::read_dir(&config_dir)
+            .expect("read config dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, [std::ffi::OsString::from("config.toml")]);
     }
 
     #[tokio::test]

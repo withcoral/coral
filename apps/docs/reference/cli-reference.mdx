@@ -436,7 +436,9 @@ coral server
 ```
 
 The bind address comes from `[server].bind_addr`. Without a `[server]` section,
-Coral uses an ephemeral port on `127.0.0.1`. See
+Coral uses an ephemeral port on `127.0.0.1`. Bearer authentication is optional
+and configured under `[server.auth]`. Coral does not terminate server-side TLS;
+put non-loopback deployments behind a TLS-terminating reverse proxy. See
 [Configuration](/reference/configuration#server).
 
 ## `coral mcp-stdio`

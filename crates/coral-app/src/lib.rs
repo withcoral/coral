@@ -51,6 +51,7 @@ mod functions;
 mod hash;
 mod identity;
 mod query;
+mod request_auth;
 mod request_context;
 mod search;
 mod sources;
@@ -71,5 +72,6 @@ pub use identity::{
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
+pub use request_auth::{AuthValidator, StaticTokenValidator};
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

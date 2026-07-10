@@ -93,6 +93,7 @@ schemars = "1.2.1"
 sea-query = { version = "1", default-features = false, features = ["backend-postgres", "backend-sqlite", "derive", "thread-safe"] }
 sea-query-sqlx = { version = "0.9", default-features = false, features = ["sqlx-postgres", "sqlx-sqlite"] }
 sha2 = "0.10"
+subtle = "2.6"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "postgres", "runtime-tokio", "sqlite", "tls-rustls"] }
 sqlparser = "0.59.0"
 strsim = "0.11"

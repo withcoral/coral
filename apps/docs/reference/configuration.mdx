@@ -79,8 +79,21 @@ The long-running `coral server` command reads its native gRPC bind address from
 ```toml
 [server]
 bind_addr = "127.0.0.1:14555"
+
+[server.auth]
+token_env = "CORAL_SERVER_AUTH_TOKEN"
 ```
 
+The optional `[server.auth]` section requires a nonempty bearer token in
+`token_env`; the environment variable defaults to `CORAL_SERVER_AUTH_TOKEN`.
+If the section is absent, the server accepts unauthenticated requests regardless
+of bind address.
+
+The static token grants full access to Coral's data and control RPCs. The
+standard gRPC health check remains unauthenticated because it reports process
+liveness only. Coral does not terminate server-side TLS yet: put every
+non-loopback deployment behind a TLS-terminating reverse proxy, and do not
+expose its plaintext listener directly.
 ## Runtime features
 
 Experimental runtime features are configured under `[features]`.
