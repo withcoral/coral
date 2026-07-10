@@ -24,26 +24,38 @@ message FunctionTableFunctionPublish {
   string description = 3;
 }
 
-// Public surfaces published by a function.
-message FunctionPublish {
+// Runtime metadata for an installed function that currently plans and executes.
+message FunctionRuntimeReady {
+  // User-facing description.
+  string description = 1;
+  // Arguments inferred from the planned function SQL.
+  repeated FunctionArgument arguments = 2;
   // SQL table-function publication.
-  FunctionTableFunctionPublish table_function = 1;
+  FunctionTableFunctionPublish table_function = 3;
+  // Result columns inferred from the planned function SQL.
+  repeated TableFunctionResultColumn result_columns = 4;
 }
 
-// Function definition exposed by function lifecycle APIs.
+// Validation failure for an installed function that is not currently queryable.
+message FunctionRuntimeInvalid {
+  // Actionable reason the function could not be published into the query runtime.
+  string reason = 1;
+}
+
+// Installed function exposed by function lifecycle APIs.
 message Function {
   // Stable function name.
   string name = 1;
-  // User-facing description.
-  string description = 2;
-  // Arguments inferred from the planned function SQL.
-  repeated FunctionArgument arguments = 3;
-  // Published function surfaces.
-  FunctionPublish publish = 4;
-  // Result columns inferred from the planned function SQL.
-  repeated TableFunctionResultColumn result_columns = 5;
-  // Workspace whose runtime-ready catalog exposes this function.
-  Workspace workspace = 6;
+  // Workspace that owns this function.
+  Workspace workspace = 2;
+  // Current runtime state. Installed functions remain listed when invalid so
+  // callers can inspect or remove them.
+  oneof runtime {
+    // The function currently plans and is published into query runtimes.
+    FunctionRuntimeReady ready = 3;
+    // The function is installed but is not currently queryable.
+    FunctionRuntimeInvalid invalid = 4;
+  }
 }
 
 // Installs or replaces one user function after validation.
@@ -60,15 +72,16 @@ message AddFunctionResponse {
   Function function = 1;
 }
 
-// Lists runtime-ready installed functions in one workspace.
+// Lists installed functions and their current runtime status in one workspace.
 message ListFunctionsRequest {
   // Workspace that scopes functions and selected sources.
   Workspace workspace = 1;
 }
 
-// Runtime-ready installed functions.
+// Installed functions and their current runtime status.
 message ListFunctionsResponse {
-  // Functions that planned successfully against the current workspace sources.
+  // Every installed function, including functions that no longer plan against
+  // the current workspace sources.
   repeated Function functions = 1;
 }
 
@@ -87,7 +100,7 @@ message DeleteFunctionResponse {}
 service FunctionService {
   // Installs or replaces one user function.
   rpc AddFunction(AddFunctionRequest) returns (AddFunctionResponse);
-  // Lists installed functions that are runtime-ready for the current workspace sources.
+  // Lists installed functions and their current runtime status.
   rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse);
   // Deletes one user function.
   rpc DeleteFunction(DeleteFunctionRequest) returns (DeleteFunctionResponse);
