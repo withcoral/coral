@@ -140,10 +140,6 @@ impl ResolvedAuthSettings {
         &self.authorization_server
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the OIDC federation descendant")
-    )]
     pub(super) fn provider(&self) -> &ResolvedOidcProvider {
         &self.provider
     }
