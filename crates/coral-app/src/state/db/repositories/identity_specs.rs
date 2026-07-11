@@ -1,15 +1,15 @@
 #![expect(
     dead_code,
-    reason = "identity repositories land before their read and write behavior in the B1 stack"
+    reason = "identity repositories land before B2 wires their production consumers"
 )]
 
 use std::collections::BTreeMap;
 
-use sea_query::{Expr, ExprTrait, Order, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::bootstrap::AppError;
-use crate::state::db::schema::IdentitySpecs;
-use crate::state::db::{DbError, DbSession};
+use crate::state::db::schema::{IdentitySpecDocuments, IdentitySpecs};
+use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 use coral_spec::validate_identity_spec_name;
 
@@ -177,6 +177,43 @@ pub(crate) struct IdentitySpecRecord {
     pub(crate) updated_at_unix_nanos: i64,
 }
 
+/// Validated authored fields used to insert or replace an identity spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IdentitySpecWrite {
+    version: String,
+    description: String,
+    issuer: String,
+    identity_type: String,
+    manifest_yaml: String,
+}
+
+impl IdentitySpecWrite {
+    /// Validate authored fields before they can reach the database repository.
+    pub(crate) fn new(
+        version: impl Into<String>,
+        description: impl Into<String>,
+        issuer: impl Into<String>,
+        identity_type: impl Into<String>,
+        manifest_yaml: impl Into<String>,
+    ) -> Result<Self, AppError> {
+        let write = Self {
+            version: version.into(),
+            description: description.into(),
+            issuer: issuer.into(),
+            identity_type: identity_type.into(),
+            manifest_yaml: manifest_yaml.into(),
+        };
+        validate_identity_spec_fields([
+            &write.version,
+            &write.issuer,
+            &write.identity_type,
+            &write.manifest_yaml,
+        ])
+        .map_err(AppError::InvalidInput)?;
+        Ok(write)
+    }
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct IdentitySpecRow {
     scope_kind: String,
@@ -194,19 +231,13 @@ struct IdentitySpecRow {
 
 impl IdentitySpecRow {
     fn validate(self) -> Result<IdentitySpecRecord, DbError> {
-        if [
+        validate_identity_spec_fields([
             &self.version,
             &self.issuer,
             &self.identity_type,
             &self.manifest_yaml,
-        ]
-        .into_iter()
-        .any(|value| value.trim().is_empty())
-        {
-            return Err(DbError::CorruptData(
-                "identity spec row has an empty required field".to_string(),
-            ));
-        }
+        ])
+        .map_err(DbError::CorruptData)?;
         if self.created_at_unix_nanos < 0 || self.updated_at_unix_nanos < self.created_at_unix_nanos
         {
             return Err(DbError::CorruptData(
@@ -225,6 +256,160 @@ impl IdentitySpecRow {
             issuer: self.issuer,
             identity_type: self.identity_type,
             manifest_yaml: self.manifest_yaml,
+            created_at_unix_nanos: self.created_at_unix_nanos,
+            updated_at_unix_nanos: self.updated_at_unix_nanos,
+        })
+    }
+}
+
+/// Opaque encrypted setup-input document persisted for one identity spec.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct IdentitySpecDocumentRecord {
+    /// Identity spec that owns the encrypted document.
+    pub(crate) key: IdentitySpecKey,
+    /// Monotonic storage version incremented on each replacement.
+    pub(crate) document_version: i64,
+    /// Opaque encrypted setup-input bytes.
+    pub(crate) ciphertext: Vec<u8>,
+    /// Nonce paired with the encrypted setup-input bytes.
+    pub(crate) nonce: Vec<u8>,
+    /// Opaque wrapped data-encryption-key bytes.
+    pub(crate) wrapped_dek: Vec<u8>,
+    /// Nonce paired with the wrapped data-encryption key.
+    pub(crate) wrapped_dek_nonce: Vec<u8>,
+    /// Identifier of the key-encryption key used for the envelope.
+    pub(crate) key_id: String,
+    /// Authored envelope algorithm identifier.
+    pub(crate) algorithm: String,
+    /// Authored AAD encoding version, interpreted by the crypto layer.
+    pub(crate) aad_version: i64,
+    /// Creation timestamp in Unix nanoseconds.
+    pub(crate) created_at_unix_nanos: i64,
+    /// Last update timestamp in Unix nanoseconds.
+    pub(crate) updated_at_unix_nanos: i64,
+}
+
+/// Validated opaque envelope fields used to insert or replace a document.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct IdentitySpecDocumentWrite {
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    wrapped_dek: Vec<u8>,
+    wrapped_dek_nonce: Vec<u8>,
+    key_id: String,
+    algorithm: String,
+    aad_version: i64,
+}
+
+impl IdentitySpecDocumentWrite {
+    /// Validate opaque envelope shape without interpreting crypto policy.
+    pub(crate) fn new(
+        ciphertext: Vec<u8>,
+        nonce: Vec<u8>,
+        wrapped_dek: Vec<u8>,
+        wrapped_dek_nonce: Vec<u8>,
+        key_id: impl Into<String>,
+        algorithm: impl Into<String>,
+        aad_version: i64,
+    ) -> Result<Self, AppError> {
+        let write = Self {
+            ciphertext,
+            nonce,
+            wrapped_dek,
+            wrapped_dek_nonce,
+            key_id: key_id.into(),
+            algorithm: algorithm.into(),
+            aad_version,
+        };
+        validate_identity_spec_document_fields(
+            &write.ciphertext,
+            &write.nonce,
+            &write.wrapped_dek,
+            &write.wrapped_dek_nonce,
+            &write.key_id,
+            &write.algorithm,
+            write.aad_version,
+        )
+        .map_err(AppError::InvalidInput)?;
+        Ok(write)
+    }
+}
+
+impl std::fmt::Debug for IdentitySpecDocumentRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentitySpecDocumentRecord")
+            .field("key", &self.key)
+            .field("document_version", &self.document_version)
+            .field("ciphertext_len", &self.ciphertext.len())
+            .field("nonce_len", &self.nonce.len())
+            .field("wrapped_dek_len", &self.wrapped_dek.len())
+            .field("wrapped_dek_nonce_len", &self.wrapped_dek_nonce.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for IdentitySpecDocumentWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentitySpecDocumentWrite")
+            .field("ciphertext_len", &self.ciphertext.len())
+            .field("nonce_len", &self.nonce.len())
+            .field("wrapped_dek_len", &self.wrapped_dek.len())
+            .field("wrapped_dek_nonce_len", &self.wrapped_dek_nonce.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct IdentitySpecDocumentRow {
+    scope_kind: String,
+    scope_id: String,
+    name: String,
+    document_version: i64,
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    wrapped_dek: Vec<u8>,
+    wrapped_dek_nonce: Vec<u8>,
+    key_id: String,
+    algorithm: String,
+    aad_version: i64,
+    created_at_unix_nanos: i64,
+    updated_at_unix_nanos: i64,
+}
+
+impl IdentitySpecDocumentRow {
+    fn validate(self) -> Result<IdentitySpecDocumentRecord, DbError> {
+        if self.document_version < 1
+            || self.created_at_unix_nanos < 0
+            || self.updated_at_unix_nanos < self.created_at_unix_nanos
+        {
+            return Err(DbError::CorruptData(
+                "identity spec document row has invalid version or timestamps".to_string(),
+            ));
+        }
+        validate_identity_spec_document_fields(
+            &self.ciphertext,
+            &self.nonce,
+            &self.wrapped_dek,
+            &self.wrapped_dek_nonce,
+            &self.key_id,
+            &self.algorithm,
+            self.aad_version,
+        )
+        .map_err(DbError::CorruptData)?;
+        Ok(IdentitySpecDocumentRecord {
+            key: IdentitySpecKey::from_document_storage_parts(
+                &self.scope_kind,
+                &self.scope_id,
+                &self.name,
+            )?,
+            document_version: self.document_version,
+            ciphertext: self.ciphertext,
+            nonce: self.nonce,
+            wrapped_dek: self.wrapped_dek,
+            wrapped_dek_nonce: self.wrapped_dek_nonce,
+            key_id: self.key_id,
+            algorithm: self.algorithm,
+            aad_version: self.aad_version,
             created_at_unix_nanos: self.created_at_unix_nanos,
             updated_at_unix_nanos: self.updated_at_unix_nanos,
         })
@@ -325,6 +510,83 @@ where
     }
 }
 
+impl IdentitySpecsRepo<'_, CoralTx<'_>> {
+    /// Insert or replace one exact-scope definition while preserving creation time.
+    pub(crate) async fn upsert(
+        &mut self,
+        key: &IdentitySpecKey,
+        spec: &IdentitySpecWrite,
+        now_unix_nanos: i64,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        validate_write_timestamp(now_unix_nanos)?;
+        let current_updated_at =
+            Expr::col((IdentitySpecs::Table, IdentitySpecs::UpdatedAtUnixNanos));
+        let statement = Query::insert()
+            .into_table(IdentitySpecs::Table)
+            .columns(identity_spec_columns())
+            .values_panic([
+                Expr::val(key.scope.kind()),
+                Expr::val(key.scope.scope_id()),
+                Expr::val(key.scope.workspace_id().map(ToString::to_string)),
+                Expr::val(key.name.clone()),
+                Expr::val(spec.version.clone()),
+                Expr::val(spec.description.clone()),
+                Expr::val(spec.issuer.clone()),
+                Expr::val(spec.identity_type.clone()),
+                Expr::val(spec.manifest_yaml.clone()),
+                Expr::val(now_unix_nanos),
+                Expr::val(now_unix_nanos),
+            ])
+            .on_conflict(
+                OnConflict::columns([
+                    IdentitySpecs::ScopeKind,
+                    IdentitySpecs::ScopeId,
+                    IdentitySpecs::Name,
+                ])
+                .update_columns([
+                    IdentitySpecs::Version,
+                    IdentitySpecs::Description,
+                    IdentitySpecs::Issuer,
+                    IdentitySpecs::IdentityType,
+                    IdentitySpecs::ManifestYaml,
+                ])
+                .value(
+                    IdentitySpecs::UpdatedAtUnixNanos,
+                    Expr::case(
+                        current_updated_at.clone().gt(now_unix_nanos),
+                        current_updated_at,
+                    )
+                    .finally(now_unix_nanos),
+                )
+                .to_owned(),
+            )
+            .to_owned();
+        let rows_affected = self.session.execute_affected(statement).await?;
+        if rows_affected != 1 {
+            return Err(AppError::Database(format!(
+                "identity spec upsert affected {rows_affected} rows"
+            )));
+        }
+        self.load_optional(key)
+            .await?
+            .ok_or_else(|| AppError::Database("identity spec disappeared after upsert".to_string()))
+    }
+
+    /// Delete one exact-scope definition and cascade its encrypted document.
+    pub(crate) async fn delete(&mut self, key: &IdentitySpecKey) -> Result<bool, DbError> {
+        let rows_affected = self
+            .session
+            .execute_affected(
+                Query::delete()
+                    .from_table(IdentitySpecs::Table)
+                    .and_where(identity_spec_key_where(key))
+                    .to_owned(),
+            )
+            .await?;
+        zero_or_one_affected(rows_affected, "identity spec delete")
+    }
+}
+
 /// Repository shell for encrypted setup-input documents owned by identity specs.
 pub(crate) struct IdentitySpecDocumentsRepo<'a, S> {
     session: &'a mut S,
@@ -337,6 +599,173 @@ where
     /// Create an identity-spec document repository over an existing DB session.
     pub(crate) fn new(session: &'a mut S) -> Self {
         Self { session }
+    }
+
+    /// Load one encrypted document by exact scope and name without fallback.
+    pub(crate) async fn load_optional(
+        &mut self,
+        key: &IdentitySpecKey,
+    ) -> Result<Option<IdentitySpecDocumentRecord>, DbError> {
+        let row: Option<IdentitySpecDocumentRow> = self
+            .session
+            .fetch_optional(
+                Query::select()
+                    .columns(identity_spec_document_columns())
+                    .from(IdentitySpecDocuments::Table)
+                    .and_where(identity_spec_document_key_where(key))
+                    .to_owned(),
+            )
+            .await?;
+        row.map(IdentitySpecDocumentRow::validate).transpose()
+    }
+}
+
+impl IdentitySpecDocumentsRepo<'_, CoralTx<'_>> {
+    /// Insert or atomically replace an encrypted document and increment its version.
+    pub(crate) async fn upsert(
+        &mut self,
+        key: &IdentitySpecKey,
+        document: &IdentitySpecDocumentWrite,
+        now_unix_nanos: i64,
+    ) -> Result<IdentitySpecDocumentRecord, AppError> {
+        validate_write_timestamp(now_unix_nanos)?;
+        let current_version = Expr::col((
+            IdentitySpecDocuments::Table,
+            IdentitySpecDocuments::DocumentVersion,
+        ));
+        let current_updated_at = Expr::col((
+            IdentitySpecDocuments::Table,
+            IdentitySpecDocuments::UpdatedAtUnixNanos,
+        ));
+        let statement = Query::insert()
+            .into_table(IdentitySpecDocuments::Table)
+            .columns(identity_spec_document_columns())
+            .values_panic([
+                Expr::val(key.scope.kind()),
+                Expr::val(key.scope.scope_id()),
+                Expr::val(key.name.clone()),
+                Expr::val(1),
+                Expr::val(document.ciphertext.clone()),
+                Expr::val(document.nonce.clone()),
+                Expr::val(document.wrapped_dek.clone()),
+                Expr::val(document.wrapped_dek_nonce.clone()),
+                Expr::val(document.key_id.clone()),
+                Expr::val(document.algorithm.clone()),
+                Expr::val(document.aad_version),
+                Expr::val(now_unix_nanos),
+                Expr::val(now_unix_nanos),
+            ])
+            .on_conflict(
+                OnConflict::columns([
+                    IdentitySpecDocuments::ScopeKind,
+                    IdentitySpecDocuments::ScopeId,
+                    IdentitySpecDocuments::Name,
+                ])
+                .value(
+                    IdentitySpecDocuments::DocumentVersion,
+                    current_version.clone().add(1),
+                )
+                .update_columns([
+                    IdentitySpecDocuments::Ciphertext,
+                    IdentitySpecDocuments::Nonce,
+                    IdentitySpecDocuments::WrappedDek,
+                    IdentitySpecDocuments::WrappedDekNonce,
+                    IdentitySpecDocuments::KeyId,
+                    IdentitySpecDocuments::Algorithm,
+                    IdentitySpecDocuments::AadVersion,
+                ])
+                .value(
+                    IdentitySpecDocuments::UpdatedAtUnixNanos,
+                    Expr::case(
+                        current_updated_at.clone().gt(now_unix_nanos),
+                        current_updated_at,
+                    )
+                    .finally(now_unix_nanos),
+                )
+                .action_and_where(current_version.lt(i64::MAX))
+                .to_owned(),
+            )
+            .to_owned();
+        match self.session.execute_affected(statement).await? {
+            1 => {}
+            0 => {
+                return Err(AppError::FailedPrecondition(format!(
+                    "identity spec document version is exhausted for {}:{}",
+                    key.scope.scope_id(),
+                    key.name
+                )));
+            }
+            rows_affected => {
+                return Err(AppError::Database(format!(
+                    "identity spec document upsert affected {rows_affected} rows"
+                )));
+            }
+        }
+        self.load_optional(key).await?.ok_or_else(|| {
+            AppError::Database("identity spec document disappeared after upsert".to_string())
+        })
+    }
+
+    /// Delete one exact-scope encrypted document without deleting its definition.
+    pub(crate) async fn delete(&mut self, key: &IdentitySpecKey) -> Result<bool, DbError> {
+        let rows_affected = self
+            .session
+            .execute_affected(
+                Query::delete()
+                    .from_table(IdentitySpecDocuments::Table)
+                    .and_where(identity_spec_document_key_where(key))
+                    .to_owned(),
+            )
+            .await?;
+        zero_or_one_affected(rows_affected, "identity spec document delete")
+    }
+}
+
+fn validate_identity_spec_fields(fields: [&str; 4]) -> Result<(), String> {
+    if fields.into_iter().any(|value| value.trim().is_empty()) {
+        return Err("identity spec has an empty required field".to_string());
+    }
+    Ok(())
+}
+
+fn validate_identity_spec_document_fields(
+    ciphertext: &[u8],
+    nonce: &[u8],
+    wrapped_dek: &[u8],
+    wrapped_dek_nonce: &[u8],
+    key_id: &str,
+    algorithm: &str,
+    aad_version: i64,
+) -> Result<(), String> {
+    if ciphertext.is_empty()
+        || nonce.is_empty()
+        || wrapped_dek.is_empty()
+        || wrapped_dek_nonce.is_empty()
+    {
+        return Err("identity spec document has an empty encrypted byte field".to_string());
+    }
+    if key_id.trim().is_empty() || algorithm.trim().is_empty() || aad_version < 1 {
+        return Err("identity spec document has invalid envelope metadata".to_string());
+    }
+    Ok(())
+}
+
+fn validate_write_timestamp(now_unix_nanos: i64) -> Result<(), AppError> {
+    match now_unix_nanos {
+        0.. => Ok(()),
+        _ => Err(AppError::InvalidInput(
+            "identity spec timestamp is negative".into(),
+        )),
+    }
+}
+
+fn zero_or_one_affected(rows_affected: u64, op: &str) -> Result<bool, DbError> {
+    match rows_affected {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DbError::CorruptData(format!(
+            "{op} affected {rows_affected} rows"
+        ))),
     }
 }
 
@@ -392,6 +821,24 @@ fn identity_spec_columns() -> [IdentitySpecs; 11] {
     ]
 }
 
+fn identity_spec_document_columns() -> [IdentitySpecDocuments; 13] {
+    [
+        IdentitySpecDocuments::ScopeKind,
+        IdentitySpecDocuments::ScopeId,
+        IdentitySpecDocuments::Name,
+        IdentitySpecDocuments::DocumentVersion,
+        IdentitySpecDocuments::Ciphertext,
+        IdentitySpecDocuments::Nonce,
+        IdentitySpecDocuments::WrappedDek,
+        IdentitySpecDocuments::WrappedDekNonce,
+        IdentitySpecDocuments::KeyId,
+        IdentitySpecDocuments::Algorithm,
+        IdentitySpecDocuments::AadVersion,
+        IdentitySpecDocuments::CreatedAtUnixNanos,
+        IdentitySpecDocuments::UpdatedAtUnixNanos,
+    ]
+}
+
 fn identity_spec_key_where(key: &IdentitySpecKey) -> sea_query::SimpleExpr {
     identity_spec_scope_where(&key.scope).and(Expr::col(IdentitySpecs::Name).eq(key.name.as_str()))
 }
@@ -402,12 +849,21 @@ fn identity_spec_scope_where(scope: &IdentitySpecScope) -> sea_query::SimpleExpr
         .and(Expr::col(IdentitySpecs::ScopeId).eq(scope.scope_id()))
 }
 
+fn identity_spec_document_key_where(key: &IdentitySpecKey) -> sea_query::SimpleExpr {
+    Expr::col(IdentitySpecDocuments::ScopeKind)
+        .eq(key.scope.kind())
+        .and(Expr::col(IdentitySpecDocuments::ScopeId).eq(key.scope.scope_id()))
+        .and(Expr::col(IdentitySpecDocuments::Name).eq(key.name.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use sea_query::{Expr, Query};
     use tempfile::tempdir;
 
-    use super::{IdentitySpecKey, identity_spec_columns, identity_spec_key_where};
+    use super::{
+        IdentitySpecDocumentWrite, IdentitySpecKey, identity_spec_columns, identity_spec_key_where,
+    };
     use crate::bootstrap::{self, AppError};
     use crate::state::db::schema::IdentitySpecs;
     use crate::state::db::{CoralDb, DbError, DbRepos, DbSession, ResolvedDatabaseConfig};
@@ -530,6 +986,38 @@ mod tests {
             6,
         )
         .await;
+        let document = IdentitySpecDocumentWrite::new(
+            b"secret".to_vec(),
+            b"nonce".to_vec(),
+            b"wrapped".to_vec(),
+            b"wrapped-nonce".to_vec(),
+            "key-1",
+            "opaque-algorithm",
+            7,
+        )
+        .expect("valid document");
+        let first = tx
+            .identity_spec_documents()
+            .upsert(&global_shadow, &document, 5)
+            .await
+            .expect("insert document");
+        let second = tx
+            .identity_spec_documents()
+            .upsert(&global_shadow, &document, 6)
+            .await
+            .expect("replace document");
+        assert_eq!((first.document_version, second.document_version), (1, 2));
+        assert_eq!(
+            (second.created_at_unix_nanos, second.updated_at_unix_nanos),
+            (5, 6)
+        );
+        assert!(!format!("{second:?}").contains("secret"));
+        assert!(
+            tx.identity_spec_documents()
+                .delete(&global_shadow)
+                .await
+                .expect("delete")
+        );
         tx.commit().await.expect("commit seed tx");
 
         let mut session = db;

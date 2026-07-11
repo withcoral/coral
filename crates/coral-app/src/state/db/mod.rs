@@ -19,10 +19,11 @@ pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
 #[expect(
     unused_imports,
-    reason = "identity key types land before later repository behavior consumes them"
+    reason = "identity repository types land before B2 wires production consumers"
 )]
 pub(crate) use repositories::identity_specs::{
-    IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
+    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,
+    IdentitySpecScope, IdentitySpecWrite,
 };
 pub(crate) use session::{DbRepos, DbSession};
 pub(crate) use transaction::CoralTx;
