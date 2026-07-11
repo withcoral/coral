@@ -7,6 +7,7 @@
     reason = "CLI intentionally renders user-facing output and the package includes test-only dependencies."
 )]
 
+mod auth_login;
 mod bootstrap;
 mod branding;
 mod browser;
@@ -80,10 +81,12 @@ struct Cli {
 
 #[derive(Args)]
 struct ConnectionArgs {
-    /// Connect to an existing Coral gRPC endpoint. Overrides `CORAL_ENDPOINT`; empty is local.
+    /// Connect to an existing Coral gRPC endpoint. Overrides `CORAL_ENDPOINT`.
+    /// An empty value selects local mode where supported.
     #[arg(long, value_name = "URI", global = true)]
     endpoint: Option<String>,
-    /// Send a bearer token. Overrides `CORAL_AUTH_TOKEN` and stored login; empty disables auth.
+    /// Bearer token for commands that connect to a remote endpoint.
+    /// Overrides `CORAL_AUTH_TOKEN` and stored login; empty disables authentication.
     #[arg(long, value_name = "TOKEN", global = true)]
     token: Option<String>,
 }
@@ -100,6 +103,8 @@ impl std::fmt::Debug for ConnectionArgs {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Authenticate to a remote Coral server
+    Auth(auth_login::AuthArgs),
     /// Execute a SQL query
     Sql(SqlArgs),
     /// Search Coral's catalog and, when enabled, locally observed values
@@ -562,7 +567,7 @@ impl Command {
             | Command::Function(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
-            Command::Features(_) | Command::Completion(_) | Command::Server => {
+            Command::Auth(_) | Command::Features(_) | Command::Completion(_) | Command::Server => {
                 RequiredRuntime::None
             }
             #[cfg(feature = "embedded-ui")]
@@ -715,7 +720,11 @@ pub async fn run_from_env() -> Result<(), CliError> {
         RequiredRuntime::None => {
             coral_app::run_with_context(
                 &ctx,
-                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+                Box::pin(run_no_runtime_command(
+                    command,
+                    &feature_overrides,
+                    connection.endpoint,
+                )),
             )
             .await
         }
@@ -858,8 +867,12 @@ async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
 async fn run_no_runtime_command(
     command: Command,
     feature_overrides: &coral_app::features::FeatureOverrides,
+    endpoint_override: Option<String>,
 ) -> Result<(), CliError> {
     match command {
+        Command::Auth(args) => auth_login::run(endpoint_override, args)
+            .await
+            .map_err(Into::into),
         Command::Completion(args) => {
             let mut cmd = Cli::command();
             let bin_name = cmd.get_name().to_string();
@@ -984,7 +997,7 @@ async fn run_app_command(
             .await
             .map_err(anyhow::Error::from)?;
         }
-        Command::Completion(_) | Command::Features(_) | Command::Server => {
+        Command::Auth(_) | Command::Completion(_) | Command::Features(_) | Command::Server => {
             unreachable!("no-runtime commands are routed without an app client")
         }
         #[cfg(feature = "embedded-ui")]
@@ -1796,6 +1809,41 @@ mod tests {
                 "endpoint: {endpoint}"
             );
         }
+    }
+
+    #[test]
+    fn auth_login_parses_as_a_no_runtime_command() {
+        let cli = Cli::try_parse_from([
+            "coral",
+            "--endpoint",
+            "https://coral.example",
+            "auth",
+            "login",
+            "github",
+            "--authorization-server",
+            "https://login.example",
+            "--no-open",
+        ])
+        .expect("auth login should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
+        assert!(matches!(cli.command, super::Command::Auth(_)));
+        assert_eq!(
+            cli.connection.endpoint.as_deref(),
+            Some("https://coral.example")
+        );
+    }
+
+    #[test]
+    fn authorization_server_is_scoped_to_auth_login() {
+        Cli::try_parse_from([
+            "coral",
+            "--authorization-server",
+            "https://login.example",
+            "auth",
+            "login",
+        ])
+        .expect_err("authorization server must not become a global option");
     }
 
     #[cfg(feature = "embedded-ui")]

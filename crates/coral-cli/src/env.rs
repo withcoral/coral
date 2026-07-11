@@ -6,6 +6,7 @@
 use std::env::VarError;
 
 const CORAL_ENDPOINT_ENV: &str = "CORAL_ENDPOINT";
+const CORAL_AUTH_ENDPOINT_ENV: &str = "CORAL_AUTH_ENDPOINT";
 const CORAL_AUTH_TOKEN_ENV: &str = "CORAL_AUTH_TOKEN";
 
 /// A fixed CLI connection environment variable contained non-Unicode data.
@@ -23,6 +24,16 @@ pub(crate) struct ConnectionEnvError {
 )]
 pub(crate) fn endpoint() -> Result<Option<String>, ConnectionEnvError> {
     read_connection_env(CORAL_ENDPOINT_ENV, |name| std::env::var(name))
+}
+
+/// Reads the optional OAuth authorization server without collapsing an
+/// explicit empty value into absence.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CORAL_AUTH_ENDPOINT is a public CLI login setting."
+)]
+pub(crate) fn auth_endpoint() -> Result<Option<String>, ConnectionEnvError> {
+    read_connection_env(CORAL_AUTH_ENDPOINT_ENV, |name| std::env::var(name))
 }
 
 /// Reads the optional bearer token without collapsing an explicit empty value
@@ -95,16 +106,16 @@ mod tests {
 
     #[test]
     fn non_unicode_connection_environment_error_is_value_redacted() {
-        let error = read_connection_env(CORAL_AUTH_TOKEN_ENV, |name| {
-            assert_eq!(name, CORAL_AUTH_TOKEN_ENV);
+        let error = read_connection_env(CORAL_AUTH_ENDPOINT_ENV, |name| {
+            assert_eq!(name, CORAL_AUTH_ENDPOINT_ENV);
             Err(VarError::NotUnicode(OsString::from(
-                "token-secret-sentinel",
+                "authorization-secret-sentinel",
             )))
         })
         .expect_err("non-Unicode value");
 
         let rendered = format!("{error:?} {error}");
-        assert!(rendered.contains(CORAL_AUTH_TOKEN_ENV));
-        assert!(!rendered.contains("token-secret-sentinel"));
+        assert!(rendered.contains(CORAL_AUTH_ENDPOINT_ENV));
+        assert!(!rendered.contains("authorization-secret-sentinel"));
     }
 }

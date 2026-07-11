@@ -57,6 +57,38 @@ Remote endpoints must be root HTTPS URLs. Plaintext HTTP is accepted only for
 explicit loopback endpoints such as `http://127.0.0.1:1457`, whether or not a
 token is used.
 
+## `coral auth login`
+
+Sign in through an OAuth authorization server and store the resulting bearer
+for one remote Coral endpoint:
+
+```shellscript
+coral --endpoint https://coral.example auth login \
+  --authorization-server https://login.example
+
+CORAL_ENDPOINT=https://coral.example \
+CORAL_AUTH_ENDPOINT=https://login.example \
+  coral auth login github --no-open
+```
+
+The global `--endpoint` flag overrides `CORAL_ENDPOINT` and identifies the
+Coral gRPC endpoint (E) to which the stored login is bound. Login requires a
+nonempty remote endpoint; an explicit empty value suppresses environment
+fallback and fails instead of selecting local mode.
+
+`--authorization-server` overrides `CORAL_AUTH_ENDPOINT` for this command only
+and independently identifies the OAuth authorization server (I). The protected
+resource (R) comes from that server's validated metadata. E, I, and R may all
+be different origins; Coral neither derives them from one another nor requires
+them to match. An optional provider positional argument, such as `github`, is
+forwarded to the authorization server.
+
+Coral prints the authorization URL before attempting to open a browser. Pass
+`--no-open` to open the printed URL yourself. The browser must be able to reach
+the loopback callback listener on the machine running Coral. A successful login
+atomically replaces the stored login for canonical E; login does not connect to
+E and does not consult `--token`, `CORAL_AUTH_TOKEN`, or an older stored login.
+
 ## `coral sql`
 
 Run one SQL query and exit.
