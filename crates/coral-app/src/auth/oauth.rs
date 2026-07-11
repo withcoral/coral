@@ -25,6 +25,7 @@ use crate::outbound_url_policy::ConfiguredEndpointUrl;
 
 mod authorize;
 mod callback;
+mod client_metadata;
 mod token;
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
@@ -411,23 +412,28 @@ impl OAuthClientConfigFile {
             )));
         }
         for uri in &self.redirect_uris {
-            if uri.trim() != uri {
-                return Err(config_error("redirect URI has surrounding whitespace"));
-            }
-            let url = validate_endpoint("OAuth client redirect URI", uri)?;
-            if url.as_url().query_pairs().any(|(key, _value)| {
-                matches!(
-                    key.to_ascii_lowercase().as_str(),
-                    "code" | "state" | "error" | "error_description"
-                )
-            }) {
-                return Err(config_error(
-                    "OAuth client redirect URI must not contain OAuth response parameters",
-                ));
-            }
+            validate_oauth_redirect_uri(uri)?;
         }
         Ok(self.redirect_uris)
     }
+}
+
+fn validate_oauth_redirect_uri(uri: &str) -> Result<(), String> {
+    if uri.trim() != uri {
+        return Err(config_error("redirect URI has surrounding whitespace"));
+    }
+    let url = validate_endpoint("OAuth client redirect URI", uri)?;
+    if url.as_url().query_pairs().any(|(key, _value)| {
+        matches!(
+            key.to_ascii_lowercase().as_str(),
+            "code" | "state" | "error" | "error_description"
+        )
+    }) {
+        return Err(config_error(
+            "OAuth client redirect URI must not contain OAuth response parameters",
+        ));
+    }
+    Ok(())
 }
 
 fn required(label: &str, value: Option<&str>) -> Result<String, String> {
