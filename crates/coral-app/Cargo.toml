@@ -40,6 +40,7 @@ sea-query.workspace = true
 sea-query-sqlx.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
