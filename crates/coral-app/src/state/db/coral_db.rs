@@ -25,6 +25,11 @@ impl CoralDb {
         CoralTx::begin(&self.backend).await
     }
 
+    /// Begin a transaction with a stable snapshot across multiple reads.
+    pub(crate) async fn begin_read_snapshot(&self) -> Result<CoralTx<'_>, DbError> {
+        CoralTx::begin_read_snapshot(&self.backend).await
+    }
+
     #[cfg_attr(
         not(test),
         expect(

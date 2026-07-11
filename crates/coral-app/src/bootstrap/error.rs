@@ -2,8 +2,8 @@
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
-    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -21,6 +21,14 @@ pub enum AppError {
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested identity spec was not found in the selected scope.
+    #[error("identity spec '{name}' not found in scope '{scope}'")]
+    IdentitySpecNotFound {
+        /// Requested identity-spec name.
+        name: String,
+        /// Canonical requested scope (`global` or `workspace:<name>`).
+        scope: String,
+    },
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -168,6 +176,7 @@ pub(crate) fn status_with_bounded_detail(code: Code, detail: impl Into<String>) 
 pub(crate) fn app_status(error: AppError) -> Status {
     let not_found_reason = match &error {
         AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::IdentitySpecNotFound { .. } => Some(CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND),
         AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
         _ => None,
     };
@@ -254,7 +263,9 @@ fn grpc_code(status: StatusCode) -> Code {
 fn app_code(error: &AppError) -> Code {
     match error {
         AppError::Unauthenticated(_) => Code::Unauthenticated,
-        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::SourceNotFound(_)
+        | AppError::IdentitySpecNotFound { .. }
+        | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)

@@ -39,7 +39,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         WorkspacesRepo::new(self)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "B2 wires production consumers"))]
     fn identity_specs(&mut self) -> IdentitySpecsRepo<'_, Self> {
         IdentitySpecsRepo::new(self)
     }

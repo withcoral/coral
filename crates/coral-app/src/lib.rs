@@ -48,6 +48,7 @@ mod credentials;
 pub mod features;
 mod feedback;
 mod identity;
+mod identity_specs;
 mod query;
 mod request_context;
 mod search;

@@ -111,6 +111,9 @@ pub const CORAL_TASK_INTENT_MAX_CHARS: usize = 4096;
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 
+/// Machine-readable reason for an installed identity-spec lookup miss.
+pub const CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND: &str = "IDENTITY_SPEC_NOT_FOUND";
+
 /// Machine-readable reason for a configured workspace lookup miss.
 pub const CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND: &str = "WORKSPACE_NOT_FOUND";
 
