@@ -4,12 +4,14 @@ use std::thread;
 
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use tempfile::tempdir;
+use zeroize::Zeroizing;
 
 use super::CredentialsError;
 use super::encryption::{
-    CREDENTIAL_DOCUMENT_AAD_VERSION, CredentialEncryptionKey, CredentialKeyProvider,
-    LocalFileCredentialKeyProvider, decrypt_credential_values, encrypt_credential_values,
-    rewrap_credential_document,
+    CREDENTIAL_DOCUMENT_AAD_VERSION, CREDENTIAL_DOCUMENT_ALGORITHM, CredentialEncryptionKey,
+    CredentialKeyProvider, LocalFileCredentialKeyProvider, decrypt_credential_values,
+    encrypt_credential_values, open_envelope_document, rewrap_credential_document,
+    rewrap_envelope_document, seal_envelope_document,
 };
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
@@ -305,6 +307,119 @@ fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
 }
 
 #[test]
+fn credential_document_rewrap_migrates_legacy_payload_aad() {
+    let workspace = WorkspaceName::parse("default").expect("workspace");
+    let source = SourceName::parse("github").expect("source");
+    let old_key_bytes = [29; 32];
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes);
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([31; 32]);
+    let old_provider = RotatingKeyProvider {
+        active: old_key.clone(),
+        keys: vec![old_key.clone()],
+    };
+    let rotating_provider = RotatingKeyProvider {
+        active: new_key.clone(),
+        keys: vec![old_key, new_key.clone()],
+    };
+    let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
+    let mut legacy =
+        encrypt_credential_values(&workspace, &source, &values, &old_provider).expect("encrypt");
+    let key_id = legacy.key_id.clone();
+    let dek: [u8; 32] = open_for_test(
+        &old_key_bytes,
+        legacy.wrapped_dek_nonce.as_slice(),
+        current_dek_aad_for_test(&key_id),
+        &legacy.wrapped_dek,
+    )
+    .try_into()
+    .expect("DEK length");
+    let plaintext = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "values": values,
+    }))
+    .expect("serialize legacy document");
+    let legacy_nonce = [5; 12];
+    legacy.ciphertext = seal_for_test(
+        &dek,
+        legacy_nonce,
+        legacy_document_aad_for_test(&workspace, &source, &key_id),
+        &plaintext,
+    );
+    legacy.nonce = legacy_nonce.to_vec();
+
+    assert_eq!(
+        decrypt_credential_values(&workspace, &source, &legacy, &old_provider)
+            .expect("legacy payload AAD should decrypt"),
+        values
+    );
+    let migrated = rewrap_credential_document(&workspace, &source, &legacy, &rotating_provider)
+        .expect("rewrap legacy document")
+        .expect("stale key should migrate");
+    assert_eq!(migrated.key_id, new_key.key_id());
+    assert_ne!(migrated.ciphertext, legacy.ciphertext);
+    assert_ne!(migrated.nonce, legacy.nonce);
+    assert_eq!(
+        decrypt_credential_values(&workspace, &source, &migrated, &rotating_provider)
+            .expect("decrypt migrated document"),
+        values
+    );
+}
+
+#[test]
+fn shared_envelope_helpers_round_trip_and_rewrap_current_documents() {
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([37; 32]);
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([41; 32]);
+    let old_provider = RotatingKeyProvider {
+        active: old_key.clone(),
+        keys: vec![old_key.clone()],
+    };
+    let rotating_provider = RotatingKeyProvider {
+        active: new_key.clone(),
+        keys: vec![old_key, new_key.clone()],
+    };
+    let aad = b"test-envelope-aad".to_vec();
+    let plaintext = b"envelope payload".to_vec();
+
+    let encrypted = seal_envelope_document(
+        aad.clone(),
+        Zeroizing::new(plaintext.clone()),
+        &old_provider,
+    )
+    .expect("seal envelope");
+    assert_eq!(
+        open_envelope_document(&encrypted, aad.clone(), &old_provider)
+            .expect("open envelope")
+            .as_slice(),
+        plaintext
+    );
+    assert_open_failed(
+        &open_envelope_document(&encrypted, b"wrong-aad".to_vec(), &old_provider)
+            .expect_err("wrong AAD should fail authentication"),
+    );
+
+    let rewrapped = rewrap_envelope_document(&encrypted, aad.clone(), &rotating_provider)
+        .expect("rewrap envelope")
+        .expect("stale key should rewrap");
+    assert_eq!(rewrapped.key_id, new_key.key_id());
+    assert_eq!(rewrapped.ciphertext, encrypted.ciphertext);
+    assert_eq!(rewrapped.nonce, encrypted.nonce);
+    assert_ne!(rewrapped.wrapped_dek, encrypted.wrapped_dek);
+    assert_ne!(rewrapped.wrapped_dek_nonce, encrypted.wrapped_dek_nonce);
+    assert_eq!(
+        open_envelope_document(&rewrapped, aad.clone(), &rotating_provider)
+            .expect("open rewrapped envelope")
+            .as_slice(),
+        plaintext
+    );
+    assert!(
+        rewrap_envelope_document(&rewrapped, aad, &rotating_provider)
+            .expect("rewrap current envelope")
+            .is_none(),
+        "active KEK should not produce another rewrap"
+    );
+}
+
+#[test]
 fn local_file_key_provider_creates_and_reuses_private_key_file() {
     let temp = tempdir().expect("temp dir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
@@ -405,6 +520,22 @@ fn current_dek_aad_for_test(key_id: &str) -> Vec<u8> {
 
 fn legacy_dek_aad_for_test(key_id: &str) -> Vec<u8> {
     format!("coral-credential-dek:v{CREDENTIAL_DOCUMENT_AAD_VERSION}:{key_id}").into_bytes()
+}
+
+fn legacy_document_aad_for_test(
+    workspace: &WorkspaceName,
+    source: &SourceName,
+    key_id: &str,
+) -> Vec<u8> {
+    format!(
+        "coral-credential-document:v{}:{}:{}:{}:{}",
+        CREDENTIAL_DOCUMENT_AAD_VERSION,
+        workspace.as_str(),
+        source.as_str(),
+        CREDENTIAL_DOCUMENT_ALGORITHM,
+        key_id
+    )
+    .into_bytes()
 }
 
 fn encode_aad_fields_for_test(domain: &str, fields: &[&str]) -> Vec<u8> {
