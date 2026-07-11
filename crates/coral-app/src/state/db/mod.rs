@@ -19,6 +19,8 @@ pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
 #[cfg_attr(not(test), expect(unused_imports, reason = "Used by B4f."))]
 pub(crate) use repositories::identities::IdentityRecord;
+#[cfg_attr(not(test), expect(unused_imports, reason = "Used by B4f."))]
+pub(crate) use repositories::identity_documents::{IdentityDocumentRecord, IdentityDocumentWrite};
 pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,
     IdentitySpecScope, IdentitySpecWrite,

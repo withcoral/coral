@@ -127,6 +127,15 @@ impl IdentityOwner {
             )),
         }
     }
+
+    /// Reconstruct an owner from tables whose complete key omits the redundant workspace column.
+    pub(crate) fn from_key_storage_parts(
+        owner_kind: &str,
+        owner_key: &str,
+    ) -> Result<Self, DbError> {
+        let workspace_id = (owner_kind == WORKSPACE_OWNER_KIND).then_some(owner_key);
+        Self::from_storage_parts(owner_kind, owner_key, workspace_id)
+    }
 }
 
 /// Exact identity-spec version selected when an identity is written.
