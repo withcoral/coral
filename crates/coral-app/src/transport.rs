@@ -662,15 +662,21 @@ mod tests {
             query_test_result,
         },
     };
+    use opentelemetry::Value as OtelValue;
+    use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use tokio::sync::Notify;
+    use tonic::codegen::http;
     use tonic::{Code, Request, Response, Status};
-    use tower::Layer as _;
+    use tower::{Layer as _, Service as _};
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        GrpcMethodMetadata, GrpcRequestContextLayer, GrpcServerMethod, grpc_method, grpc_span,
-        instrument_grpc, principal_for_request, query_status, query_test_result_to_proto,
-        table_function_to_proto, table_summary_to_proto, table_to_proto,
-        user_principal_provider_status, workspace_name_from_proto, workspace_to_proto,
+        GrpcMethodMetadata, GrpcRequestContextLayer, GrpcServerMethod,
+        USER_PRINCIPAL_PROVIDER_TIMEOUT, grpc_method, grpc_span, instrument_grpc, query_status,
+        query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
+        table_to_proto, user_principal_provider_status, workspace_name_from_proto,
+        workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::identity::{
@@ -826,6 +832,40 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct SignalingPendingUserPrincipalProvider(Arc<Notify>);
+
+    #[tonic::async_trait]
+    impl UserPrincipalProvider for SignalingPendingUserPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            _metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    fn span_i64_attr(span: &SpanData, key: &str) -> Option<i64> {
+        span.attributes.iter().find_map(|attribute| {
+            match (attribute.key.as_str(), &attribute.value) {
+                (attribute_key, OtelValue::I64(value)) if attribute_key == key => Some(*value),
+                _ => None,
+            }
+        })
+    }
+
+    fn span_string_attr(span: &SpanData, key: &str) -> Option<String> {
+        span.attributes.iter().find_map(|attribute| {
+            match (attribute.key.as_str(), &attribute.value) {
+                (attribute_key, OtelValue::String(value)) if attribute_key == key => {
+                    Some(value.to_string())
+                }
+                _ => None,
+            }
+        })
+    }
+
     #[derive(Clone)]
     struct FeedbackContextProbe(Arc<Mutex<Vec<(UserPrincipal, tracing::span::Id)>>>);
 
@@ -844,6 +884,26 @@ mod tests {
                     tracing::Span::current().id().expect("active grpc span"),
                 ));
                 Ok(Response::new(SubmitFeedbackResponse { report: None }))
+            })
+            .await
+        }
+    }
+
+    #[derive(Clone)]
+    struct PendingFeedbackContextProbe(Arc<Notify>);
+
+    #[tonic::async_trait]
+    impl FeedbackService for PendingFeedbackContextProbe {
+        async fn submit_feedback(
+            &self,
+            request: Request<SubmitFeedbackRequest>,
+        ) -> Result<Response<SubmitFeedbackResponse>, Status> {
+            let span = grpc_span(&request);
+            let started = Arc::clone(&self.0);
+            instrument_grpc(span, async move {
+                RequestContext::from_request(&request)?;
+                started.notify_one();
+                std::future::pending().await
             })
             .await
         }
@@ -943,18 +1003,119 @@ mod tests {
         assert_eq!(provider_span_ids[0], observed[0].1);
     }
 
-    #[tokio::test]
-    async fn principal_provider_timeout_is_unavailable() {
-        let error = principal_for_request(
-            &PendingUserPrincipalProvider,
-            &tonic::metadata::MetadataMap::new(),
-            Duration::ZERO,
-        )
-        .await
-        .expect_err("pending provider should time out");
-        let status = user_principal_provider_status(&error);
+    #[tokio::test(start_paused = true)]
+    async fn grpc_layer_times_out_pending_provider() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let server = GrpcRequestContextLayer::new(Arc::new(PendingUserPrincipalProvider)).layer(
+            FeedbackServiceServer::new(FeedbackContextProbe(Arc::clone(&seen))),
+        );
+        let mut client = FeedbackServiceClient::new(server);
+        let (result, ()) = tokio::join!(
+            biased;
+            client.submit_feedback(feedback_request("saul")),
+            tokio::time::advance(USER_PRINCIPAL_PROVIDER_TIMEOUT)
+        );
 
-        assert_eq!(status.code(), Code::Unavailable);
+        assert_eq!(result.expect_err("timeout").code(), Code::Unavailable);
+        assert!(seen.lock().expect("observed handler state lock").is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropped_provider_and_handler_futures_finalize_distinct_spans_as_cancelled() {
+        let exporter = InMemorySpanExporter::default();
+        let telemetry_provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = telemetry_provider.tracer("grpc-server-cancellation-test");
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::LevelFilter::TRACE)
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+
+        let provider_started = Arc::new(Notify::new());
+        let provider_inner = tower::service_fn(|_request: http::Request<()>| async {
+            Ok::<_, Status>(http::Response::new(()))
+        });
+        let mut provider_service = GrpcRequestContextLayer::new(Arc::new(
+            SignalingPendingUserPrincipalProvider(Arc::clone(&provider_started)),
+        ))
+        .layer(provider_inner);
+        let provider_request = http::Request::builder()
+            .uri("/coral.v1.TestService/PendingProvider")
+            .body(())
+            .expect("provider request");
+        let provider_task = tokio::spawn(provider_service.call(provider_request));
+
+        let handler_started = Arc::new(Notify::new());
+        let handler_server = GrpcRequestContextLayer::new(Arc::new(SingleUserPrincipalProvider))
+            .layer(FeedbackServiceServer::new(PendingFeedbackContextProbe(
+                Arc::clone(&handler_started),
+            )));
+        let mut handler_client = FeedbackServiceClient::new(handler_server);
+        let handler_task = tokio::spawn(async move {
+            handler_client
+                .submit_feedback(feedback_request("saul"))
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            provider_started.notified().await;
+            handler_started.notified().await;
+        })
+        .await
+        .expect("both cancellation paths should become pending");
+
+        provider_task.abort();
+        handler_task.abort();
+        assert!(
+            provider_task
+                .await
+                .expect_err("provider task should be cancelled")
+                .is_cancelled()
+        );
+        assert!(
+            handler_task
+                .await
+                .expect_err("handler task should be cancelled")
+                .is_cancelled()
+        );
+
+        telemetry_provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let provider_span = spans
+            .iter()
+            .find(|span| span.name == "coral.v1.TestService/PendingProvider")
+            .expect("pending-provider span");
+        let handler_spans = spans
+            .iter()
+            .filter(|span| span.name == "coral.v1.FeedbackService/SubmitFeedback")
+            .collect::<Vec<_>>();
+        assert_eq!(handler_spans.len(), 1, "one shared handler span");
+        let handler_span = handler_spans[0];
+
+        assert_ne!(
+            provider_span.span_context.span_id(),
+            handler_span.span_context.span_id()
+        );
+        for span in [provider_span, handler_span] {
+            assert_eq!(
+                span_i64_attr(span, "grpc.status_code"),
+                Some(Code::Cancelled as i64)
+            );
+            assert_eq!(
+                span_string_attr(span, "grpc.code").as_deref(),
+                Some("CANCELLED")
+            );
+            assert_eq!(
+                span_string_attr(span, "rpc.response.status_code").as_deref(),
+                Some("CANCELLED")
+            );
+            assert_eq!(
+                span_string_attr(span, "error.type").as_deref(),
+                Some("CANCELLED")
+            );
+            assert_eq!(span.status, OtelStatus::error("CANCELLED"));
+        }
     }
 
     #[test]
