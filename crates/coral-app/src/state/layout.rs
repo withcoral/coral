@@ -145,6 +145,10 @@ impl AppStateLayout {
         self.config_dir.join("credentials").join("encryption.key")
     }
 
+    pub(crate) fn oauth_login_file(&self) -> PathBuf {
+        self.config_dir.join("auth").join("login.json")
+    }
+
     pub(crate) fn search_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name).join("search")
     }

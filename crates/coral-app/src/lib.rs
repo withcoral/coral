@@ -54,6 +54,7 @@ mod identity;
 mod oauth_loopback;
 pub(crate) mod outbound_url_policy;
 mod query;
+mod remote_endpoint;
 mod request_auth;
 mod request_context;
 mod search;
@@ -66,7 +67,8 @@ mod transport;
 mod workspaces;
 
 pub use auth::{
-    OAuthLoginError, OAuthLoginResult, OidcAuthConfig, RunningOidcAuthServer, run_oauth_login,
+    OAuthLoginError, OAuthLoginResult, OAuthLoginStoreError, OidcAuthConfig, RunningOidcAuthServer,
+    load_oauth_login, run_oauth_login, save_oauth_login,
 };
 pub use bootstrap::{
     AppError, McpHttpServeConfig, PreparedGrpcServer, RunningServer, ServeCompanionConfig,
@@ -79,5 +81,6 @@ pub use identity::{
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
+pub use remote_endpoint::{CanonicalRemoteEndpoint, RemoteEndpointError};
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

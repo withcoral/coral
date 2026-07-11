@@ -45,9 +45,9 @@ const RESERVED_ENDPOINT_QUERY_KEYS: &[&str] = &[
 
 /// A successful OAuth login result.
 pub struct OAuthLoginResult {
-    access_token: Zeroizing<String>,
-    issuer: String,
-    resource: String,
+    pub(super) access_token: Zeroizing<String>,
+    pub(super) issuer: String,
+    pub(super) resource: String,
 }
 
 impl OAuthLoginResult {
@@ -431,7 +431,7 @@ fn is_json_response(response: &reqwest::Response) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
 }
 
-fn valid_access_token(token: &str) -> bool {
+pub(super) fn valid_access_token(token: &str) -> bool {
     !token.is_empty()
         && token.trim() == token
         && token.is_ascii()

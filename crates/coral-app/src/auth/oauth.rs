@@ -27,9 +27,11 @@ mod authorize;
 mod callback;
 mod client_metadata;
 mod login;
+mod login_store;
 mod token;
 
 pub use login::{OAuthLoginError, OAuthLoginResult, run_oauth_login};
+pub use login_store::{OAuthLoginStoreError, load_oauth_login, save_oauth_login};
 
 use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
 

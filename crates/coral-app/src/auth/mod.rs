@@ -11,5 +11,6 @@ pub(crate) mod session;
 pub(crate) mod state_store;
 
 pub use oauth::{
-    OAuthLoginError, OAuthLoginResult, OidcAuthConfig, RunningOidcAuthServer, run_oauth_login,
+    OAuthLoginError, OAuthLoginResult, OAuthLoginStoreError, OidcAuthConfig, RunningOidcAuthServer,
+    load_oauth_login, run_oauth_login, save_oauth_login,
 };
