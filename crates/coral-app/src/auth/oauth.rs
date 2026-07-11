@@ -112,7 +112,10 @@ impl OidcAuthConfig {
                 get(authorization_server_metadata),
             )
             .route("/oauth/clients/{client}", get(client_metadata))
-            .route("/oauth/authorize", get(authorize::oauth_authorize))
+            .route(
+                "/oauth/authorize",
+                get(authorize::oauth_authorize_get).post(authorize::oauth_authorize_post),
+            )
             .route("/oauth/token", post(token::oauth_token))
             .route(
                 "/auth/oidc/{provider}/callback",
@@ -233,10 +236,7 @@ async fn client_metadata(
         .clients
         .get(&client)
         .ok_or((StatusCode::NOT_FOUND, "unknown OAuth client"))?;
-    let name = match client.as_str() {
-        CLI_CLIENT => "Coral CLI",
-        _ => &client,
-    };
+    let name = oauth_client_name(&client);
     Ok(json_response(&serde_json::json!({
         "client_id": oauth_client_id(oauth, &client),
         "redirect_uris": redirect_uris,
@@ -250,6 +250,14 @@ async fn client_metadata(
 
 fn oauth_client_id(oauth: &OAuthServerConfig, client: &str) -> String {
     format!("{}/oauth/clients/{client}", oauth.issuer)
+}
+
+fn oauth_client_name(client: &str) -> &str {
+    if client == CLI_CLIENT {
+        "Coral CLI"
+    } else {
+        client
+    }
 }
 
 fn json_response(value: &serde_json::Value) -> impl IntoResponse + use<> {

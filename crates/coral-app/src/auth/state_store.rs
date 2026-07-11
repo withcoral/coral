@@ -16,10 +16,6 @@ type SecretHash = [u8; 32];
 pub(crate) struct OAuthAuthorizationApprovalTicket([u8; 32]);
 
 impl OAuthAuthorizationApprovalTicket {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the stacked authorization approval flow")
-    )]
     pub(super) fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -80,20 +76,12 @@ pub(crate) enum StateStoreError {
 
 #[async_trait::async_trait]
 pub(crate) trait StateStore: Send + Sync {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the stacked authorization approval flow")
-    )]
     async fn store_authorization_approval(
         &self,
         ticket: &OAuthAuthorizationApprovalTicket,
         approval: OAuthAuthorizationApprovalRecord,
     ) -> Result<(), StateStoreError>;
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the stacked authorization approval flow")
-    )]
     async fn take_authorization_approval(
         &self,
         ticket: &OAuthAuthorizationApprovalTicket,

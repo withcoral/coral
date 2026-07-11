@@ -1,20 +1,26 @@
 use std::collections::BTreeSet;
 
-use axum::extract::{RawQuery, State};
+use axum::extract::{RawQuery, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use url::{Url, form_urlencoded};
 
 use super::super::provider_client::OidcAuthorizationRequest;
-use super::super::state_store::OAuthAuthorizationSessionRecord;
-use super::{AuthState, OAuthServerConfig, oauth_client_id};
+use super::super::state_store::{
+    OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord,
+};
+use super::{AuthState, OAuthServerConfig, oauth_client_id, oauth_client_name};
+
+mod confirmation;
+
+use confirmation::ApprovalDecision;
 
 const MAX_QUERY_BYTES: usize = 8 * 1024;
 const MAX_PARAMETERS: usize = 32;
 const MAX_PARAMETER_NAME_BYTES: usize = 64;
 const MAX_PARAMETER_VALUE_BYTES: usize = 2 * 1024;
 
-pub(super) async fn oauth_authorize(
+pub(super) async fn oauth_authorize_get(
     State(state): State<AuthState>,
     RawQuery(raw_query): RawQuery,
 ) -> Response {
@@ -26,11 +32,13 @@ pub(super) async fn oauth_authorize(
     else {
         return direct_error("invalid_request", "client_id and redirect_uri are required");
     };
-    let Some(callback) = registered_redirect(&state.config.oauth, client_id, redirect_uri) else {
+    let Some((client_name, callback)) =
+        registered_client(&state.config.oauth, client_id, redirect_uri)
+    else {
         return direct_error("invalid_request", "client_id or redirect_uri is invalid");
     };
     let trusted = TrustedRedirect {
-        url: callback,
+        url: callback.clone(),
         client_state: query.state.clone(),
     };
 
@@ -70,17 +78,68 @@ pub(super) async fn oauth_authorize(
     {
         return trusted.error("invalid_target", "resource does not match this server");
     }
-    let provider = match query.provider.as_deref() {
+    let provider_id = match query.provider.as_deref() {
         Some(name) => match state.config.providers.get_key_value(name) {
-            Some(provider) => provider,
+            Some((provider_id, _provider)) => provider_id,
             None => return trusted.error("invalid_request", "OIDC provider is unknown"),
         },
         None => match state.config.providers.first_key_value() {
-            Some(provider) => provider,
+            Some((provider_id, _provider)) => provider_id,
             None => return trusted.error("server_error", "authorization failed"),
         },
     };
-    let (provider_id, provider_config) = provider;
+    let approval = OAuthAuthorizationApprovalRecord {
+        provider_id: provider_id.clone(),
+        client_id: client_id.to_string(),
+        client_name,
+        redirect_uri: redirect_uri.to_string(),
+        client_state: query.state,
+        code_challenge,
+        scope: oauth.scope.clone(),
+    };
+    let Ok(ticket) = confirmation::new_ticket() else {
+        return trusted.error("server_error", "authorization failed");
+    };
+    let Some(page) = confirmation::response(
+        &ticket,
+        &approval.client_name,
+        &approval.client_id,
+        &callback,
+    ) else {
+        return trusted.error("server_error", "authorization failed");
+    };
+    if state
+        .store
+        .store_authorization_approval(&ticket, approval)
+        .await
+        .is_err()
+    {
+        return trusted.error("server_error", "authorization failed");
+    }
+    page
+}
+
+pub(super) async fn oauth_authorize_post(
+    State(state): State<AuthState>,
+    request: Request,
+) -> Response {
+    let Ok((ticket, decision)) = confirmation::parse_submission(request).await else {
+        return approval_error();
+    };
+    let Ok(Some(approval)) = state.store.take_authorization_approval(&ticket).await else {
+        return approval_error();
+    };
+    let Some(trusted) =
+        TrustedRedirect::parse(&approval.redirect_uri, approval.client_state.clone())
+    else {
+        return direct_error("server_error", "authorization failed");
+    };
+    if decision == ApprovalDecision::Cancel {
+        return trusted.error("access_denied", "authorization was denied");
+    }
+    let Some(provider_config) = state.config.providers.get(&approval.provider_id) else {
+        return trusted.error("server_error", "authorization failed");
+    };
     let request = match state
         .provider_client
         .authorization_request(provider_config)
@@ -96,12 +155,12 @@ pub(super) async fn oauth_authorize(
         code_verifier: oidc_code_verifier,
     } = request;
     let session = OAuthAuthorizationSessionRecord {
-        provider_id: provider_id.clone(),
-        client_id: client_id.to_string(),
-        redirect_uri: redirect_uri.to_string(),
-        client_state: query.state,
-        code_challenge,
-        scope: oauth.scope.clone(),
+        provider_id: approval.provider_id,
+        client_id: approval.client_id,
+        redirect_uri: approval.redirect_uri,
+        client_state: approval.client_state,
+        code_challenge: approval.code_challenge,
+        scope: approval.scope,
         oidc_code_verifier,
         oidc_nonce,
     };
@@ -163,16 +222,17 @@ fn parse_query(raw: &str) -> Result<AuthorizeQuery, ()> {
     Ok(query)
 }
 
-fn registered_redirect(
+fn registered_client(
     oauth: &OAuthServerConfig,
     client_id: &str,
     redirect_uri: &str,
-) -> Option<Url> {
+) -> Option<(String, Url)> {
     oauth.clients.iter().find_map(|(name, redirect_uris)| {
         (oauth_client_id(oauth, name) == client_id)
             .then_some(redirect_uris)
             .and_then(|uris| uris.iter().find(|uri| uri.as_str() == redirect_uri))
             .and_then(|uri| Url::parse(uri).ok())
+            .map(|redirect| (oauth_client_name(name).to_string(), redirect))
     })
 }
 
@@ -189,6 +249,13 @@ struct TrustedRedirect {
 }
 
 impl TrustedRedirect {
+    fn parse(redirect_uri: &str, client_state: Option<String>) -> Option<Self> {
+        Some(Self {
+            url: Url::parse(redirect_uri).ok()?,
+            client_state,
+        })
+    }
+
     fn error(&self, error: &'static str, description: &'static str) -> Response {
         let mut url = self.url.clone();
         let mut query = url.query_pairs_mut();
@@ -203,6 +270,13 @@ impl TrustedRedirect {
     }
 }
 
+fn approval_error() -> Response {
+    direct_error(
+        "invalid_request",
+        "authorization approval is invalid or expired",
+    )
+}
+
 fn direct_error(error: &'static str, description: &'static str) -> Response {
     let body = serde_json::json!({
         "error": error,
@@ -215,6 +289,8 @@ fn direct_error(error: &'static str, description: &'static str) -> Response {
             (header::CONTENT_TYPE, "application/json"),
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "no-referrer"),
         ],
         body,
     )
@@ -242,17 +318,24 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use axum::body::to_bytes;
+    use axum::body::{Body, to_bytes};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::json;
+    use tokio::sync::Barrier;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::super::{OAuthClientConfigFile, OAuthServerConfig, OidcAuthConfig};
+    use super::super::{
+        CLI_CLIENT, CLI_REDIRECT_URI, OAuthClientConfigFile, OAuthServerConfig, OidcAuthConfig,
+    };
     use super::*;
     use crate::auth::provider::{OidcProviderConfig, ProviderConfigFile};
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenConfig;
-    use crate::auth::state_store::{InMemoryStateStore, StateStore};
+    use crate::auth::state_store::{
+        InMemoryStateStore, OAuthAuthorizationApprovalTicket, StateStore,
+    };
 
     const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
@@ -284,7 +367,10 @@ mod tests {
             issuer: AUTH_ISSUER.into(),
             resource: RESOURCE.into(),
             scope: SCOPE.into(),
-            clients: BTreeMap::from([("web".into(), vec![REDIRECT_URI.into()])]),
+            clients: BTreeMap::from([
+                ("web".into(), vec![REDIRECT_URI.into()]),
+                (CLI_CLIENT.into(), vec![CLI_REDIRECT_URI.into()]),
+            ]),
         };
         let session = SessionTokenConfig::new(
             Some(AUTH_ISSUER),
@@ -337,7 +423,45 @@ mod tests {
     }
 
     async fn request(state: AuthState, pairs: &[(String, String)]) -> Response {
-        oauth_authorize(State(state), RawQuery(Some(encode(pairs)))).await
+        oauth_authorize_get(State(state), RawQuery(Some(encode(pairs)))).await
+    }
+
+    async fn response_body(response: Response) -> String {
+        String::from_utf8(
+            to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("body")
+                .to_vec(),
+        )
+        .expect("UTF-8 body")
+    }
+
+    fn ticket_from_page(page: &str) -> String {
+        page.split("name=\"ticket\" value=\"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .expect("approval ticket")
+            .to_string()
+    }
+
+    fn submission_request(ticket: &str, decision: &str) -> Request {
+        let body = form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([("ticket", ticket), ("decision", decision)])
+            .finish();
+        Request::builder()
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .expect("request")
+    }
+
+    async fn submit(state: AuthState, ticket: &str, decision: &str) -> Response {
+        oauth_authorize_post(State(state), submission_request(ticket, decision)).await
+    }
+
+    async fn approval_ticket(state: AuthState, pairs: &[(String, String)]) -> String {
+        let response = request(state, pairs).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        ticket_from_page(&response_body(response).await)
     }
 
     fn location(response: &Response) -> Option<&str> {
@@ -381,6 +505,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirmation_is_secure_stores_only_validated_data_and_supports_cli() {
+        let store = Arc::new(InMemoryStateStore::new());
+        let mut request_pairs = pairs();
+        request_pairs.push(("approved".into(), "true".into()));
+        request_pairs.push(("decision".into(), "continue".into()));
+        let response = request(
+            state("https://provider.invalid", store.clone()),
+            &request_pairs,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        for (name, value) in [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "no-referrer"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+        ] {
+            assert_eq!(response.headers()[name], value);
+        }
+        let page = response_body(response).await;
+        assert!(page.contains("Client ID hostname</dt><dd><code>auth.example.test"));
+        assert!(page.contains("Redirect host and port</dt><dd><code>client.example.test:443"));
+        assert!(page.contains("method=\"post\" action=\"/oauth/authorize\""));
+        assert!(!page.contains(CLIENT_STATE));
+        assert!(!page.contains(CHALLENGE));
+        assert!(!page.contains("<script"));
+        let ticket = ticket_from_page(&page);
+        let ticket = OAuthAuthorizationApprovalTicket::from_bytes(
+            URL_SAFE_NO_PAD
+                .decode(ticket)
+                .expect("ticket")
+                .try_into()
+                .expect("ticket length"),
+        );
+        let approval = store
+            .take_authorization_approval(&ticket)
+            .await
+            .expect("store")
+            .expect("approval");
+        assert!(approval.provider_id == "alpha");
+        assert!(approval.client_id == CLIENT_ID);
+        assert!(approval.client_name == "web");
+        assert!(approval.redirect_uri == REDIRECT_URI);
+        assert!(approval.client_state.as_deref() == Some(CLIENT_STATE));
+        assert!(approval.code_challenge == CHALLENGE);
+        assert!(approval.scope == SCOPE);
+
+        let mut cli = pairs();
+        replace(
+            &mut cli,
+            "client_id",
+            Some(&format!("{AUTH_ISSUER}/oauth/clients/{CLI_CLIENT}")),
+        );
+        replace(&mut cli, "redirect_uri", Some(CLI_REDIRECT_URI));
+        let page =
+            response_body(request(state("https://provider.invalid", store), &cli).await).await;
+        assert!(page.contains("<bdi>Coral CLI</bdi>"));
+        assert!(page.contains("127.0.0.1:14554"));
+        assert!(page.contains("Local redirect warning"));
+
+        let escaped = confirmation::response(
+            &OAuthAuthorizationApprovalTicket::from_bytes([7; 32]),
+            "</bdi><script>alert(\"x\")</script>&'",
+            CLIENT_ID,
+            &Url::parse(REDIRECT_URI).expect("redirect"),
+        )
+        .expect("page");
+        let escaped = response_body(escaped).await;
+        assert!(!escaped.contains("</bdi><script>"));
+        assert!(escaped.contains("&lt;/bdi&gt;&lt;script&gt;alert(&quot;x&quot;)"));
+    }
+
+    #[tokio::test]
+    async fn submission_form_is_strict_bounded_and_ignores_no_query_bypass() {
+        let ticket = URL_SAFE_NO_PAD.encode([7; 32]);
+        let malformed = [
+            format!("ticket={ticket}"),
+            format!("ticket={ticket}&decision=continue&extra=x"),
+            format!("ticket={ticket}&ticket={ticket}&decision=continue"),
+            format!("ticket={ticket}&decision=approve"),
+            format!("ticket={ticket}=&decision=continue"),
+            "x".repeat(257),
+        ];
+        for body in malformed {
+            let request = Request::builder()
+                .uri(format!(
+                    "/oauth/authorize?ticket={ticket}&decision=continue"
+                ))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .expect("request");
+            assert!(confirmation::parse_submission(request).await.is_err());
+        }
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(format!("ticket={ticket}&decision=continue")))
+            .expect("request");
+        assert!(confirmation::parse_submission(request).await.is_err());
+    }
+
+    #[tokio::test]
     async fn client_and_redirect_must_match_exactly_before_redirecting() {
         let store = Arc::new(InMemoryStateStore::new());
         for (field, value) in [
@@ -399,7 +630,7 @@ mod tests {
         }
 
         let raw = format!("{}&client%5Fid=raw-secret", encode(&pairs()));
-        let response = oauth_authorize(
+        let response = oauth_authorize_get(
             State(state("https://provider.invalid", store)),
             RawQuery(Some(raw)),
         )
@@ -445,11 +676,99 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn success_stores_single_use_session_before_provider_redirect() {
+    async fn cancel_is_trusted_once_while_replay_and_restart_are_direct_errors() {
+        let store = Arc::new(InMemoryStateStore::new());
+        let auth_state = state("https://provider.invalid", store);
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        let cancelled = submit(auth_state.clone(), &ticket, "cancel").await;
+        let callback = Url::parse(location(&cancelled).expect("client redirect")).expect("URL");
+        let query = callback.query_pairs().into_owned().collect::<Vec<_>>();
+        assert!(query.contains(&("tenant".into(), "one".into())));
+        assert!(query.contains(&("error".into(), "access_denied".into())));
+        assert!(query.contains(&("state".into(), CLIENT_STATE.into())));
+
+        let replay = submit(auth_state, &ticket, "cancel").await;
+        let restarted = submit(
+            state(
+                "https://provider.invalid",
+                Arc::new(InMemoryStateStore::new()),
+            ),
+            &ticket,
+            "continue",
+        )
+        .await;
+        for response in [replay, restarted] {
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(location(&response).is_none());
+            let body = response_body(response).await;
+            assert!(body.contains("authorization approval is invalid or expired"));
+            assert!(!body.contains(&ticket));
+            assert!(!body.contains(REDIRECT_URI));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_approval_is_a_direct_error() {
+        let auth_state = state(
+            "https://provider.invalid",
+            Arc::new(InMemoryStateStore::new()),
+        );
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        tokio::time::advance(Duration::from_mins(6)).await;
+        let response = submit(auth_state, &ticket, "continue").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_double_submit_has_one_winner() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let auth_state = state(&provider.uri(), Arc::new(InMemoryStateStore::new()));
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        let barrier = Arc::new(Barrier::new(3));
+        let spawn = |state: AuthState| {
+            let barrier = barrier.clone();
+            let ticket = ticket.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                submit(state, &ticket, "continue").await
+            })
+        };
+        let first = spawn(auth_state.clone());
+        let second = spawn(auth_state);
+        barrier.wait().await;
+        let (first, second) = tokio::join!(first, second);
+        let (first, second) = (first.expect("first submit"), second.expect("second submit"));
+        assert!(
+            matches!(
+                (first.status(), second.status()),
+                (StatusCode::FOUND, StatusCode::BAD_REQUEST)
+                    | (StatusCode::BAD_REQUEST, StatusCode::FOUND)
+            ),
+            "one submission must win"
+        );
+        assert_eq!(
+            provider.received_requests().await.expect("requests").len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_stores_single_use_session_before_provider_redirect() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let store = Arc::new(InMemoryStateStore::new());
-        let response = request(state(&provider.uri(), store.clone()), &pairs()).await;
+        let auth_state = state(&provider.uri(), store.clone());
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        assert!(
+            provider
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+        let response = submit(auth_state, &ticket, "continue").await;
         let provider_url = location(&response).expect("provider redirect");
         let query = Url::parse(provider_url)
             .expect("URL")
@@ -484,7 +803,9 @@ mod tests {
 
         let mut explicit = pairs();
         replace(&mut explicit, "provider", Some("zeta"));
-        let response = request(state(&provider.uri(), store.clone()), &explicit).await;
+        let auth_state = state(&provider.uri(), store.clone());
+        let ticket = approval_ticket(auth_state.clone(), &explicit).await;
+        let response = submit(auth_state, &ticket, "continue").await;
         let url = Url::parse(location(&response).expect("provider redirect")).expect("URL");
         let state_key = url
             .query_pairs()
@@ -504,7 +825,9 @@ mod tests {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 500).await;
         let store = Arc::new(InMemoryStateStore::new());
-        let response = request(state(&provider.uri(), store.clone()), &pairs()).await;
+        let auth_state = state(&provider.uri(), store.clone());
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        let response = submit(auth_state, &ticket, "continue").await;
         let error_location = location(&response).expect("error redirect");
         assert!(error_location.contains("error=server_error"));
         assert!(!error_location.contains(PROVIDER_SECRET));
@@ -548,6 +871,7 @@ mod tests {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("client");
+        let authorize_url = format!("{}/oauth/authorize", server.endpoint_uri());
         let response = client
             .get(format!(
                 "{}/oauth/authorize?{}",
@@ -557,6 +881,19 @@ mod tests {
             .send()
             .await
             .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let ticket = ticket_from_page(&response.text().await.expect("page"));
+        let response = client
+            .post(authorize_url)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(
+                form_urlencoded::Serializer::new(String::new())
+                    .extend_pairs([("ticket", ticket.as_str()), ("decision", "cancel")])
+                    .finish(),
+            )
+            .send()
+            .await
+            .expect("submit");
         assert_eq!(response.status(), StatusCode::FOUND);
         server.shutdown().await.expect("shutdown");
     }
