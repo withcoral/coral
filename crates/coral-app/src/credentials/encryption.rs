@@ -111,6 +111,7 @@ pub(crate) trait CredentialKeyProvider: Send + Sync {
 pub(crate) struct LocalFileCredentialKeyProvider {
     path: PathBuf,
     provided_key: Option<CredentialEncryptionKey>,
+    allow_local_file_fallback: bool,
 }
 
 impl LocalFileCredentialKeyProvider {
@@ -118,14 +119,30 @@ impl LocalFileCredentialKeyProvider {
         layout: &AppStateLayout,
         provided_key: Option<CredentialEncryptionKey>,
     ) -> Self {
+        Self::from_layout(layout, provided_key, true)
+    }
+
+    pub(crate) fn configured_key_only(
+        layout: &AppStateLayout,
+        provided_key: Option<CredentialEncryptionKey>,
+    ) -> Self {
+        Self::from_layout(layout, provided_key, false)
+    }
+
+    fn from_layout(
+        layout: &AppStateLayout,
+        provided_key: Option<CredentialEncryptionKey>,
+        allow_local_file_fallback: bool,
+    ) -> Self {
         Self {
             path: layout.credential_encryption_key_file(),
             provided_key,
+            allow_local_file_fallback,
         }
     }
 
     fn load_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
-        match std::fs::read_to_string(&self.path) {
+        match storage_fs::read_to_string_private(&self.path) {
             Ok(raw) => {
                 let raw = Zeroizing::new(raw);
                 CredentialEncryptionKey::from_encoded_material(raw.as_str()).map(Some)
@@ -170,7 +187,11 @@ impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
         if let Some(key) = &self.provided_key {
             return Ok(key.clone());
         }
-        self.load_or_create_key()
+        if self.allow_local_file_fallback {
+            self.load_or_create_key()
+        } else {
+            Err(configured_key_required())
+        }
     }
 
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -179,15 +200,25 @@ impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
         {
             return Ok(key.clone());
         }
-        if let Some(key) = self.load_key()?
-            && key.key_id == key_id
-        {
-            return Ok(key);
+        if self.allow_local_file_fallback {
+            if let Some(key) = self.load_key()?
+                && key.key_id == key_id
+            {
+                return Ok(key);
+            }
+        } else if self.provided_key.is_none() {
+            return Err(configured_key_required());
         }
         Err(CredentialsError::Crypto(format!(
             "credential encryption key '{key_id}' is unavailable"
         )))
     }
+}
+
+pub(crate) fn configured_key_required() -> CredentialsError {
+    CredentialsError::Unavailable(
+        "Postgres identity inputs require [credentials].encryption_key_env to provide a shared credential encryption key".to_string(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -168,11 +168,17 @@ impl IdentitySpecManager {
                 .clone()
                 .map(record_to_installed)
                 .transpose()?;
-            let previous_material = decrypt_input_material(
-                &key,
-                snapshot.document.clone(),
-                self.key_provider.as_ref(),
-            )?;
+            let material_key = key.clone();
+            let material_document = snapshot.document.clone();
+            let material_key_provider = Arc::clone(&self.key_provider);
+            let previous_material = run_key_operation(move || {
+                decrypt_input_material(
+                    &material_key,
+                    material_document,
+                    material_key_provider.as_ref(),
+                )
+            })
+            .await?;
             let prepared = prepare_identity_spec_input_material(
                 &key,
                 &manifest,
@@ -180,8 +186,16 @@ impl IdentitySpecManager {
                 &previous_material,
                 &input_values,
             )?;
-            let document =
-                prepare_document_write(&key, &prepared.values, self.key_provider.as_ref())?;
+            let document_key = key.clone();
+            let document_key_provider = Arc::clone(&self.key_provider);
+            let document = run_key_operation(move || {
+                prepare_document_write(
+                    &document_key,
+                    &prepared.values,
+                    document_key_provider.as_ref(),
+                )
+            })
+            .await?;
             let replaced = snapshot.record.is_some();
 
             match self
@@ -318,7 +332,7 @@ impl IdentitySpecManager {
         };
         tx.commit().await?;
         let record = record.ok_or_else(|| spec_not_found(key))?;
-        resolve_record_for_use(record, document, self.key_provider.as_ref())
+        resolve_record_for_use_async(record, document, Arc::clone(&self.key_provider)).await
     }
 
     pub(crate) async fn get_global_for_use(
@@ -396,7 +410,7 @@ impl IdentitySpecManager {
         };
         tx.commit().await?;
         let record = record.ok_or_else(|| spec_not_found(&requested_key))?;
-        resolve_record_for_use(record, document, self.key_provider.as_ref())
+        resolve_record_for_use_async(record, document, Arc::clone(&self.key_provider)).await
     }
 
     /// List the effective specs for a workspace, shadowed and sorted by name.
@@ -525,6 +539,23 @@ fn prepare_document_write(
         document.algorithm,
         document.aad_version,
     )?))
+}
+
+async fn resolve_record_for_use_async(
+    record: IdentitySpecRecord,
+    document: Option<IdentitySpecDocumentRecord>,
+    key_provider: Arc<dyn CredentialKeyProvider>,
+) -> Result<ResolvedIdentitySpec, AppError> {
+    run_key_operation(move || resolve_record_for_use(record, document, key_provider.as_ref())).await
+}
+
+async fn run_key_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    let span = tracing::Span::current();
+    tokio::task::spawn_blocking(move || span.in_scope(operation)).await?
 }
 
 fn mutation_retry_exhausted() -> AppError {
@@ -723,7 +754,8 @@ fn scope_label(scope: &IdentitySpecScope) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
 
     use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND};
     use coral_spec::parse_identity_manifest_yaml;
@@ -763,6 +795,41 @@ pub(crate) mod tests {
         }};
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn manager_key_provider_wait_keeps_async_runtime_responsive() {
+        let fixture = fixture().await;
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (heartbeat_tx, heartbeat_rx) = mpsc::channel();
+        let manager = IdentitySpecManager::new(
+            Arc::clone(&fixture.db),
+            Arc::new(BlockingKeyProvider {
+                entered: Mutex::new(Some(entered_tx)),
+                release: Mutex::new(release_rx),
+            }),
+        );
+        let watchdog = std::thread::spawn(move || {
+            let progressed = heartbeat_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+            release_tx.send(()).expect("release provider");
+            progressed
+        });
+        let heartbeat = async move {
+            entered_rx.await.expect("provider entry");
+            heartbeat_tx.send(()).expect("heartbeat");
+        };
+        let manifest = oauth_manifest("blocking_key", "blocking");
+        let mutation = manager.add_or_replace_exact(
+            IdentitySpecScope::global(),
+            &manifest,
+            vec![IdentitySpecInputValue::new("CLIENT_SECRET", "secret")],
+        );
+
+        let (result, ()) = tokio::join!(mutation, heartbeat);
+
+        result.expect("identity mutation");
+        assert!(watchdog.join().expect("watchdog"));
+    }
+
     struct Fixture {
         _temp: TempDir,
         db: Arc<CoralDb>,
@@ -787,6 +854,42 @@ pub(crate) mod tests {
                 .find(|key| key.key_id() == key_id)
                 .cloned()
                 .ok_or_else(|| CredentialsError::Crypto("missing test key".to_string()))
+        }
+    }
+
+    struct BlockingKeyProvider {
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    fn coordination_error() -> CredentialsError {
+        CredentialsError::Unavailable("test provider coordination failed".to_string())
+    }
+
+    impl CredentialKeyProvider for BlockingKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+            if let Some(entered) = self
+                .entered
+                .lock()
+                .map_err(|_error| coordination_error())?
+                .take()
+            {
+                entered.send(()).map_err(|()| coordination_error())?;
+            }
+            self.release
+                .lock()
+                .map_err(|_error| coordination_error())?
+                .recv()
+                .map_err(|_error| coordination_error())?;
+            Ok(CredentialEncryptionKey::from_static_bytes_for_test(
+                [61; 32],
+            ))
+        }
+
+        fn key(&self, _key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Err(CredentialsError::Crypto(
+                "unused test key lookup".to_string(),
+            ))
         }
     }
 

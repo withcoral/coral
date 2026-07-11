@@ -33,11 +33,21 @@ For Postgres, store the connection URL in an environment variable and reference 
 [database]
 backend = "postgres"
 url_env = "CORAL_DATABASE_URL"
+
+[credentials]
+encryption_key_env = "CORAL_CREDENTIAL_ENCRYPTION_KEY"
 ```
 
 ```shellscript
 export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?sslmode=verify-full"
+export CORAL_CREDENTIAL_ENCRYPTION_KEY="v1:$(openssl rand -base64 32)"
 ```
+
+Identity specs with stored inputs on Postgres require one provisioned
+credential encryption key shared by every Coral server connected to that
+database. Preserve the same value across restarts and replicas; replacing or
+losing it makes encrypted identity inputs unreadable. Postgres deployments that
+do not store identity inputs can omit `[credentials].encryption_key_env`.
 
 <Note>
   Remote Postgres URLs must set `sslmode=verify-full` so Coral verifies the server identity. Loopback and local-socket Postgres URLs may omit TLS for local development.

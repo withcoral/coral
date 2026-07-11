@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -46,6 +46,53 @@ pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// Open and read an existing private regular file without following a
+/// pre-existing symlink or trusting a path that changed before open.
+pub(crate) fn read_to_string_private(path: &Path) -> io::Result<String> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+    let path_metadata = fs::symlink_metadata(path)?;
+    if !path_metadata.file_type().is_file() {
+        return Err(not_regular_file(path));
+    }
+
+    let mut file = File::open(path)?;
+    let opened_metadata = file.metadata()?;
+    if !opened_metadata.file_type().is_file()
+        || !opened_file_matches_path(&path_metadata, &opened_metadata)
+    {
+        return Err(not_regular_file(path));
+    }
+    set_open_file_permissions_private(&file)?;
+
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)?;
+    Ok(raw)
+}
+
+fn not_regular_file(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "path is not the same private regular file that was inspected: {}",
+            path.display()
+        ),
+    )
+}
+
+#[cfg(unix)]
+fn opened_file_matches_path(path: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    path.dev() == opened.dev() && path.ino() == opened.ino()
+}
+
+#[cfg(not(unix))]
+fn opened_file_matches_path(_path: &fs::Metadata, _opened: &fs::Metadata) -> bool {
+    true
 }
 
 fn ensure_existing_file_private(path: &Path) -> io::Result<()> {
@@ -286,9 +333,80 @@ fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn set_open_file_permissions_private(file: &File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_open_file_permissions_private(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryBackup, ensure_file_private};
+    use super::{DirectoryBackup, ensure_file_private, read_to_string_private};
+
+    #[test]
+    fn read_to_string_private_rejects_non_regular_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("credential-encryption.key");
+        std::fs::create_dir(&path).expect("create directory at key path");
+
+        let error = read_to_string_private(&path).expect_err("directory should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("private regular file"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_private_rejects_symlink_without_chmoding_target() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target.key");
+        let link = temp.path().join("credential-encryption.key");
+        std::fs::write(&target, "v1:not-a-real-key\n").expect("write target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))
+            .expect("set target permissions");
+        symlink(&target, &link).expect("create symlink");
+
+        let error = read_to_string_private(&link).expect_err("symlink should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        let target_mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(target_mode, 0o644);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_private_tightens_opened_file_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("credential-encryption.key");
+        std::fs::write(&path, "private key\n").expect("write key");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("set permissive mode");
+
+        assert_eq!(
+            read_to_string_private(&path).expect("read key"),
+            "private key\n"
+        );
+        let mode = std::fs::metadata(&path)
+            .expect("key metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 
     #[test]
     fn ensure_file_private_rejects_existing_directory() {

@@ -7,9 +7,10 @@ use crate::state::AppStateLayout;
 
 use super::CredentialStoragePreference;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct CredentialStorageConfig {
     pub(crate) storage: CredentialStoragePreference,
+    pub(crate) encryption_key_env: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -22,6 +23,8 @@ struct CredentialStorageConfigFile {
 struct CredentialStorageConfigSection {
     #[serde(default)]
     storage: CredentialStoragePreference,
+    #[serde(default)]
+    encryption_key_env: Option<String>,
 }
 
 impl CredentialStorageConfig {
@@ -33,6 +36,7 @@ impl CredentialStorageConfig {
         let file = toml::from_str::<CredentialStorageConfigFile>(&raw)?;
         Ok(Self {
             storage: file.credentials.storage,
+            encryption_key_env: file.credentials.encryption_key_env,
         })
     }
 }

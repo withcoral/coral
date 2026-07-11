@@ -16,13 +16,15 @@ use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
+use coral_api::v1::identity_spec_service_server::IdentitySpecServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
-    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
+    IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
     TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
@@ -36,19 +38,26 @@ use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
 use tower::{Layer, Service};
+use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
-use crate::credentials::{CredentialManager, CredentialStore};
+use crate::credentials::encryption::{
+    CredentialEncryptionKey, CredentialKeyProvider, LocalFileCredentialKeyProvider,
+    configured_key_required,
+};
+use crate::credentials::{CredentialManager, CredentialStore, CredentialsError};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::identity_specs::IdentitySpecService;
+use crate::identity_specs::manager::IdentitySpecManager;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
@@ -281,10 +290,17 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
-        let coral_db = init_database(&layout).await?;
+        let credential_config = CredentialStorageConfig::load(&layout)?;
+        let credential_encryption_key = credential_encryption_key(&credential_config)?;
+        let database_config = resolve_database_config(&layout)?;
+        let (identity_spec_key_provider, postgres_identity_inputs_disabled) =
+            identity_spec_key_provider(&layout, &database_config, credential_encryption_key);
+        let coral_db = init_database(database_config).await?;
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store).await?;
         let coral_db = Arc::new(coral_db);
+        let identity_spec_manager =
+            IdentitySpecManager::new(Arc::clone(&coral_db), identity_spec_key_provider);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -295,13 +311,20 @@ impl ServerBuilder {
             self.config.enable_stderr_logs,
             internal_trace_store_dir.clone(),
         )?;
+        if postgres_identity_inputs_disabled {
+            tracing::warn!(
+                backend = "postgres",
+                capability = "identity_inputs",
+                remediation = "[credentials].encryption_key_env",
+                "Postgres identity inputs are disabled until a shared credential encryption key is configured"
+            );
+        }
         let active_trace_store = telemetry_config
             .trace_history
             .enabled
             .then_some(installed_trace_store)
             .flatten();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
@@ -349,6 +372,7 @@ impl ServerBuilder {
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
+                identity_spec: identity_spec_manager,
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -361,11 +385,86 @@ impl ServerBuilder {
     }
 }
 
-async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
-    let database_config = resolve_database_config(layout)?;
+async fn init_database(database_config: ResolvedDatabaseConfig) -> Result<CoralDb, AppError> {
     let coral_db = CoralDb::open(database_config).await?;
     coral_db.migrate().await?;
     Ok(coral_db)
+}
+
+fn identity_spec_key_provider(
+    layout: &AppStateLayout,
+    database_config: &ResolvedDatabaseConfig,
+    configured_key: Option<CredentialEncryptionKey>,
+) -> (Arc<dyn CredentialKeyProvider>, bool) {
+    let configured = configured_key.is_some();
+    let provider: Arc<dyn CredentialKeyProvider> = match database_config {
+        ResolvedDatabaseConfig::Sqlite { .. } => {
+            Arc::new(LocalFileCredentialKeyProvider::new(layout, configured_key))
+        }
+        ResolvedDatabaseConfig::Postgres { .. } => {
+            Arc::new(ReloadingConfiguredKeyProvider(layout.clone()))
+        }
+    };
+    let postgres_identity_inputs_disabled =
+        matches!(database_config, ResolvedDatabaseConfig::Postgres { .. }) && !configured;
+    (provider, postgres_identity_inputs_disabled)
+}
+
+struct ReloadingConfiguredKeyProvider(AppStateLayout);
+
+impl ReloadingConfiguredKeyProvider {
+    fn configured_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        let config = CredentialStorageConfig::load(&self.0)
+            .map_err(|error| CredentialsError::Unavailable(error.to_string()))?;
+        credential_encryption_key(&config)
+            .map_err(|error| CredentialsError::Unavailable(error.to_string()))?
+            .ok_or_else(configured_key_required)
+    }
+}
+
+impl CredentialKeyProvider for ReloadingConfiguredKeyProvider {
+    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        self.configured_key()
+    }
+
+    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        let key = self.configured_key()?;
+        if key.key_id() == key_id {
+            Ok(key)
+        } else {
+            Err(CredentialsError::Crypto(format!(
+                "credential encryption key '{key_id}' is unavailable"
+            )))
+        }
+    }
+}
+
+fn credential_encryption_key(
+    config: &CredentialStorageConfig,
+) -> Result<Option<CredentialEncryptionKey>, AppError> {
+    let Some(env_name) = config.encryption_key_env.as_deref() else {
+        return Ok(None);
+    };
+    let raw = Zeroizing::new(
+        AppEnvironment::env_var(env_name)
+            .map_err(|_error| {
+                AppError::FailedPrecondition(format!(
+                    "credential encryption key environment variable `{env_name}` must contain valid UTF-8"
+                ))
+            })?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "credential encryption key environment variable `{env_name}` is not set"
+                ))
+            })?,
+    );
+    CredentialEncryptionKey::from_encoded_material(raw.as_str())
+        .map(Some)
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "credential encryption key from environment variable `{env_name}` is invalid: {error}"
+            ))
+        })
 }
 
 fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseConfig, AppError> {
@@ -475,6 +574,7 @@ struct TraceServerComponents {
 struct ServerManagers {
     source: SourceManager,
     workspace: WorkspaceManager,
+    identity_spec: IdentitySpecManager,
     query: QueryManager,
     search: SearchManager,
     feedback: FeedbackManager,
@@ -493,12 +593,14 @@ async fn start_server(
     let ServerManagers {
         source,
         workspace,
+        identity_spec,
         query,
         search,
         feedback,
     } = managers;
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
+    let identity_spec_service = IdentitySpecService::new(identity_spec);
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
     let search_service = SearchService::new(search);
@@ -509,6 +611,10 @@ async fn start_server(
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(WorkspaceServiceServer::new(workspace_service))
+        .add_service(
+            IdentitySpecServiceServer::new(identity_spec_service)
+                .max_encoding_message_size(IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE),
+        )
         .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -780,8 +886,10 @@ mod tests {
         StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
         is_native_grpc_content_type, start_server,
     };
+    use crate::credentials::encryption::LocalFileCredentialKeyProvider;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
+    use crate::identity_specs::manager::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
@@ -934,6 +1042,16 @@ enabled = false
         Arc::new(db)
     }
 
+    fn test_identity_spec_manager(
+        layout: &AppStateLayout,
+        db: &Arc<CoralDb>,
+    ) -> IdentitySpecManager {
+        IdentitySpecManager::new(
+            Arc::clone(db),
+            Arc::new(LocalFileCredentialKeyProvider::new(layout, None)),
+        )
+    }
+
     #[tokio::test]
     async fn trace_service_is_unregistered_when_local_store_is_disabled() {
         let temp = TempDir::new().expect("temp dir");
@@ -992,6 +1110,7 @@ backend = "unsupported"
             "unsupported database config should abort startup after database cutover"
         );
     }
+
     #[tokio::test]
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
@@ -1080,6 +1199,7 @@ backend = "unsupported"
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
+                identity_spec: test_identity_spec_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -1507,6 +1627,7 @@ tables:
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
+                identity_spec: test_identity_spec_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -1622,6 +1743,7 @@ tables:
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
+                identity_spec: test_identity_spec_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -1737,6 +1859,7 @@ tables:
             ServerManagers {
                 source: source_manager,
                 workspace: workspace_manager,
+                identity_spec: test_identity_spec_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
