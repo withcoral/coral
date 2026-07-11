@@ -25,6 +25,92 @@ async fn production_migrate_fills_sparse_version_gaps_on_sqlite() {
 }
 
 #[tokio::test]
+async fn sqlite_identity_schema_enforces_owner_and_spec_scope_structure() {
+    let temp = tempdir().expect("temp dir");
+    let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+        path: temp.path().join("identities.sqlite"),
+    })
+    .await
+    .expect("open sqlite");
+    db.migrate().await.expect("migrate sqlite");
+    let CoralDbBackend::Sqlite(backend) = &db.backend else {
+        panic!("expected SQLite backend");
+    };
+    for workspace in ["alpha", "beta"] {
+        sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES (?, 0)")
+            .bind(workspace)
+            .execute(&backend.pool)
+            .await
+            .expect("seed workspace");
+    }
+
+    for row in [
+        ("user", "local", None, "user-global", "global", "__global__"),
+        (
+            "workspace",
+            "alpha",
+            Some("alpha"),
+            "workspace-global",
+            "global",
+            "__global__",
+        ),
+        (
+            "workspace",
+            "alpha",
+            Some("alpha"),
+            "workspace-scoped",
+            "workspace",
+            "alpha",
+        ),
+    ] {
+        insert_identity(&backend.pool, row)
+            .await
+            .expect("valid identity row");
+    }
+    let spec_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM identity_specs")
+        .fetch_one(&backend.pool)
+        .await
+        .expect("count identity specs");
+    let identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM identities")
+        .fetch_one(&backend.pool)
+        .await
+        .expect("count identities");
+    assert_eq!((spec_count, identity_count), (0, 3));
+
+    for row in [
+        (
+            "workspace",
+            "alpha",
+            Some("beta"),
+            "owner-mismatch",
+            "global",
+            "__global__",
+        ),
+        (
+            "workspace",
+            "missing",
+            Some("missing"),
+            "missing-workspace",
+            "global",
+            "__global__",
+        ),
+        ("user", "member", None, "user-scoped", "workspace", "alpha"),
+        (
+            "workspace",
+            "alpha",
+            Some("alpha"),
+            "cross-workspace",
+            "workspace",
+            "beta",
+        ),
+    ] {
+        insert_identity(&backend.pool, row)
+            .await
+            .expect_err("invalid identity row must be rejected");
+    }
+}
+
+#[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run the isolated Postgres database contracts"]
 async fn postgres_identity_database_contracts() {
     let base_url = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
@@ -150,13 +236,13 @@ async fn assert_migration_order_contract(db: &CoralDb) {
         MIGRATOR
             .migrations
             .iter()
-            .filter(|migration| matches!(migration.version, 1 | 10))
+            .filter(|migration| matches!(migration.version, 1 | 10 | 11))
             .cloned()
             .collect(),
     );
-    assert_eq!(migration_versions(&sparse), vec![1, 10]);
+    assert_eq!(migration_versions(&sparse), vec![1, 10, 11]);
     run_migrator(db, &sparse).await;
-    assert_eq!(migration_ledger(db).await, vec![1, 10]);
+    assert_eq!(migration_ledger(db).await, vec![1, 10, 11]);
     let mut session = db;
     let identity_specs = session
         .identity_specs()
@@ -194,6 +280,31 @@ async fn assert_migration_order_contract(db: &CoralDb) {
             .await
             .expect("marker survives idempotent migrate")
     );
+}
+
+type IdentityRow<'a> = (&'a str, &'a str, Option<&'a str>, &'a str, &'a str, &'a str);
+
+async fn insert_identity(
+    pool: &sqlx::SqlitePool,
+    (owner_kind, owner_key, workspace_id, name, scope_kind, scope_id): IdentityRow<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO identities (
+            owner_kind, owner_key, workspace_id, name,
+            identity_spec_scope_kind, identity_spec_scope_id, identity_spec_name,
+            identity_spec_fingerprint, issuer, identity_type,
+            created_at_unix_nanos, updated_at_unix_nanos
+         ) VALUES (?, ?, ?, ?, ?, ?, 'missing-spec', 'fingerprint', 'issuer', 'fixed_token', 1, 1)",
+    )
+    .bind(owner_kind)
+    .bind(owner_key)
+    .bind(workspace_id)
+    .bind(name)
+    .bind(scope_kind)
+    .bind(scope_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 async fn run_migrator(db: &CoralDb, migrator: &Migrator) {
