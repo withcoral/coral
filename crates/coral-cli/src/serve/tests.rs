@@ -17,6 +17,7 @@ use super::*;
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
 const OAUTH_ISSUER: &str = "http://localhost:9080";
 const OAUTH_RESOURCE: &str = "http://localhost:1457";
+const SESSION_ISSUER: &str = "https://auth.example";
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
@@ -116,19 +117,87 @@ async fn assert_grpc_rejects_unauthenticated(endpoint: &str) {
         .expect("unauthenticated gRPC client");
     let denied = unauthenticated
         .catalog_client()
-        .list_catalog(Request::new(ListCatalogRequest {
-            workspace: Some(default_workspace()),
-            catalog_name: String::new(),
-            schema_name: String::new(),
-            kind: CatalogItemKind::Unspecified as i32,
-            pagination: Some(PaginationRequest {
-                limit: 1,
-                offset: 0,
-            }),
-        }))
+        .list_catalog(Request::new(catalog_request()))
         .await
         .expect_err("the gRPC data plane must refuse an unauthenticated call");
     assert_eq!(denied.code(), Code::Unauthenticated);
+}
+
+fn catalog_request() -> ListCatalogRequest {
+    ListCatalogRequest {
+        workspace: Some(default_workspace()),
+        catalog_name: String::new(),
+        schema_name: String::new(),
+        kind: CatalogItemKind::Unspecified as i32,
+        pagination: Some(PaginationRequest {
+            limit: 1,
+            offset: 0,
+        }),
+    }
+}
+
+/// Mints a session token through the real issuer.
+///
+/// Anything the issuer can legitimately emit goes through it, so these tests
+/// track the issuer's wire format instead of re-implementing the JWT the
+/// verifier expects. Fixtures the issuer can never emit — an already-expired
+/// token, or one whose `kid` disclaims the key that signed it — still have to be
+/// assembled by hand wherever they are needed.
+fn session_token(signing_key: &[u8], audience: &str) -> String {
+    coral_app::test_session_tokens::issue_access_token(
+        SESSION_ISSUER,
+        signing_key,
+        Duration::from_mins(5),
+        "alice",
+        "https://client.example/client.json",
+        audience,
+    )
+    .expect("session token")
+}
+
+fn write_session_config(temp: &TempDir, signing_key: &[u8]) {
+    std::fs::write(temp.path().join("session.key"), signing_key).expect("session key");
+    // The uppercase host is deliberate: the advertised-resource assertion only
+    // proves canonicalization if the configured URL actually needs canonicalizing.
+    write_config(
+        temp,
+        r"
+[trace_history]
+enabled = false
+
+[server.mcp_http]
+enabled = true
+bind = '127.0.0.1:0'
+public_url = 'https://CORAL.example/mcp'
+
+[auth.session]
+signing_key_file = 'session.key'
+
+[auth.authorization_server]
+issuer = 'https://auth.example'
+
+[auth.provider]
+issuer = 'https://accounts.example'
+client_id = 'upstream-client'
+client_secret = 'test-secret'
+redirect_uri = 'https://auth.example/auth/oidc/callback'
+",
+    );
+}
+
+async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, token: &str) {
+    let authenticated = connect_with_loopback_bearer(
+        server.endpoint_uri(),
+        BearerToken::new(token).expect("bearer token"),
+    )
+    .await
+    .expect("authenticated gRPC client");
+    authenticated
+        .catalog_client()
+        .list_catalog(Request::new(catalog_request()))
+        .await
+        .expect("authenticated catalog call");
+    assert_catalog_tool(mcp_endpoint.to_string(), Some(token)).await;
 }
 
 #[test]
@@ -295,36 +364,12 @@ async fn oauth_start_failure_releases_the_started_grpc_listener() {
 }
 
 #[tokio::test]
-async fn session_authenticated_companion_forwards_bearer() {
+async fn session_authenticated_companion_gates_grpc_and_mcp() {
     let temp = TempDir::new().expect("temp dir");
     let signing_key =
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
-    std::fs::write(temp.path().join("session.key"), signing_key.as_ref()).expect("session key");
-    write_config(
-        &temp,
-        r"
-[trace_history]
-enabled = false
-
-[server.mcp_http]
-enabled = true
-bind = '127.0.0.1:0'
-public_url = 'https://CORAL.example/mcp'
-
-[auth.session]
-signing_key_file = 'session.key'
-
-[auth.authorization_server]
-issuer = 'https://auth.example'
-
-[auth.provider]
-issuer = 'https://accounts.example'
-client_id = 'upstream-client'
-client_secret = 'test-secret'
-redirect_uri = 'https://auth.example/auth/oidc/callback'
-",
-    );
+    write_session_config(&temp, signing_key.as_ref());
     let server = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
@@ -356,24 +401,13 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
 
     assert_unauthorized(&base, "Bearer wrong-token").await;
 
-    let token = |audience: &str| {
-        coral_app::test_session_tokens::issue_access_token(
-            "https://auth.example",
-            signing_key.as_ref(),
-            Duration::from_mins(5),
-            "alice",
-            "https://client.example/client.json",
-            audience,
-        )
-        .expect("session token")
-    };
-    let wrong_audience = token("https://other.example/mcp");
+    let wrong_audience = session_token(signing_key.as_ref(), "https://other.example/mcp");
     assert_unauthorized(&base, &format!("Bearer {wrong_audience}")).await;
 
     assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
-    let token = token(&resource);
-    assert_catalog_tool(format!("{base}/mcp"), Some(&token)).await;
+    let token = session_token(signing_key.as_ref(), &resource);
+    assert_authenticated_data(&server, &format!("{base}/mcp"), &token).await;
 
     // Readiness observes the backend, not just the port: stopping gRPC while MCP
     // HTTP keeps serving must turn the authenticated probe unhealthy.
@@ -392,6 +426,9 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
         reqwest::StatusCode::SERVICE_UNAVAILABLE,
         "an unreachable engine must not report ready"
     );
+    if let Some(oauth) = oauth {
+        oauth.shutdown().await.expect("shutdown OAuth server");
+    }
     mcp_http
         .expect("MCP HTTP server")
         .shutdown()
