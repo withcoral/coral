@@ -1644,6 +1644,7 @@ mod tests {
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
+    use crate::storage::fs;
     use crate::workspaces::WorkspaceName;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
@@ -3251,10 +3252,6 @@ surface:
         let refresh_lock = credential_store
             .credential_refresh_lock(&workspace_name, &credential_set_id)
             .expect("hold refresh lock");
-        let config_temp_path = layout
-            .config_file()
-            .with_file_name(format!("config.toml.tmp.{}", std::process::id()));
-        std::fs::create_dir_all(&config_temp_path).expect("block config save temp path");
         let (started_tx, started_rx) = std_mpsc::channel();
         let import_manager = manager.clone();
         let import_workspace = workspace_name.clone();
@@ -3290,12 +3287,12 @@ surface:
                 ]),
             )
             .expect("simulate persisted refresh while lock is held");
+        let _config_write_failure = fs::fail_atomic_write_for_test(layout.config_file());
         drop(refresh_lock);
         import_handle
             .join()
             .expect("import thread")
             .expect_err("blocked config save should fail import");
-        drop(std::fs::remove_dir_all(&config_temp_path));
 
         let material = credential_manager
             .read_material(
