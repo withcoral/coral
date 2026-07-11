@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 
 mod authorize;
 mod callback;
+mod client_metadata;
 mod query;
 mod response;
 mod token;
