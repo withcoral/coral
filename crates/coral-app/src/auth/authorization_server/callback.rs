@@ -179,7 +179,10 @@ mod tests {
     };
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
-    use crate::auth::state_store::{InMemoryStateStore, StateStore, StateStoreError};
+    use crate::auth::state_store::{
+        InMemoryStateStore, OAuthAuthorizationApprovalRecord, OAuthAuthorizationApprovalTicket,
+        StateStore, StateStoreError,
+    };
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -507,6 +510,21 @@ mod tests {
 
     #[async_trait::async_trait]
     impl StateStore for FailCodeStore {
+        async fn store_authorization_approval(
+            &self,
+            ticket: &OAuthAuthorizationApprovalTicket,
+            approval: OAuthAuthorizationApprovalRecord,
+        ) -> Result<(), StateStoreError> {
+            self.0.store_authorization_approval(ticket, approval).await
+        }
+
+        async fn take_authorization_approval(
+            &self,
+            ticket: &OAuthAuthorizationApprovalTicket,
+        ) -> Result<Option<OAuthAuthorizationApprovalRecord>, StateStoreError> {
+            self.0.take_authorization_approval(ticket).await
+        }
+
         async fn store_authorization_session(
             &self,
             state: &str,
