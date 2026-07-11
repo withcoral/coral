@@ -10,4 +10,6 @@ mod provider_client;
 pub(crate) mod session;
 pub(crate) mod state_store;
 
-pub use oauth::{OidcAuthConfig, RunningOidcAuthServer};
+pub use oauth::{
+    OAuthLoginError, OAuthLoginResult, OidcAuthConfig, RunningOidcAuthServer, run_oauth_login,
+};

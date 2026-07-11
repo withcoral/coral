@@ -26,7 +26,10 @@ use crate::outbound_url_policy::ConfiguredEndpointUrl;
 mod authorize;
 mod callback;
 mod client_metadata;
+mod login;
 mod token;
+
+pub use login::{OAuthLoginError, OAuthLoginResult, run_oauth_login};
 
 use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
 
