@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use sqlx::migrate::Migrator;
 use tempfile::tempdir;
 
@@ -41,11 +43,13 @@ async fn postgres_identity_database_contracts() {
     isolated_url
         .query_pairs_mut()
         .append_pair("options[search_path]", &schema);
-    let db = CoralDb::open(ResolvedDatabaseConfig::Postgres {
-        url: isolated_url.to_string(),
-    })
-    .await
-    .expect("open isolated Postgres database");
+    let db = Arc::new(
+        CoralDb::open(ResolvedDatabaseConfig::Postgres {
+            url: isolated_url.to_string(),
+        })
+        .await
+        .expect("open isolated Postgres database"),
+    );
     let CoralDbBackend::Postgres(backend) = &db.backend else {
         panic!("expected Postgres backend");
     };
@@ -60,6 +64,7 @@ async fn postgres_identity_database_contracts() {
         .await;
     assert_identity_spec_write_contract(&db).await;
     assert_identity_spec_negative_contract(&db).await;
+    crate::identity_specs::manager::tests::assert_identity_spec_mutation_contract(&db).await;
 
     backend.pool.close().await;
     drop(db);

@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), expect(dead_code, reason = "B2 wires consumers"))]
-
 use std::collections::BTreeMap;
 
 use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};

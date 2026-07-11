@@ -30,6 +30,11 @@ impl CoralDb {
         CoralTx::begin_read_snapshot(&self.backend).await
     }
 
+    /// Begin a transaction that detects conflicting concurrent writes.
+    pub(crate) async fn begin_serializable(&self) -> Result<CoralTx<'_>, DbError> {
+        CoralTx::begin_serializable(&self.backend).await
+    }
+
     #[cfg_attr(
         not(test),
         expect(

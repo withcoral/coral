@@ -171,6 +171,22 @@ pub(in crate::state::db) async fn assert_identity_spec_write_contract(db: &Coral
     tx.commit().await.expect("commit cleanup");
 }
 
+pub(crate) async fn set_identity_spec_document_version(
+    tx: &mut CoralTx<'_>,
+    key: &IdentitySpecKey,
+    version: i64,
+) {
+    tx.execute(
+        Query::update()
+            .table(IdentitySpecDocuments::Table)
+            .value(IdentitySpecDocuments::DocumentVersion, version)
+            .and_where(document_key_where(key))
+            .to_owned(),
+    )
+    .await
+    .expect("set identity spec document version");
+}
+
 async fn assert_foreign_keys_and_rollback(
     db: &CoralDb,
     suffix: &str,

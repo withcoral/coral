@@ -720,6 +720,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
+        AppError::RetryableTransactionConflict => "DATABASE_TRANSACTION_CONFLICT",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
         AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",

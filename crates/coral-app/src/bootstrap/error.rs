@@ -79,6 +79,9 @@ pub enum AppError {
     /// A required remote dependency was unavailable.
     #[error("unavailable: {0}")]
     Unavailable(String),
+    /// A database mutation conflicted with another transaction and may be retried.
+    #[error("unavailable: database transaction conflict; retry the request")]
+    RetryableTransactionConflict,
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -127,6 +130,7 @@ impl From<DbError> for AppError {
             )),
             DbError::Io(error) => Self::Io(error),
             DbError::TomlDecode(error) => Self::TomlDecode(error),
+            DbError::RetryableTransactionConflict(_) => Self::RetryableTransactionConflict,
             DbError::Sqlx(error) => Self::Database(error.to_string()),
             DbError::Migration(error) => Self::Database(error.to_string()),
         }
@@ -277,7 +281,7 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
             Code::FailedPrecondition
         }
-        AppError::Unavailable(_) => Code::Unavailable,
+        AppError::Unavailable(_) | AppError::RetryableTransactionConflict => Code::Unavailable,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
         | AppError::Yaml(_)

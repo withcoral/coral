@@ -35,6 +35,16 @@ impl<'a> CoralTx<'a> {
         Ok(tx)
     }
 
+    pub(super) async fn begin_serializable(backend: &'a CoralDbBackend) -> Result<Self, DbError> {
+        let mut tx = Self::begin(backend).await?;
+        if let CoralTxBackend::Postgres(postgres) = &mut tx.backend {
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                .execute(&mut **postgres)
+                .await?;
+        }
+        Ok(tx)
+    }
+
     pub(crate) async fn commit(self) -> Result<(), DbError> {
         match self.backend {
             CoralTxBackend::Sqlite(tx) => tx.commit().await?,
