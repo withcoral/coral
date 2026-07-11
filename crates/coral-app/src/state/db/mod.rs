@@ -21,6 +21,8 @@ pub(crate) use import::run_state_migrations;
     unused_imports,
     reason = "identity key types land before later repository behavior consumes them"
 )]
-pub(crate) use repositories::identity_specs::{IdentitySpecKey, IdentitySpecScope};
+pub(crate) use repositories::identity_specs::{
+    IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
+};
 pub(crate) use session::{DbRepos, DbSession};
 pub(crate) use transaction::CoralTx;

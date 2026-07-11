@@ -3,7 +3,12 @@
     reason = "identity repositories land before their read and write behavior in the B1 stack"
 )]
 
+use std::collections::BTreeMap;
+
+use sea_query::{Expr, ExprTrait, Order, Query};
+
 use crate::bootstrap::AppError;
+use crate::state::db::schema::IdentitySpecs;
 use crate::state::db::{DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 use coral_spec::validate_identity_spec_name;
@@ -151,6 +156,81 @@ impl IdentitySpecKey {
     }
 }
 
+/// Persisted authored definition for one identity spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IdentitySpecRecord {
+    /// Scope and name that identify this identity spec.
+    pub(crate) key: IdentitySpecKey,
+    /// Authored identity spec version string.
+    pub(crate) version: String,
+    /// Human-readable identity spec description.
+    pub(crate) description: String,
+    /// Issuer identifier declared by the identity spec.
+    pub(crate) issuer: String,
+    /// Identity mechanism declared by the identity spec.
+    pub(crate) identity_type: String,
+    /// Authored identity spec manifest YAML.
+    pub(crate) manifest_yaml: String,
+    /// Creation timestamp in Unix nanoseconds.
+    pub(crate) created_at_unix_nanos: i64,
+    /// Last update timestamp in Unix nanoseconds.
+    pub(crate) updated_at_unix_nanos: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct IdentitySpecRow {
+    scope_kind: String,
+    scope_id: String,
+    workspace_id: Option<String>,
+    name: String,
+    version: String,
+    description: String,
+    issuer: String,
+    identity_type: String,
+    manifest_yaml: String,
+    created_at_unix_nanos: i64,
+    updated_at_unix_nanos: i64,
+}
+
+impl IdentitySpecRow {
+    fn validate(self) -> Result<IdentitySpecRecord, DbError> {
+        if [
+            &self.version,
+            &self.issuer,
+            &self.identity_type,
+            &self.manifest_yaml,
+        ]
+        .into_iter()
+        .any(|value| value.trim().is_empty())
+        {
+            return Err(DbError::CorruptData(
+                "identity spec row has an empty required field".to_string(),
+            ));
+        }
+        if self.created_at_unix_nanos < 0 || self.updated_at_unix_nanos < self.created_at_unix_nanos
+        {
+            return Err(DbError::CorruptData(
+                "identity spec row has invalid timestamps".to_string(),
+            ));
+        }
+        Ok(IdentitySpecRecord {
+            key: IdentitySpecKey::from_spec_storage_parts(
+                &self.scope_kind,
+                &self.scope_id,
+                self.workspace_id.as_deref(),
+                &self.name,
+            )?,
+            version: self.version,
+            description: self.description,
+            issuer: self.issuer,
+            identity_type: self.identity_type,
+            manifest_yaml: self.manifest_yaml,
+            created_at_unix_nanos: self.created_at_unix_nanos,
+            updated_at_unix_nanos: self.updated_at_unix_nanos,
+        })
+    }
+}
+
 /// Repository shell for durable DSL v4 identity spec definitions.
 pub(crate) struct IdentitySpecsRepo<'a, S> {
     session: &'a mut S,
@@ -163,6 +243,85 @@ where
     /// Create an identity-spec repository over an existing DB session.
     pub(crate) fn new(session: &'a mut S) -> Self {
         Self { session }
+    }
+
+    /// Load one identity spec by exact scope and name without fallback.
+    pub(crate) async fn load_optional(
+        &mut self,
+        key: &IdentitySpecKey,
+    ) -> Result<Option<IdentitySpecRecord>, DbError> {
+        let row: Option<IdentitySpecRow> = self
+            .session
+            .fetch_optional(
+                identity_spec_select()
+                    .and_where(identity_spec_key_where(key))
+                    .to_owned(),
+            )
+            .await?;
+        row.map(IdentitySpecRow::validate).transpose()
+    }
+
+    /// List globally installed identity specs in name order.
+    pub(crate) async fn list_global(&mut self) -> Result<Vec<IdentitySpecRecord>, DbError> {
+        self.list_scope(&IdentitySpecScope::Global).await
+    }
+
+    /// List identity specs scoped to one workspace in name order.
+    pub(crate) async fn list_workspace(
+        &mut self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<IdentitySpecRecord>, DbError> {
+        self.list_scope(&IdentitySpecScope::Workspace(workspace_name.clone()))
+            .await
+    }
+
+    /// Resolve one spec, preferring a workspace definition over its global fallback.
+    pub(crate) async fn resolve_optional(
+        &mut self,
+        key: &IdentitySpecKey,
+    ) -> Result<Option<IdentitySpecRecord>, DbError> {
+        if let Some(record) = self.load_optional(key).await? {
+            return Ok(Some(record));
+        }
+        if matches!(&key.scope, IdentitySpecScope::Global) {
+            return Ok(None);
+        }
+        self.load_optional(&IdentitySpecKey {
+            scope: IdentitySpecScope::Global,
+            name: key.name.clone(),
+        })
+        .await
+    }
+
+    /// List the effective specs for a workspace with one record per name.
+    pub(crate) async fn list_resolved_for_workspace(
+        &mut self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<IdentitySpecRecord>, DbError> {
+        let mut by_name = BTreeMap::new();
+        for record in self.list_global().await? {
+            by_name.insert(record.key.name.clone(), record);
+        }
+        for record in self.list_workspace(workspace_name).await? {
+            by_name.insert(record.key.name.clone(), record);
+        }
+        Ok(by_name.into_values().collect())
+    }
+
+    async fn list_scope(
+        &mut self,
+        scope: &IdentitySpecScope,
+    ) -> Result<Vec<IdentitySpecRecord>, DbError> {
+        let rows: Vec<IdentitySpecRow> = self
+            .session
+            .fetch_all(
+                identity_spec_select()
+                    .and_where(identity_spec_scope_where(scope))
+                    .order_by(IdentitySpecs::Name, Order::Asc)
+                    .to_owned(),
+            )
+            .await?;
+        rows.into_iter().map(IdentitySpecRow::validate).collect()
     }
 }
 
@@ -210,11 +369,49 @@ fn parse_persisted_identity_spec_name(name: &str) -> Result<String, DbError> {
     Ok(parsed)
 }
 
+fn identity_spec_select() -> sea_query::SelectStatement {
+    Query::select()
+        .columns(identity_spec_columns())
+        .from(IdentitySpecs::Table)
+        .to_owned()
+}
+
+fn identity_spec_columns() -> [IdentitySpecs; 11] {
+    [
+        IdentitySpecs::ScopeKind,
+        IdentitySpecs::ScopeId,
+        IdentitySpecs::WorkspaceId,
+        IdentitySpecs::Name,
+        IdentitySpecs::Version,
+        IdentitySpecs::Description,
+        IdentitySpecs::Issuer,
+        IdentitySpecs::IdentityType,
+        IdentitySpecs::ManifestYaml,
+        IdentitySpecs::CreatedAtUnixNanos,
+        IdentitySpecs::UpdatedAtUnixNanos,
+    ]
+}
+
+fn identity_spec_key_where(key: &IdentitySpecKey) -> sea_query::SimpleExpr {
+    identity_spec_scope_where(&key.scope).and(Expr::col(IdentitySpecs::Name).eq(key.name.as_str()))
+}
+
+fn identity_spec_scope_where(scope: &IdentitySpecScope) -> sea_query::SimpleExpr {
+    Expr::col(IdentitySpecs::ScopeKind)
+        .eq(scope.kind())
+        .and(Expr::col(IdentitySpecs::ScopeId).eq(scope.scope_id()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::IdentitySpecKey;
-    use crate::bootstrap::AppError;
-    use crate::state::db::DbError;
+    use sea_query::{Expr, Query};
+    use tempfile::tempdir;
+
+    use super::{IdentitySpecKey, identity_spec_columns, identity_spec_key_where};
+    use crate::bootstrap::{self, AppError};
+    use crate::state::db::schema::IdentitySpecs;
+    use crate::state::db::{CoralDb, DbError, DbRepos, DbSession, ResolvedDatabaseConfig};
+    use crate::workspaces::WorkspaceName;
 
     #[test]
     fn caller_names_keep_invalid_input_classification() {
@@ -253,5 +450,205 @@ mod tests {
         ] {
             assert!(matches!(result, Err(DbError::CorruptData(_))));
         }
+    }
+
+    #[tokio::test]
+    async fn identity_spec_reads_resolve_scopes_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        assert_identity_spec_read_contract(&db).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
+    async fn identity_spec_reads_resolve_scopes_against_postgres() {
+        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+            .expect("read CORAL_TEST_POSTGRES_URL")
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        assert_identity_spec_read_contract(&db).await;
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "shared backend repository contract fixture"
+    )]
+    async fn assert_identity_spec_read_contract(db: &CoralDb) {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let workspace = WorkspaceName::parse(&format!("identity{suffix}")).expect("workspace");
+        let other_workspace =
+            WorkspaceName::parse(&format!("identity_other_{suffix}")).expect("other workspace");
+        let shadow_name = format!("github_{suffix}");
+        let fallback_name = format!("stripe_{suffix}");
+        let global_shadow = IdentitySpecKey::global(&shadow_name).expect("global shadow key");
+        let global_fallback = IdentitySpecKey::global(&fallback_name).expect("global fallback key");
+        let workspace_shadow =
+            IdentitySpecKey::workspace(workspace.clone(), &shadow_name).expect("workspace key");
+        let workspace_fallback =
+            IdentitySpecKey::workspace(workspace.clone(), &fallback_name).expect("fallback key");
+        let other_workspace_shadow =
+            IdentitySpecKey::workspace(other_workspace.clone(), &shadow_name)
+                .expect("other workspace shadow key");
+        let other_workspace_fallback =
+            IdentitySpecKey::workspace(other_workspace.clone(), &fallback_name)
+                .expect("other workspace fallback key");
+
+        let mut tx = db.begin().await.expect("begin seed tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 1)
+            .await
+            .expect("ensure workspace");
+        tx.workspaces()
+            .ensure(other_workspace.as_str(), 2)
+            .await
+            .expect("ensure other workspace");
+        insert_spec(&mut tx, &global_shadow, "global-shadow", 2).await;
+        insert_spec(&mut tx, &global_fallback, "global-fallback", 3).await;
+        insert_spec(&mut tx, &workspace_shadow, "workspace-shadow", 4).await;
+        insert_spec(
+            &mut tx,
+            &other_workspace_shadow,
+            "other-workspace-shadow",
+            5,
+        )
+        .await;
+        insert_spec(
+            &mut tx,
+            &other_workspace_fallback,
+            "other-workspace-fallback",
+            6,
+        )
+        .await;
+        tx.commit().await.expect("commit seed tx");
+
+        let mut session = db;
+        let exact = session
+            .identity_specs()
+            .load_optional(&global_shadow)
+            .await
+            .expect("load global");
+        assert_eq!(
+            exact.map(|record| record.version).as_deref(),
+            Some("global-shadow")
+        );
+        let exact_workspace = session
+            .identity_specs()
+            .load_optional(&workspace_shadow)
+            .await
+            .expect("load workspace");
+        assert_eq!(
+            exact_workspace.map(|record| record.version).as_deref(),
+            Some("workspace-shadow")
+        );
+        let workspace_records: Vec<_> = session
+            .identity_specs()
+            .list_workspace(&workspace)
+            .await
+            .expect("list workspace")
+            .into_iter()
+            .map(|record| (record.key, record.version))
+            .collect();
+        assert_eq!(
+            workspace_records,
+            vec![(workspace_shadow.clone(), "workspace-shadow".to_string())]
+        );
+        let missing_workspace_fallback = session
+            .identity_specs()
+            .load_optional(&workspace_fallback)
+            .await
+            .expect("load absent workspace fallback");
+        assert!(missing_workspace_fallback.is_none());
+        let shadow = session
+            .identity_specs()
+            .resolve_optional(&workspace_shadow)
+            .await
+            .expect("resolve shadow");
+        assert_eq!(
+            shadow.map(|record| record.version).as_deref(),
+            Some("workspace-shadow")
+        );
+        let fallback = session
+            .identity_specs()
+            .resolve_optional(&workspace_fallback)
+            .await
+            .expect("resolve fallback");
+        assert_eq!(
+            fallback.map(|record| record.key),
+            Some(global_fallback.clone())
+        );
+        let resolved: Vec<_> = session
+            .identity_specs()
+            .list_resolved_for_workspace(&workspace)
+            .await
+            .expect("list resolved")
+            .into_iter()
+            .filter(|record| record.key.name.ends_with(&suffix))
+            .map(|record| (record.key.name, record.version))
+            .collect();
+        assert_eq!(
+            resolved,
+            vec![
+                (shadow_name, "workspace-shadow".to_string()),
+                (fallback_name, "global-fallback".to_string()),
+            ]
+        );
+
+        let mut tx = db.begin().await.expect("begin cleanup tx");
+        for key in [&global_shadow, &global_fallback] {
+            tx.execute(
+                Query::delete()
+                    .from_table(IdentitySpecs::Table)
+                    .and_where(identity_spec_key_where(key))
+                    .to_owned(),
+            )
+            .await
+            .expect("delete global spec");
+        }
+        for workspace_name in [&workspace, &other_workspace] {
+            tx.workspaces()
+                .delete(workspace_name.as_str())
+                .await
+                .expect("delete workspace");
+        }
+        tx.commit().await.expect("commit cleanup tx");
+    }
+
+    async fn insert_spec<S>(session: &mut S, key: &IdentitySpecKey, version: &str, now: i64)
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(IdentitySpecs::Table)
+                    .columns(identity_spec_columns())
+                    .values_panic([
+                        Expr::val(key.scope.kind()),
+                        Expr::val(key.scope.scope_id()),
+                        Expr::val(key.scope.workspace_id().map(ToString::to_string)),
+                        Expr::val(key.name.clone()),
+                        Expr::val(version),
+                        Expr::val("test identity spec"),
+                        Expr::val("issuer"),
+                        Expr::val("oauth"),
+                        Expr::val("kind: identity\n"),
+                        Expr::val(now),
+                        Expr::val(now),
+                    ])
+                    .to_owned(),
+            )
+            .await
+            .expect("insert identity spec");
     }
 }
