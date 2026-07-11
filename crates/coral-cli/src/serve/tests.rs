@@ -1,8 +1,11 @@
 use std::net::TcpListener;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_client::default_workspace;
+use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use reqwest::header::WWW_AUTHENTICATE;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use rmcp::ServiceExt as _;
@@ -18,6 +21,7 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 const OAUTH_ISSUER: &str = "http://localhost:9080";
 const OAUTH_RESOURCE: &str = "http://localhost:1457";
 const SESSION_ISSUER: &str = "https://auth.example";
+const SESSION_RESOURCE: &str = "https://coral.example/mcp";
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
@@ -155,6 +159,42 @@ fn session_token(signing_key: &[u8], audience: &str) -> String {
     .expect("session token")
 }
 
+/// Assembles a session token by hand, for fixtures the issuer cannot emit.
+///
+/// Reserved for tokens the real issuer will never produce: one that already
+/// expired (its TTL is a `Duration`, and a zero TTL is rejected outright) or one
+/// whose `kid` disclaims the key that signed it. Claims mirror
+/// `SessionTokenClaims` exactly so these fixtures fail on the property under
+/// test rather than on a shape the verifier never sees. Anything legitimate goes
+/// through [`session_token`].
+fn signed_session_token(
+    signing_key: &EncodingKey,
+    key_id: &str,
+    audience: &str,
+    issued_at: u64,
+    expires_at: u64,
+    token_id: &str,
+) -> String {
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some(key_id.to_string());
+    header.typ = Some("at+jwt".to_string());
+    encode(
+        &header,
+        &serde_json::json!({
+            "iss": SESSION_ISSUER,
+            "aud": audience,
+            "sub": "alice",
+            "jti": token_id,
+            "client_id": "https://client.example/client.json",
+            "iat": issued_at,
+            "nbf": issued_at,
+            "exp": expires_at,
+        }),
+        signing_key,
+    )
+    .expect("session token")
+}
+
 fn write_session_config(temp: &TempDir, signing_key: &[u8]) {
     std::fs::write(temp.path().join("session.key"), signing_key).expect("session key");
     // The uppercase host is deliberate: the advertised-resource assertion only
@@ -198,6 +238,70 @@ async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, t
         .await
         .expect("authenticated catalog call");
     assert_catalog_tool(mcp_endpoint.to_string(), Some(token)).await;
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct BearerRejection {
+    grpc_code: Code,
+    grpc_message: String,
+    grpc_details: Vec<u8>,
+    status: reqwest::StatusCode,
+    challenge: String,
+    body: String,
+}
+
+async fn assert_bearer_rejected(
+    server: &RunningServer,
+    mcp_endpoint: &str,
+    token: &str,
+) -> BearerRejection {
+    let client = connect_with_loopback_bearer(
+        server.endpoint_uri(),
+        BearerToken::new(token).expect("bearer token"),
+    )
+    .await
+    .expect("gRPC client");
+    let denied = client
+        .catalog_client()
+        .list_catalog(Request::new(catalog_request()))
+        .await
+        .expect_err("invalid session token must fail gRPC");
+    let grpc_code = denied.code();
+    let grpc_message = denied.message().to_string();
+    let grpc_details = denied.details().to_vec();
+    assert_eq!(grpc_code, Code::Unauthenticated);
+    assert_eq!(grpc_message, "unauthenticated: authentication required");
+    assert!(grpc_details.is_empty());
+    assert!(!format!("{denied:?}").contains(token));
+
+    let denied = reqwest::Client::new()
+        .post(mcp_endpoint)
+        .bearer_auth(token)
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .body(INITIALIZE)
+        .send()
+        .await
+        .expect("invalid session MCP response");
+    let status = denied.status();
+    let challenge = denied
+        .headers()
+        .get(WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .expect("ASCII MCP authentication challenge")
+        .to_string();
+    assert_eq!(denied.headers().get_all(WWW_AUTHENTICATE).iter().count(), 1);
+    let body = denied.text().await.expect("invalid session MCP body");
+    assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+    assert!(body.is_empty());
+    BearerRejection {
+        grpc_code,
+        grpc_message,
+        grpc_details,
+        status,
+        challenge,
+        body,
+    }
 }
 
 #[test]
@@ -436,6 +540,85 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         .shutdown()
         .await
         .expect("shutdown OAuth server");
+}
+
+#[tokio::test]
+async fn session_failures_and_restart_are_fail_closed() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_session_config(&temp, signing_key.as_ref());
+
+    let encoding_key = EncodingKey::from_ec_der(signing_key.as_ref());
+    let key_id = Jwk::from_encoding_key(&encoding_key, Algorithm::ES256)
+        .expect("signing JWK")
+        .thumbprint(ThumbprintHash::SHA256);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time")
+        .as_secs();
+    let valid = session_token(signing_key.as_ref(), SESSION_RESOURCE);
+    let expired = signed_session_token(
+        &encoding_key,
+        &key_id,
+        SESSION_RESOURCE,
+        now.saturating_sub(300),
+        now.saturating_sub(120),
+        "expired-token",
+    );
+    let wrong_audience = session_token(signing_key.as_ref(), "https://coral.example/not-mcp");
+    let forged_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("forged P-256 signing key");
+    let forged = signed_session_token(
+        &EncodingKey::from_ec_der(forged_key.as_ref()),
+        &key_id,
+        SESSION_RESOURCE,
+        now.saturating_sub(1),
+        now + 300,
+        "forged-token",
+    );
+
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    .expect("start authenticated composite server");
+    let mcp_endpoint = format!(
+        "http://{}/mcp",
+        server.mcp_http_addr().expect("MCP HTTP endpoint")
+    );
+
+    let expired_rejection = assert_bearer_rejected(&server, &mcp_endpoint, &expired).await;
+    let wrong_audience_rejection =
+        assert_bearer_rejected(&server, &mcp_endpoint, &wrong_audience).await;
+    let malformed_rejection =
+        assert_bearer_rejected(&server, &mcp_endpoint, "not-a-session-token").await;
+    let forged_rejection = assert_bearer_rejected(&server, &mcp_endpoint, &forged).await;
+    assert_eq!(expired_rejection, wrong_audience_rejection);
+    assert_eq!(expired_rejection, malformed_rejection);
+    assert_eq!(expired_rejection, forged_rejection);
+    assert_authenticated_data(&server, &mcp_endpoint, &valid).await;
+    server.shutdown().await.expect("first shutdown");
+
+    let restarted = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    .expect("restart authenticated composite server");
+    let restarted_mcp = format!(
+        "http://{}/mcp",
+        restarted.mcp_http_addr().expect("restarted MCP endpoint")
+    );
+    assert_authenticated_data(&restarted, &restarted_mcp, &valid).await;
+    restarted.shutdown().await.expect("restarted shutdown");
 }
 
 #[tokio::test]
