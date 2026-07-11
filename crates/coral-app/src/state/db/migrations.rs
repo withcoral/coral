@@ -3,6 +3,10 @@ use super::{CoralDb, DbError};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+#[cfg(test)]
+#[path = "migration_order_tests.rs"]
+mod migration_order_tests;
+
 impl CoralDb {
     pub(crate) async fn migrate(&self) -> Result<(), DbError> {
         match &self.backend {

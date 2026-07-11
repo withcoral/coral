@@ -28,7 +28,8 @@
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
 - For Postgres-backed database changes, run `make postgres-tests`. This starts
   a local Docker Postgres, sets `CORAL_TEST_POSTGRES_URL` for the ignored
-  Postgres tests, and runs the repository harness plus server startup coverage.
+  Postgres tests, and runs workspace-repository coverage, the isolated
+  identity/migration contract harness, and server startup coverage.
   Docker chooses an available localhost port by default, and each test run uses
   a fresh database inside the reusable container; use `make postgres-url` to
   print the server URL or `LOCAL_POSTGRES_PORT=55432 make postgres-start` when

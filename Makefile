@@ -107,6 +107,9 @@ postgres-tests: postgres-start
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
 	  state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
 	  -- --ignored; \
+	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
+	  state::db::migrations::migration_order_tests::postgres_identity_database_contracts \
+	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
 	  --test postgres_database_tests \
 	  -- --ignored

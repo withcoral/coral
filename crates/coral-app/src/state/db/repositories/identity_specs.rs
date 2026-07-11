@@ -1,7 +1,4 @@
-#![expect(
-    dead_code,
-    reason = "identity repositories land before B2 wires their production consumers"
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "B2 wires consumers"))]
 
 use std::collections::BTreeMap;
 
@@ -857,7 +854,7 @@ fn identity_spec_document_key_where(key: &IdentitySpecKey) -> sea_query::SimpleE
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::state::db) mod tests {
     use sea_query::{Expr, Query};
     use tempfile::tempdir;
 
@@ -940,7 +937,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "shared backend repository contract fixture"
     )]
-    async fn assert_identity_spec_read_contract(db: &CoralDb) {
+    pub(in crate::state::db) async fn assert_identity_spec_read_contract(db: &CoralDb) {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let workspace = WorkspaceName::parse(&format!("identity{suffix}")).expect("workspace");
         let other_workspace =
