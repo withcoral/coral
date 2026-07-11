@@ -3,7 +3,9 @@ use tempfile::tempdir;
 
 use super::{CoralDbBackend, MIGRATOR};
 use crate::bootstrap;
-use crate::state::db::repositories::identity_specs_contract_tests::assert_identity_spec_write_contract;
+use crate::state::db::repositories::identity_specs_contract_tests::{
+    assert_identity_spec_write_contract, document,
+};
 use crate::state::db::repositories::identity_specs_negative_contract_tests::assert_identity_spec_negative_contract;
 use crate::state::db::{
     CoralDb, DbRepos, IdentitySpecKey, IdentitySpecWrite, ResolvedDatabaseConfig,
@@ -88,37 +90,54 @@ async fn assert_repeatable_read_snapshot_contract(db: &CoralDb) {
         .upsert(&key, &write("before"), 1)
         .await
         .expect("seed snapshot record");
+    seed.identity_spec_documents()
+        .upsert(&key, &document("before"), 1)
+        .await
+        .expect("seed snapshot document");
     seed.commit().await.expect("commit snapshot seed");
     let mut snapshot = db.begin_read_snapshot().await.expect("begin read snapshot");
-    snapshot
+    let before = snapshot
         .identity_specs()
         .load_optional(&key)
         .await
         .expect("read original snapshot record")
         .expect("original snapshot record");
+    assert_eq!(before.version, "before");
     let mut update = db.begin().await.expect("begin concurrent update");
     update
         .identity_specs()
         .upsert(&key, &write("after"), 2)
         .await
         .expect("update snapshot record");
+    update
+        .identity_spec_documents()
+        .upsert(&key, &document("after"), 2)
+        .await
+        .expect("update snapshot document");
     update.commit().await.expect("commit concurrent update");
     let during = snapshot
-        .identity_specs()
+        .identity_spec_documents()
         .load_optional(&key)
         .await
-        .expect("re-read snapshot record")
-        .expect("snapshot record remains visible");
-    assert_eq!(during.version, "before");
+        .expect("read snapshot document")
+        .expect("snapshot document remains visible");
+    assert_eq!(during.ciphertext, b"cipher-before");
     snapshot.commit().await.expect("commit read snapshot");
     let mut fresh = db;
-    let current = fresh
+    let current_spec = fresh
         .identity_specs()
         .load_optional(&key)
         .await
         .expect("read current record")
         .expect("current snapshot record");
-    assert_eq!(current.version, "after");
+    let current_document = fresh
+        .identity_spec_documents()
+        .load_optional(&key)
+        .await
+        .expect("read current document")
+        .expect("current snapshot document");
+    assert_eq!(current_spec.version, "after");
+    assert_eq!(current_document.ciphertext, b"cipher-after");
 }
 
 async fn assert_migration_order_contract(db: &CoralDb) {

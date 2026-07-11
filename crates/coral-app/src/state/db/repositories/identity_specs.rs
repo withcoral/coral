@@ -94,6 +94,10 @@ impl IdentitySpecKey {
         &self.name
     }
 
+    pub(crate) fn document_aad_parts(&self) -> (&str, &str, &str) {
+        (self.scope.kind(), self.scope.scope_id(), self.name())
+    }
+
     pub(super) fn from_spec_storage_parts(
         scope_kind: &str,
         scope_id: &str,

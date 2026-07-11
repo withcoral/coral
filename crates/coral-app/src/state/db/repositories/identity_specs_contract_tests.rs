@@ -395,7 +395,7 @@ pub(super) fn spec(label: &str) -> IdentitySpecWrite {
     .expect("valid spec")
 }
 
-pub(super) fn document(label: &str) -> IdentitySpecDocumentWrite {
+pub(in crate::state::db) fn document(label: &str) -> IdentitySpecDocumentWrite {
     IdentitySpecDocumentWrite::new(
         format!("cipher-{label}").into_bytes(),
         format!("nonce-{label}").into_bytes(),

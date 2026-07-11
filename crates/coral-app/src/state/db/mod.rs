@@ -17,9 +17,9 @@ pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
-#[expect(
-    unused_imports,
-    reason = "identity repository types land before B2 wires production consumers"
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "B2c wires identity document writes")
 )]
 pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,

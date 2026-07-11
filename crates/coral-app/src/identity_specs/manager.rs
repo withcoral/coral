@@ -1,12 +1,17 @@
 //! Read and resolution behavior for installed identity specs.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::sync::Arc;
 
-use coral_spec::{IdentityManifest, parse_identity_manifest_yaml};
+use coral_spec::{IdentityManifest, ManifestInputKind, parse_identity_manifest_yaml};
 
 use crate::bootstrap::AppError;
+use crate::credentials::encryption::{CredentialKeyProvider, EncryptedEnvelopeDocument};
+use crate::identity::{decrypt_identity_spec_document, parse_path_segment};
 use crate::state::db::{
-    CoralDb, CoralTx, DbRepos, IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
+    CoralDb, CoralTx, DbRepos, IdentitySpecDocumentRecord, IdentitySpecKey, IdentitySpecRecord,
+    IdentitySpecScope,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -18,15 +23,89 @@ pub(crate) struct InstalledIdentitySpec {
     pub(crate) manifest: IdentityManifest,
 }
 
+/// One caller-supplied setup input whose value must never appear in diagnostics.
+pub(crate) struct IdentitySpecInputValue {
+    key: String,
+    value: String,
+}
+
+impl IdentitySpecInputValue {
+    pub(crate) fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
+impl fmt::Debug for IdentitySpecInputValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdentitySpecInputValue")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) struct PreparedIdentitySpecInputMaterial {
+    pub(crate) values: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for PreparedIdentitySpecInputMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedIdentitySpecInputMaterial")
+            .field("value_count", &self.values.len())
+            .finish()
+    }
+}
+
+pub(crate) struct ResolvedIdentitySpec {
+    pub(crate) spec: InstalledIdentitySpec,
+    pub(crate) inputs: ResolvedIdentitySpecInputs,
+}
+
+impl fmt::Debug for ResolvedIdentitySpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedIdentitySpec")
+            .field("key", &self.spec.key)
+            .field("inputs", &self.inputs)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) struct ResolvedIdentitySpecInputs {
+    variables: BTreeMap<String, String>,
+    secrets: BTreeMap<String, String>,
+}
+
+impl ResolvedIdentitySpecInputs {
+    pub(crate) fn variables(&self) -> &BTreeMap<String, String> {
+        &self.variables
+    }
+
+    pub(crate) fn secrets(&self) -> &BTreeMap<String, String> {
+        &self.secrets
+    }
+}
+
+impl fmt::Debug for ResolvedIdentitySpecInputs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedIdentitySpecInputs")
+            .field("variable_count", &self.variables.len())
+            .field("secret_count", &self.secrets.len())
+            .finish()
+    }
+}
+
 /// Database-backed identity-spec read and resolution behavior.
 #[derive(Clone)]
 pub(crate) struct IdentitySpecManager {
     db: Arc<CoralDb>,
+    key_provider: Arc<dyn CredentialKeyProvider>,
 }
 
 impl IdentitySpecManager {
-    pub(crate) fn new(db: Arc<CoralDb>) -> Self {
-        Self { db }
+    pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn CredentialKeyProvider>) -> Self {
+        Self { db, key_provider }
     }
 
     /// Fetch one spec in exactly the requested scope, without fallback.
@@ -48,6 +127,34 @@ impl IdentitySpecManager {
     /// Fetch one global spec by name.
     pub(crate) async fn get_global(&self, name: &str) -> Result<InstalledIdentitySpec, AppError> {
         self.get_exact(&IdentitySpecKey::global(name)?).await
+    }
+
+    pub(crate) async fn get_exact_for_use(
+        &self,
+        key: &IdentitySpecKey,
+    ) -> Result<ResolvedIdentitySpec, AppError> {
+        let mut tx = self.db.begin_read_snapshot().await?;
+        require_scope_workspace(&mut tx, key.scope()).await?;
+        let record = tx.identity_specs().load_optional(key).await?;
+        let document = match record.as_ref() {
+            Some(record) => {
+                tx.identity_spec_documents()
+                    .load_optional(&record.key)
+                    .await?
+            }
+            None => None,
+        };
+        tx.commit().await?;
+        let record = record.ok_or_else(|| spec_not_found(key))?;
+        resolve_record_for_use(record, document, self.key_provider.as_ref())
+    }
+
+    pub(crate) async fn get_global_for_use(
+        &self,
+        name: &str,
+    ) -> Result<ResolvedIdentitySpec, AppError> {
+        self.get_exact_for_use(&IdentitySpecKey::global(name)?)
+            .await
     }
 
     /// List specs in exactly one scope, without fallback.
@@ -98,6 +205,28 @@ impl IdentitySpecManager {
         Ok(installed)
     }
 
+    pub(crate) async fn resolve_for_workspace_for_use(
+        &self,
+        workspace: &WorkspaceName,
+        name: &str,
+    ) -> Result<ResolvedIdentitySpec, AppError> {
+        let requested_key = IdentitySpecKey::workspace(workspace.clone(), name)?;
+        let mut tx = self.db.begin_read_snapshot().await?;
+        require_workspace(&mut tx, workspace).await?;
+        let record = tx.identity_specs().resolve_optional(&requested_key).await?;
+        let document = match record.as_ref() {
+            Some(record) => {
+                tx.identity_spec_documents()
+                    .load_optional(&record.key)
+                    .await?
+            }
+            None => None,
+        };
+        tx.commit().await?;
+        let record = record.ok_or_else(|| spec_not_found(&requested_key))?;
+        resolve_record_for_use(record, document, self.key_provider.as_ref())
+    }
+
     /// List the effective specs for a workspace, shadowed and sorted by name.
     pub(crate) async fn list_resolved_for_workspace(
         &self,
@@ -112,6 +241,180 @@ impl IdentitySpecManager {
         tx.commit().await?;
         convert_records(records)
     }
+}
+
+pub(crate) fn prepare_identity_spec_input_material(
+    key: &IdentitySpecKey,
+    manifest: &IdentityManifest,
+    previous_manifest: Option<&IdentityManifest>,
+    previous_material: &BTreeMap<String, String>,
+    provided: Vec<IdentitySpecInputValue>,
+) -> Result<PreparedIdentitySpecInputMaterial, AppError> {
+    let previous_kinds = previous_manifest
+        .map(|manifest| {
+            manifest
+                .inputs
+                .iter()
+                .map(|input| (input.key.as_str(), input.kind))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    if previous_material
+        .keys()
+        .any(|input_key| !previous_kinds.contains_key(input_key.as_str()))
+    {
+        return Err(corrupt_input_material(key));
+    }
+
+    let declared = manifest
+        .inputs
+        .iter()
+        .map(|input| input.key.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut supplied = BTreeMap::new();
+    for input in provided {
+        let input_key = parse_path_segment("identity spec input", &input.key)?;
+        if supplied.insert(input_key.clone(), input.value).is_some() {
+            return Err(AppError::InvalidInput(format!(
+                "duplicate identity spec input '{input_key}' for identity spec '{}'",
+                manifest.name
+            )));
+        }
+    }
+    for input_key in supplied.keys() {
+        if !declared.contains(input_key.as_str()) {
+            return Err(AppError::InvalidInput(format!(
+                "unknown identity spec input '{input_key}' for identity spec '{}'",
+                manifest.name
+            )));
+        }
+    }
+
+    let mut values = BTreeMap::new();
+    for input in &manifest.inputs {
+        let supplied_value = supplied
+            .get(&input.key)
+            .and_then(|value| trimmed_non_empty_value(value));
+        let previous_value = if previous_kinds.get(input.key.as_str()) == Some(&input.kind) {
+            previous_material
+                .get(&input.key)
+                .and_then(|value| trimmed_non_empty_value(value))
+        } else {
+            None
+        };
+        if let Some(value) = supplied_value.or(previous_value) {
+            values.insert(input.key.clone(), value);
+        }
+    }
+    resolve_identity_spec_inputs_for_use(key, manifest, &values).map_err(|error| match error {
+        AppError::FailedPrecondition(detail) => AppError::InvalidInput(detail),
+        other => other,
+    })?;
+    Ok(PreparedIdentitySpecInputMaterial { values })
+}
+
+fn resolve_record_for_use(
+    record: IdentitySpecRecord,
+    document: Option<IdentitySpecDocumentRecord>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<ResolvedIdentitySpec, AppError> {
+    let spec = record_to_installed(record)?;
+    let material = decrypt_input_material(&spec.key, document, key_provider)?;
+    let inputs = resolve_identity_spec_inputs_for_use(&spec.key, &spec.manifest, &material)?;
+    Ok(ResolvedIdentitySpec { spec, inputs })
+}
+
+fn decrypt_input_material(
+    key: &IdentitySpecKey,
+    document: Option<IdentitySpecDocumentRecord>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let Some(document) = document else {
+        return Ok(BTreeMap::new());
+    };
+    let IdentitySpecDocumentRecord {
+        key: document_key,
+        ciphertext,
+        nonce,
+        wrapped_dek,
+        wrapped_dek_nonce,
+        key_id,
+        algorithm,
+        aad_version,
+        ..
+    } = document;
+    if document_key != *key {
+        return Err(corrupt_input_material(key));
+    }
+    let envelope = EncryptedEnvelopeDocument {
+        ciphertext,
+        nonce,
+        wrapped_dek,
+        wrapped_dek_nonce,
+        key_id,
+        algorithm,
+        aad_version,
+    };
+    let (scope_kind, scope_id, name) = key.document_aad_parts();
+    decrypt_identity_spec_document(scope_kind, scope_id, name, &envelope, key_provider)
+        .map_err(Into::into)
+}
+
+fn resolve_identity_spec_inputs_for_use(
+    key: &IdentitySpecKey,
+    manifest: &IdentityManifest,
+    material: &BTreeMap<String, String>,
+) -> Result<ResolvedIdentitySpecInputs, AppError> {
+    let declared = manifest
+        .inputs
+        .iter()
+        .map(|input| input.key.as_str())
+        .collect::<BTreeSet<_>>();
+    if material
+        .keys()
+        .any(|input_key| !declared.contains(input_key.as_str()))
+    {
+        return Err(corrupt_input_material(key));
+    }
+
+    let mut variables = BTreeMap::new();
+    let mut secrets = BTreeMap::new();
+    for input in &manifest.inputs {
+        let value = material
+            .get(&input.key)
+            .and_then(|value| trimmed_non_empty_value(value))
+            .or_else(|| {
+                (input.kind == ManifestInputKind::Variable && !input.required)
+                    .then(|| input.default_value.clone())
+            });
+        let Some(value) = value else {
+            if input.required {
+                return Err(AppError::FailedPrecondition(format!(
+                    "missing identity spec input '{}' for identity spec '{}'",
+                    input.key, manifest.name
+                )));
+            }
+            continue;
+        };
+        match input.kind {
+            ManifestInputKind::Variable => variables.insert(input.key.clone(), value),
+            ManifestInputKind::Secret => secrets.insert(input.key.clone(), value),
+        };
+    }
+    Ok(ResolvedIdentitySpecInputs { variables, secrets })
+}
+
+fn trimmed_non_empty_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn corrupt_input_material(key: &IdentitySpecKey) -> AppError {
+    AppError::Database(format!(
+        "identity spec '{}:{}' has invalid encrypted input material",
+        scope_label(key.scope()),
+        key.name()
+    ))
 }
 
 async fn require_scope_workspace(
@@ -201,6 +504,7 @@ fn scope_label(scope: &IdentitySpecScope) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND};
@@ -209,11 +513,18 @@ mod tests {
     use tonic::Code;
     use tonic_types::{ErrorDetail, StatusExt as _};
 
-    use super::{IdentitySpecManager, InstalledIdentitySpec, record_to_installed, scope_label};
+    use super::{
+        IdentitySpecInputValue, IdentitySpecManager, InstalledIdentitySpec,
+        prepare_identity_spec_input_material, record_to_installed,
+        resolve_identity_spec_inputs_for_use, scope_label,
+    };
     use crate::bootstrap::{AppError, app_status};
+    use crate::credentials::CredentialsError;
+    use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
+    use crate::identity::encrypt_identity_spec_document;
     use crate::state::db::{
-        CoralDb, CoralTx, DbRepos, IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
-        IdentitySpecWrite, ResolvedDatabaseConfig,
+        CoralDb, CoralTx, DbRepos, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,
+        IdentitySpecScope, IdentitySpecWrite, ResolvedDatabaseConfig,
     };
     use crate::workspaces::WorkspaceName;
 
@@ -236,8 +547,21 @@ mod tests {
     struct Fixture {
         _temp: TempDir,
         db: Arc<CoralDb>,
+        key_provider: Arc<TestKeyProvider>,
         manager: IdentitySpecManager,
         workspace: WorkspaceName,
+    }
+
+    struct TestKeyProvider(CredentialEncryptionKey);
+
+    impl CredentialKeyProvider for TestKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Ok(self.0.clone())
+        }
+
+        fn key(&self, _key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Ok(self.0.clone())
+        }
     }
 
     type RecordDrift = (&'static str, fn(&mut IdentitySpecRecord));
@@ -342,9 +666,15 @@ mod tests {
         let missing_scope = IdentitySpecScope::workspace(missing.clone());
         let missing_key = IdentitySpecKey::workspace(missing.clone(), "alpha").expect("key");
         assert_workspace_missing!(fixture.manager.get_exact(&missing_key));
+        assert_workspace_missing!(fixture.manager.get_exact_for_use(&missing_key));
         assert_workspace_missing!(fixture.manager.list_exact(&missing_scope));
         assert_workspace_missing!(fixture.manager.list_workspace_with_global(&missing));
         assert_workspace_missing!(fixture.manager.resolve_for_workspace(&missing, "alpha"));
+        assert_workspace_missing!(
+            fixture
+                .manager
+                .resolve_for_workspace_for_use(&missing, "alpha")
+        );
         assert_workspace_missing!(fixture.manager.list_resolved_for_workspace(&missing));
 
         seed_corrupt_records(&fixture).await;
@@ -364,6 +694,158 @@ mod tests {
             Err(AppError::Database(_))
         ));
         assert_metadata_drifts_fail();
+    }
+
+    #[tokio::test]
+    async fn decrypts_material_for_the_actual_resolved_scope_and_fails_closed() {
+        let fixture = fixture().await;
+        let global = IdentitySpecKey::global("oauth").expect("global key");
+        let workspace =
+            IdentitySpecKey::workspace(fixture.workspace.clone(), "oauth").expect("workspace key");
+        let fallback = IdentitySpecKey::global("fallback").expect("fallback key");
+        let missing = IdentitySpecKey::global("missing_inputs").expect("missing key");
+        let mut tx = fixture.db.begin().await.expect("begin material seed");
+        for (key, label, secret) in [
+            (&global, "global", Some("global-secret")),
+            (&workspace, "workspace", Some("workspace-secret")),
+            (&fallback, "fallback", Some("fallback-secret")),
+            (&missing, "missing", None),
+        ] {
+            seed_oauth(&mut tx, key, label, secret, fixture.key_provider.as_ref()).await;
+        }
+        tx.commit().await.expect("commit material seed");
+
+        let global = fixture
+            .manager
+            .get_global_for_use("oauth")
+            .await
+            .expect("global");
+        let shadow = fixture
+            .manager
+            .resolve_for_workspace_for_use(&fixture.workspace, "oauth")
+            .await
+            .expect("workspace shadow");
+        let fallback = fixture
+            .manager
+            .resolve_for_workspace_for_use(&fixture.workspace, "fallback")
+            .await
+            .expect("global fallback");
+        assert_resolved(&global, "global", "tenant-global", "global-secret");
+        assert_resolved(
+            &shadow,
+            "workspace:work",
+            "tenant-workspace",
+            "workspace-secret",
+        );
+        assert_resolved(&fallback, "global", "tenant-fallback", "fallback-secret");
+        let rendered = format!("{global:?}{shadow:?}{fallback:?}");
+        for secret in ["global-secret", "workspace-secret", "fallback-secret"] {
+            assert!(!rendered.contains(secret));
+        }
+        assert!(matches!(
+            fixture.manager.get_exact_for_use(&missing).await,
+            Err(AppError::FailedPrecondition(detail)) if detail.contains("CLIENT_SECRET")
+        ));
+    }
+
+    #[test]
+    fn prepares_trimmed_override_material_without_leaking_or_persisting_defaults() {
+        let key = IdentitySpecKey::global("merge").expect("merge key");
+        let manifest = parse_identity_manifest_yaml(&oauth_manifest("merge", "current"))
+            .expect("merge manifest");
+        let mut previous_manifest = manifest.clone();
+        let previous_tenant = previous_manifest
+            .inputs
+            .iter_mut()
+            .find(|input| input.key == "TENANT")
+            .expect("tenant input");
+        previous_tenant.kind = coral_spec::ManifestInputKind::Secret;
+        previous_tenant.default_value.clear();
+        let previous = BTreeMap::from([
+            ("TENANT".to_string(), "old-secret".to_string()),
+            ("CLIENT_SECRET".to_string(), " old-client ".to_string()),
+        ]);
+        let prepared = prepare_identity_spec_input_material(
+            &key,
+            &manifest,
+            Some(&previous_manifest),
+            &previous,
+            vec![IdentitySpecInputValue::new("CLIENT_SECRET", " \t ")],
+        )
+        .expect("blank supplied value falls back");
+        assert_eq!(map_value(&prepared.values, "CLIENT_SECRET"), "old-client");
+        assert_eq!(prepared.values.len(), 1);
+        assert!(!format!("{prepared:?}").contains("old-client"));
+
+        let replaced = prepare_identity_spec_input_material(
+            &key,
+            &manifest,
+            Some(&manifest),
+            &previous,
+            vec![IdentitySpecInputValue::new(
+                " CLIENT_SECRET ",
+                " new-client ",
+            )],
+        )
+        .expect("normalized replacement");
+        assert_eq!(map_value(&replaced.values, "CLIENT_SECRET"), "new-client");
+        for invalid in [
+            vec![IdentitySpecInputValue::new("UNKNOWN", "value")],
+            vec![
+                IdentitySpecInputValue::new("CLIENT_SECRET", "one"),
+                IdentitySpecInputValue::new(" CLIENT_SECRET ", "two"),
+            ],
+        ] {
+            let error = prepare_identity_spec_input_material(
+                &key,
+                &manifest,
+                Some(&manifest),
+                &BTreeMap::new(),
+                invalid,
+            )
+            .expect_err("invalid caller material");
+            assert!(matches!(error, AppError::InvalidInput(_)));
+        }
+        assert!(matches!(
+            prepare_identity_spec_input_material(
+                &key,
+                &manifest,
+                None,
+                &BTreeMap::new(),
+                Vec::new()
+            ),
+            Err(AppError::InvalidInput(_))
+        ));
+
+        let mut required_default = manifest.clone();
+        let tenant = required_default
+            .inputs
+            .iter_mut()
+            .find(|input| input.key == "TENANT")
+            .expect("tenant");
+        tenant.required = true;
+        assert!(matches!(
+            resolve_identity_spec_inputs_for_use(&key, &required_default, &prepared.values),
+            Err(AppError::FailedPrecondition(_))
+        ));
+    }
+
+    fn assert_resolved(
+        resolved: &super::ResolvedIdentitySpec,
+        scope: &str,
+        tenant: &str,
+        secret: &str,
+    ) {
+        assert_eq!(scope_label(resolved.spec.key.scope()), scope);
+        assert_eq!(map_value(resolved.inputs.variables(), "TENANT"), tenant);
+        assert_eq!(
+            map_value(resolved.inputs.secrets(), "CLIENT_SECRET"),
+            secret
+        );
+    }
+
+    fn map_value<'a>(values: &'a BTreeMap<String, String>, key: &str) -> &'a str {
+        values.get(key).map(String::as_str).expect("input value")
     }
 
     async fn seed_corrupt_records(fixture: &Fixture) {
@@ -433,6 +915,9 @@ mod tests {
             .expect("open sqlite"),
         );
         db.migrate().await.expect("migrate sqlite");
+        let key_provider = Arc::new(TestKeyProvider(
+            CredentialEncryptionKey::from_static_bytes_for_test([43; 32]),
+        ));
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let mut tx = db.begin().await.expect("begin fixture seed");
         tx.workspaces()
@@ -459,10 +944,55 @@ mod tests {
         tx.commit().await.expect("commit fixture seed");
         Fixture {
             _temp: temp,
-            manager: IdentitySpecManager::new(Arc::clone(&db)),
+            manager: IdentitySpecManager::new(Arc::clone(&db), key_provider.clone()),
             db,
+            key_provider,
             workspace,
         }
+    }
+
+    async fn seed_oauth(
+        tx: &mut CoralTx<'_>,
+        key: &IdentitySpecKey,
+        label: &str,
+        secret: Option<&str>,
+        key_provider: &dyn CredentialKeyProvider,
+    ) {
+        let yaml = oauth_manifest(key.name(), label);
+        let parsed = parse_identity_manifest_yaml(&yaml).expect("valid OAuth identity manifest");
+        seed_write(
+            tx,
+            key,
+            IdentitySpecWrite::new(
+                &parsed.version,
+                &parsed.description,
+                &parsed.issuer,
+                parsed.identity_type.label(),
+                yaml,
+            )
+            .expect("valid OAuth identity write"),
+        )
+        .await;
+        let Some(secret) = secret else { return };
+        let values = BTreeMap::from([("CLIENT_SECRET".to_string(), secret.to_string())]);
+        let (scope_kind, scope_id, name) = key.document_aad_parts();
+        let encrypted =
+            encrypt_identity_spec_document(scope_kind, scope_id, name, &values, key_provider)
+                .expect("encrypt identity spec material");
+        let write = IdentitySpecDocumentWrite::new(
+            encrypted.ciphertext,
+            encrypted.nonce,
+            encrypted.wrapped_dek,
+            encrypted.wrapped_dek_nonce,
+            encrypted.key_id,
+            encrypted.algorithm,
+            encrypted.aad_version,
+        )
+        .expect("valid encrypted document write");
+        tx.identity_spec_documents()
+            .upsert(key, &write, 3)
+            .await
+            .expect("seed encrypted identity spec material");
     }
 
     async fn seed_valid(tx: &mut CoralTx<'_>, key: &IdentitySpecKey, label: &str) {
@@ -489,6 +1019,12 @@ mod tests {
     fn manifest(name: &str, label: &str) -> String {
         format!(
             "kind: identity\nspec_version: 1\nname: {name}\nversion: {label}\ndescription: description {label}\nissuer: issuer_{label}\ntype: fixed_token\n"
+        )
+    }
+
+    fn oauth_manifest(name: &str, label: &str) -> String {
+        format!(
+            "kind: identity\nspec_version: 1\nname: {name}\nversion: {label}\ndescription: OAuth {label}\nissuer: issuer_{label}\ntype: oauth\ninputs:\n  TENANT:\n    kind: variable\n    default: tenant-{label}\n  CLIENT_SECRET:\n    kind: secret\n    required: true\noauth:\n  method:\n    flow:\n      type: authorization_code\n      pkce: disabled\n    redirect_uri: http://127.0.0.1:53682/oauth/callback\n    endpoints:\n      authorization_url: https://provider.example.com/authorize\n      token_url: https://provider.example.com/token\n    client:\n      id:\n        input: TENANT\n      secret:\n        input: CLIENT_SECRET\n        transport: basic_auth\n"
         )
     }
 
