@@ -5,6 +5,7 @@ use tempfile::tempdir;
 
 use super::{CoralDbBackend, MIGRATOR};
 use crate::bootstrap;
+use crate::state::db::repositories::identities_contract_tests::assert_identity_repository_contract;
 use crate::state::db::repositories::identity_specs_contract_tests::{
     assert_identity_spec_write_contract, document,
 };
@@ -150,6 +151,7 @@ async fn postgres_identity_database_contracts() {
         .await;
     assert_identity_spec_write_contract(&db).await;
     assert_identity_spec_negative_contract(&db).await;
+    assert_identity_repository_contract(&db).await;
     crate::identity_specs::manager::tests::assert_identity_spec_mutation_contract(&db).await;
 
     backend.pool.close().await;
