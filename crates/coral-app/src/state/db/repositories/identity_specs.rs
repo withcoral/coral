@@ -861,7 +861,7 @@ pub(in crate::state::db) mod tests {
     use super::{
         IdentitySpecDocumentWrite, IdentitySpecKey, identity_spec_columns, identity_spec_key_where,
     };
-    use crate::bootstrap::{self, AppError};
+    use crate::bootstrap::AppError;
     use crate::state::db::schema::IdentitySpecs;
     use crate::state::db::{CoralDb, DbError, DbRepos, DbSession, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
@@ -914,22 +914,6 @@ pub(in crate::state::db) mod tests {
         .await
         .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        assert_identity_spec_read_contract(&db).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn identity_spec_reads_resolve_scopes_against_postgres() {
-        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
-            .expect("read CORAL_TEST_POSTGRES_URL")
-            .filter(|value| !value.is_empty())
-        else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
         assert_identity_spec_read_contract(&db).await;
     }
 

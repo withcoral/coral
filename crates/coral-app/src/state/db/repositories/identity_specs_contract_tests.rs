@@ -26,6 +26,7 @@ async fn identity_spec_write_contract_holds_against_sqlite() {
 
 #[expect(clippy::too_many_lines, reason = "shared backend contract fixture")]
 pub(in crate::state::db) async fn assert_identity_spec_write_contract(db: &CoralDb) {
+    assert_ne!(document_aad("workspace"), document_aad("alternate"));
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let workspace = parsed_workspace(&format!("identity{suffix}"));
     let alternate = parsed_workspace(&format!("alternate{suffix}"));
@@ -76,6 +77,18 @@ pub(in crate::state::db) async fn assert_identity_spec_write_contract(db: &Coral
         assert_pair(db, key, label, now, document_version).await;
     }
     let mut tx = db.begin().await.expect("begin delete tx");
+    let advanced_spec = tx
+        .identity_specs()
+        .upsert(&workspace_key, &spec("workspace"), 21)
+        .await
+        .expect("advance spec timestamp");
+    assert_eq!(
+        (
+            advanced_spec.created_at_unix_nanos,
+            advanced_spec.updated_at_unix_nanos,
+        ),
+        (20, 21)
+    );
     assert!(
         tx.identity_spec_documents()
             .delete(&alternate_key)
@@ -328,7 +341,7 @@ async fn assert_pair(
             wrapped_dek_nonce: format!("wrapped-nonce-{label}").into_bytes(),
             key_id: format!("key-{label}"),
             algorithm: format!("algo-{label}"),
-            aad_version: 99,
+            aad_version: document_aad(label),
             created_at_unix_nanos: now,
             updated_at_unix_nanos: now,
         }
@@ -371,7 +384,7 @@ async fn assert_document_presence<const N: usize>(
     }
 }
 
-fn spec(label: &str) -> IdentitySpecWrite {
+pub(super) fn spec(label: &str) -> IdentitySpecWrite {
     IdentitySpecWrite::new(
         format!("v-{label}"),
         format!("description-{label}"),
@@ -382,7 +395,7 @@ fn spec(label: &str) -> IdentitySpecWrite {
     .expect("valid spec")
 }
 
-fn document(label: &str) -> IdentitySpecDocumentWrite {
+pub(super) fn document(label: &str) -> IdentitySpecDocumentWrite {
     IdentitySpecDocumentWrite::new(
         format!("cipher-{label}").into_bytes(),
         format!("nonce-{label}").into_bytes(),
@@ -390,9 +403,16 @@ fn document(label: &str) -> IdentitySpecDocumentWrite {
         format!("wrapped-nonce-{label}").into_bytes(),
         format!("key-{label}"),
         format!("algo-{label}"),
-        99,
+        document_aad(label),
     )
     .expect("valid opaque document")
+}
+
+fn document_aad(label: &str) -> i64 {
+    label
+        .bytes()
+        .take(3)
+        .fold(0_i64, |aad, byte| aad * 256 + i64::from(byte))
 }
 
 fn document_key_where(key: &IdentitySpecKey) -> sea_query::SimpleExpr {
