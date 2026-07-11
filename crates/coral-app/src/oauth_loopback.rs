@@ -147,13 +147,22 @@ fn validate_configuration(
     if redirect_uri.scheme() != "http"
         || !redirect_uri.username().is_empty()
         || redirect_uri.password().is_some()
-        || redirect_uri.query().is_some()
         || redirect_uri.fragment().is_some()
         || !url_host_is_loopback(redirect_uri)
     {
         return Err(OAuthLoopbackError::InvalidConfiguration(
-            "redirect URI must be an HTTP loopback URL without credentials, query, or fragment"
+            "redirect URI must be an HTTP loopback URL without credentials or a fragment"
                 .to_string(),
+        ));
+    }
+    if redirect_uri.query_pairs().any(|(key, _value)| {
+        matches!(
+            key.as_ref(),
+            "state" | "code" | "error" | "error_description"
+        )
+    }) {
+        return Err(OAuthLoopbackError::InvalidConfiguration(
+            "redirect URI query must not include OAuth response parameters".to_string(),
         ));
     }
     if state.is_empty() {
@@ -277,7 +286,16 @@ fn parse_request_inner(raw: &[u8], expected: &ExpectedCallback) -> Result<Parsed
     if callback.path() != expected.redirect_uri.path() {
         return Ok(ParsedCallback::Ignored(ResponseKind::NotFound));
     }
-    let params = callback.query_pairs().into_owned().fold(
+    let callback_pairs = callback.query_pairs().into_owned().collect::<Vec<_>>();
+    let expected_pairs = expected
+        .redirect_uri
+        .query_pairs()
+        .into_owned()
+        .collect::<Vec<_>>();
+    if !callback_pairs.starts_with(&expected_pairs) {
+        return Err(());
+    }
+    let params = callback_pairs.into_iter().fold(
         BTreeMap::<String, Vec<String>>::new(),
         |mut params, (key, value)| {
             params.entry(key).or_default().push(value);

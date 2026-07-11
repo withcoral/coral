@@ -51,11 +51,6 @@ mod feedback;
 mod functions;
 mod hash;
 mod identity;
-#[expect(
-    clippy::allow_attributes,
-    reason = "stacked OAuth login callback receiver"
-)]
-#[allow(dead_code, reason = "stacked OAuth login callback receiver")]
 mod oauth_loopback;
 pub(crate) mod outbound_url_policy;
 mod query;
