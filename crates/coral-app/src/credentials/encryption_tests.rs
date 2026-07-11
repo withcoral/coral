@@ -427,6 +427,16 @@ fn local_file_key_provider_creates_and_reuses_private_key_file() {
     let provider = local_file_key_provider(&layout);
 
     let first = provider.active_key().expect("first key");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::set_permissions(
+            layout.credential_encryption_key_file(),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .expect("make existing key permissive");
+    }
     let second = provider.active_key().expect("second key");
 
     assert_eq!(first, second);
@@ -434,6 +444,43 @@ fn local_file_key_provider_creates_and_reuses_private_key_file() {
         layout.credential_encryption_key_file().exists(),
         "provider should create durable key material outside the DB"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mode = std::fs::metadata(layout.credential_encryption_key_file())
+            .expect("key metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+}
+
+#[test]
+fn configured_only_key_provider_uses_injected_key_and_fails_closed_without_one() {
+    let temp = tempdir().expect("temp dir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+    layout.ensure().expect("ensure layout");
+    let configured_key = CredentialEncryptionKey::from_static_bytes_for_test([7; 32]);
+    let provider =
+        LocalFileCredentialKeyProvider::configured_key_only(&layout, Some(configured_key.clone()));
+
+    let active = provider.active_key().expect("configured active key");
+    assert_eq!(active, configured_key);
+    assert_eq!(provider.key(active.key_id()).expect("key by id"), active);
+    assert!(!layout.credential_encryption_key_file().exists());
+
+    let missing = LocalFileCredentialKeyProvider::configured_key_only(&layout, None);
+    assert!(matches!(
+        missing.active_key(),
+        Err(CredentialsError::Unavailable(_))
+    ));
+    assert!(matches!(
+        missing.key(active.key_id()),
+        Err(CredentialsError::Unavailable(_))
+    ));
+    assert!(!layout.credential_encryption_key_file().exists());
 }
 
 #[test]

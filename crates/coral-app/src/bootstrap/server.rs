@@ -872,8 +872,9 @@ mod tests {
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-        ListTracesRequest, SearchRequest, Workspace, import_source_response,
+        ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListIdentitySpecsRequest,
+        ListIdentitySpecsResponse, ListSourcesRequest, ListTracesRequest, SearchRequest, Workspace,
+        import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -883,11 +884,13 @@ mod tests {
 
     use super::{
         RunningServer, ServerBuilder, ServerManagers, ServerMode, StaticAsset,
-        StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        StaticAssetsProvider, TraceServerComponents, credential_encryption_key,
+        identity_spec_key_provider, is_grpc_web_content_type, is_native_grpc_content_type,
+        start_server,
     };
+    use crate::credentials::config::CredentialStorageConfig;
     use crate::credentials::encryption::LocalFileCredentialKeyProvider;
-    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::credentials::{CredentialManager, CredentialStore, CredentialsError};
     use crate::feedback::manager::FeedbackManager;
     use crate::identity_specs::manager::IdentitySpecManager;
     use crate::query::manager::QueryManager;
@@ -1112,6 +1115,95 @@ backend = "unsupported"
     }
 
     #[tokio::test]
+    async fn server_builder_rejects_invalid_explicit_identity_spec_key() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let missing_env = format!("CORAL_TEST_MISSING_{}", uuid::Uuid::new_v4().simple());
+        std::fs::write(
+            layout.config_file(),
+            format!("[credentials]\nencryption_key_env = \"{missing_env}\"\n"),
+        )
+        .expect("write config");
+
+        let result = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::bootstrap::AppError::FailedPrecondition(_))
+        ));
+        assert!(!layout.database_file().exists());
+        assert!(!layout.credential_encryption_key_file().exists());
+    }
+
+    #[test]
+    fn postgres_identity_spec_key_provider_reloads_config_and_never_falls_back() {
+        const RUN_FLAG: &str = "CORAL_RUN_POSTGRES_KEY_RELOAD_TEST";
+        const KEY_ENV: &str = "CORAL_TEST_POSTGRES_IDENTITY_KEY";
+        const KEY_VALUE: &str = "v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+        if crate::bootstrap::env_var(RUN_FLAG)
+            .expect("read subprocess flag")
+            .is_none()
+        {
+            let status =
+                std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                    .env(RUN_FLAG, "1")
+                    .env(KEY_ENV, KEY_VALUE)
+                    .arg("--exact")
+                    .arg(
+                        "bootstrap::server::tests::postgres_identity_spec_key_provider_reloads_config_and_never_falls_back",
+                    )
+                    .arg("--nocapture")
+                    .status()
+                    .expect("run configured-key subprocess");
+            assert!(status.success(), "configured-key subprocess should pass");
+            return;
+        }
+
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        std::fs::write(
+            layout.config_file(),
+            format!("[credentials]\nencryption_key_env = \"{KEY_ENV}\"\n"),
+        )
+        .expect("write configured key reference");
+        let configured_key = credential_encryption_key(
+            &CredentialStorageConfig::load(&layout).expect("load credential config"),
+        )
+        .expect("resolve configured key")
+        .expect("configured key");
+        let configured_key_id = configured_key.key_id().to_string();
+        let (provider, disabled) = identity_spec_key_provider(
+            &layout,
+            &ResolvedDatabaseConfig::Postgres {
+                url: "postgres://unused".to_string(),
+            },
+            Some(configured_key),
+        );
+
+        assert!(!disabled);
+        let active = provider.active_key().expect("configured active key");
+        assert_eq!(active.key_id(), configured_key_id);
+        std::fs::remove_file(layout.config_file()).expect("remove key configuration");
+        assert!(matches!(
+            provider.active_key(),
+            Err(CredentialsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            provider.key(active.key_id()),
+            Err(CredentialsError::Unavailable(_))
+        ));
+        assert!(!layout.credential_encryption_key_file().exists());
+    }
+
+    #[tokio::test]
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
         let server = start_trace_test_server(&temp, Arc::new(SingleUserPrincipalProvider)).await;
@@ -1230,6 +1322,52 @@ backend = "unsupported"
         body
     }
 
+    fn decode_grpc_web_response<T>(body: &[u8]) -> T
+    where
+        T: prost::Message + Default,
+    {
+        assert!(body.len() >= 5, "expected a gRPC-Web data frame");
+        assert_eq!(body[0], 0, "expected first frame to be uncompressed data");
+        let data_len =
+            u32::from_be_bytes(body[1..5].try_into().expect("gRPC-Web data length header"))
+                as usize;
+        let data_end = 5 + data_len;
+        let message = T::decode(body.get(5..data_end).expect("complete gRPC-Web data frame"))
+            .expect("decode gRPC-Web protobuf response");
+
+        assert!(
+            body.len() >= data_end + 5,
+            "expected final gRPC-Web trailer frame"
+        );
+        assert_eq!(
+            body[data_end], 0x80,
+            "expected final frame to be uncompressed trailers"
+        );
+        let trailer_len = u32::from_be_bytes(
+            body[data_end + 1..data_end + 5]
+                .try_into()
+                .expect("gRPC-Web trailer length header"),
+        ) as usize;
+        let trailer_end = data_end + 5 + trailer_len;
+        let trailers = body
+            .get(data_end + 5..trailer_end)
+            .expect("complete gRPC-Web trailer frame");
+        assert_eq!(
+            body.len(),
+            trailer_end,
+            "expected trailers to be the final gRPC-Web frame"
+        );
+        let trailers = std::str::from_utf8(trailers).expect("trailers are UTF-8");
+        assert!(
+            trailers.lines().any(|line| {
+                line.strip_prefix("grpc-status:")
+                    .is_some_and(|status| status.trim() == "0")
+            }),
+            "expected successful gRPC-Web trailer status, got {trailers:?}"
+        );
+        message
+    }
+
     struct StubAssets;
 
     impl StaticAssetsProvider for StubAssets {
@@ -1296,28 +1434,21 @@ backend = "unsupported"
             .await
             .expect("start embedded UI server");
         let endpoint = running.endpoint_uri();
-        let path = format!("{endpoint}/coral.v1.SourceService/ListSources");
+        let path = format!("{endpoint}/coral.v1.IdentitySpecService/ListIdentitySpecs");
         let client = reqwest::Client::new();
 
         let response = client
             .post(&path)
             .header("content-type", "application/grpc-web+proto")
             .header("x-grpc-web", "1")
-            .body(grpc_web_body(&ListSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
+            .body(grpc_web_body(&ListIdentitySpecsRequest::default()))
             .send()
             .await
             .expect("gRPC-Web request");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
-        assert!(
-            !response
-                .bytes()
-                .await
-                .expect("gRPC-Web response")
-                .is_empty(),
-            "expected framed gRPC-Web response body"
-        );
+        let body = response.bytes().await.expect("gRPC-Web response");
+        let listed = decode_grpc_web_response::<ListIdentitySpecsResponse>(&body);
+        assert!(listed.identity_specs.is_empty());
 
         let native_grpc = client
             .post(&path)
@@ -1379,45 +1510,7 @@ tables:
             .expect("gRPC-Web streaming request");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let body = response.bytes().await.expect("gRPC-Web streaming body");
-        let body = body.as_ref();
-        assert!(body.len() >= 5, "expected framed gRPC-Web response body");
-        assert_eq!(body[0], 0, "expected first frame to be a data frame");
-        let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
-        let frame = body.get(5..5 + len).expect("complete gRPC-Web data frame");
-        let trailer_offset = 5 + len;
-        assert!(
-            body.len() >= trailer_offset + 5,
-            "expected final gRPC-Web trailer frame"
-        );
-        assert_eq!(
-            body[trailer_offset], 0x80,
-            "expected final frame to be uncompressed trailers"
-        );
-        let trailer_len = u32::from_be_bytes([
-            body[trailer_offset + 1],
-            body[trailer_offset + 2],
-            body[trailer_offset + 3],
-            body[trailer_offset + 4],
-        ]) as usize;
-        let trailer_end = trailer_offset + 5 + trailer_len;
-        let trailers = body
-            .get(trailer_offset + 5..trailer_end)
-            .expect("complete gRPC-Web trailer frame");
-        assert_eq!(
-            body.len(),
-            trailer_end,
-            "expected trailers to be the final gRPC-Web frame"
-        );
-        let trailers = std::str::from_utf8(trailers).expect("trailers are UTF-8");
-        assert!(
-            trailers.lines().any(|line| {
-                line.strip_prefix("grpc-status:")
-                    .is_some_and(|status| status.trim() == "0")
-            }),
-            "expected successful gRPC-Web trailer status, got {trailers:?}"
-        );
-        let event = <ImportSourceResponse as prost::Message>::decode(frame)
-            .expect("decode import source response")
+        let event = decode_grpc_web_response::<ImportSourceResponse>(&body)
             .event
             .expect("stream event");
         match event {

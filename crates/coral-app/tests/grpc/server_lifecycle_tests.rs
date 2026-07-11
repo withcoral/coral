@@ -8,11 +8,12 @@
 
 use std::fs;
 
-use coral_api::v1::ListSourcesRequest;
+use coral_api::v1::{AddIdentitySpecRequest, ListIdentitySpecsRequest, ListSourcesRequest};
 use coral_client::{
     AppClient, default_workspace,
     local::{LocalServerError, ServerBuilder},
 };
+use prost::Message as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
@@ -46,6 +47,56 @@ async fn server_lifecycle_can_repeat_within_process() {
 
         server.shutdown().await.expect("shutdown server");
     }
+}
+
+#[tokio::test]
+async fn identity_spec_list_response_above_tonic_default_round_trips_real_route() {
+    const TONIC_DEFAULT_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+    const DESCRIPTION_SIZE: usize = TONIC_DEFAULT_MESSAGE_SIZE / 4 + 64 * 1024;
+
+    let temp = TempDir::new().expect("temp dir");
+    let server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(server.endpoint_uri())
+        .await
+        .expect("connect client");
+    let mut client = app.identity_spec_client();
+
+    for index in 0..2 {
+        let manifest_yaml = format!(
+            "kind: identity\nspec_version: 1\nname: large_{index}\nversion: 0.1.0\ndescription: {}\nissuer: fixture\ntype: fixed_token\n",
+            "x".repeat(DESCRIPTION_SIZE)
+        );
+        let added = client
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml,
+                input_values: Vec::new(),
+                workspace: None,
+            }))
+            .await
+            .expect("add large identity spec")
+            .into_inner();
+        assert!(
+            added.encoded_len() < TONIC_DEFAULT_MESSAGE_SIZE,
+            "one response should remain below tonic's default limit"
+        );
+    }
+
+    let listed = client
+        .list_identity_specs(Request::new(ListIdentitySpecsRequest::default()))
+        .await
+        .expect("list large identity specs")
+        .into_inner();
+    assert_eq!(listed.identity_specs.len(), 2);
+    assert!(
+        listed.encoded_len() > TONIC_DEFAULT_MESSAGE_SIZE,
+        "real route should return an aggregate response above tonic's default limit"
+    );
+
+    server.shutdown().await.expect("shutdown server");
 }
 
 #[tokio::test]

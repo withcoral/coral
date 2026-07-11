@@ -62,4 +62,16 @@ storage = "file"
         .expect("config");
         assert_eq!(file.credentials.storage, CredentialStoragePreference::File);
     }
+
+    #[test]
+    fn parses_encryption_key_environment_variable() {
+        let file = toml::from_str::<CredentialStorageConfigFile>(
+            "[credentials]\nencryption_key_env = \"CORAL_CREDENTIAL_KEY\"",
+        )
+        .expect("config");
+        assert_eq!(
+            file.credentials.encryption_key_env.as_deref(),
+            Some("CORAL_CREDENTIAL_KEY")
+        );
+    }
 }
