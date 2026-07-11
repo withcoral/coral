@@ -48,10 +48,6 @@ pub(in crate::state::db) enum IdentitySpecDocuments {
     UpdatedAtUnixNanos,
 }
 
-#[expect(
-    dead_code,
-    reason = "Identity repository consumers land in the next stack units."
-)]
 #[derive(Iden)]
 pub(in crate::state::db) enum Identities {
     Table,

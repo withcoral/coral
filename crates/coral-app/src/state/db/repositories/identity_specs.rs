@@ -129,7 +129,7 @@ impl IdentitySpecKey {
         })
     }
 
-    pub(super) fn from_document_storage_parts(
+    pub(crate) fn from_reference_storage_parts(
         scope_kind: &str,
         scope_id: &str,
         name: &str,
@@ -138,13 +138,13 @@ impl IdentitySpecKey {
             GLOBAL_SCOPE_KIND if scope_id == GLOBAL_SCOPE_ID => IdentitySpecScope::Global,
             GLOBAL_SCOPE_KIND => {
                 return Err(DbError::CorruptData(
-                    "global identity spec document row has invalid scope columns".to_string(),
+                    "global identity spec reference has invalid scope columns".to_string(),
                 ));
             }
             WORKSPACE_SCOPE_KIND => IdentitySpecScope::Workspace(parse_workspace_name(scope_id)?),
             other => {
                 return Err(DbError::CorruptData(format!(
-                    "identity spec document row has invalid scope kind '{other}'"
+                    "identity spec reference has invalid scope kind '{other}'"
                 )));
             }
         };
@@ -396,7 +396,7 @@ impl IdentitySpecDocumentRow {
         )
         .map_err(DbError::CorruptData)?;
         Ok(IdentitySpecDocumentRecord {
-            key: IdentitySpecKey::from_document_storage_parts(
+            key: IdentitySpecKey::from_reference_storage_parts(
                 &self.scope_kind,
                 &self.scope_id,
                 &self.name,
@@ -899,8 +899,8 @@ pub(in crate::state::db) mod tests {
                 Some(" default"),
                 "github",
             ),
-            IdentitySpecKey::from_document_storage_parts("global", "__global__", "github "),
-            IdentitySpecKey::from_document_storage_parts("workspace", " default", "github"),
+            IdentitySpecKey::from_reference_storage_parts("global", "__global__", "github "),
+            IdentitySpecKey::from_reference_storage_parts("workspace", " default", "github"),
             IdentitySpecKey::from_spec_storage_parts("global", "__global__", None, "github-oauth"),
         ] {
             assert!(matches!(result, Err(DbError::CorruptData(_))));

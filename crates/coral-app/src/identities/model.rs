@@ -1,16 +1,8 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Identity persistence consumers land in the next stack units."
-    )
-)]
-
 use std::fmt;
 
 use crate::bootstrap::AppError;
-use crate::identity::{UserPrincipal, parse_path_segment};
-use crate::state::db::{IdentitySpecKey, IdentitySpecScope};
+use crate::identity::{LOCAL_MEMBER_ID, UserPrincipal, parse_path_segment};
+use crate::state::db::{DbError, IdentitySpecKey, IdentitySpecScope};
 use crate::workspaces::WorkspaceName;
 
 const USER_OWNER_KIND: &str = "user";
@@ -29,6 +21,20 @@ impl IdentityName {
     /// Borrow the normalized identity name.
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self, DbError> {
+        let name = Self::parse(value).map_err(|error| {
+            DbError::CorruptData(format!(
+                "invalid persisted identity name '{value}': {error}"
+            ))
+        })?;
+        if name.as_str() != value {
+            return Err(DbError::CorruptData(format!(
+                "persisted identity name '{value}' is not normalized"
+            )));
+        }
+        Ok(name)
     }
 }
 
@@ -77,6 +83,48 @@ impl IdentityOwner {
         match self {
             Self::User(_) => None,
             Self::Workspace(workspace) => Some(workspace),
+        }
+    }
+
+    pub(crate) fn from_storage_parts(
+        owner_kind: &str,
+        owner_key: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<Self, DbError> {
+        match (owner_kind, workspace_id) {
+            (USER_OWNER_KIND, None) => {
+                let principal = if owner_key == LOCAL_MEMBER_ID {
+                    UserPrincipal::local()
+                } else {
+                    UserPrincipal::for_user(owner_key).map_err(|error| {
+                        DbError::CorruptData(format!(
+                            "invalid persisted identity user owner '{owner_key}': {error}"
+                        ))
+                    })?
+                };
+                if principal.user_id() != owner_key {
+                    return Err(DbError::CorruptData(format!(
+                        "persisted identity user owner '{owner_key}' is not normalized"
+                    )));
+                }
+                Ok(Self::for_user(principal))
+            }
+            (WORKSPACE_OWNER_KIND, Some(workspace_id)) if owner_key == workspace_id => {
+                let workspace = WorkspaceName::parse(workspace_id).map_err(|error| {
+                    DbError::CorruptData(format!(
+                        "invalid persisted identity workspace owner '{workspace_id}': {error}"
+                    ))
+                })?;
+                if workspace.as_str() != workspace_id {
+                    return Err(DbError::CorruptData(format!(
+                        "persisted identity workspace owner '{workspace_id}' is not normalized"
+                    )));
+                }
+                Ok(Self::workspace(workspace))
+            }
+            _ => Err(DbError::CorruptData(
+                "persisted identity row has invalid owner columns".to_string(),
+            )),
         }
     }
 }
@@ -132,6 +180,27 @@ impl IdentitySpecReference {
 
     pub(crate) fn identity_type(&self) -> &str {
         &self.identity_type
+    }
+
+    pub(crate) fn validate_for_owner(&self, owner: &IdentityOwner) -> Result<(), AppError> {
+        validate_scope(owner, self.key.scope())
+    }
+
+    pub(crate) fn from_storage_parts(
+        owner: &IdentityOwner,
+        scope_kind: &str,
+        scope_id: &str,
+        name: &str,
+        fingerprint: String,
+        issuer: String,
+        identity_type: String,
+    ) -> Result<Self, DbError> {
+        let key = IdentitySpecKey::from_reference_storage_parts(scope_kind, scope_id, name)?;
+        Self::new(owner, key, fingerprint, issuer, identity_type).map_err(|error| {
+            DbError::CorruptData(format!(
+                "invalid persisted identity spec reference: {error}"
+            ))
+        })
     }
 }
 

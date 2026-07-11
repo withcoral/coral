@@ -6,6 +6,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
+use crate::state::db::repositories::identities::IdentitiesRepo;
 use crate::state::db::repositories::identity_specs::{
     IdentitySpecDocumentsRepo, IdentitySpecsRepo,
 };
@@ -41,6 +42,11 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn identity_specs(&mut self) -> IdentitySpecsRepo<'_, Self> {
         IdentitySpecsRepo::new(self)
+    }
+
+    #[cfg_attr(not(test), expect(dead_code, reason = "Used by B4f."))]
+    fn identities(&mut self) -> IdentitiesRepo<'_, Self> {
+        IdentitiesRepo::new(self)
     }
 
     fn identity_spec_documents(&mut self) -> IdentitySpecDocumentsRepo<'_, Self> {
