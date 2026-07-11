@@ -6,6 +6,9 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
+use crate::state::db::repositories::identity_specs::{
+    IdentitySpecDocumentsRepo, IdentitySpecsRepo,
+};
 use crate::state::db::repositories::state_migrations::StateMigrationsRepo;
 use crate::state::db::repositories::workspaces::WorkspacesRepo;
 
@@ -34,6 +37,22 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn workspaces(&mut self) -> WorkspacesRepo<'_, Self> {
         WorkspacesRepo::new(self)
+    }
+
+    #[expect(
+        dead_code,
+        reason = "identity repository behavior lands in the next B1 stack units"
+    )]
+    fn identity_specs(&mut self) -> IdentitySpecsRepo<'_, Self> {
+        IdentitySpecsRepo::new(self)
+    }
+
+    #[expect(
+        dead_code,
+        reason = "identity repository behavior lands in the next B1 stack units"
+    )]
+    fn identity_spec_documents(&mut self) -> IdentitySpecDocumentsRepo<'_, Self> {
+        IdentitySpecDocumentsRepo::new(self)
     }
 }
 

@@ -22,6 +22,11 @@ use crate::{
 /// Current authored identity-spec format version.
 pub const IDENTITY_SPEC_VERSION: u32 = 1;
 
+/// Validate the stable name used by authored and persisted identity specs.
+pub fn validate_identity_spec_name(name: &str) -> Result<()> {
+    validate_identifier(name, "identity spec name")
+}
+
 /// Validated identity manifest.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IdentityManifest {
@@ -186,7 +191,7 @@ fn validate_identity_manifest(raw: &RawIdentityManifest) -> Result<()> {
             "identity manifest spec_version must be {IDENTITY_SPEC_VERSION}"
         )));
     }
-    validate_identifier(&raw.name, "identity spec name")?;
+    validate_identity_spec_name(&raw.name)?;
     if raw.version.trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "identity '{}' version must not be empty",
@@ -476,7 +481,7 @@ fn optional_string(
 
 #[cfg(test)]
 mod tests {
-    use super::{IdentitySpecConfig, parse_identity_manifest_yaml};
+    use super::{IdentitySpecConfig, parse_identity_manifest_yaml, validate_identity_spec_name};
 
     const OAUTH_BODY: &str = "oauth:\n  method:\n    flow: {type: device_code}\n    endpoints: {device_authorization_url: 'https://provider.example.com/device', token_url: 'https://provider.example.com/token'}\n    client: {id: {default: demo-client}}";
 
@@ -493,6 +498,22 @@ mod tests {
         let fixed =
             parse_identity_manifest_yaml(&identity("fixed_token", "")).expect("fixed token");
         assert!(matches!(fixed.config, IdentitySpecConfig::FixedToken));
+    }
+
+    #[test]
+    fn identity_spec_names_use_the_manifest_identifier_grammar() {
+        for valid in ["github", "github_oauth2", "_internal"] {
+            validate_identity_spec_name(valid).expect(valid);
+        }
+        for invalid in [
+            "",
+            "9github",
+            "github-oauth",
+            "github oauth",
+            "github/oauth",
+        ] {
+            validate_identity_spec_name(invalid).expect_err(invalid);
+        }
     }
 
     #[test]

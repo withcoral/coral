@@ -114,7 +114,7 @@ pub use error::{ManifestError, Result};
 pub use identities::{
     IDENTITY_SPEC_VERSION, IdentityManifest, IdentityOAuthMethodSpec, IdentityOAuthSpec,
     IdentitySpecConfig, IdentitySpecType, generated_identity_manifest_schema,
-    parse_identity_manifest_value, parse_identity_manifest_yaml,
+    parse_identity_manifest_value, parse_identity_manifest_yaml, validate_identity_spec_name,
 };
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
