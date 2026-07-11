@@ -30,6 +30,12 @@ message Identity {
   IdentityOwner owner = 5;
   // Safe provider metadata, never token material.
   repeated CredentialMetadata metadata = 6;
+  // Workspace that owns this identity. Absent for user-owned identities.
+  Workspace owner_workspace = 7;
+  // Exact workspace scope of the referenced identity spec. Absent when the
+  // identity references a global spec, including workspace-owned identities
+  // that resolved through global fallback.
+  Workspace identity_spec_workspace = 8;
 }
 
 // Creates or replaces one identity owned by the request Coral user principal.
@@ -118,6 +124,78 @@ message DeleteUserOwnedIdentityRequest {
 // Confirms user-owned identity deletion.
 message DeleteUserOwnedIdentityResponse {}
 
+// Creates or replaces one identity owned by a workspace.
+message CreateWorkspaceOwnedIdentityRequest {
+  // Workspace that owns the stored identity material.
+  Workspace workspace = 1;
+  // Stable identity name used by source identity bindings.
+  string name = 2;
+  // Identity spec name resolved from the workspace scope with global fallback.
+  string identity_spec = 3;
+
+  // Type-specific setup material.
+  oneof setup {
+    // Fixed-token identity setup input.
+    FixedTokenWorkspaceOwnedIdentitySetup fixed_token = 4;
+  }
+}
+
+// Setup payload for a workspace-owned fixed-token identity.
+message FixedTokenWorkspaceOwnedIdentitySetup {
+  // Bearer token to store for this identity.
+  string token = 1;
+}
+
+// Streaming event emitted while creating a workspace-owned identity.
+message CreateWorkspaceOwnedIdentityResponse {
+  // Creation progress or completion event.
+  oneof event {
+    // Identity creation completed.
+    Identity identity = 1;
+    // OAuth authorization URL is ready.
+    IdentityOAuthAuthorization oauth_authorization = 2;
+    // OAuth credential retrieval completed.
+    IdentityOAuthCompleted oauth_completed = 3;
+  }
+}
+
+// Lists identities owned by one workspace.
+message ListWorkspaceOwnedIdentitiesRequest {
+  // Workspace that owns the stored identities.
+  Workspace workspace = 1;
+}
+
+// Returns workspace-owned identities sorted by name.
+message ListWorkspaceOwnedIdentitiesResponse {
+  // Stored workspace-owned identities.
+  repeated Identity identities = 1;
+}
+
+// Fetches one identity owned by a workspace.
+message GetWorkspaceOwnedIdentityRequest {
+  // Workspace that owns the stored identity.
+  Workspace workspace = 1;
+  // Stored identity name.
+  string name = 2;
+}
+
+// Returns one workspace-owned identity.
+message GetWorkspaceOwnedIdentityResponse {
+  // Stored identity.
+  Identity identity = 1;
+}
+
+// Deletes one identity owned by a workspace.
+message DeleteWorkspaceOwnedIdentityRequest {
+  // Workspace that owns the stored identity.
+  Workspace workspace = 1;
+  // Stored identity name.
+  string name = 2;
+}
+
+// Confirms workspace-owned identity deletion.
+message DeleteWorkspaceOwnedIdentityResponse {}
+
 // Stored identity APIs.
 service IdentityService {
   // Creates or replaces one identity owned by the request Coral user principal.
@@ -128,4 +206,16 @@ service IdentityService {
   rpc GetUserOwnedIdentity(GetUserOwnedIdentityRequest) returns (GetUserOwnedIdentityResponse);
   // Deletes one user-owned identity.
   rpc DeleteUserOwnedIdentity(DeleteUserOwnedIdentityRequest) returns (DeleteUserOwnedIdentityResponse);
+}
+
+// Workspace-owned stored identity APIs.
+service WorkspaceIdentityService {
+  // Creates or replaces one identity owned by a workspace.
+  rpc CreateWorkspaceOwnedIdentity(CreateWorkspaceOwnedIdentityRequest) returns (stream CreateWorkspaceOwnedIdentityResponse);
+  // Lists identities owned by one workspace.
+  rpc ListWorkspaceOwnedIdentities(ListWorkspaceOwnedIdentitiesRequest) returns (ListWorkspaceOwnedIdentitiesResponse);
+  // Fetches one identity owned by a workspace.
+  rpc GetWorkspaceOwnedIdentity(GetWorkspaceOwnedIdentityRequest) returns (GetWorkspaceOwnedIdentityResponse);
+  // Deletes one identity owned by a workspace.
+  rpc DeleteWorkspaceOwnedIdentity(DeleteWorkspaceOwnedIdentityRequest) returns (DeleteWorkspaceOwnedIdentityResponse);
 }

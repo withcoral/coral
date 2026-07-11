@@ -8,11 +8,13 @@ use coral_api::v1::identity_spec_service_client::IdentitySpecServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
+use coral_api::v1::workspace_identity_service_client::WorkspaceIdentityServiceClient;
 use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
-    IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
+    IDENTITY_RESPONSE_MAX_MESSAGE_SIZE, IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE,
+    QUERY_RESPONSE_MAX_MESSAGE_SIZE, SEARCH_RESPONSE_MAX_MESSAGE_SIZE,
+    SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
@@ -53,6 +55,9 @@ pub type IdentitySpecClient = IdentitySpecServiceClient<GrpcService>;
 /// Public stored-identity gRPC client.
 pub type IdentityClient = IdentityServiceClient<GrpcService>;
 
+/// Public workspace-owned stored-identity gRPC client.
+pub type WorkspaceIdentityClient = WorkspaceIdentityServiceClient<GrpcService>;
+
 /// Public catalog-discovery gRPC client.
 pub type CatalogClient = CatalogServiceClient<GrpcService>;
 
@@ -74,6 +79,7 @@ pub struct AppClient {
     workspace: WorkspaceClient,
     identity_spec: IdentitySpecClient,
     identity: IdentityClient,
+    workspace_identity: WorkspaceIdentityClient,
     catalog: CatalogClient,
     query: QueryClient,
     search: SearchClient,
@@ -100,7 +106,11 @@ impl AppClient {
         let identity_spec_client =
             IdentitySpecClient::new(grpc_service(channel.clone(), &grpc_endpoint))
                 .max_decoding_message_size(IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE);
-        let identity_client = IdentityClient::new(grpc_service(channel.clone(), &grpc_endpoint));
+        let identity_client = IdentityClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE);
+        let workspace_identity_client =
+            WorkspaceIdentityClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+                .max_decoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE);
         let catalog_client = CatalogClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
         let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
@@ -113,6 +123,7 @@ impl AppClient {
             workspace: workspace_client,
             identity_spec: identity_spec_client,
             identity: identity_client,
+            workspace_identity: workspace_identity_client,
             catalog: catalog_client,
             query: query_client,
             search: search_client,
@@ -142,6 +153,12 @@ impl AppClient {
     /// Returns a cloned stored-identity client.
     pub fn identity_client(&self) -> IdentityClient {
         self.identity.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned workspace-owned stored-identity client.
+    pub fn workspace_identity_client(&self) -> WorkspaceIdentityClient {
+        self.workspace_identity.clone()
     }
 
     #[must_use]
@@ -178,15 +195,27 @@ fn grpc_service(channel: Channel, endpoint: &GrpcClientEndpoint) -> GrpcService 
 
 #[cfg(test)]
 mod tests {
-    use coral_api::IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE;
+    use coral_api::v1::identity_service_server::{IdentityService, IdentityServiceServer};
     use coral_api::v1::identity_spec_service_server::{
         IdentitySpecService, IdentitySpecServiceServer,
     };
-    use coral_api::v1::{
-        AddIdentitySpecRequest, AddIdentitySpecResponse, DeleteIdentitySpecRequest,
-        DeleteIdentitySpecResponse, GetIdentitySpecRequest, GetIdentitySpecResponse, IdentitySpec,
-        ListIdentitySpecsRequest, ListIdentitySpecsResponse,
+    use coral_api::v1::workspace_identity_service_server::{
+        WorkspaceIdentityService, WorkspaceIdentityServiceServer,
     };
+    use coral_api::v1::{
+        AddIdentitySpecRequest, AddIdentitySpecResponse, CreateUserOwnedIdentityRequest,
+        CreateUserOwnedIdentityResponse, CreateWorkspaceOwnedIdentityRequest,
+        CreateWorkspaceOwnedIdentityResponse, CredentialMetadata, DeleteIdentitySpecRequest,
+        DeleteIdentitySpecResponse, DeleteUserOwnedIdentityRequest,
+        DeleteUserOwnedIdentityResponse, DeleteWorkspaceOwnedIdentityRequest,
+        DeleteWorkspaceOwnedIdentityResponse, GetIdentitySpecRequest, GetIdentitySpecResponse,
+        GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse,
+        GetWorkspaceOwnedIdentityRequest, GetWorkspaceOwnedIdentityResponse, Identity,
+        IdentitySpec, ListIdentitySpecsRequest, ListIdentitySpecsResponse,
+        ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
+        ListWorkspaceOwnedIdentitiesRequest, ListWorkspaceOwnedIdentitiesResponse, Workspace,
+    };
+    use coral_api::{IDENTITY_RESPONSE_MAX_MESSAGE_SIZE, IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE};
     use tokio::net::TcpListener;
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
@@ -200,6 +229,9 @@ mod tests {
 
     #[derive(Debug)]
     struct LargeIdentitySpecFixture;
+
+    #[derive(Debug)]
+    struct LargeIdentityFixture;
 
     #[tonic::async_trait]
     impl IdentitySpecService for LargeIdentitySpecFixture {
@@ -237,6 +269,104 @@ mod tests {
         ) -> Result<Response<DeleteIdentitySpecResponse>, Status> {
             Err(Status::unimplemented("fixture only supports listing"))
         }
+    }
+
+    fn large_identities() -> Vec<Identity> {
+        (0..SPEC_COUNT)
+            .map(|index| Identity {
+                name: format!("large-{index}"),
+                metadata: vec![CredentialMetadata {
+                    key: "provider_metadata".to_string(),
+                    value: "x".repeat(MANIFEST_SIZE),
+                }],
+                ..Identity::default()
+            })
+            .collect()
+    }
+
+    #[tonic::async_trait]
+    impl IdentityService for LargeIdentityFixture {
+        type CreateUserOwnedIdentityStream =
+            tokio_stream::Empty<Result<CreateUserOwnedIdentityResponse, Status>>;
+
+        async fn create_user_owned_identity(
+            &self,
+            _request: Request<CreateUserOwnedIdentityRequest>,
+        ) -> Result<Response<Self::CreateUserOwnedIdentityStream>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn list_user_owned_identities(
+            &self,
+            _request: Request<ListUserOwnedIdentitiesRequest>,
+        ) -> Result<Response<ListUserOwnedIdentitiesResponse>, Status> {
+            Ok(Response::new(ListUserOwnedIdentitiesResponse {
+                identities: large_identities(),
+            }))
+        }
+
+        async fn get_user_owned_identity(
+            &self,
+            _request: Request<GetUserOwnedIdentityRequest>,
+        ) -> Result<Response<GetUserOwnedIdentityResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn delete_user_owned_identity(
+            &self,
+            _request: Request<DeleteUserOwnedIdentityRequest>,
+        ) -> Result<Response<DeleteUserOwnedIdentityResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+    }
+
+    #[tonic::async_trait]
+    impl WorkspaceIdentityService for LargeIdentityFixture {
+        type CreateWorkspaceOwnedIdentityStream =
+            tokio_stream::Empty<Result<CreateWorkspaceOwnedIdentityResponse, Status>>;
+
+        async fn create_workspace_owned_identity(
+            &self,
+            _request: Request<CreateWorkspaceOwnedIdentityRequest>,
+        ) -> Result<Response<Self::CreateWorkspaceOwnedIdentityStream>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn list_workspace_owned_identities(
+            &self,
+            _request: Request<ListWorkspaceOwnedIdentitiesRequest>,
+        ) -> Result<Response<ListWorkspaceOwnedIdentitiesResponse>, Status> {
+            Ok(Response::new(ListWorkspaceOwnedIdentitiesResponse {
+                identities: large_identities(),
+            }))
+        }
+
+        async fn get_workspace_owned_identity(
+            &self,
+            _request: Request<GetWorkspaceOwnedIdentityRequest>,
+        ) -> Result<Response<GetWorkspaceOwnedIdentityResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn delete_workspace_owned_identity(
+            &self,
+            _request: Request<DeleteWorkspaceOwnedIdentityRequest>,
+        ) -> Result<Response<DeleteWorkspaceOwnedIdentityResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+    }
+
+    fn assert_large_identity_aggregate(identities: &[Identity]) {
+        assert_eq!(identities.len(), SPEC_COUNT);
+        let metadata_bytes = identities.iter().fold(0, |bytes, identity| {
+            let metadata = identity
+                .metadata
+                .first()
+                .expect("large identity fixture has provider metadata");
+            assert!(metadata.value.len() < TONIC_DEFAULT_MAX_MESSAGE_SIZE);
+            bytes + metadata.value.len()
+        });
+        assert!(metadata_bytes > TONIC_DEFAULT_MAX_MESSAGE_SIZE);
     }
 
     #[tokio::test]
@@ -278,6 +408,52 @@ mod tests {
             .map(|spec| spec.manifest_yaml.len())
             .sum::<usize>();
         assert!(manifest_bytes > TONIC_DEFAULT_MAX_MESSAGE_SIZE);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn app_client_decodes_large_aggregates_for_both_identity_services() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind identity fixture");
+        let address = listener.local_addr().expect("read fixture address");
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(
+                    IdentityServiceServer::new(LargeIdentityFixture)
+                        .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
+                )
+                .add_service(
+                    WorkspaceIdentityServiceServer::new(LargeIdentityFixture)
+                        .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
+                )
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+        });
+
+        let app_client = AppClient::connect(&format!("http://{address}"))
+            .await
+            .expect("connect AppClient to identity fixture");
+        let user_response = app_client
+            .identity_client()
+            .list_user_owned_identities(ListUserOwnedIdentitiesRequest {})
+            .await
+            .expect("decode user identity response through AppClient")
+            .into_inner();
+        assert_large_identity_aggregate(&user_response.identities);
+
+        let workspace_response = app_client
+            .workspace_identity_client()
+            .list_workspace_owned_identities(ListWorkspaceOwnedIdentitiesRequest {
+                workspace: Some(Workspace {
+                    name: "work".to_string(),
+                }),
+            })
+            .await
+            .expect("decode workspace identity response through AppClient")
+            .into_inner();
+        assert_large_identity_aggregate(&workspace_response.identities);
 
         server.abort();
     }

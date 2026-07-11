@@ -68,6 +68,12 @@ pub const SOURCE_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE
 /// 4 MB default.
 pub const IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
 
+/// Maximum gRPC message size for stored-identity service *responses*, in bytes.
+///
+/// Identity listing is currently unpaginated and may aggregate safe provider
+/// metadata for many stored identities beyond tonic's 4 MB default.
+pub const IDENTITY_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `SearchService` *responses*, in bytes.
 ///
 /// Universal Search returns bounded metadata hints, but it may include table,
@@ -113,6 +119,9 @@ pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 
 /// Machine-readable reason for an installed identity-spec lookup miss.
 pub const CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND: &str = "IDENTITY_SPEC_NOT_FOUND";
+
+/// Machine-readable reason for a stored-identity lookup miss.
+pub const CORAL_ERROR_REASON_IDENTITY_NOT_FOUND: &str = "IDENTITY_NOT_FOUND";
 
 /// Machine-readable reason for a configured workspace lookup miss.
 pub const CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND: &str = "WORKSPACE_NOT_FOUND";
