@@ -1,6 +1,6 @@
 //! HTTP lifecycle for Coral's authorization server.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ mod query;
 mod response;
 mod token;
 
+use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
+
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Prepared Coral authorization server with validated settings and runtime dependencies.
@@ -36,7 +38,6 @@ pub struct CoralAuthorizationServer {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
     state_store: Arc<InMemoryStateStore>,
-    registered_clients: Arc<BTreeMap<String, (String, Vec<String>)>>,
     authorization_resources: BTreeSet<String>,
 }
 
@@ -86,7 +87,6 @@ impl CoralAuthorizationServer {
             settings: Arc::new(settings),
             session_tokens,
             state_store: Arc::new(InMemoryStateStore::new()),
-            registered_clients: Arc::new(BTreeMap::new()),
             authorization_resources: BTreeSet::new(),
         }
     }
@@ -123,53 +123,58 @@ impl CoralAuthorizationServer {
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
-        let state = AuthorizationServerHttpState {
-            settings: self.settings,
-            session_tokens: self.session_tokens,
-            approval_store: self.state_store.clone(),
-            session_store: self.state_store.clone(),
-            code_store: self.state_store,
-            provider_client: OidcProviderClient::new()
-                .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
-            registered_clients: self.registered_clients,
-            authorization_resources: Arc::new(self.authorization_resources),
-        };
-        let router = Router::new()
-            .route(
-                "/.well-known/oauth-authorization-server",
-                get(authorization_server_metadata),
-            )
-            .route(
-                "/oauth/authorize",
-                get(authorize::oauth_authorize_get).post(authorize::oauth_authorize_post),
-            )
-            .route("/oauth/token", post(token::oauth_token))
-            .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
-            .with_state(state);
-        let listener =
-            TcpListener::bind(bind_addr)
-                .await
-                .map_err(|source| AuthServerError::Bind {
-                    address: bind_addr,
-                    source,
-                })?;
-        let local_addr = listener.local_addr().map_err(AuthServerError::LocalAddr)?;
-        let endpoint_uri = format!("http://{local_addr}");
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async {
-                    let _result = shutdown_rx.await;
-                })
-                .await
-        });
-        Ok(RunningCoralAuthorizationServer {
-            local_addr,
-            endpoint_uri,
-            shutdown_tx: Some(shutdown_tx),
-            task: Some(task),
-        })
+        let state = AuthorizationServerHttpState::new(
+            self.settings,
+            self.session_tokens,
+            self.state_store,
+            Arc::new(self.authorization_resources),
+        )?;
+        start_listener(bind_addr, state).await
     }
+}
+
+fn auth_router(state: AuthorizationServerHttpState) -> Router {
+    Router::new()
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(authorization_server_metadata),
+        )
+        .route(
+            "/oauth/authorize",
+            get(authorize::oauth_authorize_get).post(authorize::oauth_authorize_post),
+        )
+        .route("/oauth/token", post(token::oauth_token))
+        .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
+        .with_state(state)
+}
+
+async fn start_listener(
+    bind_addr: SocketAddr,
+    state: AuthorizationServerHttpState,
+) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
+    let router = auth_router(state);
+    let listener = TcpListener::bind(bind_addr)
+        .await
+        .map_err(|source| AuthServerError::Bind {
+            address: bind_addr,
+            source,
+        })?;
+    let local_addr = listener.local_addr().map_err(AuthServerError::LocalAddr)?;
+    let endpoint_uri = format!("http://{local_addr}");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _result = shutdown_rx.await;
+            })
+            .await
+    });
+    Ok(RunningCoralAuthorizationServer {
+        local_addr,
+        endpoint_uri,
+        shutdown_tx: Some(shutdown_tx),
+        task: Some(task),
+    })
 }
 
 /// An active Coral authorization-server listener with deterministic graceful shutdown.
@@ -239,8 +244,52 @@ struct AuthorizationServerHttpState {
     session_store: Arc<dyn SessionStore>,
     code_store: Arc<dyn CodeStore>,
     provider_client: OidcProviderClient,
-    registered_clients: Arc<BTreeMap<String, (String, Vec<String>)>>,
     authorization_resources: Arc<BTreeSet<String>>,
+    client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
+}
+
+impl AuthorizationServerHttpState {
+    fn new(
+        settings: Arc<ResolvedAuthSettings>,
+        session_tokens: SessionTokenIssuer,
+        state_store: Arc<InMemoryStateStore>,
+        authorization_resources: Arc<BTreeSet<String>>,
+    ) -> Result<Self, AuthServerError> {
+        Ok(Self {
+            settings,
+            session_tokens,
+            approval_store: state_store.clone(),
+            session_store: state_store.clone(),
+            code_store: state_store,
+            provider_client: OidcProviderClient::new()
+                .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
+            authorization_resources,
+            client_metadata_resolver: Arc::new(
+                HttpClientMetadataResolver::new()
+                    .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
+            ),
+        })
+    }
+
+    #[cfg(test)]
+    fn with_client_metadata_resolver(
+        settings: Arc<ResolvedAuthSettings>,
+        session_tokens: SessionTokenIssuer,
+        state_store: Arc<InMemoryStateStore>,
+        authorization_resources: Arc<BTreeSet<String>>,
+        client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            settings,
+            session_tokens,
+            approval_store: state_store.clone(),
+            session_store: state_store.clone(),
+            code_store: state_store,
+            provider_client: OidcProviderClient::new().map_err(|error| error.to_string())?,
+            authorization_resources,
+            client_metadata_resolver,
+        })
+    }
 }
 
 /// Canonicalizes an RFC 8707 `resource` for comparison and recording.
@@ -264,7 +313,7 @@ async fn authorization_server_metadata(
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
-        "client_id_metadata_document_supported": false,
+        "client_id_metadata_document_supported": true,
     }))
 }
 
@@ -405,7 +454,7 @@ mod tests {
                 "grant_types_supported": ["authorization_code"],
                 "code_challenge_methods_supported": ["S256"],
                 "token_endpoint_auth_methods_supported": ["none"],
-                "client_id_metadata_document_supported": false,
+                "client_id_metadata_document_supported": true,
             })
         );
         let response = client

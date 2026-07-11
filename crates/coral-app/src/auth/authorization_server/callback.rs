@@ -167,6 +167,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::AuthorizationServerHttpState;
+    use super::super::client_metadata::HttpClientMetadataResolver;
     use super::*;
     use crate::auth::config::{AuthSettings, ResolvedAuthSettings};
     use crate::auth::id_token::tests::{
@@ -229,8 +230,10 @@ mod tests {
             session_store: store.clone(),
             code_store: store,
             provider_client: OidcProviderClient::new().expect("client"),
-            registered_clients: Arc::new(BTreeMap::new()),
             authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
+            client_metadata_resolver: Arc::new(
+                HttpClientMetadataResolver::new().expect("client metadata resolver"),
+            ),
         }
     }
 

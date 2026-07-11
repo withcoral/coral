@@ -1,13 +1,5 @@
 //! Client ID Metadata Document fetching and validation.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the authorization-route integration lands in the next stacked PR"
-    )
-)]
-
 use std::fmt;
 use std::sync::Arc;
 
@@ -24,6 +16,7 @@ const CLIENT_METADATA_MAX_BYTES: usize = 5 * 1024;
 const MAX_CLIENT_NAME_BYTES: usize = 255;
 
 /// The client properties needed after a metadata document has been validated.
+#[derive(Clone)]
 pub(super) struct OAuthClientRegistration {
     pub(super) redirect_uris: Vec<String>,
     pub(super) client_name: String,

@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use axum::extract::{RawQuery, Request, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -9,6 +7,7 @@ use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::state_store::{
     OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord,
 };
+use super::client_metadata::OAuthClientRegistration;
 use super::response::{TrustedRedirect, direct_error, redirect};
 use super::{AuthorizationServerHttpState, canonical_authorization_resource, query};
 use crate::outbound_url_policy::{BrowserRedirect, EndpointUrl};
@@ -30,11 +29,13 @@ pub(super) async fn oauth_authorize_get(
     else {
         return direct_error("invalid_request", "client_id and redirect_uri are required");
     };
-    let Some((client_name, callback)) =
-        registered_client(&state.registered_clients, client_id, redirect_uri)
-    else {
+    let Ok(registration) = resolve_client(&state, client_id).await else {
         return direct_error("invalid_request", "client_id or redirect_uri is invalid");
     };
+    let Some(callback) = registered_redirect(&registration.redirect_uris, redirect_uri) else {
+        return direct_error("invalid_request", "client_id or redirect_uri is invalid");
+    };
+    let client_name = registration.client_name;
     let trusted = TrustedRedirect::new(callback.clone(), query.state.clone());
 
     match query.response_type.as_deref() {
@@ -208,25 +209,29 @@ fn parse_query(raw: &str) -> Result<AuthorizeQuery, ()> {
     Ok(parsed)
 }
 
-/// Resolves the registered client and the redirect URI a request names, under
-/// [`BrowserRedirect`].
-///
-/// The registry is remote input once client metadata documents populate it, so
-/// the policy is applied here rather than trusted to have been applied at
-/// registration: a URI the policy rejects resolves to `None`, and the request
-/// fails with a direct error instead of becoming a redirect.
-fn registered_client(
-    registered_clients: &BTreeMap<String, (String, Vec<String>)>,
+async fn resolve_client(
+    state: &AuthorizationServerHttpState,
     client_id: &str,
-    redirect_uri: &str,
-) -> Option<(String, Url)> {
-    let (client_name, redirect_uris) = registered_clients.get(client_id)?;
+) -> Result<OAuthClientRegistration, ()> {
+    state
+        .client_metadata_resolver
+        .resolve(client_id)
+        .await
+        .map_err(|_error| ())
+}
+
+/// Resolves the redirect URI a request names, under [`BrowserRedirect`].
+///
+/// The candidates come from the client's own metadata document, so they are
+/// remote input: the policy is applied here rather than trusted to have been
+/// applied at resolution. A URI the policy rejects resolves to `None`, and the
+/// request fails with a direct error instead of becoming a redirect.
+fn registered_redirect(redirect_uris: &[String], redirect_uri: &str) -> Option<Url> {
     redirect_uris
         .iter()
         .find(|uri| uri.as_str() == redirect_uri)
         .and_then(|uri| EndpointUrl::<BrowserRedirect>::parse(uri).ok())
         .map(EndpointUrl::into_url)
-        .map(|redirect| (client_name.clone(), redirect))
 }
 
 fn valid_s256_challenge(value: &str) -> bool {
@@ -248,6 +253,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
@@ -262,11 +268,13 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::super::{AuthorizationServerHttpState, CoralAuthorizationServer};
+    use super::super::AuthorizationServerHttpState;
+    use super::super::client_metadata::{
+        ClientMetadataError, ClientMetadataResolver, OAuthClientRegistration,
+    };
     use super::*;
     use crate::auth::config::AuthSettings;
     use crate::auth::config::ResolvedAuthSettings;
-    use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::{SessionTokenIssuer, test_signing_key};
     use crate::auth::state_store::{
         ApprovalStore, InMemoryStateStore, OAuthAuthorizationApprovalBrowserBinding,
@@ -308,26 +316,66 @@ mod tests {
         settings
     }
 
-    fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
+    struct FakeResolver {
+        result: Result<OAuthClientRegistration, ClientMetadataError>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ClientMetadataResolver for FakeResolver {
+        async fn resolve(
+            &self,
+            _client_id: &str,
+        ) -> Result<OAuthClientRegistration, ClientMetadataError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.result.clone()
+        }
+    }
+
+    fn fake_resolver(
+        result: Result<OAuthClientRegistration, ClientMetadataError>,
+    ) -> (Arc<dyn ClientMetadataResolver>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Arc::new(FakeResolver {
+                result,
+                calls: calls.clone(),
+            }),
+            calls,
+        )
+    }
+
+    fn registration(redirect_uris: &[&str]) -> OAuthClientRegistration {
+        OAuthClientRegistration {
+            redirect_uris: redirect_uris.iter().map(ToString::to_string).collect(),
+            client_name: "Test Client".into(),
+        }
+    }
+
+    fn state_with_resolver(
+        issuer: &str,
+        store: Arc<InMemoryStateStore>,
+        resolver: Arc<dyn ClientMetadataResolver>,
+    ) -> AuthorizationServerHttpState {
         let session_tokens = SessionTokenIssuer::new(
             Some(AUTH_ISSUER),
             test_signing_key(),
             Duration::from_mins(5),
         )
         .expect("session");
-        AuthorizationServerHttpState {
-            settings: Arc::new(settings(issuer)),
+        AuthorizationServerHttpState::with_client_metadata_resolver(
+            Arc::new(settings(issuer)),
             session_tokens,
-            approval_store: store.clone(),
-            session_store: store.clone(),
-            code_store: store,
-            provider_client: OidcProviderClient::new().expect("provider client"),
-            registered_clients: Arc::new(BTreeMap::from([(
-                CLIENT_ID.into(),
-                ("Test Client".into(), vec![REDIRECT_URI.into()]),
-            )])),
-            authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
-        }
+            store,
+            Arc::new(BTreeSet::from([RESOURCE.into()])),
+            resolver,
+        )
+        .expect("auth state")
+    }
+
+    fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        state_with_resolver(issuer, store, resolver)
     }
 
     fn pairs() -> Vec<(String, String)> {
@@ -762,26 +810,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cimd_client_uses_resolved_exact_redirect_once() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let request_pairs = pairs();
+        let auth_state = state_with_resolver(
+            &provider.uri(),
+            Arc::new(InMemoryStateStore::new()),
+            resolver,
+        );
+        let response = request(auth_state.clone(), &request_pairs).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = response_body(response).await;
+        assert!(page.contains("<bdi>Test Client</bdi>"));
+        assert!(page.contains("Client ID hostname</dt><dd><code>client.example.test"));
+        let ticket = ticket_from_page(&page);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(
+            provider
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+
+        let response = submit(auth_state, &ticket, "continue").await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(location(&response).is_some_and(|url| url.starts_with(&provider.uri())));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn cimd_undeclared_redirect_is_never_trusted() {
+        let (resolver, calls) = fake_resolver(Ok(registration(&[
+            "https://client.example.test/other-callback",
+        ])));
+        let response = request(
+            state_with_resolver(
+                "https://provider.invalid",
+                Arc::new(InMemoryStateStore::new()),
+                resolver,
+            ),
+            &pairs(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn resolver_failures_are_generic_direct_errors() {
+        let (resolver, calls) = fake_resolver(Err(ClientMetadataError::HttpStatus));
+        let client_id = format!("{CLIENT_ID}?secret=attacker-url-secret");
+        let mut request_pairs = pairs();
+        replace(&mut request_pairs, "client_id", Some(&client_id));
+        let response = request(
+            state_with_resolver(
+                "https://provider.invalid",
+                Arc::new(InMemoryStateStore::new()),
+                resolver,
+            ),
+            &request_pairs,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+        let body = to_bytes(response.into_body(), 4096).await.expect("body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("invalid_request"));
+        assert!(!body.contains("attacker-url-secret"));
+        assert!(!body.contains("HttpStatus"));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn client_and_redirect_must_match_exactly_before_redirecting() {
         let store = Arc::new(InMemoryStateStore::new());
-        for (field, value) in [
-            (
-                "client_id",
-                "https://client.example.test/oauth/%63lient.json",
-            ),
-            ("redirect_uri", "https://client.example.test/other"),
-        ] {
-            let mut request_pairs = pairs();
-            replace(&mut request_pairs, field, Some(value));
-            let response = request(
-                state("https://provider.invalid", store.clone()),
-                &request_pairs,
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            assert_security(&response);
-            assert!(location(&response).is_none());
-        }
+        let (resolver, _calls) = fake_resolver(Err(ClientMetadataError::InvalidMetadata));
+        let mut wrong_client = pairs();
+        replace(
+            &mut wrong_client,
+            "client_id",
+            Some("https://client.example.test/oauth/%63lient.json"),
+        );
+        let response = request(
+            state_with_resolver("https://provider.invalid", store.clone(), resolver),
+            &wrong_client,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_security(&response);
+        assert!(location(&response).is_none());
+
+        let mut wrong_redirect = pairs();
+        replace(
+            &mut wrong_redirect,
+            "redirect_uri",
+            Some("https://client.example.test/other"),
+        );
+        let response = request(
+            state("https://provider.invalid", store.clone()),
+            &wrong_redirect,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_security(&response);
+        assert!(location(&response).is_none());
 
         let raw = format!("{}&client%5Fid=raw-secret", encode(&pairs()));
         let response = oauth_authorize_get(
@@ -803,11 +939,9 @@ mod tests {
             "data:text/html,<script>alert(1)</script>",
             "http://client.example.test/callback",
         ] {
-            let mut auth_state = state("https://provider.invalid", store.clone());
-            auth_state.registered_clients = Arc::new(BTreeMap::from([(
-                CLIENT_ID.into(),
-                ("Test Client".into(), vec![uri.into()]),
-            )]));
+            let (resolver, _calls) = fake_resolver(Ok(registration(&[uri])));
+            let auth_state =
+                state_with_resolver("https://provider.invalid", store.clone(), resolver);
             let mut request_pairs = pairs();
             replace(&mut request_pairs, "redirect_uri", Some(uri));
             let response = request(auth_state, &request_pairs).await;
@@ -1030,18 +1164,11 @@ mod tests {
     async fn listener_exposes_authorize_route() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let store = Arc::new(InMemoryStateStore::new());
-        let state = state(&provider.uri(), Arc::clone(&store));
-        let server = CoralAuthorizationServer {
-            settings: state.settings,
-            session_tokens: state.session_tokens,
-            state_store: store,
-            registered_clients: state.registered_clients,
-            authorization_resources: state.authorization_resources.as_ref().clone(),
-        }
-        .start()
-        .await
-        .expect("start");
+        let auth_state = state(&provider.uri(), Arc::new(InMemoryStateStore::new()));
+        let bind_addr = auth_state.settings.bind_addr();
+        let server = super::super::start_listener(bind_addr, auth_state)
+            .await
+            .expect("start");
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()

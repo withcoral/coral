@@ -301,7 +301,7 @@ fn json_response(status: StatusCode, body: &serde_json::Value) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -313,6 +313,7 @@ mod tests {
     use serde_json::Value;
     use url::form_urlencoded;
 
+    use super::super::client_metadata::HttpClientMetadataResolver;
     use super::super::query;
     use super::*;
     use crate::auth::config::AuthSettings;
@@ -373,8 +374,10 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
             session_store: store.clone(),
             code_store: store.clone(),
             provider_client: OidcProviderClient::new().expect("client"),
-            registered_clients: Arc::new(BTreeMap::new()),
             authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
+            client_metadata_resolver: Arc::new(
+                HttpClientMetadataResolver::new().expect("client metadata resolver"),
+            ),
         };
         (state, store, session_tokens)
     }
