@@ -3,7 +3,6 @@ use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::{SecureRandom as _, SystemRandom};
-use url::Url;
 use zeroize::Zeroizing;
 
 use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorizationSessionRecord};
@@ -141,18 +140,14 @@ fn random_code() -> Result<String, ()> {
 
 /// Rebuilds the client callback this login was started for.
 ///
-/// The `None` arm is unreachable. `redirect_uri` is only ever stored after
-/// `authorize`'s `registered_redirect` matched it against a registered URI and
-/// parsed that URI under
-/// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect), so a value
-/// that reaches here has already parsed once. It is checked rather than
-/// unwrapped because the store sits between the two handlers, and a panic in a
-/// callback would be a worse answer than a failed login. Re-applying
-/// `BrowserRedirect` here would not add a check — it would only move where the
-/// same policy was applied.
+/// `redirect_uri` is only ever stored after `authorize`'s `registered_client`
+/// matched it against a registered URI and parsed that URI under
+/// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect), so
+/// re-applying `BrowserRedirect` here would not add a check — it would only
+/// move where the same policy was applied. [`TrustedRedirect::parse`] carries
+/// the reason the `None` arm is checked rather than unwrapped.
 fn trusted_redirect(session: &OAuthAuthorizationSessionRecord) -> Option<TrustedRedirect> {
-    let url = Url::parse(&session.redirect_uri).ok()?;
-    Some(TrustedRedirect::new(url, session.client_state.clone()))
+    TrustedRedirect::parse(&session.redirect_uri, session.client_state.clone())
 }
 
 #[cfg(test)]
@@ -167,7 +162,7 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::{Value, json};
-    use url::form_urlencoded;
+    use url::{Url, form_urlencoded};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -230,6 +225,7 @@ mod tests {
         AuthorizationServerHttpState {
             settings: Arc::new(settings(issuer)),
             session_tokens,
+            approval_store: store.clone(),
             session_store: store.clone(),
             code_store: store,
             provider_client: OidcProviderClient::new().expect("client"),

@@ -16,10 +16,10 @@ type SecretHash = [u8; 32];
 
 /// Single-use secret naming a stored authorization approval.
 ///
-/// Outside tests the only way to build one is [`Self::generate`], which fills
-/// the secret in place from a caller-supplied CSPRNG. The bytes therefore never
-/// exist outside the value that zeroizes them on drop, and no caller can mint a
-/// ticket with attacker-guessable content.
+/// New tickets come from [`Self::generate`], which fills the secret in place
+/// from a caller-supplied CSPRNG, so a minted ticket's bytes never exist
+/// outside the value that zeroizes them on drop. [`Self::from_bytes`] exists
+/// only to rebuild a ticket the browser sent back.
 pub(crate) struct OAuthAuthorizationApprovalTicket([u8; 32]);
 
 impl OAuthAuthorizationApprovalTicket {
@@ -29,10 +29,6 @@ impl OAuthAuthorizationApprovalTicket {
     ///
     /// Returns [`StateStoreError::Randomness`] when `random` cannot fill the
     /// ticket.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the stacked authorization approval flow")
-    )]
     pub(super) fn generate(random: &dyn SecureRandom) -> Result<Self, StateStoreError> {
         let mut ticket = Self([0; 32]);
         random
@@ -41,17 +37,35 @@ impl OAuthAuthorizationApprovalTicket {
         Ok(ticket)
     }
 
-    #[cfg(test)]
-    fn from_bytes(bytes: [u8; 32]) -> Self {
+    /// Rebuilds a ticket from the bytes carried by a confirmation submission.
+    pub(super) fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    fn as_bytes(&self) -> &[u8; 32] {
+    pub(super) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 }
 
 impl Drop for OAuthAuthorizationApprovalTicket {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+pub(crate) struct OAuthAuthorizationApprovalBrowserBinding([u8; 32]);
+
+impl OAuthAuthorizationApprovalBrowserBinding {
+    pub(super) fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(super) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Drop for OAuthAuthorizationApprovalBrowserBinding {
     fn drop(&mut self) {
         self.0.zeroize();
     }
@@ -100,21 +114,19 @@ pub(crate) enum StateStoreError {
 }
 
 /// Storage for approvals awaiting the user's confirmation.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by the stacked authorization approval flow")
-)]
 #[async_trait::async_trait]
 pub(crate) trait ApprovalStore: Send + Sync {
     async fn store_authorization_approval(
         &self,
         ticket: &OAuthAuthorizationApprovalTicket,
+        browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
         approval: OAuthAuthorizationApprovalRecord,
     ) -> Result<(), StateStoreError>;
 
     async fn take_authorization_approval(
         &self,
         ticket: &OAuthAuthorizationApprovalTicket,
+        browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
     ) -> Result<Option<OAuthAuthorizationApprovalRecord>, StateStoreError>;
 }
 
@@ -188,9 +200,10 @@ impl ApprovalStore for InMemoryStateStore {
     async fn store_authorization_approval(
         &self,
         ticket: &OAuthAuthorizationApprovalTicket,
+        browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
         approval: OAuthAuthorizationApprovalRecord,
     ) -> Result<(), StateStoreError> {
-        let key = hash_bytes(ticket.as_bytes());
+        let key = approval_key(ticket, browser_binding);
         let mut inner = self.inner.lock().await;
         let now = Instant::now();
         let expires_at = self.expires_at(now)?;
@@ -213,8 +226,9 @@ impl ApprovalStore for InMemoryStateStore {
     async fn take_authorization_approval(
         &self,
         ticket: &OAuthAuthorizationApprovalTicket,
+        browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
     ) -> Result<Option<OAuthAuthorizationApprovalRecord>, StateStoreError> {
-        let key = hash_bytes(ticket.as_bytes());
+        let key = approval_key(ticket, browser_binding);
         let mut inner = self.inner.lock().await;
         let now = Instant::now();
         let entry = inner.approvals.remove(&key);
@@ -364,6 +378,17 @@ fn hash_bytes(secret: &[u8]) -> SecretHash {
     Sha256::digest(secret).into()
 }
 
+fn approval_key(
+    ticket: &OAuthAuthorizationApprovalTicket,
+    browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
+) -> SecretHash {
+    let mut hash = Sha256::new();
+    hash.update(b"coral-oauth-browser-bound-approval-v1\0");
+    hash.update(ticket.as_bytes());
+    hash.update(browser_binding.as_bytes());
+    hash.finalize().into()
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::{Future, poll_fn};
@@ -386,6 +411,10 @@ mod tests {
             code_challenge: "challenge".to_string(),
             resource: "https://mcp.example.test/mcp".to_string(),
         }
+    }
+
+    fn browser_binding() -> OAuthAuthorizationApprovalBrowserBinding {
+        OAuthAuthorizationApprovalBrowserBinding::from_bytes([0x42; 32])
     }
 
     fn session(id: &str) -> OAuthAuthorizationSessionRecord {
@@ -455,20 +484,34 @@ mod tests {
         let store = Arc::new(InMemoryStateStore::new());
         let raw_ticket = [0x5a; 32];
         let ticket = Arc::new(OAuthAuthorizationApprovalTicket::from_bytes(raw_ticket));
+        let binding = browser_binding();
         store
-            .store_authorization_approval(&ticket, approval("approval"))
+            .store_authorization_approval(&ticket, &binding, approval("approval"))
             .await
             .unwrap();
         let inner = store.inner.lock().await;
-        let hash = hash_bytes(&raw_ticket);
+        let hash = approval_key(&ticket, &binding);
         assert!(inner.approvals.contains_key(&hash));
         assert!(!inner.approvals.contains_key(&raw_ticket));
+        drop(inner);
+        let wrong_binding = OAuthAuthorizationApprovalBrowserBinding::from_bytes([0x43; 32]);
+        assert!(
+            store
+                .take_authorization_approval(&ticket, &wrong_binding)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
+        let inner = store.inner.lock().await;
         let take = |store: &Arc<InMemoryStateStore>,
                     ticket: &Arc<OAuthAuthorizationApprovalTicket>| {
             let store = Arc::clone(store);
             let ticket = Arc::clone(ticket);
-            async move { store.take_authorization_approval(&ticket).await }
+            async move {
+                let binding = browser_binding();
+                store.take_authorization_approval(&ticket, &binding).await
+            }
         };
         let (first, second) =
             park_takes_on_store_lock(take(&store, &ticket), take(&store, &ticket)).await;
@@ -484,7 +527,7 @@ mod tests {
         assert!(winner == approval("approval"));
         assert!(
             store
-                .take_authorization_approval(&ticket)
+                .take_authorization_approval(&ticket, &binding)
                 .await
                 .unwrap()
                 .is_none()
@@ -500,20 +543,21 @@ mod tests {
         assert_ne!(ticket.as_bytes(), other.as_bytes());
 
         let store = InMemoryStateStore::new();
+        let binding = browser_binding();
         store
-            .store_authorization_approval(&ticket, approval("generated"))
+            .store_authorization_approval(&ticket, &binding, approval("generated"))
             .await
             .unwrap();
         assert!(
             store
-                .take_authorization_approval(&other)
+                .take_authorization_approval(&other, &binding)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             store
-                .take_authorization_approval(&ticket)
+                .take_authorization_approval(&ticket, &binding)
                 .await
                 .unwrap()
                 .is_some()
@@ -526,21 +570,21 @@ mod tests {
         let ticket = OAuthAuthorizationApprovalTicket::from_bytes([1; 32]);
         let other_ticket = OAuthAuthorizationApprovalTicket::from_bytes([2; 32]);
         store
-            .store_authorization_approval(&ticket, approval("original"))
+            .store_authorization_approval(&ticket, &browser_binding(), approval("original"))
             .await
             .unwrap();
         assert_eq!(
             store
-                .store_authorization_approval(&other_ticket, approval("other"))
+                .store_authorization_approval(&other_ticket, &browser_binding(), approval("other"),)
                 .await,
             Err(StateStoreError::CapacityExceeded { max_entries: 1 })
         );
         store
-            .store_authorization_approval(&ticket, approval("replacement"))
+            .store_authorization_approval(&ticket, &browser_binding(), approval("replacement"))
             .await
             .unwrap();
         let stored = store
-            .take_authorization_approval(&ticket)
+            .take_authorization_approval(&ticket, &browser_binding())
             .await
             .unwrap()
             .expect("replacement approval");
@@ -553,7 +597,7 @@ mod tests {
         let expired_ticket = OAuthAuthorizationApprovalTicket::from_bytes([1; 32]);
         let other_ticket = OAuthAuthorizationApprovalTicket::from_bytes([2; 32]);
         store
-            .store_authorization_approval(&expired_ticket, approval("expired"))
+            .store_authorization_approval(&expired_ticket, &browser_binding(), approval("expired"))
             .await
             .unwrap();
         store
@@ -566,7 +610,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .store_authorization_approval(&other_ticket, approval("other"))
+                .store_authorization_approval(&other_ticket, &browser_binding(), approval("other"),)
                 .await,
             Err(StateStoreError::CapacityExceeded { max_entries: 1 })
         );
@@ -574,19 +618,23 @@ mod tests {
         tokio::time::advance(OAUTH_STATE_TTL).await;
         let replacement_ticket = OAuthAuthorizationApprovalTicket::from_bytes([3; 32]);
         store
-            .store_authorization_approval(&replacement_ticket, approval("replacement"))
+            .store_authorization_approval(
+                &replacement_ticket,
+                &browser_binding(),
+                approval("replacement"),
+            )
             .await
             .unwrap();
         assert!(
             store
-                .take_authorization_approval(&expired_ticket)
+                .take_authorization_approval(&expired_ticket, &browser_binding())
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             store
-                .take_authorization_approval(&replacement_ticket)
+                .take_authorization_approval(&replacement_ticket, &browser_binding())
                 .await
                 .unwrap()
                 .is_some()

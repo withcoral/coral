@@ -11,7 +11,7 @@ use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
-use super::state_store::{CodeStore, InMemoryStateStore, SessionStore};
+use super::state_store::{ApprovalStore, CodeStore, InMemoryStateStore, SessionStore};
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use axum::Router;
 use axum::extract::State;
@@ -36,7 +36,7 @@ pub struct CoralAuthorizationServer {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
     state_store: Arc<InMemoryStateStore>,
-    registered_clients: Arc<BTreeMap<String, Vec<String>>>,
+    registered_clients: Arc<BTreeMap<String, (String, Vec<String>)>>,
     authorization_resources: BTreeSet<String>,
 }
 
@@ -126,6 +126,7 @@ impl CoralAuthorizationServer {
         let state = AuthorizationServerHttpState {
             settings: self.settings,
             session_tokens: self.session_tokens,
+            approval_store: self.state_store.clone(),
             session_store: self.state_store.clone(),
             code_store: self.state_store,
             provider_client: OidcProviderClient::new()
@@ -138,7 +139,10 @@ impl CoralAuthorizationServer {
                 "/.well-known/oauth-authorization-server",
                 get(authorization_server_metadata),
             )
-            .route("/oauth/authorize", get(authorize::oauth_authorize))
+            .route(
+                "/oauth/authorize",
+                get(authorize::oauth_authorize_get).post(authorize::oauth_authorize_post),
+            )
             .route("/oauth/token", post(token::oauth_token))
             .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
             .with_state(state);
@@ -231,10 +235,11 @@ impl Drop for RunningCoralAuthorizationServer {
 struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
+    approval_store: Arc<dyn ApprovalStore>,
     session_store: Arc<dyn SessionStore>,
     code_store: Arc<dyn CodeStore>,
     provider_client: OidcProviderClient,
-    registered_clients: Arc<BTreeMap<String, Vec<String>>>,
+    registered_clients: Arc<BTreeMap<String, (String, Vec<String>)>>,
     authorization_resources: Arc<BTreeSet<String>>,
 }
 

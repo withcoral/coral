@@ -369,6 +369,7 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
         let state = AuthorizationServerHttpState {
             settings: Arc::new(settings),
             session_tokens: session_tokens.clone(),
+            approval_store: store.clone(),
             session_store: store.clone(),
             code_store: store.clone(),
             provider_client: OidcProviderClient::new().expect("client"),

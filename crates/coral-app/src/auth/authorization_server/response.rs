@@ -46,6 +46,18 @@ impl TrustedRedirect {
         Self { url, client_state }
     }
 
+    /// Rebuilds a callback from a redirect URI a store handed back.
+    ///
+    /// The `None` arm is unreachable in practice: a stored `redirect_uri` was
+    /// string-matched against a registration and parsed under
+    /// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect) before
+    /// it was written, so it has already parsed once. It is checked rather than
+    /// unwrapped because a store sits between the handler that wrote it and the
+    /// one reading it, and a failed authorization beats a panicking handler.
+    pub(super) fn parse(redirect_uri: &str, client_state: Option<String>) -> Option<Self> {
+        Some(Self::new(Url::parse(redirect_uri).ok()?, client_state))
+    }
+
     /// Redirects the browser back to the client with an authorization code.
     pub(super) fn success(&self, code: &str) -> Response {
         self.redirect("code", code, None)
@@ -88,7 +100,10 @@ pub(super) fn direct_error(error: &'static str, description: &'static str) -> Re
     (
         StatusCode::BAD_REQUEST,
         security_headers(),
-        [(header::CONTENT_TYPE, "application/json")],
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
         body,
     )
         .into_response()

@@ -1,18 +1,26 @@
 use std::collections::BTreeMap;
 
-use axum::extract::{RawQuery, State};
+use axum::extract::{RawQuery, Request, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use url::Url;
 
 use super::super::provider_client::OidcAuthorizationRequest;
-use super::super::state_store::OAuthAuthorizationSessionRecord;
+use super::super::state_store::{
+    OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord,
+};
 use super::response::{TrustedRedirect, direct_error, redirect};
 use super::{AuthorizationServerHttpState, canonical_authorization_resource, query};
 use crate::outbound_url_policy::{BrowserRedirect, EndpointUrl};
 
-pub(super) async fn oauth_authorize(
+mod confirmation;
+
+use confirmation::ApprovalDecision;
+
+pub(super) async fn oauth_authorize_get(
     State(state): State<AuthorizationServerHttpState>,
     RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
 ) -> Response {
     let Ok(query) = parse_query(raw_query.as_deref().unwrap_or_default()) else {
         return direct_error("invalid_request", "authorization request is malformed");
@@ -22,11 +30,12 @@ pub(super) async fn oauth_authorize(
     else {
         return direct_error("invalid_request", "client_id and redirect_uri are required");
     };
-    let Some(callback) = registered_redirect(&state.registered_clients, client_id, redirect_uri)
+    let Some((client_name, callback)) =
+        registered_client(&state.registered_clients, client_id, redirect_uri)
     else {
         return direct_error("invalid_request", "client_id or redirect_uri is invalid");
     };
-    let trusted = TrustedRedirect::new(callback, query.state.clone());
+    let trusted = TrustedRedirect::new(callback.clone(), query.state.clone());
 
     match query.response_type.as_deref() {
         Some("code") => {}
@@ -61,6 +70,71 @@ pub(super) async fn oauth_authorize(
     if !state.authorization_resources.contains(&resource) {
         return trusted.error("invalid_target", "resource does not match this server");
     }
+    let approval = OAuthAuthorizationApprovalRecord {
+        client_id: client_id.to_string(),
+        client_name,
+        redirect_uri: redirect_uri.to_string(),
+        client_state: query.state,
+        code_challenge,
+        resource,
+    };
+    let Ok(ticket) = confirmation::new_ticket() else {
+        return trusted.error("server_error", "authorization failed");
+    };
+    let secure_cookie = secure_approval_cookie(&state);
+    let Ok(browser_binding) = confirmation::browser_binding_for_page(&headers, secure_cookie)
+    else {
+        return trusted.error("server_error", "authorization failed");
+    };
+    let Some(page) = confirmation::response(
+        &ticket,
+        &approval.client_name,
+        &approval.client_id,
+        &callback,
+        &browser_binding,
+        secure_cookie,
+    ) else {
+        return trusted.error("server_error", "authorization failed");
+    };
+    if state
+        .approval_store
+        .store_authorization_approval(&ticket, &browser_binding, approval)
+        .await
+        .is_err()
+    {
+        return trusted.error("server_error", "authorization failed");
+    }
+    page
+}
+
+pub(super) async fn oauth_authorize_post(
+    State(state): State<AuthorizationServerHttpState>,
+    request: Request,
+) -> Response {
+    let Ok((ticket, browser_binding, decision)) = confirmation::parse_submission(
+        request,
+        state.settings.authorization_server().issuer(),
+        secure_approval_cookie(&state),
+    )
+    .await
+    else {
+        return approval_error();
+    };
+    let Ok(Some(approval)) = state
+        .approval_store
+        .take_authorization_approval(&ticket, &browser_binding)
+        .await
+    else {
+        return approval_error();
+    };
+    let Some(trusted) =
+        TrustedRedirect::parse(&approval.redirect_uri, approval.client_state.clone())
+    else {
+        return direct_error("server_error", "authorization failed");
+    };
+    if decision == ApprovalDecision::Cancel {
+        return trusted.error("access_denied", "authorization was denied");
+    }
     let request = match state
         .provider_client
         .authorization_request(state.settings.provider())
@@ -76,11 +150,11 @@ pub(super) async fn oauth_authorize(
         code_verifier: oidc_code_verifier,
     } = request;
     let session = OAuthAuthorizationSessionRecord {
-        client_id: client_id.to_string(),
-        redirect_uri: redirect_uri.to_string(),
-        client_state: query.state,
-        code_challenge,
-        resource,
+        client_id: approval.client_id,
+        redirect_uri: approval.redirect_uri,
+        client_state: approval.client_state,
+        code_challenge: approval.code_challenge,
+        resource: approval.resource,
         oidc_code_verifier,
         oidc_nonce,
     };
@@ -93,6 +167,14 @@ pub(super) async fn oauth_authorize(
         return trusted.error("server_error", "authorization failed");
     }
     redirect(url.as_str())
+}
+
+fn secure_approval_cookie(state: &AuthorizationServerHttpState) -> bool {
+    state
+        .settings
+        .authorization_server()
+        .issuer()
+        .starts_with("https://")
 }
 
 #[derive(Default)]
@@ -126,24 +208,25 @@ fn parse_query(raw: &str) -> Result<AuthorizeQuery, ()> {
     Ok(parsed)
 }
 
-/// Resolves the registered redirect URI a request names, under
+/// Resolves the registered client and the redirect URI a request names, under
 /// [`BrowserRedirect`].
 ///
 /// The registry is remote input once client metadata documents populate it, so
 /// the policy is applied here rather than trusted to have been applied at
 /// registration: a URI the policy rejects resolves to `None`, and the request
 /// fails with a direct error instead of becoming a redirect.
-fn registered_redirect(
-    registered_clients: &BTreeMap<String, Vec<String>>,
+fn registered_client(
+    registered_clients: &BTreeMap<String, (String, Vec<String>)>,
     client_id: &str,
     redirect_uri: &str,
-) -> Option<Url> {
-    registered_clients
-        .get(client_id)?
+) -> Option<(String, Url)> {
+    let (client_name, redirect_uris) = registered_clients.get(client_id)?;
+    redirect_uris
         .iter()
         .find(|uri| uri.as_str() == redirect_uri)
         .and_then(|uri| EndpointUrl::<BrowserRedirect>::parse(uri).ok())
         .map(EndpointUrl::into_url)
+        .map(|redirect| (client_name.clone(), redirect))
 }
 
 fn valid_s256_challenge(value: &str) -> bool {
@@ -153,6 +236,13 @@ fn valid_s256_challenge(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn approval_error() -> Response {
+    direct_error(
+        "invalid_request",
+        "authorization approval is invalid or expired",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -160,13 +250,14 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use axum::body::to_bytes;
+    use axum::body::{Body, to_bytes};
     use axum::http::{StatusCode, header};
     use base64::Engine as _;
-    use base64::engine::general_purpose::STANDARD;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::json;
+    use tokio::sync::Barrier;
     use url::form_urlencoded;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -176,8 +267,11 @@ mod tests {
     use crate::auth::config::AuthSettings;
     use crate::auth::config::ResolvedAuthSettings;
     use crate::auth::provider_client::OidcProviderClient;
-    use crate::auth::session::SessionTokenIssuer;
-    use crate::auth::state_store::{InMemoryStateStore, SessionStore};
+    use crate::auth::session::{SessionTokenIssuer, test_signing_key};
+    use crate::auth::state_store::{
+        ApprovalStore, InMemoryStateStore, OAuthAuthorizationApprovalBrowserBinding,
+        OAuthAuthorizationApprovalTicket, SessionStore,
+    };
 
     const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
@@ -186,6 +280,7 @@ mod tests {
     const CLIENT_STATE: &str = "client-state&error=injected";
     const CHALLENGE: &str = "0123456789012345678901234567890123456789012";
     const PROVIDER_SECRET: &str = "provider-secret-must-not-leak";
+    const BROWSER_BINDING: [u8; 32] = [0x42; 32];
 
     fn settings(issuer: &str) -> ResolvedAuthSettings {
         let settings = AuthSettings::from_toml(&format!(
@@ -214,24 +309,22 @@ mod tests {
     }
 
     fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
-        let signing_key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key");
         let session_tokens = SessionTokenIssuer::new(
             Some(AUTH_ISSUER),
-            signing_key.as_ref(),
+            test_signing_key(),
             Duration::from_mins(5),
         )
         .expect("session");
         AuthorizationServerHttpState {
             settings: Arc::new(settings(issuer)),
             session_tokens,
+            approval_store: store.clone(),
             session_store: store.clone(),
             code_store: store,
             provider_client: OidcProviderClient::new().expect("provider client"),
             registered_clients: Arc::new(BTreeMap::from([(
                 CLIENT_ID.into(),
-                vec![REDIRECT_URI.into()],
+                ("Test Client".into(), vec![REDIRECT_URI.into()]),
             )])),
             authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
         }
@@ -268,7 +361,95 @@ mod tests {
     }
 
     async fn request(state: AuthorizationServerHttpState, pairs: &[(String, String)]) -> Response {
-        oauth_authorize(State(state), RawQuery(Some(encode(pairs)))).await
+        oauth_authorize_get(
+            State(state),
+            RawQuery(Some(encode(pairs))),
+            browser_headers(),
+        )
+        .await
+    }
+
+    fn browser_cookie() -> String {
+        format!(
+            "__Host-coral_oauth_approval={}",
+            URL_SAFE_NO_PAD.encode(BROWSER_BINDING)
+        )
+    }
+
+    fn browser_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            browser_cookie().parse().expect("browser cookie"),
+        );
+        headers
+    }
+
+    fn browser_binding() -> OAuthAuthorizationApprovalBrowserBinding {
+        OAuthAuthorizationApprovalBrowserBinding::from_bytes(BROWSER_BINDING)
+    }
+
+    async fn response_body(response: Response) -> String {
+        String::from_utf8(
+            to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("body")
+                .to_vec(),
+        )
+        .expect("UTF-8 body")
+    }
+
+    fn ticket_from_page(page: &str) -> String {
+        page.split("name=\"ticket\" value=\"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .expect("approval ticket")
+            .to_string()
+    }
+
+    fn set_cookie_pair(response: &Response) -> String {
+        response.headers()[header::SET_COOKIE]
+            .to_str()
+            .expect("approval cookie")
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .to_string()
+    }
+
+    fn submission_request_with_cookie(
+        ticket: &str,
+        decision: &str,
+        cookie: Option<&str>,
+    ) -> Request {
+        let body = form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([("ticket", ticket), ("decision", decision)])
+            .finish();
+        let mut request = Request::builder()
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::ORIGIN, AUTH_ISSUER);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        request.body(Body::from(body)).expect("request")
+    }
+
+    fn submission_request(ticket: &str, decision: &str) -> Request {
+        let cookie = browser_cookie();
+        submission_request_with_cookie(ticket, decision, Some(&cookie))
+    }
+
+    async fn submit(state: AuthorizationServerHttpState, ticket: &str, decision: &str) -> Response {
+        oauth_authorize_post(State(state), submission_request(ticket, decision)).await
+    }
+
+    async fn approval_ticket(
+        state: AuthorizationServerHttpState,
+        pairs: &[(String, String)],
+    ) -> String {
+        let response = request(state, pairs).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        ticket_from_page(&response_body(response).await)
     }
 
     fn location(response: &Response) -> Option<&str> {
@@ -310,7 +491,230 @@ mod tests {
         let mut cases = vec![format!("{encoded}&client%5Fid=duplicate")];
         cases.extend(query::rejected_queries());
         for raw in cases {
-            assert!(parse_query(&raw).is_err(), "accepted {raw}");
+            let Err(()) = parse_query(&raw) else {
+                panic!("accepted malformed authorization query: {raw}");
+            };
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmation_is_secure_and_stores_only_validated_data() {
+        let store = Arc::new(InMemoryStateStore::new());
+        let mut request_pairs = pairs();
+        request_pairs.push(("approved".into(), "true".into()));
+        request_pairs.push(("decision".into(), "continue".into()));
+        let response = request(
+            state("https://provider.invalid", store.clone()),
+            &request_pairs,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        for (name, value) in [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "no-referrer"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+        ] {
+            assert_eq!(response.headers()[name], value);
+        }
+        let set_cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .expect("approval cookie")
+            .to_string();
+        let page = response_body(response).await;
+        assert!(page.contains("Client ID hostname</dt><dd><code>client.example.test"));
+        assert!(page.contains("Redirect host and port</dt><dd><code>client.example.test:443"));
+        assert!(page.contains("method=\"post\" action=\"/oauth/authorize\""));
+        assert!(!page.contains(CLIENT_STATE));
+        assert!(!page.contains(CHALLENGE));
+        assert!(!page.contains("<script"));
+        let ticket = ticket_from_page(&page);
+        assert_eq!(
+            set_cookie,
+            format!(
+                "{}; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax",
+                browser_cookie()
+            )
+        );
+        assert!(!set_cookie.contains(&ticket));
+        let ticket = OAuthAuthorizationApprovalTicket::from_bytes(
+            URL_SAFE_NO_PAD
+                .decode(ticket)
+                .expect("ticket")
+                .try_into()
+                .expect("ticket length"),
+        );
+        let approval = store
+            .take_authorization_approval(&ticket, &browser_binding())
+            .await
+            .expect("store")
+            .expect("approval");
+        assert_eq!(approval.client_id, CLIENT_ID);
+        assert_eq!(approval.client_name, "Test Client");
+        assert_eq!(approval.redirect_uri, REDIRECT_URI);
+        assert_eq!(approval.client_state.as_deref(), Some(CLIENT_STATE));
+        assert_eq!(approval.code_challenge, CHALLENGE);
+        assert_eq!(approval.resource, RESOURCE);
+
+        let loopback = confirmation::response(
+            &OAuthAuthorizationApprovalTicket::from_bytes([6; 32]),
+            "Local Test Client",
+            CLIENT_ID,
+            &Url::parse("http://127.0.0.1:14554/oauth/callback").expect("loopback redirect"),
+            &browser_binding(),
+            false,
+        )
+        .expect("page");
+        let loopback_cookie = loopback.headers()[header::SET_COOKIE]
+            .to_str()
+            .expect("loopback approval cookie")
+            .to_string();
+        let page = response_body(loopback).await;
+        assert!(page.contains("<bdi>Local Test Client</bdi>"));
+        assert!(page.contains("127.0.0.1:14554"));
+        assert!(page.contains("Local redirect warning"));
+        assert_eq!(
+            loopback_cookie,
+            format!(
+                "coral_oauth_approval={}; Path=/; Max-Age=300; HttpOnly; SameSite=Lax",
+                URL_SAFE_NO_PAD.encode(BROWSER_BINDING)
+            )
+        );
+        assert!(!loopback_cookie.contains("; Secure"));
+
+        let escaped = confirmation::response(
+            &OAuthAuthorizationApprovalTicket::from_bytes([7; 32]),
+            "</bdi><script>alert(\"x\")</script>&'",
+            CLIENT_ID,
+            &Url::parse(REDIRECT_URI).expect("redirect"),
+            &browser_binding(),
+            true,
+        )
+        .expect("page");
+        let escaped = response_body(escaped).await;
+        assert!(!escaped.contains("</bdi><script>"));
+        assert!(escaped.contains("&lt;/bdi&gt;&lt;script&gt;alert(&quot;x&quot;)"));
+    }
+
+    #[tokio::test]
+    async fn submission_form_is_strict_bounded_and_ignores_no_query_bypass() {
+        let ticket = URL_SAFE_NO_PAD.encode([7; 32]);
+        let malformed = [
+            format!("ticket={ticket}"),
+            format!("ticket={ticket}&decision=continue&extra=x"),
+            format!("ticket={ticket}&ticket={ticket}&decision=continue"),
+            format!("ticket={ticket}&decision=approve"),
+            format!("ticket={ticket}=&decision=continue"),
+            "x".repeat(257),
+        ];
+        for body in malformed {
+            let request = Request::builder()
+                .uri(format!(
+                    "/oauth/authorize?ticket={ticket}&decision=continue"
+                ))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .expect("request");
+            let Err(()) = confirmation::parse_submission(request, AUTH_ISSUER, true).await else {
+                panic!("accepted malformed approval submission");
+            };
+        }
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(format!("ticket={ticket}&decision=continue")))
+            .expect("request");
+        let Err(()) = confirmation::parse_submission(request, AUTH_ISSUER, true).await else {
+            panic!("accepted approval submission with the wrong content type");
+        };
+    }
+
+    #[tokio::test]
+    async fn submission_requires_same_origin_browser_binding_without_consuming_the_approval() {
+        let auth_state = state(
+            "https://provider.invalid",
+            Arc::new(InMemoryStateStore::new()),
+        );
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+
+        let missing_cookie = oauth_authorize_post(
+            State(auth_state.clone()),
+            submission_request_with_cookie(&ticket, "cancel", None),
+        )
+        .await;
+        assert_eq!(missing_cookie.status(), StatusCode::BAD_REQUEST);
+
+        let wrong_cookie = format!(
+            "__Host-coral_oauth_approval={}",
+            URL_SAFE_NO_PAD.encode([0x43; 32])
+        );
+        let mismatched_cookie = oauth_authorize_post(
+            State(auth_state.clone()),
+            submission_request_with_cookie(&ticket, "cancel", Some(&wrong_cookie)),
+        )
+        .await;
+        assert_eq!(mismatched_cookie.status(), StatusCode::BAD_REQUEST);
+
+        let mut cross_origin = submission_request(&ticket, "cancel");
+        cross_origin
+            .headers_mut()
+            .insert(header::ORIGIN, "http://127.0.0.1:65535".parse().unwrap());
+        let cross_origin = oauth_authorize_post(State(auth_state.clone()), cross_origin).await;
+        assert_eq!(cross_origin.status(), StatusCode::BAD_REQUEST);
+
+        let mut missing_origin = submission_request(&ticket, "cancel");
+        missing_origin.headers_mut().remove(header::ORIGIN);
+        let missing_origin = oauth_authorize_post(State(auth_state.clone()), missing_origin).await;
+        assert_eq!(missing_origin.status(), StatusCode::BAD_REQUEST);
+
+        let bound_browser = submit(auth_state, &ticket, "cancel").await;
+        assert_eq!(bound_browser.status(), StatusCode::FOUND);
+        assert!(
+            location(&bound_browser).is_some_and(|location| location.contains("access_denied"))
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_consent_pages_reuse_the_binding_and_remain_valid() {
+        let auth_state = state(
+            "https://provider.invalid",
+            Arc::new(InMemoryStateStore::new()),
+        );
+        let first = oauth_authorize_get(
+            State(auth_state.clone()),
+            RawQuery(Some(encode(&pairs()))),
+            HeaderMap::new(),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let cookie = set_cookie_pair(&first);
+        let first_ticket = ticket_from_page(&response_body(first).await);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, cookie.parse().expect("browser cookie"));
+        let second = oauth_authorize_get(
+            State(auth_state.clone()),
+            RawQuery(Some(encode(&pairs()))),
+            headers,
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(set_cookie_pair(&second), cookie);
+        let second_ticket = ticket_from_page(&response_body(second).await);
+        assert_ne!(first_ticket, second_ticket);
+
+        for ticket in [first_ticket, second_ticket] {
+            let response = oauth_authorize_post(
+                State(auth_state.clone()),
+                submission_request_with_cookie(&ticket, "cancel", Some(&cookie)),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::FOUND);
         }
     }
 
@@ -337,9 +741,10 @@ mod tests {
         }
 
         let raw = format!("{}&client%5Fid=raw-secret", encode(&pairs()));
-        let response = oauth_authorize(
+        let response = oauth_authorize_get(
             State(state("https://provider.invalid", store)),
             RawQuery(Some(raw)),
+            browser_headers(),
         )
         .await;
         assert!(location(&response).is_none());
@@ -356,8 +761,10 @@ mod tests {
             "http://client.example.test/callback",
         ] {
             let mut auth_state = state("https://provider.invalid", store.clone());
-            auth_state.registered_clients =
-                Arc::new(BTreeMap::from([(CLIENT_ID.into(), vec![uri.into()])]));
+            auth_state.registered_clients = Arc::new(BTreeMap::from([(
+                CLIENT_ID.into(),
+                ("Test Client".into(), vec![uri.into()]),
+            )]));
             let mut request_pairs = pairs();
             replace(&mut request_pairs, "redirect_uri", Some(uri));
             let response = request(auth_state, &request_pairs).await;
@@ -414,11 +821,99 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn success_stores_single_use_session_before_provider_redirect() {
+    async fn cancel_is_trusted_once_while_replay_and_restart_are_direct_errors() {
+        let store = Arc::new(InMemoryStateStore::new());
+        let auth_state = state("https://provider.invalid", store);
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        let cancelled = submit(auth_state.clone(), &ticket, "cancel").await;
+        let callback = Url::parse(location(&cancelled).expect("client redirect")).expect("URL");
+        let query = callback.query_pairs().into_owned().collect::<Vec<_>>();
+        assert!(query.contains(&("tenant".into(), "one".into())));
+        assert!(query.contains(&("error".into(), "access_denied".into())));
+        assert!(query.contains(&("state".into(), CLIENT_STATE.into())));
+
+        let replay = submit(auth_state, &ticket, "cancel").await;
+        let restarted = submit(
+            state(
+                "https://provider.invalid",
+                Arc::new(InMemoryStateStore::new()),
+            ),
+            &ticket,
+            "continue",
+        )
+        .await;
+        for response in [replay, restarted] {
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(location(&response).is_none());
+            let body = response_body(response).await;
+            assert!(body.contains("authorization approval is invalid or expired"));
+            assert!(!body.contains(&ticket));
+            assert!(!body.contains(REDIRECT_URI));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_approval_is_a_direct_error() {
+        let auth_state = state(
+            "https://provider.invalid",
+            Arc::new(InMemoryStateStore::new()),
+        );
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        tokio::time::advance(Duration::from_mins(6)).await;
+        let response = submit(auth_state, &ticket, "continue").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_double_submit_has_one_winner() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let auth_state = state(&provider.uri(), Arc::new(InMemoryStateStore::new()));
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        let barrier = Arc::new(Barrier::new(3));
+        let spawn = |state: AuthorizationServerHttpState| {
+            let barrier = barrier.clone();
+            let ticket = ticket.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                submit(state, &ticket, "continue").await
+            })
+        };
+        let first = spawn(auth_state.clone());
+        let second = spawn(auth_state);
+        barrier.wait().await;
+        let (first, second) = tokio::join!(first, second);
+        let (first, second) = (first.expect("first submit"), second.expect("second submit"));
+        assert!(
+            matches!(
+                (first.status(), second.status()),
+                (StatusCode::FOUND, StatusCode::BAD_REQUEST)
+                    | (StatusCode::BAD_REQUEST, StatusCode::FOUND)
+            ),
+            "one submission must win"
+        );
+        assert_eq!(
+            provider.received_requests().await.expect("requests").len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_stores_single_use_session_before_provider_redirect() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let store = Arc::new(InMemoryStateStore::new());
-        let response = request(state(&provider.uri(), store.clone()), &pairs()).await;
+        let auth_state = state(&provider.uri(), store.clone());
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        assert!(
+            provider
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+        let response = submit(auth_state, &ticket, "continue").await;
         let provider_url = location(&response).expect("provider redirect");
         let query = Url::parse(provider_url)
             .expect("URL")
@@ -456,27 +951,29 @@ mod tests {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 500).await;
         let store = Arc::new(InMemoryStateStore::new());
-        let response = request(state(&provider.uri(), store.clone()), &pairs()).await;
+        let auth_state = state(&provider.uri(), store.clone());
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+        let response = submit(auth_state, &ticket, "continue").await;
         let error_location = location(&response).expect("error redirect");
         assert!(error_location.contains("error=server_error"));
         assert!(!error_location.contains(PROVIDER_SECRET));
 
-        provider.reset().await;
-        mount_discovery(&provider, 200).await;
-        let filler = OAuthAuthorizationSessionRecord {
+        let filler = OAuthAuthorizationApprovalRecord {
             client_id: CLIENT_ID.into(),
+            client_name: "Test Client".into(),
             redirect_uri: REDIRECT_URI.into(),
             client_state: None,
             code_challenge: CHALLENGE.into(),
             resource: RESOURCE.into(),
-            oidc_code_verifier: "verifier".to_string().into(),
-            oidc_nonce: "nonce".into(),
         };
-        for index in 0..4096 {
+        for index in 0_u64..4096 {
+            let mut ticket = [0; 32];
+            ticket[..8].copy_from_slice(&index.to_le_bytes());
+            let ticket = OAuthAuthorizationApprovalTicket::from_bytes(ticket);
             store
-                .store_authorization_session(&format!("filler-{index}"), filler.clone())
+                .store_authorization_approval(&ticket, &browser_binding(), filler.clone())
                 .await
-                .expect("fill store");
+                .expect("fill approval store");
         }
         let response = request(state(&provider.uri(), store), &pairs()).await;
         assert!(
@@ -506,6 +1003,7 @@ mod tests {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("client");
+        let authorize_url = format!("{}/oauth/authorize", server.endpoint_uri());
         let response = client
             .get(format!(
                 "{}/oauth/authorize?{}",
@@ -515,6 +1013,28 @@ mod tests {
             .send()
             .await
             .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .expect("approval cookie")
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .to_string();
+        let ticket = ticket_from_page(&response.text().await.expect("page"));
+        let response = client
+            .post(authorize_url)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::ORIGIN, AUTH_ISSUER)
+            .header(header::COOKIE, cookie)
+            .body(
+                form_urlencoded::Serializer::new(String::new())
+                    .extend_pairs([("ticket", ticket.as_str()), ("decision", "cancel")])
+                    .finish(),
+            )
+            .send()
+            .await
+            .expect("submit");
         assert_eq!(response.status(), StatusCode::FOUND);
         server.shutdown().await.expect("shutdown");
     }
