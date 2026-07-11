@@ -239,7 +239,6 @@ mod tests {
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
     use crate::auth::provider::{OidcProviderConfig, ProviderConfigFile};
-    use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenConfig;
     use crate::auth::state_store::{
         InMemoryStateStore, OAuthAuthorizationApprovalRecord, OAuthAuthorizationApprovalTicket,
@@ -280,16 +279,16 @@ mod tests {
             Duration::from_mins(5),
         )
         .expect("session");
-        AuthState {
-            config: Arc::new(OidcAuthConfig {
+        AuthState::new(
+            OidcAuthConfig {
                 bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
                 session: session_config,
                 providers: BTreeMap::from([("alpha".into(), provider(issuer))]),
                 oauth,
-            }),
+            },
             store,
-            provider_client: OidcProviderClient::new().expect("client"),
-        }
+        )
+        .expect("auth state")
     }
 
     fn session() -> OAuthAuthorizationSessionRecord {

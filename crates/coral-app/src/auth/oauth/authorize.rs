@@ -9,6 +9,7 @@ use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::state_store::{
     OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord,
 };
+use super::client_metadata::{OAuthClientRegistration, scope_is_exactly_supported};
 use super::{AuthState, OAuthServerConfig, oauth_client_id, oauth_client_name};
 
 mod confirmation;
@@ -32,9 +33,13 @@ pub(super) async fn oauth_authorize_get(
     else {
         return direct_error("invalid_request", "client_id and redirect_uri are required");
     };
-    let Some((client_name, callback)) =
-        registered_client(&state.config.oauth, client_id, redirect_uri)
-    else {
+    let Ok(registration) = resolve_client(&state, client_id).await else {
+        return direct_error("invalid_request", "client_id or redirect_uri is invalid");
+    };
+    let Some(callback) = registered_redirect(&registration.redirect_uris, redirect_uri) else {
+        return direct_error("invalid_request", "client_id or redirect_uri is invalid");
+    };
+    let Some(client_name) = registration.client_name else {
         return direct_error("invalid_request", "client_id or redirect_uri is invalid");
     };
     let trusted = TrustedRedirect {
@@ -67,7 +72,7 @@ pub(super) async fn oauth_authorize_get(
     if query
         .scope
         .as_deref()
-        .is_some_and(|scope| scope != oauth.scope.as_str())
+        .is_some_and(|scope| !scope_is_exactly_supported(scope, &oauth.scope))
     {
         return trusted.error("invalid_scope", "scope is not supported");
     }
@@ -222,18 +227,55 @@ fn parse_query(raw: &str) -> Result<AuthorizeQuery, ()> {
     Ok(query)
 }
 
-fn registered_client(
+async fn resolve_client(state: &AuthState, client_id: &str) -> Result<OAuthClientRegistration, ()> {
+    match configured_client(&state.config.oauth, client_id)? {
+        Some(registration) => Ok(registration),
+        None => state
+            .client_metadata_resolver
+            .resolve(client_id, &state.config.oauth.scope)
+            .await
+            .map_err(|_error| ()),
+    }
+}
+
+fn configured_client(
     oauth: &OAuthServerConfig,
     client_id: &str,
-    redirect_uri: &str,
-) -> Option<(String, Url)> {
-    oauth.clients.iter().find_map(|(name, redirect_uris)| {
-        (oauth_client_id(oauth, name) == client_id)
-            .then_some(redirect_uris)
-            .and_then(|uris| uris.iter().find(|uri| uri.as_str() == redirect_uri))
-            .and_then(|uri| Url::parse(uri).ok())
-            .map(|redirect| (oauth_client_name(name).to_string(), redirect))
-    })
+) -> Result<Option<OAuthClientRegistration>, ()> {
+    let namespace = format!("{}/oauth/clients", oauth.issuer);
+    let namespace_url = Url::parse(&namespace).map_err(|_error| ())?;
+    let Ok(client_url) = Url::parse(client_id) else {
+        return if client_id.starts_with(&namespace) {
+            Err(())
+        } else {
+            Ok(None)
+        };
+    };
+    if client_url.origin() != namespace_url.origin() {
+        return Ok(None);
+    }
+    // Never turn an untrusted client ID into an outbound request back to the
+    // authorization server itself. Same-origin IDs must exactly match a
+    // configured first-party client, independent of URL/proxy normalization.
+    let name = client_id
+        .strip_prefix(&namespace)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .ok_or(())?;
+    let redirect_uris = oauth.clients.get(name).ok_or(())?;
+    if oauth_client_id(oauth, name) != client_id {
+        return Err(());
+    }
+    Ok(Some(OAuthClientRegistration {
+        redirect_uris: redirect_uris.clone(),
+        client_name: Some(oauth_client_name(name).to_string()),
+    }))
+}
+
+fn registered_redirect(redirect_uris: &[String], redirect_uri: &str) -> Option<Url> {
+    redirect_uris
+        .iter()
+        .find(|uri| uri.as_str() == redirect_uri)
+        .and_then(|uri| Url::parse(uri).ok())
 }
 
 fn valid_s256_challenge(value: &str) -> bool {
@@ -316,6 +358,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
@@ -330,8 +373,10 @@ mod tests {
         CLI_CLIENT, CLI_REDIRECT_URI, OAuthClientConfigFile, OAuthServerConfig, OidcAuthConfig,
     };
     use super::*;
+    use crate::auth::oauth::client_metadata::{
+        ClientMetadataError, ClientMetadataResolver, OAuthClientRegistration,
+    };
     use crate::auth::provider::{OidcProviderConfig, ProviderConfigFile};
-    use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenConfig;
     use crate::auth::state_store::{
         InMemoryStateStore, OAuthAuthorizationApprovalTicket, StateStore,
@@ -341,6 +386,7 @@ mod tests {
     const RESOURCE: &str = "https://api.example.test/mcp";
     const SCOPE: &str = "coral:access";
     const CLIENT_ID: &str = "https://auth.example.test/oauth/clients/web";
+    const EXTERNAL_CLIENT_ID: &str = "https://client.example.test/oauth/client.json";
     const REDIRECT_URI: &str = "https://client.example.test/callback?tenant=one";
     const CLIENT_STATE: &str = "client-state&error=injected";
     const CHALLENGE: &str = "0123456789012345678901234567890123456789012";
@@ -358,7 +404,48 @@ mod tests {
         .expect("provider")
     }
 
-    fn state(issuer: &str, store: Arc<dyn StateStore>) -> AuthState {
+    struct FakeResolver {
+        result: Result<OAuthClientRegistration, ClientMetadataError>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ClientMetadataResolver for FakeResolver {
+        async fn resolve(
+            &self,
+            _client_id: &str,
+            _supported_scope: &str,
+        ) -> Result<OAuthClientRegistration, ClientMetadataError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.result.clone()
+        }
+    }
+
+    fn fake_resolver(
+        result: Result<OAuthClientRegistration, ClientMetadataError>,
+    ) -> (Arc<dyn ClientMetadataResolver>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Arc::new(FakeResolver {
+                result,
+                calls: calls.clone(),
+            }),
+            calls,
+        )
+    }
+
+    fn registration(redirect_uris: &[&str]) -> OAuthClientRegistration {
+        OAuthClientRegistration {
+            redirect_uris: redirect_uris.iter().map(ToString::to_string).collect(),
+            client_name: Some("external client".into()),
+        }
+    }
+
+    fn state_with_resolver(
+        issuer: &str,
+        store: Arc<dyn StateStore>,
+        resolver: Arc<dyn ClientMetadataResolver>,
+    ) -> AuthState {
         let providers = BTreeMap::from([
             ("zeta".to_string(), provider(issuer)),
             ("alpha".to_string(), provider(issuer)),
@@ -379,16 +466,23 @@ mod tests {
             Duration::from_mins(5),
         )
         .expect("session");
-        AuthState {
-            config: Arc::new(OidcAuthConfig {
+        let mut state = AuthState::new(
+            OidcAuthConfig {
                 bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
                 session,
                 providers,
                 oauth,
-            }),
+            },
             store,
-            provider_client: OidcProviderClient::new().expect("provider client"),
-        }
+        )
+        .expect("auth state");
+        state.client_metadata_resolver = resolver;
+        state
+    }
+
+    fn state(issuer: &str, store: Arc<dyn StateStore>) -> AuthState {
+        let (resolver, _calls) = fake_resolver(Err(ClientMetadataError::Fetch));
+        state_with_resolver(issuer, store, resolver)
     }
 
     fn pairs() -> Vec<(String, String)> {
@@ -609,6 +703,146 @@ mod tests {
             .body(Body::from(format!("ticket={ticket}&decision=continue")))
             .expect("request");
         assert!(confirmation::parse_submission(request).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn configured_client_bypasses_metadata_resolver() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let (resolver, calls) = fake_resolver(Err(ClientMetadataError::Fetch));
+        let response = request(
+            state_with_resolver(
+                &provider.uri(),
+                Arc::new(InMemoryStateStore::new()),
+                resolver,
+            ),
+            &pairs(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = response_body(response).await;
+        assert!(page.contains("<bdi>web</bdi>"));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert!(
+            provider
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn external_client_uses_resolved_exact_redirect() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let mut request_pairs = pairs();
+        replace(&mut request_pairs, "client_id", Some(EXTERNAL_CLIENT_ID));
+        replace(&mut request_pairs, "scope", Some("  coral:access\t"));
+        let auth_state = state_with_resolver(
+            &provider.uri(),
+            Arc::new(InMemoryStateStore::new()),
+            resolver,
+        );
+        let response = request(auth_state.clone(), &request_pairs).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = response_body(response).await;
+        assert!(page.contains("<bdi>external client</bdi>"));
+        assert!(page.contains("Client ID hostname</dt><dd><code>client.example.test"));
+        let ticket = ticket_from_page(&page);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(
+            provider
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+
+        let response = submit(auth_state, &ticket, "continue").await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(location(&response).is_some_and(|url| url.starts_with(&provider.uri())));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn external_undeclared_redirect_is_never_trusted() {
+        let (resolver, calls) = fake_resolver(Ok(registration(&[
+            "https://client.example.test/other-callback",
+        ])));
+        let mut request_pairs = pairs();
+        replace(&mut request_pairs, "client_id", Some(EXTERNAL_CLIENT_ID));
+        let response = request(
+            state_with_resolver(
+                "https://provider.invalid",
+                Arc::new(InMemoryStateStore::new()),
+                resolver,
+            ),
+            &request_pairs,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_or_unknown_owned_client_ids_never_fetch_metadata() {
+        let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        for client_id in [
+            format!("{AUTH_ISSUER}/oauth/clients"),
+            format!("{AUTH_ISSUER}/oauth/clients/"),
+            format!("{AUTH_ISSUER}/oauth/clients/unknown"),
+            format!("{AUTH_ISSUER}/oauth/clients/web/extra"),
+            format!("{AUTH_ISSUER}/oauth/clients/%77eb"),
+            format!("{AUTH_ISSUER}/oauth/clients?secret=owned-query"),
+            "https://AUTH.EXAMPLE.TEST/oauth/clients/unknown".into(),
+            "https://auth.example.test:443/oauth/clients/unknown".into(),
+            "https://auth.example.test/oauth/%63lients/unknown".into(),
+            "https://auth.example.test/oauth/clients%2Funknown".into(),
+            "https://auth.example.test/client.json".into(),
+        ] {
+            let mut request_pairs = pairs();
+            replace(&mut request_pairs, "client_id", Some(&client_id));
+            let response = request(
+                state_with_resolver(
+                    "https://provider.invalid",
+                    Arc::new(InMemoryStateStore::new()),
+                    resolver.clone(),
+                ),
+                &request_pairs,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{client_id}");
+            assert!(location(&response).is_none());
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn resolver_failures_are_generic_direct_errors() {
+        let (resolver, calls) = fake_resolver(Err(ClientMetadataError::HttpStatus));
+        let client_id = format!("{EXTERNAL_CLIENT_ID}?secret=attacker-url-secret");
+        let mut request_pairs = pairs();
+        replace(&mut request_pairs, "client_id", Some(&client_id));
+        let response = request(
+            state_with_resolver(
+                "https://provider.invalid",
+                Arc::new(InMemoryStateStore::new()),
+                resolver,
+            ),
+            &request_pairs,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+        let body = to_bytes(response.into_body(), 4096).await.expect("body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("invalid_request"));
+        assert!(!body.contains("attacker-url-secret"));
+        assert!(!body.contains("HttpStatus"));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

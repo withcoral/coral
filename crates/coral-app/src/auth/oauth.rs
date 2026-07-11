@@ -28,6 +28,8 @@ mod callback;
 mod client_metadata;
 mod token;
 
+use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
+
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 25 } else { 5_000 });
 const CLI_CLIENT: &str = "coral-cli";
@@ -101,11 +103,7 @@ impl OidcAuthConfig {
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningOidcAuthServer, String> {
         let bind_addr = self.bind_addr;
-        let state = AuthState {
-            config: Arc::new(self),
-            store: Arc::new(InMemoryStateStore::new()),
-            provider_client: OidcProviderClient::new().map_err(|error| error.to_string())?,
-        };
+        let state = AuthState::new(self, Arc::new(InMemoryStateStore::new()))?;
         let router = Router::new()
             .route(
                 "/.well-known/oauth-authorization-server",
@@ -201,6 +199,20 @@ struct AuthState {
     config: Arc<OidcAuthConfig>,
     store: Arc<dyn StateStore>,
     provider_client: OidcProviderClient,
+    client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
+}
+
+impl AuthState {
+    fn new(config: OidcAuthConfig, store: Arc<dyn StateStore>) -> Result<Self, String> {
+        Ok(Self {
+            config: Arc::new(config),
+            store,
+            provider_client: OidcProviderClient::new().map_err(|error| error.to_string())?,
+            client_metadata_resolver: Arc::new(
+                HttpClientMetadataResolver::new().map_err(|error| error.to_string())?,
+            ),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -223,7 +235,7 @@ async fn authorization_server_metadata(State(state): State<AuthState>) -> impl I
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": [oauth.scope],
         "resource": oauth.resource,
-        "client_id_metadata_document_supported": false,
+        "client_id_metadata_document_supported": true,
     }))
 }
 
@@ -539,7 +551,7 @@ mod tests {
         let metadata_url = format!("{endpoint}/.well-known/oauth-authorization-server");
         let metadata = json(&client, metadata_url).await;
         assert_eq!(metadata["scopes_supported"][0], "coral:mcp");
-        assert_eq!(metadata["client_id_metadata_document_supported"], false);
+        assert_eq!(metadata["client_id_metadata_document_supported"], true);
         let cli = json(&client, format!("{endpoint}/oauth/clients/coral-cli")).await;
         assert_eq!(cli["redirect_uris"][0], CLI_REDIRECT_URI);
         assert_eq!(cli["scope"], "coral:mcp");

@@ -269,7 +269,6 @@ mod tests {
 
     use super::super::{OAuthServerConfig, OidcAuthConfig};
     use super::*;
-    use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenConfig;
     use crate::auth::state_store::{InMemoryStateStore, OAuthAuthorizationCodeRecord, StateStore};
 
@@ -293,16 +292,16 @@ mod tests {
             clients: BTreeMap::new(),
         };
         let store = Arc::new(InMemoryStateStore::new());
-        let state = AuthState {
-            config: Arc::new(OidcAuthConfig {
+        let state = AuthState::new(
+            OidcAuthConfig {
                 bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
                 session: session.clone(),
                 providers: BTreeMap::new(),
                 oauth,
-            }),
-            store: store.clone(),
-            provider_client: OidcProviderClient::new().expect("client"),
-        };
+            },
+            store.clone(),
+        )
+        .expect("auth state");
         (state, store, session)
     }
 
