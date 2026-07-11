@@ -97,6 +97,7 @@ sha2 = "0.10"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "postgres", "runtime-tokio", "sqlite", "tls-rustls"] }
 sqlparser = "0.59.0"
 strsim = "0.11"
+subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
