@@ -3,54 +3,47 @@
 //! `coral-cli` is allowed to read process environment when the CLI surface
 //! explicitly defines an env-backed workflow.
 
+use std::env::VarError;
+
 const CORAL_ENDPOINT_ENV: &str = "CORAL_ENDPOINT";
 const CORAL_AUTH_TOKEN_ENV: &str = "CORAL_AUTH_TOKEN";
 
-/// Resolved endpoint and bearer credential for one CLI invocation.
-#[derive(Default)]
-pub(crate) struct ConnectionOptions {
-    pub(crate) endpoint: Option<String>,
-    pub(crate) token: Option<String>,
+/// A fixed CLI connection environment variable contained non-Unicode data.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("environment variable {name} contains non-Unicode data")]
+pub(crate) struct ConnectionEnvError {
+    name: &'static str,
 }
 
-/// Resolves CLI connection flags over their environment fallbacks.
+/// Reads the optional remote Coral endpoint without collapsing an explicit
+/// empty value into absence.
 #[expect(
     clippy::disallowed_methods,
-    reason = "CORAL_ENDPOINT and CORAL_AUTH_TOKEN are public CLI connection settings."
+    reason = "CORAL_ENDPOINT is a public CLI connection setting."
 )]
-#[must_use]
-pub(crate) fn connection_options(
-    cli_endpoint: Option<String>,
-    cli_token: Option<String>,
-) -> ConnectionOptions {
-    resolve_connection_options(cli_endpoint, cli_token, |name| std::env::var(name).ok())
+pub(crate) fn endpoint() -> Result<Option<String>, ConnectionEnvError> {
+    read_connection_env(CORAL_ENDPOINT_ENV, |name| std::env::var(name))
 }
 
-fn resolve_connection_options(
-    cli_endpoint: Option<String>,
-    cli_token: Option<String>,
-    mut read_env: impl FnMut(&str) -> Option<String>,
-) -> ConnectionOptions {
-    ConnectionOptions {
-        endpoint: resolve_value(cli_endpoint, CORAL_ENDPOINT_ENV, &mut read_env),
-        token: resolve_value(cli_token, CORAL_AUTH_TOKEN_ENV, &mut read_env),
+/// Reads the optional bearer token without collapsing an explicit empty value
+/// into absence.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CORAL_AUTH_TOKEN is a public CLI connection setting."
+)]
+pub(crate) fn auth_token() -> Result<Option<String>, ConnectionEnvError> {
+    read_connection_env(CORAL_AUTH_TOKEN_ENV, |name| std::env::var(name))
+}
+
+fn read_connection_env(
+    name: &'static str,
+    read_env: impl FnOnce(&str) -> Result<String, VarError>,
+) -> Result<Option<String>, ConnectionEnvError> {
+    match read_env(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_value)) => Err(ConnectionEnvError { name }),
     }
-}
-
-fn resolve_value(
-    cli_value: Option<String>,
-    env_name: &str,
-    read_env: &mut impl FnMut(&str) -> Option<String>,
-) -> Option<String> {
-    match cli_value {
-        Some(value) => non_empty_trimmed(&value),
-        None => read_env(env_name).and_then(|value| non_empty_trimmed(&value)),
-    }
-}
-
-fn non_empty_trimmed(value: &str) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
 }
 
 const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
@@ -80,38 +73,38 @@ pub fn workspace() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use super::*;
 
     #[test]
-    fn connection_flags_override_environment() {
-        let options = resolve_connection_options(
-            Some(" https://flag.example ".to_string()),
-            Some(" flag-token ".to_string()),
-            |name| match name {
-                CORAL_ENDPOINT_ENV => Some("https://env.example".to_string()),
-                CORAL_AUTH_TOKEN_ENV => Some("env-token".to_string()),
-                _ => None,
-            },
+    fn connection_environment_preserves_missing_empty_and_whitespace_values() {
+        assert_eq!(
+            read_connection_env(CORAL_ENDPOINT_ENV, |_| Err(VarError::NotPresent)),
+            Ok(None)
         );
-
-        assert_eq!(options.endpoint.as_deref(), Some("https://flag.example"));
-        assert_eq!(options.token.as_deref(), Some("flag-token"));
+        assert_eq!(
+            read_connection_env(CORAL_ENDPOINT_ENV, |_| Ok(String::new())),
+            Ok(Some(String::new()))
+        );
+        assert_eq!(
+            read_connection_env(CORAL_ENDPOINT_ENV, |_| Ok(" \t ".to_string())),
+            Ok(Some(" \t ".to_string()))
+        );
     }
 
     #[test]
-    fn empty_explicit_token_suppresses_environment_token() {
-        let options = resolve_connection_options(None, Some("  ".to_string()), |name| {
-            (name == CORAL_AUTH_TOKEN_ENV).then(|| "env-token".to_string())
-        });
+    fn non_unicode_connection_environment_error_is_value_redacted() {
+        let error = read_connection_env(CORAL_AUTH_TOKEN_ENV, |name| {
+            assert_eq!(name, CORAL_AUTH_TOKEN_ENV);
+            Err(VarError::NotUnicode(OsString::from(
+                "token-secret-sentinel",
+            )))
+        })
+        .expect_err("non-Unicode value");
 
-        assert_eq!(options.token, None);
-    }
-
-    #[test]
-    fn whitespace_environment_values_are_unset() {
-        let options = resolve_connection_options(None, None, |_| Some(" \t\n ".to_string()));
-
-        assert_eq!(options.endpoint, None);
-        assert_eq!(options.token, None);
+        let rendered = format!("{error:?} {error}");
+        assert!(rendered.contains(CORAL_AUTH_TOKEN_ENV));
+        assert!(!rendered.contains("token-secret-sentinel"));
     }
 }

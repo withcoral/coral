@@ -44,13 +44,18 @@ coral --endpoint https://coral.example.com --token "$TOKEN" sql "select 1"
 CORAL_ENDPOINT=https://coral.example.com CORAL_AUTH_TOKEN="$TOKEN" coral source list
 ```
 
-`--endpoint` overrides `CORAL_ENDPOINT`, and `--token` overrides
-`CORAL_AUTH_TOKEN`. A token is optional, so endpoints that do not require
-authentication remain supported. Prefer `CORAL_AUTH_TOKEN` where command-line
-arguments may be visible to other users or process-inspection tools.
+`--endpoint` overrides `CORAL_ENDPOINT`. An empty flag or environment value
+selects local mode. For a remote endpoint, `--token` overrides
+`CORAL_AUTH_TOKEN`; when both are absent, Coral uses a stored login only when it
+was issued for that exact canonical endpoint. An empty token flag or environment
+value explicitly disables authentication and suppresses stored-login fallback.
+Unauthenticated remote endpoints remain supported. Prefer `CORAL_AUTH_TOKEN`
+where command-line arguments may be visible to other users or process-inspection
+tools.
 
-Coral sends bearer credentials only over HTTPS. Plaintext HTTP is accepted
-with a token only for loopback endpoints such as `http://127.0.0.1:1457`.
+Remote endpoints must be root HTTPS URLs. Plaintext HTTP is accepted only for
+explicit loopback endpoints such as `http://127.0.0.1:1457`, whether or not a
+token is used.
 
 ## `coral sql`
 

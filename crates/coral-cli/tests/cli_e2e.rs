@@ -14,7 +14,6 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-#[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
     AddFunctionResponse, CatalogRebuildResult, DiscoverSourcesResponse, ExecuteSqlResponse,
@@ -24,6 +23,7 @@ use coral_api::v1::{
     SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function,
     search_clear_target, search_maintenance_result,
 };
+use coral_client::local::ServerBuilder;
 use tempfile::tempdir;
 use tonic::Code;
 
@@ -62,6 +62,152 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect()
+}
+
+fn write_login_record(config: &std::path::Path, endpoint: &str, token: &str, resource: &str) {
+    let auth_dir = config.join("auth");
+    std::fs::create_dir_all(&auth_dir).expect("auth dir");
+    std::fs::write(
+        auth_dir.join("login.json"),
+        serde_json::json!({
+            "version": 1,
+            "endpoint": endpoint,
+            "issuer": "https://login.example.test",
+            "resource": resource,
+            "access_token": token
+        })
+        .to_string(),
+    )
+    .expect("login record");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stored_login_requires_https_and_empty_token_suppresses_it() {
+    let server_config = tempdir().expect("server config");
+    std::fs::write(server_config.path().join("session.key"), [b'k'; 32]).expect("session key");
+    std::fs::write(
+        server_config.path().join("config.toml"),
+        r#"
+[trace_history]
+enabled = false
+
+[auth.session]
+issuer = "https://login.example.test"
+audience = "https://coral.example.test/mcp"
+signing_key_file = "session.key"
+"#,
+    )
+    .expect("server config");
+    let (server, _companions) = ServerBuilder::configured_standalone_grpc()
+        .with_config_dir(server_config.path())
+        .with_noop_feedback_uploads()
+        .prepare_for_serve()
+        .expect("prepare server");
+    let server = server.start().await.expect("server");
+    let client_config = tempdir().expect("client config");
+    write_login_record(
+        client_config.path(),
+        server.endpoint_uri(),
+        "stored-token",
+        "https://coral.example.test/mcp",
+    );
+
+    let stored = Command::cargo_bin("coral")
+        .expect("cargo bin")
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env_remove("CORAL_AUTH_TOKEN")
+        .env("CORAL_CONFIG_DIR", client_config.path())
+        .args(["workspace", "list"])
+        .assert()
+        .failure();
+    let stored_stderr = String::from_utf8_lossy(&stored.get_output().stderr);
+    assert!(
+        stored_stderr.contains("authorization metadata requires an HTTPS endpoint"),
+        "unexpected stored-login failure: {stored_stderr}"
+    );
+
+    let suppressed = Command::cargo_bin("coral")
+        .expect("cargo bin")
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_AUTH_TOKEN", "")
+        .env("CORAL_CONFIG_DIR", client_config.path())
+        .args(["workspace", "list"])
+        .assert()
+        .failure();
+    let suppressed_stderr = String::from_utf8_lossy(&suppressed.get_output().stderr);
+    assert!(
+        suppressed_stderr.contains("unauthenticated: authentication required"),
+        "unexpected empty-token failure: {suppressed_stderr}"
+    );
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[test]
+fn local_mode_ignores_token_environment_and_login_store() {
+    let config = tempdir().expect("config");
+    let auth_dir = config.path().join("auth");
+    std::fs::create_dir(&auth_dir).expect("auth dir");
+    std::fs::write(auth_dir.join("login.json"), "not-json").expect("corrupt login");
+    #[cfg(unix)]
+    let token = {
+        use std::os::unix::ffi::OsStringExt as _;
+        std::ffi::OsString::from_vec(b"local-token-secret-\xff".to_vec())
+    };
+    #[cfg(not(unix))]
+    let token = std::ffi::OsString::from("invalid token that must be ignored");
+
+    Command::cargo_bin("coral")
+        .expect("cargo bin")
+        .env("CORAL_ENDPOINT", "https://unreachable.example.test")
+        .env("CORAL_AUTH_TOKEN", token)
+        .env("CORAL_CONFIG_DIR", config.path())
+        .args(["--endpoint", "", "workspace", "list"])
+        .assert()
+        .success();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_environment_and_corrupt_login_fail_redacted_before_rpc() {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let server = MockServer::start().await;
+    for (name, value, sentinel) in [
+        (
+            "CORAL_ENDPOINT",
+            b"endpoint-secret-\xff".to_vec(),
+            "endpoint-secret",
+        ),
+        (
+            "CORAL_AUTH_TOKEN",
+            b"token-secret-\xff".to_vec(),
+            "token-secret",
+        ),
+    ] {
+        let failed = server
+            .cmd()
+            .env(name, std::ffi::OsString::from_vec(value))
+            .args(["workspace", "list"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&failed.get_output().stderr);
+        assert!(stderr.contains(name), "missing variable name: {stderr}");
+        assert!(!stderr.contains(sentinel), "secret leaked: {stderr}");
+    }
+
+    write_login_record(
+        server.config_dir(),
+        server.endpoint_uri(),
+        "token-secret-sentinel with-space",
+        "https://resource-secret.example.test/mcp",
+    );
+    let corrupt = server.cmd().args(["workspace", "list"]).assert().failure();
+    let stderr = String::from_utf8_lossy(&corrupt.get_output().stderr);
+    assert!(stderr.contains("invalid or unsupported"), "{stderr}");
+    assert!(!stderr.contains("token-secret") && !stderr.contains("resource-secret"));
+    assert!(server.list_workspaces_requests().is_empty());
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

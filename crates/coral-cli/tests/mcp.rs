@@ -153,6 +153,7 @@ async fn start_mcp_client_with_args(
             cmd.arg("mcp-stdio")
                 .args(args)
                 .env("CORAL_ENDPOINT", server.endpoint_uri())
+                .env_remove("CORAL_AUTH_TOKEN")
                 .env("CORAL_CONFIG_DIR", server.config_dir());
         }),
     )?;
@@ -388,6 +389,7 @@ origin = "bundled"
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env_remove("CORAL_AUTH_TOKEN")
         .env("CORAL_CONFIG_DIR", server.config_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -492,6 +494,7 @@ storage = "file"
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env_remove("CORAL_AUTH_TOKEN")
         .env("CORAL_CONFIG_DIR", &config_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -581,6 +584,7 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
         .arg("mcp-stdio")
         .args(["--workspace", "work"])
         .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env_remove("CORAL_AUTH_TOKEN")
         .env("CORAL_CONFIG_DIR", server.config_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1124,6 +1128,7 @@ future_flag = true
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env_remove("CORAL_AUTH_TOKEN")
         .env("CORAL_CONFIG_DIR", server.config_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

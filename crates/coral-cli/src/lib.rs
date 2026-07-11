@@ -80,10 +80,10 @@ struct Cli {
 
 #[derive(Args)]
 struct ConnectionArgs {
-    /// Connect to an existing Coral gRPC endpoint. Overrides `CORAL_ENDPOINT`.
+    /// Connect to an existing Coral gRPC endpoint. Overrides `CORAL_ENDPOINT`; empty is local.
     #[arg(long, value_name = "URI", global = true)]
     endpoint: Option<String>,
-    /// Send a bearer token to the Coral endpoint. Overrides `CORAL_AUTH_TOKEN`.
+    /// Send a bearer token. Overrides `CORAL_AUTH_TOKEN` and stored login; empty disables auth.
     #[arg(long, value_name = "TOKEN", global = true)]
     token: Option<String>,
 }
@@ -677,7 +677,10 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
                 feature_overrides: feature_overrides.clone(),
-                connection: env::connection_options(connection.endpoint, connection.token),
+                connection: bootstrap::ConnectionOverrides {
+                    endpoint: connection.endpoint,
+                    token: connection.token,
+                },
             })
             .await
             .map_err(anyhow::Error::from)?;

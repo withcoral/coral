@@ -1537,6 +1537,7 @@ impl MockServer {
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
+        cmd.env_remove("CORAL_AUTH_TOKEN");
         cmd.env("CORAL_CONFIG_DIR", self.config_dir.path());
         cmd
     }
