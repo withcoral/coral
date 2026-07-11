@@ -147,13 +147,22 @@ fn validate_configuration(
     if redirect_uri.scheme() != "http"
         || !redirect_uri.username().is_empty()
         || redirect_uri.password().is_some()
-        || redirect_uri.query().is_some()
         || redirect_uri.fragment().is_some()
         || !url_host_is_loopback(redirect_uri)
     {
         return Err(OAuthLoopbackError::InvalidConfiguration(
-            "redirect URI must be an HTTP loopback URL without credentials, query, or fragment"
+            "redirect URI must be an HTTP loopback URL without credentials or a fragment"
                 .to_string(),
+        ));
+    }
+    if redirect_uri.query_pairs().any(|(key, _value)| {
+        matches!(
+            key.as_ref(),
+            "state" | "code" | "error" | "error_description"
+        )
+    }) {
+        return Err(OAuthLoopbackError::InvalidConfiguration(
+            "redirect URI query must not include OAuth response parameters".to_string(),
         ));
     }
     if state.is_empty() {
@@ -277,7 +286,16 @@ fn parse_request_inner(raw: &[u8], expected: &ExpectedCallback) -> Result<Parsed
     if callback.path() != expected.redirect_uri.path() {
         return Ok(ParsedCallback::Ignored(ResponseKind::NotFound));
     }
-    let params = callback.query_pairs().into_owned().fold(
+    let callback_pairs = callback.query_pairs().into_owned().collect::<Vec<_>>();
+    let expected_pairs = expected
+        .redirect_uri
+        .query_pairs()
+        .into_owned()
+        .collect::<Vec<_>>();
+    if !contains_query_pairs(&callback_pairs, &expected_pairs) {
+        return Err(());
+    }
+    let params = callback_pairs.into_iter().fold(
         BTreeMap::<String, Vec<String>>::new(),
         |mut params, (key, value)| {
             params.entry(key).or_default().push(value);
@@ -305,6 +323,23 @@ fn parse_request_inner(raw: &[u8], expected: &ExpectedCallback) -> Result<Parsed
         )),
         _ => Err(()),
     }
+}
+
+fn contains_query_pairs(actual: &[(String, String)], expected: &[(String, String)]) -> bool {
+    let mut remaining = BTreeMap::<(String, String), usize>::new();
+    for pair in actual {
+        *remaining.entry(pair.clone()).or_default() += 1;
+    }
+    for pair in expected {
+        let Some(count) = remaining.get_mut(pair) else {
+            return false;
+        };
+        if *count == 0 {
+            return false;
+        }
+        *count -= 1;
+    }
+    true
 }
 
 fn parse_headers<'a>(
@@ -468,6 +503,34 @@ mod tests {
                 ),
                 "accepted {target}"
             );
+        }
+    }
+
+    #[test]
+    fn parser_retains_authored_query_pairs_without_requiring_order() {
+        let expected = expected(
+            "http://127.0.0.1:14554/oauth/callback?tenant=one&mode=cli&tenant=one",
+            "state",
+        );
+        assert!(matches!(
+            parse_request(
+                &request(
+                    "/oauth/callback?state=state&tenant=one&code=code-1&mode=cli&tenant=one",
+                    "",
+                ),
+                &expected,
+            ),
+            ParsedCallback::Terminal(OAuthCallbackOutcome::AuthorizationCode(code))
+                if code == "code-1"
+        ));
+        for target in [
+            "/oauth/callback?state=state&tenant=one&code=code-1&mode=cli",
+            "/oauth/callback?state=state&tenant=one&code=code-1&mode=other&tenant=one",
+        ] {
+            assert!(matches!(
+                parse_request(&request(target, ""), &expected),
+                ParsedCallback::Ignored(ResponseKind::BadRequest)
+            ));
         }
     }
 

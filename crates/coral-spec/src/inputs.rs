@@ -1355,6 +1355,21 @@ fn redirect_bind_port(
             "{context} must use http"
         )));
     }
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(ManifestError::validation(format!(
+            "{context} must not include credentials or a fragment"
+        )));
+    }
+    if url.query_pairs().any(|(key, _value)| {
+        matches!(
+            key.as_ref(),
+            "state" | "code" | "error" | "error_description"
+        )
+    }) {
+        return Err(ManifestError::validation(format!(
+            "{context} query must not include OAuth response parameters"
+        )));
+    }
     let host = url.host_str().unwrap_or_default();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(ManifestError::validation(format!(
