@@ -7,8 +7,8 @@
 
 use std::fs;
 
-use coral_api::v1::ListUserOwnedIdentitiesRequest;
-use coral_client::{AppClient, local::ServerBuilder};
+use coral_api::v1::{ListUserOwnedIdentitiesRequest, ListWorkspaceOwnedIdentitiesRequest};
+use coral_client::{AppClient, default_workspace, local::ServerBuilder};
 use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
 use tonic::Request;
@@ -43,6 +43,15 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
         .expect("keyless Postgres supports safe identity reads")
         .into_inner();
     assert!(identities.identities.is_empty());
+    let workspace_identities = app
+        .workspace_identity_client()
+        .list_workspace_owned_identities(Request::new(ListWorkspaceOwnedIdentitiesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("keyless Postgres supports safe workspace identity reads")
+        .into_inner();
+    assert!(workspace_identities.identities.is_empty());
     assert_postgres_db_is_migrated(&database_url).await;
 
     server.shutdown().await.expect("shutdown server");

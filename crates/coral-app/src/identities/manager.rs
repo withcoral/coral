@@ -118,10 +118,6 @@ impl IdentityManager {
     }
 
     /// Create or replace a workspace-owned fixed-token identity using workspace-first resolution.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "B4i wires the workspace identity service.")
-    )]
     pub(crate) async fn create_or_replace_workspace_fixed_token(
         &self,
         workspace: &WorkspaceName,
@@ -222,8 +218,11 @@ impl IdentityManager {
         &self,
         owner: &IdentityOwner,
     ) -> Result<Vec<IdentityRecord>, AppError> {
-        let mut db = self.db.as_ref();
-        Ok(db.identities().list_for_owner(owner).await?)
+        let mut tx = self.db.begin_read_snapshot().await?;
+        owner_workspace_created_at(&mut tx, owner).await?;
+        let records = tx.identities().list_for_owner(owner).await?;
+        tx.commit().await?;
+        Ok(records)
     }
 
     /// Get safe persisted fields for one identity, including an orphaned identity.
@@ -232,12 +231,15 @@ impl IdentityManager {
         owner: &IdentityOwner,
         identity_name: &str,
     ) -> Result<IdentityRecord, AppError> {
+        if owner.workspace_name().is_none() {
+            IdentityName::parse(identity_name)?;
+        }
+        let mut tx = self.db.begin_read_snapshot().await?;
+        owner_workspace_created_at(&mut tx, owner).await?;
         let name = IdentityName::parse(identity_name)?;
-        let mut db = self.db.as_ref();
-        db.identities()
-            .load_optional(owner, &name)
-            .await?
-            .ok_or_else(|| identity_not_found(&name))
+        let record = tx.identities().load_optional(owner, &name).await?;
+        tx.commit().await?;
+        record.ok_or_else(|| identity_not_found(&name))
     }
 
     /// Delete one identity and its cascading encrypted document.
@@ -246,9 +248,11 @@ impl IdentityManager {
         owner: &IdentityOwner,
         identity_name: &str,
     ) -> Result<(), AppError> {
-        let name = IdentityName::parse(identity_name)?;
+        if owner.workspace_name().is_none() {
+            IdentityName::parse(identity_name)?;
+        }
         for _ in 0..MAX_MUTATION_ATTEMPTS {
-            match self.try_delete(owner, &name).await {
+            match self.try_delete(owner, identity_name).await {
                 Ok(()) => return Ok(()),
                 Err(AppError::RetryableTransactionConflict) => {
                     tokio::task::yield_now().await;
@@ -259,9 +263,11 @@ impl IdentityManager {
         Err(AppError::RetryableTransactionConflict)
     }
 
-    async fn try_delete(&self, owner: &IdentityOwner, name: &IdentityName) -> Result<(), AppError> {
+    async fn try_delete(&self, owner: &IdentityOwner, identity_name: &str) -> Result<(), AppError> {
         let mut tx = self.db.begin_serializable().await?;
-        let deleted = match tx.identities().delete(owner, name).await {
+        owner_workspace_created_at(&mut tx, owner).await?;
+        let name = IdentityName::parse(identity_name)?;
+        let deleted = match tx.identities().delete(owner, &name).await {
             Ok(deleted) => deleted,
             Err(error) => {
                 tx.rollback().await?;
@@ -270,7 +276,7 @@ impl IdentityManager {
         };
         if !deleted {
             tx.rollback().await?;
-            return Err(identity_not_found(name));
+            return Err(identity_not_found(&name));
         }
         tx.commit().await?;
         Ok(())

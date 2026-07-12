@@ -22,6 +22,7 @@ use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::v1::workspace_identity_service_server::WorkspaceIdentityServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
@@ -56,8 +57,8 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
-use crate::identities::IdentityService;
 use crate::identities::manager::IdentityManager;
+use crate::identities::{IdentityService, WorkspaceIdentityService};
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::identity_specs::IdentitySpecService;
 use crate::identity_specs::manager::IdentitySpecManager;
@@ -606,9 +607,10 @@ async fn start_server(
         feedback,
     } = managers;
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
-    let workspace_service = WorkspaceService::new(workspace);
+    let workspace_service = WorkspaceService::new(workspace.clone());
     let identity_spec_service = IdentitySpecService::new(identity_spec);
-    let identity_service = IdentityService::new(identity);
+    let identity_service = IdentityService::new(identity.clone());
+    let workspace_identity_service = WorkspaceIdentityService::new(identity, workspace);
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
     let search_service = SearchService::new(search);
@@ -625,6 +627,10 @@ async fn start_server(
         )
         .add_service(
             IdentityServiceServer::new(identity_service)
+                .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
+        )
+        .add_service(
+            WorkspaceIdentityServiceServer::new(workspace_identity_service)
                 .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(
