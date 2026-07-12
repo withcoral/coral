@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coral_api::v1::create_user_owned_identity_response::Event as UserCreateEvent;
@@ -162,16 +163,24 @@ async fn user_identity_service_is_scoped_validated_and_restart_safe() {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "end-to-end OAuth lifecycle contract")]
 async fn oauth_identity_creation_streams_ordered_user_and_workspace_events() {
     let temp = TempDir::new().expect("temp dir");
-    let (server, app) = start(&temp.path().join("coral-config")).await;
-    let workspace = create_workspace(&app, "oauth_workspace").await;
+    let config_dir = temp.path().join("coral-config");
+    let (server, app) = start(&config_dir).await;
+    let workspace = create_workspace(&app, "oauth_owner").await;
+    let other_workspace = create_workspace(&app, "oauth_other").await;
+    let colliding_owner_key = workspace.name.clone();
+    let identity_name = "same-oauth";
     let spec = "shared_oauth";
     let provider = oauth_fixture(&app, &workspace, spec).await;
-
     let user_events = app
         .identity_client()
-        .create_user_owned_identity(user_oauth_request("user-oauth", spec, "alice"))
+        .create_user_owned_identity(user_oauth_request(
+            identity_name,
+            spec,
+            &colliding_owner_key,
+        ))
         .await
         .expect("create user OAuth identity")
         .into_inner()
@@ -191,7 +200,8 @@ async fn oauth_identity_creation_streams_ordered_user_and_workspace_events() {
     assert!(user.owner_workspace.is_none());
     assert!(user.identity_spec_workspace.is_none());
 
-    let workspace_request = workspace_oauth_request(&workspace, "shared-oauth", spec, "bob");
+    let workspace_request =
+        workspace_oauth_request(&workspace, identity_name, spec, "workspace-caller");
     let workspace_events = app
         .workspace_identity_client()
         .create_workspace_owned_identity(workspace_request)
@@ -258,6 +268,180 @@ async fn oauth_identity_creation_streams_ordered_user_and_workspace_events() {
         assert!(!public_responses.contains(secret));
     }
     server.shutdown().await.expect("shutdown server");
+    drop(app);
+
+    let (server, restarted) = start(&config_dir).await;
+    assert_eq!(
+        get(&restarted, &colliding_owner_key, identity_name).await,
+        *user
+    );
+    assert_eq!(
+        workspace_get(&restarted, "workspace-caller", &workspace, identity_name,).await,
+        *shared
+    );
+    let other_user = user_get_status(&restarted, "other-user", identity_name).await;
+    assert_eq!(other_user.code(), Code::NotFound);
+    assert_error_reason(&other_user, CORAL_ERROR_REASON_IDENTITY_NOT_FOUND);
+    let other_workspace = workspace_get_status(
+        &restarted,
+        "workspace-caller",
+        &other_workspace,
+        identity_name,
+    )
+    .await;
+    assert_eq!(other_workspace.code(), Code::NotFound);
+    assert_error_reason(&other_workspace, CORAL_ERROR_REASON_IDENTITY_NOT_FOUND);
+    server.shutdown().await.expect("shutdown restarted server");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dropping_native_oauth_stream_cancels_before_persistence() {
+    const IDENTITY: &str = "dropped-user-oauth";
+
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let (server, app) = start(&config_dir).await;
+    let workspace = create_workspace(&app, "oauth_drop_workspace").await;
+    let mut provider = GatedDeviceOAuthProvider::new(1).await;
+    add_oauth_specs(
+        &app,
+        &workspace,
+        "drop_oauth",
+        &provider.device_url,
+        &provider.token_url,
+    )
+    .await;
+
+    let mut client = app.identity_client();
+    let mut stream = client
+        .create_user_owned_identity(user_oauth_request(IDENTITY, "drop_oauth", "alice"))
+        .await
+        .expect("start user OAuth stream")
+        .into_inner();
+    let event = tokio::time::timeout(TEST_PHASE_TIMEOUT, stream.message())
+        .await
+        .expect("OAuth authorization timed out")
+        .expect("read OAuth authorization")
+        .expect("OAuth authorization response")
+        .event
+        .expect("OAuth authorization event");
+    assert!(matches!(event, UserCreateEvent::OauthAuthorization(_)));
+    assert_eq!(
+        provider.wait_for_token_clients().await,
+        BTreeSet::from(["global-client".to_string()])
+    );
+
+    drop(stream);
+    drop(client);
+    provider.wait_for_token_disconnect().await;
+    assert_identity_tables_empty(&config_dir).await;
+
+    provider.release_token_responses();
+    let requests = provider.received_requests();
+    provider.finish().await;
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/device", "/token"]
+    );
+    assert_identity_tables_empty(&config_dir).await;
+
+    server.shutdown().await.expect("shutdown server");
+    drop(app);
+    let (server, restarted) = start(&config_dir).await;
+    let missing = user_get_status(&restarted, "alice", IDENTITY).await;
+    assert_eq!(missing.code(), Code::NotFound);
+    assert_error_reason(&missing, CORAL_ERROR_REASON_IDENTITY_NOT_FOUND);
+    server.shutdown().await.expect("shutdown restarted server");
+}
+
+#[tokio::test]
+async fn native_oauth_surfaces_terminal_provider_failure_after_authorization() {
+    const HOSTILE_SECRET: &str = "hostile-access-refresh-device-secret";
+
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let (server, app) = start(&config_dir).await;
+    let workspace = create_workspace(&app, "oauth_failure_workspace").await;
+    let provider = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/device"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(DEVICE_RESPONSE, "application/json"))
+        .expect(1)
+        .mount(&provider)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(500).set_body_raw(
+            format!(r#"{{"error":"server_error","error_description":"{HOSTILE_SECRET}"}}"#),
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&provider)
+        .await;
+    add_oauth_specs(
+        &app,
+        &workspace,
+        "failure_oauth",
+        &format!("{}/device", provider.uri()),
+        &format!("{}/token", provider.uri()),
+    )
+    .await;
+
+    let mut stream = app
+        .identity_client()
+        .create_user_owned_identity(user_oauth_request(
+            "failed-user-oauth",
+            "failure_oauth",
+            "alice",
+        ))
+        .await
+        .expect("start user OAuth stream")
+        .into_inner();
+    let authorization = stream
+        .message()
+        .await
+        .expect("read OAuth authorization")
+        .expect("OAuth authorization response")
+        .event
+        .expect("OAuth authorization event");
+    assert!(matches!(
+        authorization,
+        UserCreateEvent::OauthAuthorization(_)
+    ));
+    let status = stream
+        .message()
+        .await
+        .expect_err("token HTTP failure must terminate the OAuth stream");
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert_eq!(
+        status.message(),
+        "failed precondition: OAuth device token request failed with HTTP 500"
+    );
+    assert!(!status.message().contains(HOSTILE_SECRET));
+    assert!(
+        stream
+            .message()
+            .await
+            .expect("read terminal OAuth EOF")
+            .is_none()
+    );
+    provider.verify().await;
+    let requests = provider
+        .received_requests()
+        .await
+        .expect("recorded OAuth requests");
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.url.path())
+            .collect::<Vec<_>>(),
+        ["/device", "/token"]
+    );
+    assert_identity_tables_empty(&config_dir).await;
+    server.shutdown().await.expect("shutdown server");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -269,7 +453,7 @@ async fn server_shutdown_cancels_active_identity_oauth_without_persisting() {
     let config_dir = temp.path().join("coral-config");
     let (server, app) = start(&config_dir).await;
     let workspace = create_workspace(&app, "oauth_shutdown_workspace").await;
-    let mut provider = GatedDeviceOAuthProvider::new().await;
+    let mut provider = GatedDeviceOAuthProvider::new(2).await;
     add_oauth_specs(
         &app,
         &workspace,
@@ -1038,31 +1222,44 @@ fn assert_workspace_identity(
 struct GatedDeviceOAuthProvider {
     device_url: String,
     token_url: String,
+    expected_flows: usize,
     token_requests: mpsc::UnboundedReceiver<BTreeMap<String, String>>,
+    token_disconnects: mpsc::UnboundedReceiver<()>,
     token_release: Arc<Semaphore>,
+    requests: Arc<Mutex<Vec<FixtureRequest>>>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl GatedDeviceOAuthProvider {
-    async fn new() -> Self {
+    async fn new(expected_flows: usize) -> Self {
+        assert!(expected_flows > 0, "provider must serve at least one flow");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind gated OAuth provider");
         let address = listener.local_addr().expect("gated OAuth provider address");
         let (token_requests_tx, token_requests) = mpsc::unbounded_channel();
+        let (token_disconnects_tx, token_disconnects) = mpsc::unbounded_channel();
         let token_release = Arc::new(Semaphore::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
         let task_token_release = Arc::clone(&token_release);
+        let task_requests = Arc::clone(&requests);
         let task = tokio::spawn(async move {
             let mut handlers = tokio::task::JoinSet::new();
-            for _ in 0..4 {
+            for _ in 0..expected_flows.saturating_mul(2) {
                 let (mut socket, _) = tokio::time::timeout(TEST_PHASE_TIMEOUT, listener.accept())
                     .await
                     .expect("OAuth provider accept timed out")
                     .expect("accept OAuth provider request");
                 let token_requests_tx = token_requests_tx.clone();
+                let token_disconnects_tx = token_disconnects_tx.clone();
                 let token_release = Arc::clone(&task_token_release);
+                let requests = Arc::clone(&task_requests);
                 handlers.spawn(async move {
                     let request = read_fixture_request(&mut socket).await;
+                    requests
+                        .lock()
+                        .expect("record OAuth provider request")
+                        .push(request.clone());
                     match request.path.as_str() {
                         "/device" => write_fixture_json(&mut socket, DEVICE_RESPONSE)
                             .await
@@ -1071,12 +1268,35 @@ impl GatedDeviceOAuthProvider {
                             token_requests_tx
                                 .send(request.form)
                                 .expect("record in-flight OAuth token request");
-                            let permit = token_release
-                                .acquire_owned()
-                                .await
-                                .expect("token response gate closed");
-                            permit.forget();
-                            let _response = write_fixture_json(&mut socket, TOKEN_RESPONSE).await;
+                            let mut disconnect_probe = [0_u8; 1];
+                            tokio::select! {
+                                permit = token_release.acquire_owned() => {
+                                    permit.expect("token response gate closed").forget();
+                                    let _response =
+                                        write_fixture_json(&mut socket, TOKEN_RESPONSE).await;
+                                }
+                                disconnected = socket.read(&mut disconnect_probe) => {
+                                    match disconnected {
+                                        Ok(0) => {}
+                                        Err(error)
+                                            if matches!(
+                                                error.kind(),
+                                                ErrorKind::ConnectionReset
+                                                    | ErrorKind::ConnectionAborted
+                                                    | ErrorKind::NotConnected
+                                            ) => {}
+                                        Ok(read) => panic!(
+                                            "OAuth client sent {read} unexpected bytes after its request"
+                                        ),
+                                        Err(error) => panic!(
+                                            "unexpected token connection cancellation error: {error}"
+                                        ),
+                                    }
+                                    token_disconnects_tx
+                                        .send(())
+                                        .expect("record token connection cancellation");
+                                }
+                            }
                         }
                         path => panic!("unexpected OAuth provider path: {path}"),
                     }
@@ -1090,15 +1310,18 @@ impl GatedDeviceOAuthProvider {
         Self {
             device_url: format!("http://{address}/device"),
             token_url: format!("http://{address}/token"),
+            expected_flows,
             token_requests,
+            token_disconnects,
             token_release,
+            requests,
             task: Some(task),
         }
     }
 
     async fn wait_for_token_clients(&mut self) -> BTreeSet<String> {
         let mut clients = BTreeSet::new();
-        for _ in 0..2 {
+        for _ in 0..self.expected_flows {
             let form = tokio::time::timeout(TEST_PHASE_TIMEOUT, self.token_requests.recv())
                 .await
                 .expect("OAuth token request timed out")
@@ -1120,8 +1343,22 @@ impl GatedDeviceOAuthProvider {
         clients
     }
 
+    async fn wait_for_token_disconnect(&mut self) {
+        tokio::time::timeout(TEST_PHASE_TIMEOUT, self.token_disconnects.recv())
+            .await
+            .expect("OAuth token connection did not close after stream drop")
+            .expect("OAuth provider closed before observing token connection cancellation");
+    }
+
     fn release_token_responses(&self) {
-        self.token_release.add_permits(2);
+        self.token_release.add_permits(self.expected_flows);
+    }
+
+    fn received_requests(&self) -> Vec<FixtureRequest> {
+        self.requests
+            .lock()
+            .expect("read OAuth provider requests")
+            .clone()
     }
 
     async fn finish(mut self) {
@@ -1135,13 +1372,14 @@ impl GatedDeviceOAuthProvider {
 
 impl Drop for GatedDeviceOAuthProvider {
     fn drop(&mut self) {
-        self.token_release.add_permits(2);
+        self.token_release.add_permits(self.expected_flows);
         if let Some(task) = self.task.take() {
             task.abort();
         }
     }
 }
 
+#[derive(Clone)]
 struct FixtureRequest {
     path: String,
     form: BTreeMap<String, String>,

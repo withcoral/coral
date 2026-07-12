@@ -879,6 +879,7 @@ mod tests {
     )]
 
     use std::borrow::Cow;
+    use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
     use std::sync::Arc;
@@ -891,7 +892,7 @@ mod tests {
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         AddIdentitySpecRequest, AddIdentitySpecResponse, CreateUserOwnedIdentityRequest,
-        CreateUserOwnedIdentityResponse, DeleteUserOwnedIdentityRequest,
+        CreateUserOwnedIdentityResponse, CredentialMetadata, DeleteUserOwnedIdentityRequest,
         DeleteUserOwnedIdentityResponse, ExecuteSqlRequest, FixedTokenUserOwnedIdentitySetup,
         GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse, IdentityOwner,
         ImportSourceRequest, ImportSourceResponse, ListIdentitySpecsRequest,
@@ -905,6 +906,8 @@ mod tests {
     use tempfile::TempDir;
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
         RunningServer, ServerBuilder, ServerManagers, ServerMode, StaticAsset,
@@ -1394,6 +1397,62 @@ backend = "unsupported"
         response.bytes().await.expect("gRPC-Web response").to_vec()
     }
 
+    fn decode_grpc_web_stream<T>(body: &[u8]) -> (Vec<T>, String)
+    where
+        T: prost::Message + Default,
+    {
+        let mut offset = 0;
+        let mut messages = Vec::new();
+        let mut trailers = None;
+        while offset < body.len() {
+            let header_end = offset.checked_add(5).expect("gRPC-Web header offset");
+            let header = body
+                .get(offset..header_end)
+                .expect("complete gRPC-Web frame header");
+            let frame_len = u32::from_be_bytes(
+                header[1..5]
+                    .try_into()
+                    .expect("gRPC-Web frame length header"),
+            ) as usize;
+            let frame_end = header_end
+                .checked_add(frame_len)
+                .expect("gRPC-Web frame end");
+            let payload = body
+                .get(header_end..frame_end)
+                .expect("complete gRPC-Web frame payload");
+            match header[0] {
+                0 => {
+                    assert!(trailers.is_none(), "data frame followed final trailers");
+                    messages.push(T::decode(payload).expect("decode gRPC-Web protobuf response"));
+                }
+                0x80 => {
+                    assert!(trailers.is_none(), "multiple gRPC-Web trailer frames");
+                    assert_eq!(
+                        frame_end,
+                        body.len(),
+                        "expected trailers to be the final gRPC-Web frame"
+                    );
+                    trailers = Some(
+                        std::str::from_utf8(payload)
+                            .expect("trailers are UTF-8")
+                            .to_string(),
+                    );
+                }
+                flag => panic!("unexpected gRPC-Web frame flag {flag:#x}"),
+            }
+            offset = frame_end;
+        }
+        let trailers = trailers.expect("expected final gRPC-Web trailer frame");
+        assert!(
+            trailers.lines().any(|line| {
+                line.strip_prefix("grpc-status:")
+                    .is_some_and(|status| status.trim() == "0")
+            }),
+            "expected successful gRPC-Web trailer status, got {trailers:?}"
+        );
+        (messages, trailers)
+    }
+
     fn decode_grpc_web_response<T>(body: &[u8]) -> T
     where
         T: prost::Message + Default,
@@ -1636,6 +1695,170 @@ backend = "unsupported"
         .await;
         decode_grpc_web_response::<DeleteUserOwnedIdentityResponse>(&body);
 
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    #[expect(clippy::too_many_lines, reason = "end-to-end raw OAuth wire contract")]
+    async fn embedded_ui_server_streams_user_oauth_identity_over_grpc_web() {
+        const SPEC: &str = "grpc_web_oauth";
+        const ACCESS_TOKEN: &str = "raw-access-token";
+        const REFRESH_TOKEN: &str = "raw-refresh-token";
+        const DEVICE_CODE: &str = "raw-device-code";
+        let provider = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "device_code": DEVICE_CODE,
+                "user_code": "RAW-1234",
+                "verification_uri": "https://provider.example/device",
+                "verification_uri_complete": "https://provider.example/device?user_code=RAW-1234",
+                "expires_in": 60,
+                "interval": 1
+            })))
+            .mount(&provider)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": ACCESS_TOKEN,
+                "refresh_token": REFRESH_TOKEN,
+                "token_type": "Bearer",
+                "scope": "repo user",
+                "hostile": "raw-hostile"
+            })))
+            .mount(&provider)
+            .await;
+
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_user_principal_provider(Arc::new(HeaderUserPrincipalProvider))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri();
+        let client = reqwest::Client::new();
+        let device_url = format!("{}/device", provider.uri());
+        let token_url = format!("{}/token", provider.uri());
+
+        let body = post_grpc_web(
+            &client,
+            endpoint,
+            "coral.v1.IdentitySpecService/AddIdentitySpec",
+            &AddIdentitySpecRequest {
+                manifest_yaml: format!(
+                    r"kind: identity
+spec_version: 1
+name: {SPEC}
+version: 1.0.0
+description: Browser OAuth identity
+issuer: browser_oauth
+type: oauth
+oauth:
+  method:
+    flow: {{type: device_code}}
+    endpoints:
+      device_authorization_url: {device_url}
+      token_url: {token_url}
+    client:
+      id: {{default: raw-client}}
+"
+                ),
+                input_values: Vec::new(),
+                workspace: None,
+            },
+        )
+        .await;
+        decode_grpc_web_response::<AddIdentitySpecResponse>(&body);
+
+        let body = post_grpc_web(
+            &client,
+            endpoint,
+            "coral.v1.IdentityService/CreateUserOwnedIdentity",
+            &CreateUserOwnedIdentityRequest {
+                name: "browser_oauth".to_string(),
+                identity_spec: SPEC.to_string(),
+                setup: None,
+            },
+        )
+        .await;
+        for forbidden in [ACCESS_TOKEN, REFRESH_TOKEN, DEVICE_CODE, "raw-hostile"] {
+            assert!(
+                !body
+                    .windows(forbidden.len())
+                    .any(|window| window == forbidden.as_bytes()),
+                "raw gRPC-Web body leaked {forbidden}"
+            );
+        }
+        let (events, _trailers) = decode_grpc_web_stream::<CreateUserOwnedIdentityResponse>(&body);
+        let [authorization, completed, created] = events.as_slice() else {
+            panic!("expected Authorization, Completed, Identity: {events:?}");
+        };
+        let Some(create_user_owned_identity_response::Event::OauthAuthorization(authorization)) =
+            authorization.event.as_ref()
+        else {
+            panic!("expected OAuth authorization: {authorization:?}");
+        };
+        assert_eq!(authorization.user_code, "RAW-1234");
+        assert_eq!(authorization.expires_in_seconds, 60);
+        assert_eq!(
+            authorization.authorization_url,
+            "https://provider.example/device?user_code=RAW-1234"
+        );
+        let metadata = [("scope", "repo user"), ("token_type", "Bearer")].map(|(key, value)| {
+            CredentialMetadata {
+                key: key.to_string(),
+                value: value.to_string(),
+            }
+        });
+        let Some(create_user_owned_identity_response::Event::OauthCompleted(completed)) =
+            completed.event.as_ref()
+        else {
+            panic!("expected OAuth completion: {completed:?}");
+        };
+        assert_eq!(completed.metadata, metadata);
+        let Some(create_user_owned_identity_response::Event::Identity(identity)) =
+            created.event.as_ref()
+        else {
+            panic!("expected durable identity: {created:?}");
+        };
+        assert_eq!(identity.name, "browser_oauth");
+        assert_eq!(identity.identity_spec, SPEC);
+        assert_eq!(identity.issuer, "browser_oauth");
+        assert_eq!(identity.identity_type, "oauth");
+        assert_eq!(identity.owner, IdentityOwner::User as i32);
+        assert_eq!(identity.metadata, metadata);
+        assert!(identity.owner_workspace.is_none());
+        assert!(identity.identity_spec_workspace.is_none());
+
+        let requests = provider.received_requests().await.expect("OAuth requests");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].url.path(), "/device");
+        assert_eq!(requests[1].url.path(), "/token");
+        let forms = requests
+            .iter()
+            .map(|request| {
+                url::form_urlencoded::parse(&request.body)
+                    .into_owned()
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            forms[0],
+            BTreeMap::from([("client_id".into(), "raw-client".into())])
+        );
+        assert_eq!(
+            forms[1],
+            BTreeMap::from([
+                ("client_id".into(), "raw-client".into()),
+                ("device_code".into(), DEVICE_CODE.into()),
+                (
+                    "grant_type".into(),
+                    "urn:ietf:params:oauth:grant-type:device_code".into(),
+                ),
+            ])
+        );
         running.shutdown().await.expect("shutdown");
     }
 
