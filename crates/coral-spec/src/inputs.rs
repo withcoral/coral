@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use url::Url;
+use url::{Host, Url};
 
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace, TemplatePart};
 
@@ -1418,8 +1418,23 @@ fn redirect_bind_port(
             "{context} must use http"
         )));
     }
-    let host = url.host_str().unwrap_or_default();
-    if host != "127.0.0.1" && host != "localhost" {
+    if !url.username().is_empty() || url.password().is_some() || url_authority_has_userinfo(raw) {
+        return Err(ManifestError::validation(format!(
+            "{context} must not include userinfo"
+        )));
+    }
+    if url.fragment().is_some() {
+        return Err(ManifestError::validation(format!(
+            "{context} must not include a fragment"
+        )));
+    }
+    let is_loopback = match url.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    if !is_loopback {
         return Err(ManifestError::validation(format!(
             "{context} must use a loopback host"
         )));
@@ -1449,6 +1464,18 @@ fn redirect_bind_port(
             "{context} must omit the port or use port 0 when redirect_uri_port_mode is random"
         ))),
     }
+}
+
+fn url_authority_has_userinfo(value: &str) -> bool {
+    value
+        .split_once(':')
+        .map(|(_scheme, remainder)| {
+            remainder.trim_start_matches(|character| {
+                matches!(character, '/' | '\\' | '\t' | '\n' | '\r')
+            })
+        })
+        .and_then(|remainder| remainder.split(['/', '\\', '?', '#']).next())
+        .is_some_and(|authority| authority.contains('@'))
 }
 
 fn redirect_uri_has_explicit_port(raw: &str) -> bool {
@@ -1616,7 +1643,7 @@ mod tests {
         ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
         ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
         ManifestOAuthScopeDelimiter, collect_source_inputs_value, parse_identity_oauth_method,
-        parse_oauth,
+        parse_oauth, redirect_bind_port,
     };
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
@@ -2283,6 +2310,46 @@ tables: []
         )
         .expect_err("fixed port with explicit zero port should fail");
         assert!(error.to_string().contains("explicit non-zero port"));
+    }
+
+    #[test]
+    fn accepts_parsed_loopback_redirect_uri_hosts() {
+        for raw in [
+            "http://127.0.0.2:53682/oauth/callback",
+            "http://127.0.0.2:53682/oauth/@callback",
+            "http://[::1]:53682/oauth/callback",
+        ] {
+            assert_eq!(
+                redirect_bind_port(raw, ManifestOAuthRedirectUriPortMode::Fixed, "redirect URI")
+                    .expect("parsed loopback redirect URI should pass"),
+                ManifestOAuthRedirectBindPort::Fixed(53682),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_redirect_uri_hosts_and_components() {
+        for (raw, expected) in [
+            ("http://192.168.1.1:53682/oauth/callback", "loopback host"),
+            ("http://[2001:db8::1]:53682/oauth/callback", "loopback host"),
+            (
+                "http://user:password@127.0.0.1:53682/oauth/callback",
+                "userinfo",
+            ),
+            ("http://@127.0.0.1:53682/oauth/callback", "userinfo"),
+            ("http://:@127.0.0.1:53682/oauth/callback", "userinfo"),
+            ("http:/@127.0.0.1:53682/oauth/callback", "userinfo"),
+            ("http:////@127.0.0.1:53682/oauth/callback", "userinfo"),
+            (r"http:\@127.0.0.1:53682/oauth/callback", "userinfo"),
+            ("http:\t//@127.0.0.1:53682/oauth/callback", "userinfo"),
+            ("http://127.0.0.1:53682/oauth/callback#fragment", "fragment"),
+        ] {
+            let error =
+                redirect_bind_port(raw, ManifestOAuthRedirectUriPortMode::Fixed, "redirect URI")
+                    .expect_err("unsafe redirect URI should fail");
+            assert!(error.to_string().contains(expected), "{raw}: {error}");
+        }
     }
 
     #[test]

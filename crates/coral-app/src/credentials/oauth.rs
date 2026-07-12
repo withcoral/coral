@@ -271,8 +271,12 @@ impl ValidatedOAuthEndpoint {
 fn oauth_url_has_userinfo(value: &str) -> bool {
     value
         .split_once(':')
-        .and_then(|(_scheme, remainder)| remainder.strip_prefix("//"))
-        .and_then(|remainder| remainder.split(['/', '?', '#']).next())
+        .map(|(_scheme, remainder)| {
+            remainder.trim_start_matches(|character| {
+                matches!(character, '/' | '\\' | '\t' | '\n' | '\r')
+            })
+        })
+        .and_then(|remainder| remainder.split(['/', '\\', '?', '#']).next())
         .is_some_and(|authority| authority.contains('@'))
 }
 
@@ -918,8 +922,9 @@ async fn bind_redirect_listener(
     let redirect_uri = Url::parse(redirect_uri_value)
         .map_err(|error| AppError::InvalidInput(format!("invalid OAuth redirect URI: {error}")))?;
     let host = redirect_uri
-        .host_str()
+        .host()
         .ok_or_else(|| AppError::InvalidInput("OAuth redirect URI is missing host".to_string()))?;
+    let host_label = host.to_string();
     let port = match bind_port {
         ManifestOAuthRedirectBindPort::Fixed(port) => port,
         ManifestOAuthRedirectBindPort::Random => {
@@ -927,14 +932,19 @@ async fn bind_redirect_listener(
             0
         }
     };
-    let listener = TcpListener::bind((host, port)).await.map_err(|error| {
+    let listener = match host {
+        Host::Domain(domain) => TcpListener::bind((domain, port)).await,
+        Host::Ipv4(address) => TcpListener::bind((address, port)).await,
+        Host::Ipv6(address) => TcpListener::bind((address, port)).await,
+    }
+    .map_err(|error| {
         let port_label = if port == 0 {
             "a random port".to_string()
         } else {
             port.to_string()
         };
         AppError::FailedPrecondition(format!(
-            "OAuth callback listener could not bind {host}:{port_label}: {error}"
+            "OAuth callback listener could not bind {host_label}:{port_label}: {error}"
         ))
     })?;
     let mut effective_redirect_uri = redirect_uri;
@@ -2090,12 +2100,14 @@ mod tests {
 
     use super::{
         AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthMetadataKey,
-        OAuthSessionCommon, RefreshOAuthCredentialRequest, ResolvedOAuthClient,
+        OAuthRefreshConfig, OAuthSessionCommon, RefreshOAuthCredentialRequest, ResolvedOAuthClient,
         StartOAuthCredentialRequest, ValidatedOAuthEndpoint, basic_client_authorization,
-        dynamic_client_registration_grant_types, join_dynamic_client_registration_scope_values,
-        join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
+        bind_redirect_listener, dynamic_client_registration_grant_types,
+        join_dynamic_client_registration_scope_values, join_scope_values,
+        material_key_belongs_to_input, oauth_metadata_prefix, parse_device_authorization_response,
         parse_dynamic_client_registration_response, parse_token_response, pkce_challenge,
-        preflight_oauth_endpoints, receive_callback, request_device_code, token_http_clients,
+        preflight_oauth_endpoints, receive_callback, refresh_access_token, request_device_code,
+        token_http_clients,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -2214,6 +2226,7 @@ mod tests {
     fn oauth_endpoint_policy_allows_secure_and_loopback_urls_only() {
         for url in [
             "https://provider.example/oauth/token",
+            "https://provider.example/oauth/@callback",
             "http://localhost:8080/token",
             "http://LOCALHOST/token",
             "http://127.23.45.67/token",
@@ -2228,6 +2241,10 @@ mod tests {
             "ftp://localhost/token",
             "file:///tmp/token",
             "https://provider.example/token#fragment",
+            "https:/@provider.example/token",
+            "https:////@provider.example/token",
+            r"https:\@provider.example/token",
+            "https://:@provider.example/token",
             "https:/alice-credential:hunter-credential@provider.example/token",
             "https:////alice-credential:hunter-credential@provider.example/token",
         ] {
@@ -2258,6 +2275,168 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn ipv6_redirect_uri_binds_fixed_and_random_listeners() {
+        let fixed_probe = StdTcpListener::bind("[::1]:0").expect("IPv6 callback probe");
+        let fixed_port = fixed_probe.local_addr().expect("IPv6 probe addr").port();
+        drop(fixed_probe);
+
+        for (redirect_uri, port_mode) in [
+            (
+                format!("http://[::1]:{fixed_port}/oauth/callback"),
+                ManifestOAuthRedirectUriPortMode::Fixed,
+            ),
+            (
+                "http://[::1]:0/oauth/callback".to_string(),
+                ManifestOAuthRedirectUriPortMode::Random,
+            ),
+        ] {
+            let oauth = oauth_spec_with_redirect_uri(
+                "https://provider.example/oauth/token",
+                &redirect_uri,
+                port_mode,
+                ManifestOAuthPkceMode::Required,
+                ManifestOAuthClientSpec {
+                    id: ManifestOAuthClientIdSpec {
+                        default: Some("default-client".to_string()),
+                        input: None,
+                    },
+                    secret: None,
+                    dynamic_registration: None,
+                },
+            );
+
+            let (listener, callback_path, provider_redirect_uri) = bind_redirect_listener(&oauth)
+                .await
+                .expect("bind IPv6 callback");
+            let local_addr = listener.local_addr().expect("IPv6 listener addr");
+            let provider_redirect_uri =
+                Url::parse(&provider_redirect_uri).expect("provider redirect URI");
+
+            assert_eq!(
+                local_addr.ip(),
+                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+            );
+            assert_eq!(callback_path, "/oauth/callback");
+            assert!(matches!(
+                provider_redirect_uri.host(),
+                Some(url::Host::Ipv6(address)) if address.is_loopback()
+            ));
+            assert_eq!(provider_redirect_uri.port(), Some(local_addr.port()));
+            if port_mode == ManifestOAuthRedirectUriPortMode::Fixed {
+                assert_eq!(provider_redirect_uri.as_str(), redirect_uri);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_preflights_rendered_dcr_url_before_listener_or_event() {
+        let occupied_listener = StdTcpListener::bind("127.0.0.1:0").expect("callback listener");
+        let redirect_port = occupied_listener
+            .local_addr()
+            .expect("callback addr")
+            .port();
+        let oauth = dynamic_registration_oauth_spec(
+            redirect_port,
+            "https://provider.example/oauth/token",
+            "{{input.OAUTH_ENDPOINT}}",
+        );
+        let source_inputs = BTreeMap::from([(
+            "OAUTH_ENDPOINT".to_string(),
+            "http://provider.example/register?tenant=private-tenant".to_string(),
+        )]);
+
+        let result = OAuthCredentialService::new()
+            .authorize(
+                StartOAuthCredentialRequest {
+                    input_key: "API_TOKEN",
+                    oauth: &oauth,
+                    source_inputs: &source_inputs,
+                    credential_inputs: Vec::new(),
+                },
+                |_authorization| async {
+                    Err(crate::bootstrap::AppError::FailedPrecondition(
+                        "authorization event was emitted".to_string(),
+                    ))
+                },
+            )
+            .await;
+        let error = match result {
+            Ok(_material) => panic!("unsafe rendered DCR URL should fail preflight"),
+            Err(error) => error,
+        };
+
+        let detail = error.to_string();
+        assert!(detail.contains("dynamic registration URL"), "{detail}");
+        assert!(detail.contains("must use HTTPS"), "{detail}");
+        assert!(!detail.contains("private-tenant"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn oauth_preflights_every_rendered_endpoint_before_session_side_effects() {
+        for (field, expected_label) in [
+            ("authorization", "authorization URL"),
+            ("device_authorization", "device authorization URL"),
+            ("token", "token URL"),
+        ] {
+            let callback_listener =
+                StdTcpListener::bind("127.0.0.1:0").expect("occupied callback listener");
+            let redirect_port = callback_listener
+                .local_addr()
+                .expect("callback address")
+                .port();
+            let network_sentinel = StdTcpListener::bind("0.0.0.0:0").expect("network sentinel");
+            network_sentinel
+                .set_nonblocking(true)
+                .expect("nonblocking sentinel");
+            let rendered_endpoint = format!(
+                "http://{}/private-route?token=private-token",
+                network_sentinel.local_addr().expect("sentinel address")
+            );
+            let source_inputs = BTreeMap::from([("OAUTH_ENDPOINT".to_string(), rendered_endpoint)]);
+            let oauth = oauth_spec_with_rendered_endpoint(field, redirect_port);
+
+            let result =
+                OAuthCredentialService::with_token_request_timeout(Duration::from_millis(100))
+                    .authorize(
+                        StartOAuthCredentialRequest {
+                            input_key: "API_TOKEN",
+                            oauth: &oauth,
+                            source_inputs: &source_inputs,
+                            credential_inputs: Vec::new(),
+                        },
+                        |_authorization| async {
+                            Err(crate::bootstrap::AppError::FailedPrecondition(
+                                "authorization event was emitted".to_string(),
+                            ))
+                        },
+                    )
+                    .await;
+            let error = match result {
+                Ok(_material) => panic!("unsafe rendered endpoint should fail preflight"),
+                Err(error) => error,
+            };
+
+            let detail = error.to_string();
+            assert!(matches!(error, crate::bootstrap::AppError::InvalidInput(_)));
+            assert!(detail.contains(expected_label), "{detail}");
+            for redacted in ["0.0.0.0", "private-route", "private-token"] {
+                assert!(!detail.contains(redacted), "{detail}");
+            }
+            assert!(
+                !detail.contains("authorization event was emitted"),
+                "{detail}"
+            );
+            assert!(
+                matches!(
+                    network_sentinel.accept(),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                ),
+                "{field} touched the network before preflight"
+            );
+        }
+    }
+
     #[test]
     fn oauth_metadata_key_matching_is_exact_for_dotted_inputs() {
         let dotted_key = format!("{}refresh_token", oauth_metadata_prefix("A.B"));
@@ -2278,6 +2457,43 @@ mod tests {
         assert_eq!(token.token_type.as_deref(), Some("Bearer"));
         assert_eq!(token.scope.as_deref(), Some("repo"));
         assert!(token.expires_at.is_none());
+    }
+
+    #[test]
+    fn device_response_rejects_unsafe_verification_urls_without_leaking_them() {
+        for (body, expected_label) in [
+            (
+                r#"{"device_code":"code","user_code":"user","verification_uri":"http://provider.example/verify?code=primary-secret","expires_in":60}"#,
+                "provider verification URL",
+            ),
+            (
+                r#"{"device_code":"code","user_code":"user","verification_url":"http://provider.example/verify?code=legacy-secret","expires_in":60}"#,
+                "provider verification URL",
+            ),
+            (
+                r#"{"device_code":"code","user_code":"user","verification_uri":"https://provider.example/verify","verification_uri_complete":"http://provider.example/verify?code=complete-secret","expires_in":60}"#,
+                "provider complete verification URL",
+            ),
+        ] {
+            let error = match parse_device_authorization_response(body) {
+                Ok(_response) => panic!("unsafe provider verification URL should fail"),
+                Err(error) => error,
+            };
+            let detail = error.to_string();
+            assert!(matches!(
+                error,
+                crate::bootstrap::AppError::FailedPrecondition(_)
+            ));
+            assert!(detail.contains(expected_label), "{detail}");
+            assert!(!detail.contains("provider.example"), "{detail}");
+            assert!(!detail.contains("secret"), "{detail}");
+        }
+
+        let response = parse_device_authorization_response(
+            r#"{"device_code":"code","user_code":"user","verification_url":"https://provider.example/verify","expires_in":60}"#,
+        )
+        .expect("safe legacy verification URL");
+        assert_eq!(response.verification_uri, "https://provider.example/verify");
     }
 
     #[test]
@@ -2425,6 +2641,59 @@ mod tests {
             matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
             "loopback refresh must bypass the hostile proxy"
         );
+    }
+
+    #[tokio::test]
+    async fn oauth_client_does_not_replay_refresh_secret_across_307_or_308() {
+        for status in [307, 308] {
+            let target = StdTcpListener::bind("127.0.0.1:0").expect("redirect target");
+            target.set_nonblocking(true).expect("nonblocking target");
+            let target_url = format!(
+                "http://{}/replay",
+                target.local_addr().expect("target addr")
+            );
+            let source = StdTcpListener::bind("127.0.0.1:0").expect("redirect source");
+            let source_url = format!("http://{}/token", source.local_addr().expect("source addr"));
+            let server = tokio::task::spawn_blocking(move || {
+                let (mut stream, _) = source.accept().expect("accept refresh");
+                let request = read_http_request(&mut stream);
+                let response = format!(
+                    "HTTP/1.1 {status} Redirect\r\nlocation: {target_url}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write redirect");
+                request
+            });
+            let refresh = OAuthRefreshConfig {
+                token_url: ValidatedOAuthEndpoint::untrusted(&source_url, "stored token URL")
+                    .expect("loopback URL"),
+                client_id: "client".to_string(),
+                client_secret: None,
+                client_secret_transport: None,
+                refresh_token: "refresh-secret".to_string(),
+                resource: None,
+            };
+
+            let http = token_http_clients(Duration::from_millis(250), None);
+            let Err(error) = refresh_access_token(&http, &refresh).await else {
+                panic!("redirect response should not be followed");
+            };
+            let captured = server.await.expect("redirect server");
+
+            assert!(error.to_string().contains(&format!("HTTP {status}")));
+            assert_eq!(
+                captured.form.get("refresh_token").map(String::as_str),
+                Some("refresh-secret")
+            );
+            assert!(
+                matches!(
+                    target.accept(),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                ),
+                "redirect target received the refresh secret"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3694,6 +3963,48 @@ mod tests {
             .expect("callback response")
             .error_for_status()
             .expect("callback success");
+    }
+
+    fn oauth_spec_with_rendered_endpoint(
+        field: &str,
+        redirect_port: u16,
+    ) -> ManifestOAuthCredentialSpec {
+        let mut oauth = if field == "device_authorization" {
+            let mut oauth = device_oauth_spec(
+                "https://provider.example/oauth/device",
+                "https://provider.example/oauth/token",
+            );
+            oauth.client.id = ManifestOAuthClientIdSpec {
+                default: Some("default-client".to_string()),
+                input: None,
+            };
+            oauth
+        } else {
+            oauth_spec(
+                "https://provider.example/oauth/token",
+                redirect_port,
+                ManifestOAuthPkceMode::Required,
+                ManifestOAuthClientSpec {
+                    id: ManifestOAuthClientIdSpec {
+                        default: Some("default-client".to_string()),
+                        input: None,
+                    },
+                    secret: None,
+                    dynamic_registration: None,
+                },
+            )
+        };
+        match field {
+            "authorization" => {
+                oauth.authorization_url = Some("{{input.OAUTH_ENDPOINT}}".to_string());
+            }
+            "device_authorization" => {
+                oauth.device_authorization_url = Some("{{input.OAUTH_ENDPOINT}}".to_string());
+            }
+            "token" => oauth.token_url = "{{input.OAUTH_ENDPOINT}}".to_string(),
+            _ => panic!("unknown endpoint field: {field}"),
+        }
+        oauth
     }
 
     fn oauth_spec(

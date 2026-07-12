@@ -1571,12 +1571,16 @@ fn validate_loopback_http_redirect(url: &Url) -> Result<(), anyhow::Error> {
 
 fn send_loopback_get(url: &Url) -> Result<String, anyhow::Error> {
     let host = url
-        .host_str()
+        .host()
         .ok_or_else(|| anyhow::anyhow!("redirect URL is missing host"))?;
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow::anyhow!("redirect URL is missing port"))?;
-    let mut stream = TcpStream::connect((host, port))?;
+    let mut stream = match host {
+        Host::Domain(domain) => TcpStream::connect((domain, port)),
+        Host::Ipv4(address) => TcpStream::connect((address, port)),
+        Host::Ipv6(address) => TcpStream::connect((address, port)),
+    }?;
     let timeout = Some(Duration::from_secs(5));
     stream.set_read_timeout(timeout)?;
     stream.set_write_timeout(timeout)?;
@@ -2305,6 +2309,38 @@ mod tests {
         submit_oauth_redirect_url(&callback_url, &expected, Some("xyz"))
             .expect("submit redirect url");
         server.join().expect("callback server");
+    }
+
+    #[test]
+    fn submit_oauth_redirect_url_sends_get_to_ipv6_loopback_listener() {
+        let listener = TcpListener::bind("[::1]:0").expect("bind IPv6 callback listener");
+        let port = listener.local_addr().expect("IPv6 listener addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept IPv6 callback");
+            let mut buffer = [0_u8; 1024];
+            let read = stream
+                .read(&mut buffer)
+                .expect("read IPv6 callback request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(
+                request.starts_with("GET /oauth/callback?state=xyz&code=test-code HTTP/1.1\r\n"),
+                "unexpected request: {request}"
+            );
+            assert!(
+                request.contains(&format!("Host: [::1]:{port}\r\n")),
+                "unexpected request: {request}"
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .expect("write IPv6 callback response");
+        });
+        let expected =
+            Url::parse(&format!("http://[::1]:{port}/oauth/callback")).expect("expected URL");
+        let callback_url = format!("http://[::1]:{port}/oauth/callback?state=xyz&code=test-code");
+
+        submit_oauth_redirect_url(&callback_url, &expected, Some("xyz"))
+            .expect("submit IPv6 redirect URL");
+        server.join().expect("IPv6 callback server");
     }
 
     #[test]

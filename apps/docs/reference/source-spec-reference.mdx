@@ -797,7 +797,8 @@ The top-level `auth` block declares how Coral authenticates outgoing requests. I
 
 DSL v4 surfaces must not use `CustomAuth`; use identity requirements instead.
 Coral attaches top-level auth, identity-produced headers, and authored request
-headers only over HTTPS or loopback HTTP (`localhost`, `127.0.0.1`, or `[::1]`);
+headers only over HTTPS or loopback HTTP (exact `localhost`, IPv4 loopback
+`127.0.0.0/8`, or IPv6 loopback `[::1]`);
 other plaintext targets fail closed. DSL v4 HTTP requests do not follow
 redirects, so declare canonical endpoint URLs. Do not move credentials into
 query parameters or bodies to bypass this rule.
@@ -1351,6 +1352,15 @@ domain. This applies to `endpoints.*`, `resource`, and
 `client.dynamic_registration.registration_url`. OAuth URL templates do not
 support secret inputs, filters, function arguments, state, or inline defaults.
 
+OAuth endpoint URLs must use HTTPS, except that HTTP is allowed for exact
+`localhost` or a parsed IPv4 or IPv6 loopback address. Coral applies this after
+template rendering and to provider-returned verification URLs and persisted
+token endpoint overrides used for refresh. URLs with userinfo or fragments are
+rejected. Coral's OAuth HTTP client does not follow redirects, so configure
+canonical endpoint URLs. Coral validates each authorization or verification URL
+before handing it to the CLI; subsequent browser navigation is outside Coral's
+outbound HTTP policy.
+
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
 `scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral stores OAuth
 metadata alongside the source secret and preserves rotated refresh tokens when
@@ -1358,8 +1368,9 @@ the provider returns a new one during refresh.
 
 ### OAuth redirect URIs
 
-Authorization-code flow currently supports loopback HTTP callback URIs:
-`http://127.0.0.1[:<port>]/<path>` or `http://localhost[:<port>]/<path>`.
+Authorization-code flow supports loopback HTTP callback URIs using exact
+`localhost`, an IPv4 loopback address in `127.0.0.0/8`, or IPv6 loopback
+`[::1]`. Callback URIs must not contain userinfo or fragments.
 
 `redirect_uri_port_mode` controls how Coral binds the loopback port. When this
 field is omitted, Coral treats `redirect_uri` port `0` as `random`; otherwise it

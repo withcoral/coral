@@ -126,6 +126,11 @@
   OAuth source-spec behavior needs both reader-facing docs and agent-facing
   author/review guidance because `credential.methods` controls setup while
   `auth` still controls runtime requests.
+- OAuth protocol URLs must use HTTPS or parsed explicit loopback HTTP and reject
+  userinfo and fragments. Coral-owned OAuth HTTP requests must use a no-redirect
+  client. Enforce the URL policy after template rendering and for
+  provider-returned verification URLs and stored refresh overrides before
+  request construction, browser handoff, or credential mutation.
 - Keep maintained Coral agent skills in `plugins/coral/skills`. External
   distribution repos or packages should mirror from that directory rather than
   becoming a separate source of truth. Use
