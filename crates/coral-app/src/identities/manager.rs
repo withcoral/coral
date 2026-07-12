@@ -20,11 +20,12 @@ use crate::credentials::encryption::{CredentialKeyProvider, EncryptedEnvelopeDoc
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::identity::{UserPrincipal, encrypt_identity_document, run_key_operation};
 use crate::identity_specs::identity_spec_fingerprint;
-use crate::identity_specs::manager::record_to_installed;
+use crate::identity_specs::manager::{record_to_installed, spec_not_found};
 use crate::state::db::{
-    CoralDb, DbRepos, IdentityDocumentWrite, IdentityRecord, IdentitySpecKey, IdentitySpecRecord,
-    now_unix_nanos_i64,
+    CoralDb, CoralTx, DbRepos, IdentityDocumentWrite, IdentityRecord, IdentitySpecKey,
+    IdentitySpecRecord, now_unix_nanos_i64,
 };
+use crate::workspaces::WorkspaceName;
 
 const FIXED_TOKEN_KEY: &str = "TOKEN";
 const MAX_MUTATION_ATTEMPTS: usize = 8;
@@ -38,6 +39,8 @@ pub(crate) struct IdentityManager {
     before_write_gate: Option<BeforeWriteGate>,
     #[cfg(test)]
     before_upsert_gate: Option<BeforeUpsertGate>,
+    #[cfg(test)]
+    before_retry_gate: Option<BeforeWriteGate>,
 }
 
 #[cfg(test)]
@@ -55,6 +58,8 @@ struct BeforeUpsertGate {
 }
 
 struct SelectedFixedTokenSpec {
+    requested_key: IdentitySpecKey,
+    workspace_created_at_unix_nanos: Option<i64>,
     record: IdentitySpecRecord,
     reference: IdentitySpecReference,
 }
@@ -68,6 +73,8 @@ impl IdentityManager {
             before_write_gate: None,
             #[cfg(test)]
             before_upsert_gate: None,
+            #[cfg(test)]
+            before_retry_gate: None,
         }
     }
 
@@ -90,6 +97,19 @@ impl IdentityManager {
         self
     }
 
+    #[cfg(test)]
+    fn with_before_retry_gate(
+        mut self,
+        reached: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_retry_gate = Some(BeforeWriteGate {
+            selected: reached,
+            resume,
+        });
+        self
+    }
+
     /// Create or replace a user-owned fixed-token identity from one exact global spec.
     pub(crate) async fn create_or_replace_user_fixed_token(
         &self,
@@ -101,6 +121,32 @@ impl IdentityManager {
         let owner = IdentityOwner::for_user(principal.clone());
         let name = IdentityName::parse(identity_name)?;
         let spec_key = IdentitySpecKey::global(identity_spec_name)?;
+        self.create_or_replace_fixed_token(owner, name, spec_key, token)
+            .await
+    }
+
+    /// Create or replace a workspace-owned fixed-token identity using workspace-first resolution.
+    pub(crate) async fn create_or_replace_workspace_fixed_token(
+        &self,
+        workspace: &WorkspaceName,
+        identity_name: &str,
+        identity_spec_name: &str,
+        token: String,
+    ) -> Result<IdentityRecord, AppError> {
+        let owner = IdentityOwner::workspace(workspace.clone());
+        let name = IdentityName::parse(identity_name)?;
+        let spec_key = IdentitySpecKey::workspace(workspace.clone(), identity_spec_name)?;
+        self.create_or_replace_fixed_token(owner, name, spec_key, token)
+            .await
+    }
+
+    async fn create_or_replace_fixed_token(
+        &self,
+        owner: IdentityOwner,
+        name: IdentityName,
+        spec_key: IdentitySpecKey,
+        token: String,
+    ) -> Result<IdentityRecord, AppError> {
         let token = token.trim().to_string();
         if token.is_empty() {
             return Err(AppError::InvalidInput(
@@ -108,11 +154,17 @@ impl IdentityManager {
             ));
         }
         let mut document = None;
+        let mut pinned_workspace_created_at_unix_nanos = None;
         #[cfg(test)]
         let mut before_write_gate = self.before_write_gate.clone();
+        #[cfg(test)]
+        let mut before_retry_gate = self.before_retry_gate.clone();
 
         for _ in 0..MAX_MUTATION_ATTEMPTS {
-            let selected = match self.load_fixed_token_spec(&owner, &spec_key).await {
+            let selected = match self
+                .load_fixed_token_spec(&owner, &spec_key, pinned_workspace_created_at_unix_nanos)
+                .await
+            {
                 Ok(selected) => selected,
                 Err(AppError::RetryableTransactionConflict) => {
                     tokio::task::yield_now().await;
@@ -120,6 +172,9 @@ impl IdentityManager {
                 }
                 Err(error) => return Err(error),
             };
+            if pinned_workspace_created_at_unix_nanos.is_none() {
+                pinned_workspace_created_at_unix_nanos = selected.workspace_created_at_unix_nanos;
+            }
             if document.is_none() {
                 let document_owner = owner.clone();
                 let document_name = name.clone();
@@ -153,6 +208,11 @@ impl IdentityManager {
             {
                 Ok(Some(record)) => return Ok(record),
                 Ok(None) | Err(AppError::RetryableTransactionConflict) => {
+                    #[cfg(test)]
+                    if let Some(gate) = before_retry_gate.take() {
+                        gate.selected.wait().await;
+                        gate.resume.wait().await;
+                    }
                     tokio::task::yield_now().await;
                 }
                 Err(error) => return Err(error),
@@ -224,11 +284,19 @@ impl IdentityManager {
         &self,
         owner: &IdentityOwner,
         key: &IdentitySpecKey,
+        expected_workspace_created_at_unix_nanos: Option<i64>,
     ) -> Result<SelectedFixedTokenSpec, AppError> {
         let mut tx = self.db.begin_read_snapshot().await?;
-        let record = tx.identity_specs().load_optional(key).await?;
+        let workspace_created_at_unix_nanos = owner_workspace_created_at(&mut tx, owner).await?;
+        if expected_workspace_created_at_unix_nanos
+            .is_some_and(|expected| Some(expected) != workspace_created_at_unix_nanos)
+        {
+            tx.rollback().await?;
+            return Err(owner_workspace_not_found(owner));
+        }
+        let record = tx.identity_specs().resolve_optional(key).await?;
         tx.commit().await?;
-        let record = record.ok_or_else(|| global_spec_not_found(key))?;
+        let record = record.ok_or_else(|| spec_not_found(key))?;
         let installed = record_to_installed(record.clone())?;
         if installed.manifest.identity_type != IdentitySpecType::FixedToken {
             return Err(AppError::InvalidInput(format!(
@@ -244,7 +312,12 @@ impl IdentityManager {
             installed.manifest.issuer,
             installed.manifest.identity_type.label(),
         )?;
-        Ok(SelectedFixedTokenSpec { record, reference })
+        Ok(SelectedFixedTokenSpec {
+            requested_key: key.clone(),
+            workspace_created_at_unix_nanos,
+            record,
+            reference,
+        })
     }
 
     async fn try_write(
@@ -255,9 +328,16 @@ impl IdentityManager {
         document: &IdentityDocumentWrite,
     ) -> Result<Option<IdentityRecord>, AppError> {
         let mut tx = self.db.begin_serializable().await?;
+        let workspace_created_at_unix_nanos = owner_workspace_created_at(&mut tx, owner).await?;
+        if workspace_created_at_unix_nanos != selected.workspace_created_at_unix_nanos {
+            // A delete/recreate under the same name is a new owner generation. An in-flight
+            // credential write must not cross that lifecycle boundary.
+            tx.rollback().await?;
+            return Err(owner_workspace_not_found(owner));
+        }
         let current = tx
             .identity_specs()
-            .load_optional(selected.reference.key())
+            .resolve_optional(&selected.requested_key)
             .await?;
         if current.as_ref() != Some(&selected.record) {
             tx.rollback().await?;
@@ -293,6 +373,28 @@ impl IdentityManager {
     }
 }
 
+async fn owner_workspace_created_at(
+    tx: &mut CoralTx<'_>,
+    owner: &IdentityOwner,
+) -> Result<Option<i64>, AppError> {
+    let Some(workspace) = owner.workspace_name() else {
+        return Ok(None);
+    };
+    let record = tx
+        .workspaces()
+        .get(workspace.as_str())
+        .await?
+        .ok_or_else(|| AppError::WorkspaceNotFound(workspace.to_string()))?;
+    Ok(Some(record.created_at_unix_nanos))
+}
+
+fn owner_workspace_not_found(owner: &IdentityOwner) -> AppError {
+    let workspace = owner
+        .workspace_name()
+        .expect("only workspace owners have a persisted workspace generation");
+    AppError::WorkspaceNotFound(workspace.to_string())
+}
+
 fn prepare_fixed_token_document(
     owner: &IdentityOwner,
     name: &IdentityName,
@@ -324,13 +426,6 @@ fn prepare_fixed_token_document(
         algorithm,
         aad_version,
     )
-}
-
-fn global_spec_not_found(key: &IdentitySpecKey) -> AppError {
-    AppError::IdentitySpecNotFound {
-        name: key.name().to_string(),
-        scope: "global".to_string(),
-    }
 }
 
 fn identity_not_found(name: &IdentityName) -> AppError {

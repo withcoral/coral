@@ -731,7 +731,7 @@ fn corrupt_record(key: &IdentitySpecKey, detail: &str) -> AppError {
     ))
 }
 
-fn spec_not_found(key: &IdentitySpecKey) -> AppError {
+pub(crate) fn spec_not_found(key: &IdentitySpecKey) -> AppError {
     AppError::IdentitySpecNotFound {
         name: key.name().to_string(),
         scope: scope_label(key.scope()),

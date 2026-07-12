@@ -155,7 +155,7 @@ async fn postgres_identity_database_contracts() {
     assert_identity_repository_contract(&db).await;
     assert_identity_repository_negative_contract(&db).await;
     crate::identity_specs::manager::tests::assert_identity_spec_mutation_contract(&db).await;
-    crate::identities::manager::tests::assert_user_global_fixed_token_manager_contract(&db).await;
+    Box::pin(crate::identities::manager::tests::assert_fixed_token_manager_contract(&db)).await;
 
     backend.pool.close().await;
     drop(db);

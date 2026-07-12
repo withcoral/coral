@@ -39,7 +39,7 @@ impl CredentialKeyProvider for TestKeyProvider {
 }
 
 #[tokio::test]
-async fn sqlite_user_global_fixed_token_manager_contract() {
+async fn sqlite_fixed_token_manager_contract() {
     let temp = tempdir().expect("temp dir");
     let db = Arc::new(
         CoralDb::open(ResolvedDatabaseConfig::Sqlite {
@@ -49,14 +49,19 @@ async fn sqlite_user_global_fixed_token_manager_contract() {
         .expect("open sqlite"),
     );
     db.migrate().await.expect("migrate sqlite");
-    assert_user_global_fixed_token_manager_contract(&db).await;
+    Box::pin(assert_fixed_token_manager_contract(&db)).await;
+}
+
+pub(crate) async fn assert_fixed_token_manager_contract(db: &Arc<CoralDb>) {
+    assert_user_global_fixed_token_manager_contract(db).await;
+    assert_workspace_fixed_token_manager_contract(db).await;
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "shared SQLite/Postgres manager contract"
 )]
-pub(crate) async fn assert_user_global_fixed_token_manager_contract(db: &Arc<CoralDb>) {
+async fn assert_user_global_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let spec_a = format!("fixed_a_{suffix}");
     let spec_b = format!("fixed_b_{suffix}");
@@ -66,12 +71,7 @@ pub(crate) async fn assert_user_global_fixed_token_manager_contract(db: &Arc<Cor
     let workspace = WorkspaceName::parse(&format!("work{suffix}")).expect("workspace");
     let workspace_key =
         IdentitySpecKey::workspace(workspace.clone(), &workspace_only).expect("workspace key");
-    let mut tx = db.begin().await.expect("begin seed");
-    tx.workspaces()
-        .ensure(workspace.as_str(), 1)
-        .await
-        .expect("seed workspace");
-    tx.commit().await.expect("commit workspace");
+    put_workspace(db, &workspace).await;
     for (key, yaml) in [
         (
             IdentitySpecKey::global(&spec_a).unwrap(),
@@ -288,6 +288,430 @@ pub(crate) async fn assert_user_global_fixed_token_manager_contract(db: &Arc<Cor
     );
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared SQLite/Postgres workspace manager contract"
+)]
+async fn assert_workspace_fixed_token_manager_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let workspace = WorkspaceName::parse(&format!("ws{suffix}")).expect("workspace");
+    let other_workspace = WorkspaceName::parse(&format!("other{suffix}")).expect("other workspace");
+    let deleted_workspace =
+        WorkspaceName::parse(&format!("deleted{suffix}")).expect("deleted workspace");
+    let recreated_workspace =
+        WorkspaceName::parse(&format!("recreated{suffix}")).expect("recreated workspace");
+    let retry_workspace = WorkspaceName::parse(&format!("retry{suffix}")).expect("retry workspace");
+    let missing_workspace =
+        WorkspaceName::parse(&format!("missing{suffix}")).expect("missing workspace");
+    put_workspace(db, &workspace).await;
+    put_workspace(db, &other_workspace).await;
+    put_workspace(db, &deleted_workspace).await;
+    put_workspace(db, &recreated_workspace).await;
+    put_workspace(db, &retry_workspace).await;
+
+    let fallback = format!("fallback_{suffix}");
+    let shadowed = format!("shadowed_{suffix}");
+    let wrong_type = format!("wrong_type_{suffix}");
+    let exact_race = format!("exact_race_{suffix}");
+    let shadow_race = format!("shadow_race_{suffix}");
+    let delete_race = format!("delete_race_{suffix}");
+    let recreate_race = format!("recreate_race_{suffix}");
+    let retry_recreate_race = format!("retry_recreate_race_{suffix}");
+    let retry_recreate_global_key = IdentitySpecKey::global(&retry_recreate_race).unwrap();
+    let retry_recreate_workspace_key =
+        IdentitySpecKey::workspace(retry_workspace.clone(), &retry_recreate_race).unwrap();
+    let fallback_global_key = IdentitySpecKey::global(&fallback).unwrap();
+    let fallback_workspace_key = IdentitySpecKey::workspace(workspace.clone(), &fallback).unwrap();
+    let shadowed_workspace_key = IdentitySpecKey::workspace(workspace.clone(), &shadowed).unwrap();
+    let exact_race_workspace_key =
+        IdentitySpecKey::workspace(workspace.clone(), &exact_race).unwrap();
+    let shadow_race_workspace_key =
+        IdentitySpecKey::workspace(workspace.clone(), &shadow_race).unwrap();
+    for (key, yaml) in [
+        (
+            fallback_global_key.clone(),
+            fixed_manifest(&fallback, "fallback"),
+        ),
+        (
+            IdentitySpecKey::workspace(other_workspace, &fallback).unwrap(),
+            fixed_manifest(&fallback, "other_workspace"),
+        ),
+        (
+            IdentitySpecKey::global(&shadowed).unwrap(),
+            fixed_manifest(&shadowed, "global_shadowed"),
+        ),
+        (
+            shadowed_workspace_key.clone(),
+            fixed_manifest(&shadowed, "workspace_shadowed"),
+        ),
+        (
+            IdentitySpecKey::global(&wrong_type).unwrap(),
+            fixed_manifest(&wrong_type, "global_fixed"),
+        ),
+        (
+            IdentitySpecKey::workspace(workspace.clone(), &wrong_type).unwrap(),
+            oauth_manifest(&wrong_type),
+        ),
+        (
+            exact_race_workspace_key.clone(),
+            fixed_manifest(&exact_race, "before"),
+        ),
+        (
+            IdentitySpecKey::global(&shadow_race).unwrap(),
+            fixed_manifest(&shadow_race, "global_race"),
+        ),
+        (
+            IdentitySpecKey::global(&delete_race).unwrap(),
+            fixed_manifest(&delete_race, "deleted_workspace"),
+        ),
+        (
+            IdentitySpecKey::global(&recreate_race).unwrap(),
+            fixed_manifest(&recreate_race, "recreated_workspace"),
+        ),
+        (
+            retry_recreate_global_key.clone(),
+            fixed_manifest(&retry_recreate_race, "before_retry"),
+        ),
+    ] {
+        put_spec(db, &key, &yaml).await;
+    }
+
+    let key = CredentialEncryptionKey::from_static_bytes_for_test([73; 32]);
+    let provider = Arc::new(TestKeyProvider(vec![key]));
+    let manager = IdentityManager::new(db.clone(), provider.clone());
+    let owner = IdentityOwner::workspace(workspace.clone());
+    assert!(matches!(
+        manager
+            .create_or_replace_workspace_fixed_token(
+                &missing_workspace,
+                "missing-workspace",
+                &fallback,
+                "token".into(),
+            )
+            .await,
+        Err(AppError::WorkspaceNotFound(name)) if name == missing_workspace.as_str()
+    ));
+    assert!(matches!(
+        manager
+            .create_or_replace_workspace_fixed_token(
+                &workspace,
+                "missing-spec",
+                &format!("missing_{suffix}"),
+                "token".into(),
+            )
+            .await,
+        Err(AppError::IdentitySpecNotFound { scope, .. })
+            if scope == format!("workspace:{workspace}")
+    ));
+    assert!(matches!(
+        manager
+            .create_or_replace_workspace_fixed_token(
+                &workspace,
+                "wrong-type",
+                &wrong_type,
+                "token".into(),
+            )
+            .await,
+        Err(AppError::InvalidInput(_))
+    ));
+    assert!(manager.list_for_owner(&owner).await.unwrap().is_empty());
+
+    let fallback_identity = format!("fallback-identity-{suffix}");
+    let fallback_created = manager
+        .create_or_replace_workspace_fixed_token(
+            &workspace,
+            &fallback_identity,
+            &fallback,
+            " fallback-token ".into(),
+        )
+        .await
+        .expect("create global fallback");
+    assert_reference_key(&fallback_created, &fallback_global_key, "fallback");
+    let fallback_pair = load_pair(db, &owner, &fallback_identity).await;
+    assert_eq!(fallback_pair.0.as_ref(), Some(&fallback_created));
+    assert_eq!(fallback_pair.1.as_ref().unwrap().document_version, 1);
+    assert_material(
+        fallback_pair.1.as_ref().unwrap(),
+        &owner,
+        "fallback-token",
+        provider.as_ref(),
+    );
+
+    let shadowed_identity = format!("shadowed-identity-{suffix}");
+    let shadowed_created = manager
+        .create_or_replace_workspace_fixed_token(
+            &workspace,
+            &shadowed_identity,
+            &shadowed,
+            " workspace-token ".into(),
+        )
+        .await
+        .expect("create workspace shadow");
+    assert_reference_key(
+        &shadowed_created,
+        &shadowed_workspace_key,
+        "workspace_shadowed",
+    );
+    let shadowed_pair = load_pair(db, &owner, &shadowed_identity).await;
+    assert_eq!(shadowed_pair.1.as_ref().unwrap().document_version, 1);
+    assert_material(
+        shadowed_pair.1.as_ref().unwrap(),
+        &owner,
+        "workspace-token",
+        provider.as_ref(),
+    );
+
+    put_spec(
+        db,
+        &fallback_workspace_key,
+        &fixed_manifest(&fallback, "late_shadow"),
+    )
+    .await;
+    assert_eq!(
+        manager.get(&owner, &fallback_identity).await.unwrap(),
+        fallback_created
+    );
+
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(selected.clone(), resume.clone());
+    let exact_race_identity = format!("exact-race-identity-{suffix}");
+    let exact_race_result = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = gated.create_or_replace_workspace_fixed_token(
+            &workspace,
+            &exact_race_identity,
+            &exact_race,
+            " exact-race-token ".into(),
+        );
+        let replace = async {
+            selected.wait().await;
+            put_spec(
+                db,
+                &exact_race_workspace_key,
+                &fixed_manifest(&exact_race, "after"),
+            )
+            .await;
+            resume.wait().await;
+        };
+        let (created, ()) = tokio::join!(create, replace);
+        created
+    })
+    .await
+    .expect("workspace spec replacement race must not deadlock")
+    .expect("workspace spec replacement create");
+    assert_reference_key(&exact_race_result, &exact_race_workspace_key, "after");
+    let exact_raced = load_pair(db, &owner, &exact_race_identity).await;
+    assert_eq!(exact_raced.0.as_ref(), Some(&exact_race_result));
+    assert_eq!(exact_raced.1.as_ref().unwrap().document_version, 1);
+    assert_material(
+        exact_raced.1.as_ref().unwrap(),
+        &owner,
+        "exact-race-token",
+        provider.as_ref(),
+    );
+
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(selected.clone(), resume.clone());
+    let shadow_race_identity = format!("shadow-race-identity-{suffix}");
+    let shadow_race_result = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = gated.create_or_replace_workspace_fixed_token(
+            &workspace,
+            &shadow_race_identity,
+            &shadow_race,
+            " shadow-race-token ".into(),
+        );
+        let insert_shadow = async {
+            selected.wait().await;
+            put_spec(
+                db,
+                &shadow_race_workspace_key,
+                &fixed_manifest(&shadow_race, "workspace_race"),
+            )
+            .await;
+            resume.wait().await;
+        };
+        let (created, ()) = tokio::join!(create, insert_shadow);
+        created
+    })
+    .await
+    .expect("workspace shadow race must not deadlock")
+    .expect("workspace shadow race create");
+    assert_reference_key(
+        &shadow_race_result,
+        &shadow_race_workspace_key,
+        "workspace_race",
+    );
+    let shadow_raced = load_pair(db, &owner, &shadow_race_identity).await;
+    assert_eq!(shadow_raced.0.as_ref(), Some(&shadow_race_result));
+    assert_eq!(shadow_raced.1.as_ref().unwrap().document_version, 1);
+    assert_material(
+        shadow_raced.1.as_ref().unwrap(),
+        &owner,
+        "shadow-race-token",
+        provider.as_ref(),
+    );
+
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(selected.clone(), resume.clone());
+    let deleted_identity = format!("deleted-workspace-identity-{suffix}");
+    let deleted_result = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = gated.create_or_replace_workspace_fixed_token(
+            &deleted_workspace,
+            &deleted_identity,
+            &delete_race,
+            " deleted-workspace-token ".into(),
+        );
+        let delete = async {
+            selected.wait().await;
+            delete_workspace(db, &deleted_workspace).await;
+            resume.wait().await;
+        };
+        let (created, ()) = tokio::join!(create, delete);
+        created
+    })
+    .await
+    .expect("workspace deletion race must not deadlock");
+    assert!(matches!(
+        deleted_result,
+        Err(AppError::WorkspaceNotFound(name)) if name == deleted_workspace.as_str()
+    ));
+    let deleted_owner = IdentityOwner::workspace(deleted_workspace);
+    assert_eq!(
+        load_pair(db, &deleted_owner, &deleted_identity).await,
+        (None, None)
+    );
+
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(selected.clone(), resume.clone());
+    let recreated_identity = format!("recreated-workspace-identity-{suffix}");
+    let recreated_result = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = gated.create_or_replace_workspace_fixed_token(
+            &recreated_workspace,
+            &recreated_identity,
+            &recreate_race,
+            " recreated-workspace-token ".into(),
+        );
+        let recreate = async {
+            selected.wait().await;
+            delete_workspace(db, &recreated_workspace).await;
+            put_workspace_at(db, &recreated_workspace, 2).await;
+            resume.wait().await;
+        };
+        let (created, ()) = tokio::join!(create, recreate);
+        created
+    })
+    .await
+    .expect("workspace recreation race must not deadlock");
+    assert!(matches!(
+        recreated_result,
+        Err(AppError::WorkspaceNotFound(name)) if name == recreated_workspace.as_str()
+    ));
+    let recreated_owner = IdentityOwner::workspace(recreated_workspace);
+    assert_eq!(
+        load_pair(db, &recreated_owner, &recreated_identity).await,
+        (None, None)
+    );
+
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume_write = Arc::new(tokio::sync::Barrier::new(2));
+    let retry_reached = Arc::new(tokio::sync::Barrier::new(2));
+    let resume_retry = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(selected.clone(), resume_write.clone())
+        .with_before_retry_gate(retry_reached.clone(), resume_retry.clone());
+    let retry_identity = format!("retry-recreated-workspace-identity-{suffix}");
+    let retry_result = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = gated.create_or_replace_workspace_fixed_token(
+            &retry_workspace,
+            &retry_identity,
+            &retry_recreate_race,
+            " retry-recreated-workspace-token ".into(),
+        );
+        let recreate = async {
+            selected.wait().await;
+            put_spec(
+                db,
+                &retry_recreate_global_key,
+                &fixed_manifest(&retry_recreate_race, "after_retry"),
+            )
+            .await;
+            resume_write.wait().await;
+            retry_reached.wait().await;
+            delete_workspace(db, &retry_workspace).await;
+            put_workspace_at(db, &retry_workspace, 2).await;
+            resume_retry.wait().await;
+        };
+        let (created, ()) = tokio::join!(create, recreate);
+        created
+    })
+    .await
+    .expect("cross-attempt workspace recreation race must not deadlock");
+    assert!(matches!(
+        retry_result,
+        Err(AppError::WorkspaceNotFound(name)) if name == retry_workspace.as_str()
+    ));
+    let retry_owner = IdentityOwner::workspace(retry_workspace.clone());
+    assert_eq!(
+        load_pair(db, &retry_owner, &retry_identity).await,
+        (None, None)
+    );
+    put_spec(
+        db,
+        &retry_recreate_workspace_key,
+        &oauth_manifest(&retry_recreate_race),
+    )
+    .await;
+    assert!(matches!(
+        manager
+            .load_fixed_token_spec(
+                &retry_owner,
+                &retry_recreate_workspace_key,
+                Some(1),
+            )
+            .await,
+        Err(AppError::WorkspaceNotFound(name)) if name == retry_workspace.as_str()
+    ));
+    assert_eq!(manager.list_for_owner(&owner).await.unwrap().len(), 4);
+}
+
+async fn put_workspace(db: &Arc<CoralDb>, workspace: &WorkspaceName) {
+    put_workspace_at(db, workspace, 1).await;
+}
+
+async fn put_workspace_at(
+    db: &Arc<CoralDb>,
+    workspace: &WorkspaceName,
+    created_at_unix_nanos: i64,
+) {
+    let mut tx = db.begin().await.expect("begin workspace write");
+    tx.workspaces()
+        .ensure(workspace.as_str(), created_at_unix_nanos)
+        .await
+        .expect("write workspace");
+    tx.commit().await.expect("commit workspace");
+}
+
+async fn delete_workspace(db: &Arc<CoralDb>, workspace: &WorkspaceName) {
+    let mut tx = db.begin().await.expect("begin workspace delete");
+    tx.workspaces()
+        .delete(workspace.as_str())
+        .await
+        .expect("delete workspace");
+    tx.commit().await.expect("commit workspace delete");
+}
+
 async fn put_spec(db: &Arc<CoralDb>, key: &IdentitySpecKey, yaml: &str) {
     let manifest = parse_identity_manifest_yaml(yaml).expect("valid identity manifest");
     let write = IdentitySpecWrite::new(
@@ -329,11 +753,12 @@ async fn load_pair(
 }
 
 fn assert_reference(record: &IdentityRecord, spec_name: &str, label: &str) {
-    let manifest = parse_identity_manifest_yaml(&fixed_manifest(spec_name, label)).unwrap();
-    assert_eq!(
-        record.spec_reference.key(),
-        &IdentitySpecKey::global(spec_name).unwrap()
-    );
+    assert_reference_key(record, &IdentitySpecKey::global(spec_name).unwrap(), label);
+}
+
+fn assert_reference_key(record: &IdentityRecord, key: &IdentitySpecKey, label: &str) {
+    let manifest = parse_identity_manifest_yaml(&fixed_manifest(key.name(), label)).unwrap();
+    assert_eq!(record.spec_reference.key(), key);
     assert_eq!(
         record.spec_reference.fingerprint(),
         identity_spec_fingerprint(&manifest).unwrap()
