@@ -10,6 +10,7 @@ use crate::bootstrap::AppError;
 use crate::credentials::encryption::{CredentialKeyProvider, EncryptedEnvelopeDocument};
 use crate::identity::{
     decrypt_identity_spec_document, encrypt_identity_spec_document, parse_path_segment,
+    run_key_operation,
 };
 use crate::state::db::{
     CoralDb, CoralTx, DbRepos, IdentitySpecDocumentRecord, IdentitySpecDocumentWrite,
@@ -549,15 +550,6 @@ async fn resolve_record_for_use_async(
     run_key_operation(move || resolve_record_for_use(record, document, key_provider.as_ref())).await
 }
 
-async fn run_key_operation<T, F>(operation: F) -> Result<T, AppError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, AppError> + Send + 'static,
-{
-    let span = tracing::Span::current();
-    tokio::task::spawn_blocking(move || span.in_scope(operation)).await?
-}
-
 fn mutation_retry_exhausted() -> AppError {
     AppError::RetryableTransactionConflict
 }
@@ -692,7 +684,9 @@ fn convert_records(
     records.into_iter().map(record_to_installed).collect()
 }
 
-fn record_to_installed(record: IdentitySpecRecord) -> Result<InstalledIdentitySpec, AppError> {
+pub(crate) fn record_to_installed(
+    record: IdentitySpecRecord,
+) -> Result<InstalledIdentitySpec, AppError> {
     let manifest = parse_identity_manifest_yaml(&record.manifest_yaml).map_err(|error| {
         corrupt_record(&record.key, &format!("manifest cannot be parsed: {error}"))
     })?;

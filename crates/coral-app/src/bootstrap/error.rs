@@ -2,8 +2,9 @@
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND,
-    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_IDENTITY_NOT_FOUND,
+    CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -29,6 +30,9 @@ pub enum AppError {
         /// Canonical requested scope (`global` or `workspace:<name>`).
         scope: String,
     },
+    /// A requested owner-scoped identity was not found.
+    #[error("identity '{0}' not found")]
+    IdentityNotFound(String),
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -180,6 +184,7 @@ pub(crate) fn status_with_bounded_detail(code: Code, detail: impl Into<String>) 
 pub(crate) fn app_status(error: AppError) -> Status {
     let not_found_reason = match &error {
         AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::IdentityNotFound(_) => Some(CORAL_ERROR_REASON_IDENTITY_NOT_FOUND),
         AppError::IdentitySpecNotFound { .. } => Some(CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND),
         AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
         _ => None,
@@ -268,6 +273,7 @@ fn app_code(error: &AppError) -> Code {
     match error {
         AppError::Unauthenticated(_) => Code::Unauthenticated,
         AppError::SourceNotFound(_)
+        | AppError::IdentityNotFound(_)
         | AppError::IdentitySpecNotFound { .. }
         | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
@@ -384,6 +390,23 @@ mod tests {
             "WORKSPACE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
             info.metadata
         );
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_identity_not_found() {
+        let status = app_status(AppError::IdentityNotFound("private-name".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+        let info = status
+            .get_error_details_vec()
+            .into_iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("identity-not-found status must carry ErrorInfo");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_IDENTITY_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert!(info.metadata.is_empty());
     }
 
     #[test]

@@ -381,6 +381,15 @@ fn validate_identity_document_version(kind: &str, version: u32) -> Result<(), Cr
     Ok(())
 }
 
+pub(crate) async fn run_key_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    let span = tracing::Span::current();
+    tokio::task::spawn_blocking(move || span.in_scope(operation)).await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
