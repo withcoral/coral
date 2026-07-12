@@ -31,7 +31,9 @@ use crate::workspaces::WorkspaceName;
 
 mod oauth_create_races;
 
-pub(crate) use oauth_create_races::assert_oauth_creation_race_contract;
+pub(crate) use oauth_create_races::{
+    assert_oauth_creation_document_rewrap_race_contract, assert_oauth_creation_race_contract,
+};
 
 struct TestKeyProvider(Vec<CredentialEncryptionKey>);
 

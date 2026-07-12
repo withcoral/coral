@@ -18,6 +18,20 @@ async fn sqlite_oauth_creation_race_contract() {
     Box::pin(assert_oauth_creation_race_contract(&db)).await;
 }
 
+#[tokio::test]
+async fn sqlite_oauth_creation_document_rewrap_race_contract() {
+    let temp = tempdir().expect("temp dir");
+    let db = Arc::new(
+        CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite"),
+    );
+    db.migrate().await.expect("migrate sqlite");
+    Box::pin(assert_oauth_creation_document_rewrap_race_contract(&db)).await;
+}
+
 pub(crate) async fn assert_oauth_creation_race_contract(db: &Arc<CoralDb>) {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let key_provider = Arc::new(TestKeyProvider(vec![
@@ -29,6 +43,102 @@ pub(crate) async fn assert_oauth_creation_race_contract(db: &Arc<CoralDb>) {
     Box::pin(assert_spec_input_mutation(db, &key_provider, &suffix)).await;
     Box::pin(assert_fallback_shadow_insertion(db, &key_provider, &suffix)).await;
     Box::pin(assert_workspace_generation_aba(db, &key_provider, &suffix)).await;
+}
+
+pub(crate) async fn assert_oauth_creation_document_rewrap_race_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let provider = device_oauth_provider().await;
+    let fixed_spec = format!("fixed_rewrap_{suffix}");
+    let oauth_spec = format!("oauth_rewrap_{suffix}");
+    let identity_name = format!("oauth-rewrap-{suffix}");
+    let principal = UserPrincipal::for_user(&format!("oauth-rewrap-{suffix}")).unwrap();
+    let owner = IdentityOwner::for_user(principal.clone());
+    let client_id = format!("rewrap-client-{suffix}");
+    let fixed_key = IdentitySpecKey::global(&fixed_spec).unwrap();
+    let oauth_key = IdentitySpecKey::global(&oauth_spec).unwrap();
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([72; 32]);
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([73; 32]);
+
+    put_spec(db, &fixed_key, &fixed_manifest(&fixed_spec, "oauth_rewrap")).await;
+    put_spec(
+        db,
+        &oauth_key,
+        &device_default_client_oauth_manifest(&oauth_spec, &provider.uri(), &client_id),
+    )
+    .await;
+    assert_spec_document_absent(db, &fixed_key).await;
+    assert_spec_document_absent(db, &oauth_key).await;
+
+    let seeded = manager_with_keys(db, vec![old_key.clone()])
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &identity_name,
+            &fixed_spec,
+            "rewrap-token".into(),
+        )
+        .await
+        .expect("seed OAuth document-rewrap target");
+    let (before_record, before_document) = load_pair(db, &owner, &identity_name).await;
+    let before_record = before_record.expect("seeded identity row");
+    let before_document = before_document.expect("seeded identity document");
+    assert_eq!(before_record, seeded);
+    assert_eq!(before_document.document_version, 1);
+    assert_eq!(before_document.key_id, old_key.key_id());
+
+    let rotating = manager_with_keys(db, vec![old_key.clone(), new_key.clone()]);
+    let rewrap_manager = rotating.clone();
+    let (oauth_result, resolved) = Box::pin(race_at_event(
+        rotating,
+        OAuthRaceOwner::User(principal),
+        identity_name.clone(),
+        oauth_spec,
+        GatedOAuthEvent::Completed,
+        || rewrap_manager.get_for_use(&owner, &identity_name),
+    ))
+    .await;
+    assert_use_token(
+        &resolved.expect("rewrap target identity while OAuth is completed"),
+        "rewrap-token",
+    );
+    assert!(matches!(
+        oauth_result,
+        Err(AppError::RetryableTransactionConflict)
+    ));
+
+    let (after_record, after_document) = load_pair(db, &owner, &identity_name).await;
+    let after_record = after_record.expect("identity row after document rewrap");
+    let after_document = after_document.expect("rewrapped identity document");
+    assert_eq!(after_record, before_record);
+    assert_eq!(
+        after_document.document_version,
+        before_document.document_version + 1
+    );
+    assert_eq!(after_document.key_id, new_key.key_id());
+    assert_eq!(after_document.ciphertext, before_document.ciphertext);
+    assert_eq!(after_document.nonce, before_document.nonce);
+    assert_ne!(after_document.wrapped_dek, before_document.wrapped_dek);
+    assert_ne!(
+        after_document.wrapped_dek_nonce,
+        before_document.wrapped_dek_nonce
+    );
+    assert_eq!(after_document.algorithm, before_document.algorithm);
+    assert_eq!(after_document.aad_version, before_document.aad_version);
+    assert_eq!(
+        after_document.created_at_unix_nanos,
+        before_document.created_at_unix_nanos
+    );
+
+    let new_key_only = TestKeyProvider(vec![new_key.clone()]);
+    assert_material(
+        &after_record,
+        &after_document,
+        "rewrap-token",
+        &new_key_only,
+    );
+    assert_reopens_without_repair(db, &owner, &identity_name, &new_key, "rewrap-token").await;
+    assert_spec_document_absent(db, &fixed_key).await;
+    assert_spec_document_absent(db, &oauth_key).await;
+    assert_static_provider_requests(&provider, &client_id, None).await;
 }
 
 enum OAuthRaceOwner {
@@ -465,6 +575,18 @@ async fn load_exact_spec(db: &Arc<CoralDb>, key: &IdentitySpecKey) -> IdentitySp
         .await
         .expect("load exact identity spec")
         .expect("exact identity spec")
+}
+
+async fn assert_spec_document_absent(db: &Arc<CoralDb>, key: &IdentitySpecKey) {
+    let mut session = db.as_ref();
+    assert!(
+        session
+            .identity_spec_documents()
+            .load_optional(key)
+            .await
+            .expect("load absent identity spec document")
+            .is_none()
+    );
 }
 
 fn decrypt_spec_values(
