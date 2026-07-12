@@ -2177,10 +2177,11 @@ mod tests {
 
     use super::{
         AuthorizationCodeSessionConfig, DeviceTokenErrorKind, MAX_DEVICE_CODE_SESSION_TTL,
-        MAX_OAUTH_RESPONSE_BYTES, OAuthCredentialService, OAuthMetadataKey, OAuthRefreshConfig,
-        OAuthSessionCommon, RefreshOAuthCredentialRequest, ResolvedOAuthClient,
-        StartOAuthCredentialRequest, ValidatedOAuthEndpoint, basic_client_authorization,
-        bind_redirect_listener, device_token_error_kind, dynamic_client_registration_grant_types,
+        MAX_OAUTH_RESPONSE_BYTES, OAuthAuthorization, OAuthCredentialMaterial,
+        OAuthCredentialService, OAuthMetadataKey, OAuthRefreshConfig, OAuthSessionCommon,
+        RefreshOAuthCredentialRequest, ResolvedOAuthClient, StartOAuthCredentialRequest,
+        ValidatedOAuthEndpoint, basic_client_authorization, bind_redirect_listener,
+        device_token_error_kind, dynamic_client_registration_grant_types,
         join_dynamic_client_registration_scope_values, join_scope_values,
         material_key_belongs_to_input, oauth_metadata_prefix, parse_callback_request,
         parse_device_authorization_response, parse_dynamic_client_registration_response,
@@ -3702,6 +3703,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_code_oauth_retries_redacted_authorization_pending_response() {
+        let fixture = DeviceOAuthFixture::with_token_responses(vec![
+            (
+                "400 Bad Request".to_string(),
+                r#"{"error":"authorization_pending","error_description":"pending-description-secret","error_description_uri":"https://provider.example/pending-uri-secret"}"#
+                    .to_string(),
+            ),
+            (
+                "200 OK".to_string(),
+                r#"{"access_token":"access-token","token_type":"Bearer","scope":"repo read:org"}"#
+                    .to_string(),
+            ),
+        ]);
+        let oauth = device_oauth_spec(&fixture.device_url, &fixture.token_url);
+        let service = OAuthCredentialService::new();
+        let (authorization_tx, authorization_rx) = oneshot::channel();
+
+        let authorize = service.authorize(
+            StartOAuthCredentialRequest {
+                input_key: "API_TOKEN",
+                oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
+                credential_inputs: vec![(
+                    "OAUTH_CLIENT_ID".to_string(),
+                    "device-client".to_string(),
+                )],
+            },
+            move |authorization| async move {
+                authorization_tx.send(authorization).map_err(|_error| {
+                    crate::bootstrap::AppError::FailedPrecondition(
+                        "authorization receiver closed".to_string(),
+                    )
+                })
+            },
+        );
+
+        let (completed, authorization) =
+            tokio::time::timeout(Duration::from_secs(10), async move {
+                tokio::join!(authorize, authorization_rx)
+            })
+            .await
+            .expect("authorization_pending contract timed out");
+        let completed = completed
+            .map_err(|_error| ())
+            .expect("OAuth authorization did not recover from authorization_pending");
+        let authorization = authorization.expect("authorization event");
+        let captured = fixture.server.await.expect("device server");
+
+        assert_pending_device_result(&authorization, &completed);
+        assert_retried_device_token_requests(&captured);
+    }
+
+    fn assert_pending_device_result(
+        authorization: &OAuthAuthorization,
+        completed: &OAuthCredentialMaterial,
+    ) {
+        assert_eq!(
+            authorization.authorization_url,
+            "https://github.com/login/device?user_code=ABCD-1234"
+        );
+        assert_eq!(authorization.expires_in_seconds, 900);
+        assert_eq!(authorization.user_code.as_deref(), Some("ABCD-1234"));
+        assert_eq!(
+            authorization.verification_uri.as_deref(),
+            Some("https://github.com/login/device")
+        );
+        assert_eq!(
+            authorization.verification_uri_complete.as_deref(),
+            Some("https://github.com/login/device?user_code=ABCD-1234")
+        );
+        assert_eq!(completed.input_key, "API_TOKEN");
+        assert_eq!(completed.access_token, "access-token");
+        assert_eq!(
+            completed.safe_metadata,
+            BTreeMap::from([
+                ("scope".to_string(), "repo read:org".to_string()),
+                ("token_type".to_string(), "Bearer".to_string()),
+            ])
+        );
+        let public_and_material = serde_json::json!({
+            "authorization_url": &authorization.authorization_url,
+            "expires_in_seconds": authorization.expires_in_seconds,
+            "user_code": &authorization.user_code,
+            "verification_uri": &authorization.verification_uri,
+            "verification_uri_complete": &authorization.verification_uri_complete,
+            "input_key": &completed.input_key,
+            "access_token": &completed.access_token,
+            "internal_metadata": &completed.internal_metadata,
+            "safe_metadata": &completed.safe_metadata,
+        })
+        .to_string();
+        for marker in [
+            "authorization_pending",
+            "pending-description-secret",
+            "provider.example",
+            "pending-uri-secret",
+        ] {
+            assert!(
+                !public_and_material.contains(marker),
+                "provider-controlled OAuth error detail escaped"
+            );
+        }
+    }
+
+    fn assert_retried_device_token_requests(captured: &CapturedDeviceFlowRequests) {
+        assert_eq!(
+            captured.device.form.get("client_id").map(String::as_str),
+            Some("device-client")
+        );
+        assert_eq!(
+            captured.device.form.get("scope").map(String::as_str),
+            Some("repo read:org")
+        );
+        assert_eq!(captured.additional_tokens.len(), 1);
+        for token in std::iter::once(&captured.token).chain(&captured.additional_tokens) {
+            assert_eq!(
+                token.form.get("grant_type").map(String::as_str),
+                Some("urn:ietf:params:oauth:grant-type:device_code")
+            );
+            assert_eq!(
+                token.form.get("device_code").map(String::as_str),
+                Some("device-code")
+            );
+            assert_eq!(
+                token.form.get("client_id").map(String::as_str),
+                Some("device-client")
+            );
+            assert!(!token.form.contains_key("client_secret"));
+            assert!(token.authorization.is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn dynamic_registration_device_code_session_authenticates_confidential_client() {
         let registration_fixture = DynamicRegistrationFixture::new(
             r#"{"client_id":"registered-device-client","client_secret":"registered-secret","token_endpoint_auth_method":"client_secret_basic"}"#,
@@ -4563,23 +4697,42 @@ mod tests {
         }
 
         fn with_token_response(status: &str, token_body: impl Into<String>) -> Self {
+            Self::with_token_responses(vec![(status.to_string(), token_body.into())])
+        }
+
+        fn with_token_responses(token_responses: Vec<(String, String)>) -> Self {
+            assert!(
+                !token_responses.is_empty(),
+                "device fixture needs a token response"
+            );
             let listener = StdTcpListener::bind("127.0.0.1:0").expect("device listener");
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking device listener");
             let base_url = format!("http://{}", listener.local_addr().expect("addr"));
             let device_url = format!("{base_url}/device/code");
             let token_url = format!("{base_url}/access_token");
-            let status = status.to_string();
-            let token_body = token_body.into();
             let server = tokio::task::spawn_blocking(move || {
-                let (mut device_stream, _) = listener.accept().expect("accept device request");
+                let mut device_stream = accept_with_timeout(&listener, "device");
                 let device = read_http_request(&mut device_stream);
                 let device_body = r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","verification_uri_complete":"https://github.com/login/device?user_code=ABCD-1234","expires_in":900,"interval":1}"#;
                 write_json_response(&mut device_stream, device_body);
 
-                let (mut token_stream, _) = listener.accept().expect("accept token request");
-                let token = read_http_request(&mut token_stream);
-                write_json_response_with_status(&mut token_stream, &status, &token_body);
+                let mut token_requests = Vec::with_capacity(token_responses.len());
+                for (status, token_body) in token_responses {
+                    let mut token_stream = accept_with_timeout(&listener, "token");
+                    token_requests.push(read_http_request(&mut token_stream));
+                    write_json_response_with_status(&mut token_stream, &status, &token_body);
+                }
+                let mut token_requests = token_requests.into_iter();
+                let token = token_requests.next().expect("first token request");
+                let additional_tokens = token_requests.collect();
 
-                CapturedDeviceFlowRequests { device, token }
+                CapturedDeviceFlowRequests {
+                    device,
+                    token,
+                    additional_tokens,
+                }
             });
             Self {
                 device_url,
@@ -4589,9 +4742,34 @@ mod tests {
         }
     }
 
+    fn accept_with_timeout(listener: &StdTcpListener, label: &str) -> std::net::TcpStream {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((stream, _peer)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("blocking accepted stream");
+                    return stream;
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    panic!("{label} request did not arrive before fixture timeout");
+                }
+                Err(error) => panic!("{label} accept failed: {error}"),
+            }
+        }
+    }
+
     struct CapturedDeviceFlowRequests {
         device: CapturedTokenRequest,
         token: CapturedTokenRequest,
+        additional_tokens: Vec<CapturedTokenRequest>,
     }
 
     struct CapturedTokenRequest {
