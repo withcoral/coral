@@ -884,8 +884,14 @@ mod tests {
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListIdentitySpecsRequest,
-        ListIdentitySpecsResponse, ListSourcesRequest, ListTracesRequest, SearchRequest, Workspace,
+        AddIdentitySpecRequest, AddIdentitySpecResponse, CreateUserOwnedIdentityRequest,
+        CreateUserOwnedIdentityResponse, DeleteUserOwnedIdentityRequest,
+        DeleteUserOwnedIdentityResponse, ExecuteSqlRequest, FixedTokenUserOwnedIdentitySetup,
+        GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse, IdentityOwner,
+        ImportSourceRequest, ImportSourceResponse, ListIdentitySpecsRequest,
+        ListIdentitySpecsResponse, ListSourcesRequest, ListTracesRequest,
+        ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse, SearchRequest, Workspace,
+        create_user_owned_identity_request, create_user_owned_identity_response,
         import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
@@ -964,6 +970,27 @@ enabled = false
         ) -> Result<UserPrincipal, UserPrincipalProviderError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(UserPrincipal::for_user("test-user").expect("valid test principal"))
+        }
+    }
+
+    const GRPC_WEB_USER_HEADER: &str = "x-test-user";
+    const GRPC_WEB_USER: &str = "browser-user";
+
+    #[derive(Debug)]
+    struct HeaderUserPrincipalProvider;
+
+    #[tonic::async_trait]
+    impl UserPrincipalProvider for HeaderUserPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
+            let user = metadata
+                .get(GRPC_WEB_USER_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| UserPrincipalProviderError::unauthenticated("missing test user"))?;
+            UserPrincipal::for_user(user)
+                .map_err(|_error| UserPrincipalProviderError::internal("invalid test user"))
         }
     }
 
@@ -1342,6 +1369,25 @@ backend = "unsupported"
         body
     }
 
+    async fn post_grpc_web(
+        client: &reqwest::Client,
+        endpoint: &str,
+        rpc: &str,
+        request: &impl prost::Message,
+    ) -> Vec<u8> {
+        let response = client
+            .post(format!("{endpoint}/{rpc}"))
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .header(GRPC_WEB_USER_HEADER, GRPC_WEB_USER)
+            .body(grpc_web_body(request))
+            .send()
+            .await
+            .expect("gRPC-Web request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        response.bytes().await.expect("gRPC-Web response").to_vec()
+    }
+
     fn decode_grpc_web_response<T>(body: &[u8]) -> T
     where
         T: prost::Message + Default,
@@ -1481,6 +1527,108 @@ backend = "unsupported"
             native_grpc.status(),
             reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
+
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_server_supports_user_identity_crud_over_grpc_web() {
+        const SPEC: &str = "grpc_web_spec";
+        const IDENTITY: &str = "browser_identity";
+
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_user_principal_provider(Arc::new(HeaderUserPrincipalProvider))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri();
+        let client = reqwest::Client::new();
+
+        let body = post_grpc_web(
+            &client,
+            endpoint,
+            "coral.v1.IdentitySpecService/AddIdentitySpec",
+            &AddIdentitySpecRequest {
+                manifest_yaml: format!(
+                    "kind: identity\nspec_version: 1\nname: {SPEC}\nversion: 1.0.0\n\
+                     description: Browser identity\nissuer: browser\ntype: fixed_token\n"
+                ),
+                input_values: Vec::new(),
+                workspace: None,
+            },
+        )
+        .await;
+        let added = decode_grpc_web_response::<AddIdentitySpecResponse>(&body);
+        assert_eq!(added.identity_spec.expect("installed spec").name, SPEC);
+
+        let body = post_grpc_web(
+            &client,
+            endpoint,
+            "coral.v1.IdentityService/CreateUserOwnedIdentity",
+            &CreateUserOwnedIdentityRequest {
+                name: IDENTITY.to_string(),
+                identity_spec: SPEC.to_string(),
+                setup: Some(create_user_owned_identity_request::Setup::FixedToken(
+                    FixedTokenUserOwnedIdentitySetup {
+                        token: "browser-token".to_string(),
+                    },
+                )),
+            },
+        )
+        .await;
+        assert!(
+            !body
+                .windows("browser-token".len())
+                .any(|window| { window == "browser-token".as_bytes() })
+        );
+        let created = decode_grpc_web_response::<CreateUserOwnedIdentityResponse>(&body);
+        let identity = match created.event {
+            Some(create_user_owned_identity_response::Event::Identity(identity)) => identity,
+            other => panic!("unexpected create event: {other:?}"),
+        };
+        assert_eq!(identity.name, IDENTITY);
+        assert_eq!(identity.identity_spec, SPEC);
+        assert_eq!(identity.issuer, "browser");
+        assert_eq!(identity.identity_type, "fixed_token");
+        assert_eq!(identity.owner, IdentityOwner::User as i32);
+        assert!(identity.metadata.is_empty());
+        assert!(identity.owner_workspace.is_none());
+        assert!(identity.identity_spec_workspace.is_none());
+
+        let body = post_grpc_web(
+            &client,
+            endpoint,
+            "coral.v1.IdentityService/ListUserOwnedIdentities",
+            &ListUserOwnedIdentitiesRequest {},
+        )
+        .await;
+        let listed = decode_grpc_web_response::<ListUserOwnedIdentitiesResponse>(&body);
+        assert_eq!(listed.identities, vec![identity.clone()]);
+
+        let body = post_grpc_web(
+            &client,
+            endpoint,
+            "coral.v1.IdentityService/GetUserOwnedIdentity",
+            &GetUserOwnedIdentityRequest {
+                name: IDENTITY.to_string(),
+            },
+        )
+        .await;
+        let fetched = decode_grpc_web_response::<GetUserOwnedIdentityResponse>(&body);
+        assert_eq!(fetched.identity, Some(identity));
+
+        let body = post_grpc_web(
+            &client,
+            endpoint,
+            "coral.v1.IdentityService/DeleteUserOwnedIdentity",
+            &DeleteUserOwnedIdentityRequest {
+                name: IDENTITY.to_string(),
+            },
+        )
+        .await;
+        decode_grpc_web_response::<DeleteUserOwnedIdentityResponse>(&body);
 
         running.shutdown().await.expect("shutdown");
     }
