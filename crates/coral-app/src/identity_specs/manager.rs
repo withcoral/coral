@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_spec::{IdentityManifest, ManifestInputKind, parse_identity_manifest_yaml};
 
@@ -12,6 +14,7 @@ use crate::identity::{
     decrypt_identity_spec_document, encrypt_identity_spec_document, parse_path_segment,
     run_key_operation,
 };
+use crate::identity_specs::identity_spec_fingerprint;
 use crate::state::db::{
     CoralDb, CoralTx, DbRepos, IdentitySpecDocumentRecord, IdentitySpecDocumentWrite,
     IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope, IdentitySpecWrite, now_unix_nanos_i64,
@@ -108,6 +111,15 @@ pub(crate) struct IdentitySpecManager {
     key_provider: Arc<dyn CredentialKeyProvider>,
     #[cfg(test)]
     mutation_barrier: Option<Arc<tokio::sync::Barrier>>,
+    #[cfg(test)]
+    before_lifecycle_write: Option<BeforeLifecycleWrite>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BeforeLifecycleWrite {
+    barrier: Arc<tokio::sync::Barrier>,
+    used: Arc<AtomicBool>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -123,12 +135,26 @@ impl IdentitySpecManager {
             key_provider,
             #[cfg(test)]
             mutation_barrier: None,
+            #[cfg(test)]
+            before_lifecycle_write: None,
         }
     }
 
     #[cfg(test)]
     fn with_mutation_barrier(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
         self.mutation_barrier = Some(barrier);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_before_lifecycle_write(
+        mut self,
+        barrier: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_lifecycle_write = Some(BeforeLifecycleWrite {
+            barrier,
+            used: Arc::new(AtomicBool::new(false)),
+        });
         self
     }
 
@@ -200,7 +226,7 @@ impl IdentitySpecManager {
             let replaced = snapshot.record.is_some();
 
             match self
-                .try_write_mutation(&key, &snapshot, &write, document.as_ref())
+                .try_write_mutation(&key, &snapshot, &manifest, &write, document.as_ref())
                 .await
             {
                 Ok(Some(installed)) => return Ok((installed, replaced)),
@@ -214,10 +240,14 @@ impl IdentitySpecManager {
     }
 
     /// Delete one spec in exactly the selected scope.
-    pub(crate) async fn delete_exact(&self, key: &IdentitySpecKey) -> Result<(), AppError> {
+    pub(crate) async fn delete_exact(
+        &self,
+        key: &IdentitySpecKey,
+        force: bool,
+    ) -> Result<u32, AppError> {
         for _ in 0..MAX_MUTATION_ATTEMPTS {
-            match self.try_delete_exact(key).await {
-                Ok(()) => return Ok(()),
+            match self.try_delete_exact(key, force).await {
+                Ok(orphaned) => return Ok(orphaned),
                 Err(AppError::RetryableTransactionConflict) => {
                     tokio::task::yield_now().await;
                 }
@@ -241,6 +271,7 @@ impl IdentitySpecManager {
         &self,
         key: &IdentitySpecKey,
         expected: &IdentitySpecMutationSnapshot,
+        manifest: &IdentityManifest,
         write: &IdentitySpecWrite,
         document: Option<&IdentitySpecDocumentWrite>,
     ) -> Result<Option<InstalledIdentitySpec>, AppError> {
@@ -250,8 +281,11 @@ impl IdentitySpecManager {
             tx.rollback().await?;
             return Ok(None);
         }
-        let now = now_unix_nanos_i64()?;
         let result = async {
+            require_equivalent_dependents(&mut tx, key, manifest).await?;
+            #[cfg(test)]
+            self.wait_before_lifecycle_write().await;
+            let now = now_unix_nanos_i64()?;
             let record = tx.identity_specs().upsert(key, write, now).await?;
             match document {
                 Some(document) => {
@@ -277,22 +311,45 @@ impl IdentitySpecManager {
         Ok(Some(record))
     }
 
-    async fn try_delete_exact(&self, key: &IdentitySpecKey) -> Result<(), AppError> {
+    async fn try_delete_exact(&self, key: &IdentitySpecKey, force: bool) -> Result<u32, AppError> {
         let mut tx = self.db.begin_serializable().await?;
-        require_scope_workspace(&mut tx, key.scope()).await?;
-        let deleted = match tx.identity_specs().delete(key).await {
-            Ok(deleted) => deleted,
+        let result = async {
+            require_scope_workspace(&mut tx, key.scope()).await?;
+            if tx.identity_specs().load_optional(key).await?.is_none() {
+                return Err(spec_not_found(key));
+            }
+            let orphaned = tx.identities().count_dependents(key).await?;
+            let orphaned = checked_orphan_count(key, orphaned)?;
+            if orphaned > 0 && !force {
+                return Err(spec_delete_requires_force(key, orphaned));
+            }
+            #[cfg(test)]
+            self.wait_before_lifecycle_write().await;
+            let deleted = tx.identity_specs().delete(key).await?;
+            if !deleted {
+                return Err(spec_not_found(key));
+            }
+            Ok(orphaned)
+        }
+        .await;
+        let orphaned = match result {
+            Ok(orphaned) => orphaned,
             Err(error) => {
                 tx.rollback().await?;
-                return Err(error.into());
+                return Err(error);
             }
         };
-        if !deleted {
-            tx.rollback().await?;
-            return Err(spec_not_found(key));
-        }
         tx.commit().await?;
-        Ok(())
+        Ok(orphaned)
+    }
+
+    #[cfg(test)]
+    async fn wait_before_lifecycle_write(&self) {
+        if let Some(gate) = &self.before_lifecycle_write
+            && !gate.used.swap(true, Ordering::SeqCst)
+        {
+            gate.barrier.wait().await;
+        }
     }
 
     /// Fetch one spec in exactly the requested scope, without fallback.
@@ -428,6 +485,59 @@ impl IdentitySpecManager {
         tx.commit().await?;
         convert_records(records)
     }
+}
+
+async fn require_equivalent_dependents(
+    tx: &mut CoralTx<'_>,
+    key: &IdentitySpecKey,
+    manifest: &IdentityManifest,
+) -> Result<(), AppError> {
+    let dependent_count = tx.identities().count_dependents(key).await?;
+    if dependent_count == 0 {
+        return Ok(());
+    }
+    let fingerprint = identity_spec_fingerprint(manifest)?;
+    let equivalent_count = tx
+        .identities()
+        .count_exact_dependents(key, &fingerprint)
+        .await?;
+    if equivalent_count == dependent_count {
+        return Ok(());
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "identity spec '{}' in scope '{}' is used by {dependent_count} stored {} and may only be replaced or re-added with an equivalent manifest",
+        key.name(),
+        scope_label(key.scope()),
+        identity_noun(dependent_count),
+    )))
+}
+
+fn spec_delete_requires_force(key: &IdentitySpecKey, orphaned: u32) -> AppError {
+    AppError::FailedPrecondition(format!(
+        "identity spec '{}' in scope '{}' is used by {orphaned} stored {}; retry with force to orphan {}",
+        key.name(),
+        scope_label(key.scope()),
+        identity_noun(u64::from(orphaned)),
+        identity_pronoun(u64::from(orphaned)),
+    ))
+}
+
+fn checked_orphan_count(key: &IdentitySpecKey, count: u64) -> Result<u32, AppError> {
+    u32::try_from(count).map_err(|_error| {
+        AppError::FailedPrecondition(format!(
+            "identity spec '{}' in scope '{}' has too many dependent identities to report safely",
+            key.name(),
+            scope_label(key.scope()),
+        ))
+    })
+}
+
+fn identity_noun(count: u64) -> &'static str {
+    if count == 1 { "identity" } else { "identities" }
+}
+
+fn identity_pronoun(count: u64) -> &'static str {
+    if count == 1 { "it" } else { "them" }
 }
 
 pub(crate) fn prepare_identity_spec_input_material(
@@ -746,6 +856,10 @@ fn scope_label(scope: &IdentitySpecScope) -> String {
 }
 
 #[cfg(test)]
+#[path = "lifecycle_tests.rs"]
+pub(crate) mod lifecycle_tests;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex, mpsc};
@@ -832,7 +946,7 @@ pub(crate) mod tests {
         workspace: WorkspaceName,
     }
 
-    struct TestKeyProvider(Vec<CredentialEncryptionKey>);
+    pub(crate) struct TestKeyProvider(pub(crate) Vec<CredentialEncryptionKey>);
 
     impl CredentialKeyProvider for TestKeyProvider {
         fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -980,7 +1094,7 @@ pub(crate) mod tests {
 
         let global_before_delete = manager.load_mutation_snapshot(&global_key).await.unwrap();
         manager
-            .delete_exact(&workspace_key)
+            .delete_exact(&workspace_key, false)
             .await
             .expect("delete workspace spec");
         let deleted = manager
@@ -990,7 +1104,7 @@ pub(crate) mod tests {
         assert!(deleted.record.is_none() && deleted.document.is_none());
         assert!(manager.load_mutation_snapshot(&global_key).await.unwrap() == global_before_delete);
         assert!(matches!(
-            manager.delete_exact(&workspace_key).await,
+            manager.delete_exact(&workspace_key, false).await,
             Err(AppError::IdentitySpecNotFound { .. })
         ));
 
@@ -1192,7 +1306,7 @@ pub(crate) mod tests {
             &manifest("alpha", "missing"),
             vec![],
         ));
-        assert_workspace_missing!(fixture.manager.delete_exact(&missing_key));
+        assert_workspace_missing!(fixture.manager.delete_exact(&missing_key, false));
         assert_workspace_missing!(fixture.manager.get_exact(&missing_key));
         assert_workspace_missing!(fixture.manager.get_exact_for_use(&missing_key));
         assert_workspace_missing!(fixture.manager.list_exact(&missing_scope));

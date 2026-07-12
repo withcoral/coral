@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), expect(dead_code, reason = "Used by B4f."))]
-
 use sea_query::{Alias, Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::bootstrap::AppError;

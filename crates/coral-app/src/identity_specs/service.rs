@@ -109,11 +109,12 @@ impl IdentitySpecServiceApi for IdentitySpecService {
             let request = request.into_inner();
             let scope = scope_from_proto(request.workspace.as_ref())?;
             let key = IdentitySpecKey::new(scope, &request.name).map_err(app_status)?;
-            specs.delete_exact(&key).await.map_err(app_status)?;
-
-            // B4 introduces stored identity instances and owns force/orphan semantics.
+            let orphaned_identities = specs
+                .delete_exact(&key, request.force)
+                .await
+                .map_err(app_status)?;
             Ok(Response::new(DeleteIdentitySpecResponse {
-                orphaned_identities: 0,
+                orphaned_identities,
             }))
         })
         .await
