@@ -1,12 +1,17 @@
 //! Database-backed identity instance management.
 
-#![expect(
-    dead_code,
-    reason = "B4h wires identity managers into public services."
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "B4h wires identity managers into public services."
+    )
 )]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_spec::IdentitySpecType;
 
@@ -29,6 +34,24 @@ const MAX_MUTATION_ATTEMPTS: usize = 8;
 pub(crate) struct IdentityManager {
     db: Arc<CoralDb>,
     key_provider: Arc<dyn CredentialKeyProvider>,
+    #[cfg(test)]
+    before_write_gate: Option<BeforeWriteGate>,
+    #[cfg(test)]
+    before_upsert_gate: Option<BeforeUpsertGate>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BeforeWriteGate {
+    selected: Arc<tokio::sync::Barrier>,
+    resume: Arc<tokio::sync::Barrier>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BeforeUpsertGate {
+    barrier: Arc<tokio::sync::Barrier>,
+    used: Arc<AtomicBool>,
 }
 
 struct SelectedFixedTokenSpec {
@@ -38,7 +61,33 @@ struct SelectedFixedTokenSpec {
 
 impl IdentityManager {
     pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn CredentialKeyProvider>) -> Self {
-        Self { db, key_provider }
+        Self {
+            db,
+            key_provider,
+            #[cfg(test)]
+            before_write_gate: None,
+            #[cfg(test)]
+            before_upsert_gate: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_before_write_gate(
+        mut self,
+        selected: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_write_gate = Some(BeforeWriteGate { selected, resume });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_upsert_gate(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+        self.before_upsert_gate = Some(BeforeUpsertGate {
+            barrier,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
     }
 
     /// Create or replace a user-owned fixed-token identity from one exact global spec.
@@ -59,6 +108,8 @@ impl IdentityManager {
             ));
         }
         let mut document = None;
+        #[cfg(test)]
+        let mut before_write_gate = self.before_write_gate.clone();
 
         for _ in 0..MAX_MUTATION_ATTEMPTS {
             let selected = match self.load_fixed_token_spec(&owner, &spec_key).await {
@@ -85,6 +136,11 @@ impl IdentityManager {
                     })
                     .await?,
                 );
+            }
+            #[cfg(test)]
+            if let Some(gate) = before_write_gate.take() {
+                gate.selected.wait().await;
+                gate.resume.wait().await;
             }
             match self
                 .try_write(
@@ -207,6 +263,12 @@ impl IdentityManager {
             tx.rollback().await?;
             return Ok(None);
         }
+        #[cfg(test)]
+        if let Some(gate) = &self.before_upsert_gate
+            && !gate.used.swap(true, Ordering::SeqCst)
+        {
+            gate.barrier.wait().await;
+        }
         let now = now_unix_nanos_i64()?;
         let result = async {
             let record = tx
@@ -274,3 +336,6 @@ fn global_spec_not_found(key: &IdentitySpecKey) -> AppError {
 fn identity_not_found(name: &IdentityName) -> AppError {
     AppError::IdentityNotFound(name.to_string())
 }
+
+#[cfg(test)]
+pub(crate) mod tests;
