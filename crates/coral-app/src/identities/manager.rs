@@ -5,6 +5,8 @@
     expect(dead_code, reason = "Identity use consumers land in B5.")
 )]
 
+mod oauth_create;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -15,6 +17,7 @@ use coral_spec::IdentitySpecType;
 
 use crate::bootstrap::AppError;
 use crate::credentials::encryption::{CredentialKeyProvider, EncryptedEnvelopeDocument};
+use crate::credentials::oauth::{OAuthAuthorization, OAuthCredentialService};
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::identity::{
     IdentityDocumentBinding, UserPrincipal, decrypt_identity_document, encrypt_identity_document,
@@ -35,6 +38,12 @@ use crate::workspaces::WorkspaceName;
 
 const FIXED_TOKEN_KEY: &str = "TOKEN";
 const MAX_MUTATION_ATTEMPTS: usize = 8;
+
+/// App-private progress emitted before an OAuth identity becomes durable.
+pub(crate) enum IdentityOAuthCreationEvent {
+    Authorization(OAuthAuthorization),
+    Completed(BTreeMap<String, String>),
+}
 
 /// Coherent decrypted identity data prepared for one runtime use.
 pub(crate) struct ResolvedIdentityForUse {
@@ -98,6 +107,7 @@ impl PreparedIdentityForUse {
 pub(crate) struct IdentityManager {
     db: Arc<CoralDb>,
     key_provider: Arc<dyn CredentialKeyProvider>,
+    oauth: OAuthCredentialService,
     #[cfg(test)]
     before_write_gate: Option<BeforeWriteGate>,
     #[cfg(test)]
@@ -145,6 +155,7 @@ impl IdentityManager {
         Self {
             db,
             key_provider,
+            oauth: OAuthCredentialService::new(),
             #[cfg(test)]
             before_write_gate: None,
             #[cfg(test)]

@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coral_spec::parse_identity_manifest_yaml;
 use sea_query::{Alias, Expr, ExprTrait, Query};
 use tempfile::tempdir;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{IdentityManager, ResolvedIdentityForUse};
+use super::{IdentityManager, IdentityOAuthCreationEvent, ResolvedIdentityForUse};
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
@@ -19,10 +21,11 @@ use crate::identity::{
     decrypt_identity_document, encrypt_identity_spec_document,
 };
 use crate::identity_specs::identity_spec_fingerprint;
+use crate::identity_specs::manager::{IdentitySpecInputValue, IdentitySpecManager};
 use crate::state::db::{
     CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityRecord,
-    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecWrite,
-    ResolvedDatabaseConfig,
+    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecScope,
+    IdentitySpecWrite, ResolvedDatabaseConfig,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -57,6 +60,110 @@ async fn sqlite_fixed_token_manager_contract() {
     );
     db.migrate().await.expect("migrate sqlite");
     Box::pin(assert_fixed_token_manager_contract(&db)).await;
+}
+
+#[tokio::test]
+async fn sqlite_oauth_creation_core_contract() {
+    let temp = tempdir().expect("temp dir");
+    let db = Arc::new(
+        CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite"),
+    );
+    db.migrate().await.expect("migrate sqlite");
+    let provider = device_oauth_provider().await;
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let oauth_spec = format!("oauth_{suffix}");
+    let oauth_key = IdentitySpecKey::global(&oauth_spec).unwrap();
+    let oauth_yaml = device_oauth_manifest(&oauth_spec, &provider.uri());
+    let key_provider = Arc::new(TestKeyProvider(vec![
+        CredentialEncryptionKey::from_static_bytes_for_test([70; 32]),
+    ]));
+    IdentitySpecManager::new(db.clone(), key_provider.clone())
+        .add_or_replace_exact(
+            IdentitySpecScope::global(),
+            &oauth_yaml,
+            vec![IdentitySpecInputValue::new(
+                "OAUTH_CLIENT_ID",
+                "spec-client-id",
+            )],
+        )
+        .await
+        .expect("install OAuth identity spec input");
+    let manager = IdentityManager::new(db.clone(), key_provider.clone());
+    let principal = UserPrincipal::for_user(&format!("oauth-{suffix}")).unwrap();
+    let owner = IdentityOwner::for_user(principal.clone());
+    let identity_name = format!("oauth-{suffix}");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured_events = events.clone();
+    let created = manager
+        .create_or_replace_user_oauth(&principal, &identity_name, &oauth_spec, move |event| {
+            let events = captured_events.clone();
+            async move {
+                events.lock().expect("event lock").push(event);
+                Ok(())
+            }
+        })
+        .await
+        .expect("create user OAuth identity");
+    let expected_safe = BTreeMap::from([
+        ("scope".to_string(), "repo user".to_string()),
+        ("token_type".to_string(), "Bearer".to_string()),
+    ]);
+    assert_eq!(created.spec_reference.key(), &oauth_key);
+    assert_eq!(
+        created.spec_reference.fingerprint(),
+        identity_spec_fingerprint(&parse_identity_manifest_yaml(&oauth_yaml).unwrap()).unwrap()
+    );
+    assert_eq!(created.spec_reference.identity_type(), "oauth");
+    assert_eq!(created.safe_metadata, expected_safe);
+    {
+        let events = events.lock().expect("event lock");
+        assert!(matches!(
+            events.as_slice(),
+            [IdentityOAuthCreationEvent::Authorization(authorization), IdentityOAuthCreationEvent::Completed(metadata)]
+                if authorization.user_code.as_deref() == Some("ABCD-1234")
+                    && authorization.authorization_url == "https://provider.example/device?user_code=ABCD-1234"
+                    && metadata == &expected_safe
+        ));
+    }
+    let (_, document) = load_pair(&db, &owner, &identity_name).await;
+    let material = decrypt_material(
+        &created,
+        document.as_ref().expect("OAuth identity document"),
+        key_provider.as_ref(),
+    );
+    assert_eq!(
+        material.get("ACCESS_TOKEN").map(String::as_str),
+        Some("access-token")
+    );
+    assert!(
+        material
+            .iter()
+            .any(|(key, value)| key.ends_with(".refresh_token") && value == "refresh-token")
+    );
+    assert!(!material.keys().any(|key| {
+        key.ends_with(".client_id")
+            || key.ends_with(".client_secret")
+            || key.ends_with(".token_url")
+    }));
+    assert!(
+        material
+            .values()
+            .all(|value| value != "spec-client-id" && !value.contains(&provider.uri()))
+    );
+    let keyless = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(vec![])));
+    assert_eq!(keyless.get(&owner, &identity_name).await.unwrap(), created);
+    let requests = provider
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| {
+        String::from_utf8_lossy(&request.body).contains("client_id=spec-client-id")
+    }));
 }
 
 pub(crate) async fn assert_fixed_token_manager_contract(db: &Arc<CoralDb>) {
@@ -1373,6 +1480,24 @@ fn assert_material(
     token: &str,
     key_provider: &dyn CredentialKeyProvider,
 ) {
+    let values = decrypt_material(record, document, key_provider);
+    assert_eq!(
+        values,
+        std::collections::BTreeMap::from([("TOKEN".to_string(), token.to_string())])
+    );
+    assert!(
+        !document
+            .ciphertext
+            .windows(token.len())
+            .any(|window| window == token.as_bytes())
+    );
+}
+
+fn decrypt_material(
+    record: &IdentityRecord,
+    document: &IdentityDocumentRecord,
+    key_provider: &dyn CredentialKeyProvider,
+) -> BTreeMap<String, String> {
     assert_eq!(document.aad_version, IDENTITY_DOCUMENT_AAD_VERSION);
     let reference = &record.spec_reference;
     let (spec_scope_kind, spec_scope_id, spec_name) = reference.key().document_aad_parts();
@@ -1394,18 +1519,7 @@ fn assert_material(
         algorithm: document.algorithm.clone(),
         aad_version: document.aad_version,
     };
-    let values = decrypt_identity_document(&binding, &envelope, key_provider)
-        .expect("decrypt identity material");
-    assert_eq!(
-        values,
-        std::collections::BTreeMap::from([("TOKEN".to_string(), token.to_string())])
-    );
-    assert!(
-        !document
-            .ciphertext
-            .windows(token.len())
-            .any(|window| window == token.as_bytes())
-    );
+    decrypt_identity_document(&binding, &envelope, key_provider).expect("decrypt identity material")
 }
 
 fn fixed_manifest(name: &str, label: &str) -> String {
@@ -1418,4 +1532,31 @@ fn oauth_manifest(name: &str) -> String {
     format!(
         "kind: identity\nspec_version: 1\nname: {name}\nversion: oauth\ndescription: oauth\nissuer: oauth_issuer\ntype: oauth\noauth:\n  method:\n    flow:\n      type: authorization_code\n      pkce: disabled\n    redirect_uri: http://127.0.0.1:53682/oauth/callback\n    endpoints:\n      authorization_url: https://provider.example.com/authorize\n      token_url: https://provider.example.com/token\n    client:\n      id:\n        default: client\n"
     )
+}
+
+fn device_oauth_manifest(name: &str, base_url: &str) -> String {
+    format!(
+        "kind: identity\nspec_version: 1\nname: {name}\nversion: oauth\ndescription: oauth\nissuer: oauth_issuer\ntype: oauth\ninputs:\n  OAUTH_CLIENT_ID:\n    kind: variable\n    required: true\noauth:\n  method:\n    flow:\n      type: device_code\n    endpoints:\n      device_authorization_url: {base_url}/device\n      token_url: {base_url}/token\n    client:\n      id:\n        input: OAUTH_CLIENT_ID\n"
+    )
+}
+
+async fn device_oauth_provider() -> MockServer {
+    let provider = MockServer::start().await;
+    for (endpoint, response) in [
+        (
+            "/device",
+            r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"https://provider.example/device","verification_uri_complete":"https://provider.example/device?user_code=ABCD-1234","expires_in":60,"interval":1}"#,
+        ),
+        (
+            "/token",
+            r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo user"}"#,
+        ),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(response, "application/json"))
+            .mount(&provider)
+            .await;
+    }
+    provider
 }

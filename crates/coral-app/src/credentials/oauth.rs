@@ -100,6 +100,29 @@ pub(crate) struct OAuthCredentialMaterial {
     pub(crate) safe_metadata: BTreeMap<String, String>,
 }
 
+impl OAuthCredentialMaterial {
+    pub(crate) fn discard_spec_derived_refresh_context(&mut self) {
+        let prefix = oauth_metadata_prefix(&self.input_key);
+        let dynamic_client_registration = OAuthMetadataKey::DynamicClientRegistration
+            .get(&prefix, &self.internal_metadata)
+            == Some("true");
+
+        for key in [OAuthMetadataKey::TokenUrl, OAuthMetadataKey::Resource] {
+            key.remove(&prefix, &mut self.internal_metadata);
+        }
+        if !dynamic_client_registration {
+            for key in [
+                OAuthMetadataKey::ClientId,
+                OAuthMetadataKey::ClientSecretTransport,
+                OAuthMetadataKey::ClientSecret,
+                OAuthMetadataKey::DynamicClientRegistration,
+            ] {
+                key.remove(&prefix, &mut self.internal_metadata);
+            }
+        }
+    }
+}
+
 struct OAuthSessionCommon {
     input_key: String,
     endpoints: ValidatedOAuthEndpoints,
@@ -1571,7 +1594,7 @@ async fn poll_device_token(
                 }
                 "expired_token" => {
                     return Err(AppError::FailedPrecondition(
-                        "OAuth device code expired; rerun `coral source add`".to_string(),
+                        "OAuth device code expired; start a new credential retrieval".to_string(),
                     ));
                 }
                 "access_denied" => {
@@ -1599,7 +1622,7 @@ async fn poll_device_token(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(AppError::FailedPrecondition(
-                "OAuth device code expired; rerun `coral source add`".to_string(),
+                "OAuth device code expired; start a new credential retrieval".to_string(),
             ));
         }
         tokio::time::sleep(interval.min(remaining)).await;
@@ -2127,6 +2150,54 @@ mod tests {
 
     fn metadata_key(input_key: &str, key: OAuthMetadataKey) -> String {
         key.key(&oauth_metadata_prefix(input_key))
+    }
+
+    #[test]
+    fn identity_context_pruning_respects_spec_ownership() {
+        use OAuthMetadataKey as Key;
+        let key = |kind| metadata_key("ACCESS_TOKEN", kind);
+        let dcr = key(Key::DynamicClientRegistration);
+        let retained = [
+            Key::Method,
+            Key::AccessTokenExpiresAt,
+            Key::RefreshToken,
+            Key::TokenType,
+        ];
+        let spec_owned = [
+            Key::TokenUrl,
+            Key::Resource,
+            Key::ClientId,
+            Key::ClientSecretTransport,
+            Key::ClientSecret,
+        ];
+        let internal_metadata = retained
+            .into_iter()
+            .chain(spec_owned)
+            .map(|kind| (key(kind), kind.suffix().to_string()))
+            .chain([(dcr.clone(), "true".to_string())])
+            .collect();
+        let mut material = super::OAuthCredentialMaterial {
+            input_key: "ACCESS_TOKEN".to_string(),
+            access_token: "access-token".to_string(),
+            internal_metadata,
+            safe_metadata: BTreeMap::new(),
+        };
+        let mut static_material = material.clone();
+        static_material
+            .internal_metadata
+            .insert(dcr.clone(), "false".into());
+        let mut expected_dcr = material.internal_metadata.clone();
+        for kind in [Key::TokenUrl, Key::Resource] {
+            expected_dcr.remove(&key(kind));
+        }
+        let expected_static: BTreeMap<_, _> = retained
+            .into_iter()
+            .map(|kind| (key(kind), kind.suffix().to_string()))
+            .collect();
+        material.discard_spec_derived_refresh_context();
+        static_material.discard_spec_derived_refresh_context();
+        assert_eq!(material.internal_metadata, expected_dcr);
+        assert_eq!(static_material.internal_metadata, expected_static);
     }
 
     fn assert_public_dcr_metadata(metadata: &BTreeMap<String, String>, input_key: &str) {
