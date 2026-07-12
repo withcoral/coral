@@ -7,7 +7,8 @@ use coral_api::v1::{
     CreateUserOwnedIdentityRequest, CreateUserOwnedIdentityResponse, CredentialMetadata,
     DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse,
     FixedTokenUserOwnedIdentitySetup, GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse,
-    Identity as ProtoIdentity, IdentityOwner as ProtoIdentityOwner, ListUserOwnedIdentitiesRequest,
+    Identity as ProtoIdentity, IdentityOAuthAuthorization, IdentityOAuthCompleted,
+    IdentityOwner as ProtoIdentityOwner, ListUserOwnedIdentitiesRequest,
     ListUserOwnedIdentitiesResponse, create_user_owned_identity_request,
     create_user_owned_identity_response,
 };
@@ -15,11 +16,13 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
-use crate::identities::manager::IdentityManager;
+use crate::identities::manager::{IdentityManager, IdentityOAuthCreationEvent};
 use crate::identities::model::IdentityOwner;
 use crate::request_context::RequestContext;
 use crate::state::db::{IdentityRecord, IdentitySpecScope};
-use crate::transport::{grpc_span, instrument_grpc, workspace_to_proto};
+use crate::transport::{
+    acknowledged_operation_response_stream, grpc_span, instrument_grpc, workspace_to_proto,
+};
 
 #[derive(Clone)]
 pub(crate) struct IdentityService {
@@ -42,34 +45,56 @@ impl IdentityServiceApi for IdentityService {
     ) -> Result<Response<Self::CreateUserOwnedIdentityStream>, Status> {
         let span = grpc_span(&request);
         let identities = self.identities.clone();
-        instrument_grpc(span, async move {
+        instrument_grpc(span.clone(), async move {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let CreateUserOwnedIdentityRequest {
                 name,
                 identity_spec,
                 setup,
             } = request.into_inner();
-            let Some(create_user_owned_identity_request::Setup::FixedToken(
-                FixedTokenUserOwnedIdentitySetup { token },
-            )) = setup
-            else {
-                return Err(Status::unimplemented(
-                    "OAuth identity creation is not enabled by this server",
-                ));
-            };
-            let record = identities
-                .create_or_replace_user_fixed_token(&principal, &name, &identity_spec, token)
-                .await
-                .map_err(app_status)?;
-            let response = CreateUserOwnedIdentityResponse {
-                event: Some(create_user_owned_identity_response::Event::Identity(
-                    identity_to_proto(record),
-                )),
-            };
-            let stream = Box::pin(tokio_stream::iter([Ok(response)]));
-            Ok(Response::new(
-                stream as CreateUserOwnedIdentityResponseStreamBox,
-            ))
+            match setup {
+                Some(create_user_owned_identity_request::Setup::FixedToken(
+                    FixedTokenUserOwnedIdentitySetup { token },
+                )) => {
+                    let record = identities
+                        .create_or_replace_user_fixed_token(
+                            &principal,
+                            &name,
+                            &identity_spec,
+                            token,
+                        )
+                        .await
+                        .map_err(app_status)?;
+                    let stream = Box::pin(tokio_stream::iter([Ok(user_identity_response(record))]));
+                    Ok(Response::new(
+                        stream as CreateUserOwnedIdentityResponseStreamBox,
+                    ))
+                }
+                None => {
+                    let stream = acknowledged_operation_response_stream(
+                        "identity OAuth response stream closed before creation completed",
+                        move |event_sender| {
+                            instrument_grpc(span, async move {
+                                identities
+                                    .create_or_replace_user_oauth(
+                                        &principal,
+                                        &name,
+                                        &identity_spec,
+                                        move |event| {
+                                            let event_sender = event_sender.clone();
+                                            async move { event_sender.send(event).await }
+                                        },
+                                    )
+                                    .await
+                                    .map_err(app_status)
+                            })
+                        },
+                        user_oauth_event_response,
+                        user_identity_response,
+                    );
+                    Ok(Response::new(stream))
+                }
+            }
         })
         .await
     }
@@ -139,6 +164,56 @@ impl IdentityServiceApi for IdentityService {
 type CreateUserOwnedIdentityResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateUserOwnedIdentityResponse, Status>> + Send>>;
 
+fn user_oauth_event_response(event: IdentityOAuthCreationEvent) -> CreateUserOwnedIdentityResponse {
+    use create_user_owned_identity_response::Event;
+
+    let event =
+        identity_oauth_event_to_proto(event, Event::OauthAuthorization, Event::OauthCompleted);
+    CreateUserOwnedIdentityResponse { event: Some(event) }
+}
+
+pub(super) fn identity_oauth_event_to_proto<R>(
+    event: IdentityOAuthCreationEvent,
+    authorization_response: impl FnOnce(IdentityOAuthAuthorization) -> R,
+    completed_response: impl FnOnce(IdentityOAuthCompleted) -> R,
+) -> R {
+    match event {
+        IdentityOAuthCreationEvent::Authorization(authorization) => {
+            authorization_response(IdentityOAuthAuthorization {
+                authorization_url: authorization.authorization_url,
+                expires_in_seconds: authorization.expires_in_seconds,
+                user_code: authorization.user_code.unwrap_or_default(),
+                verification_uri: authorization.verification_uri.unwrap_or_default(),
+                verification_uri_complete: authorization
+                    .verification_uri_complete
+                    .unwrap_or_default(),
+            })
+        }
+        IdentityOAuthCreationEvent::Completed(metadata) => {
+            completed_response(IdentityOAuthCompleted {
+                metadata: credential_metadata_to_proto(metadata),
+            })
+        }
+    }
+}
+
+fn user_identity_response(record: IdentityRecord) -> CreateUserOwnedIdentityResponse {
+    CreateUserOwnedIdentityResponse {
+        event: Some(create_user_owned_identity_response::Event::Identity(
+            identity_to_proto(record),
+        )),
+    }
+}
+
+pub(super) fn credential_metadata_to_proto(
+    metadata: impl IntoIterator<Item = (String, String)>,
+) -> Vec<CredentialMetadata> {
+    metadata
+        .into_iter()
+        .map(|(key, value)| CredentialMetadata { key, value })
+        .collect()
+}
+
 pub(super) fn identity_to_proto(record: IdentityRecord) -> ProtoIdentity {
     let IdentityRecord {
         owner,
@@ -164,10 +239,7 @@ pub(super) fn identity_to_proto(record: IdentityRecord) -> ProtoIdentity {
         issuer: spec_reference.issuer().to_string(),
         identity_type: spec_reference.identity_type().to_string(),
         owner: owner as i32,
-        metadata: safe_metadata
-            .into_iter()
-            .map(|(key, value)| CredentialMetadata { key, value })
-            .collect(),
+        metadata: credential_metadata_to_proto(safe_metadata),
         owner_workspace,
         identity_spec_workspace,
     }

@@ -14,11 +14,13 @@ use coral_api::v1::{
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
-use super::manager::IdentityManager;
+use super::manager::{IdentityManager, IdentityOAuthCreationEvent};
 use super::model::IdentityOwner;
-use super::service::identity_to_proto;
+use super::service::{identity_oauth_event_to_proto, identity_to_proto};
 use crate::bootstrap::app_status;
-use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto};
+use crate::transport::{
+    acknowledged_operation_response_stream, grpc_span, instrument_grpc, workspace_name_from_proto,
+};
 use crate::workspaces::{WorkspaceManager, WorkspaceName};
 
 #[derive(Clone)]
@@ -47,7 +49,7 @@ impl WorkspaceIdentityServiceApi for WorkspaceIdentityService {
         let span = grpc_span(&request);
         let identities = self.identities.clone();
         let workspaces = self.workspaces.clone();
-        instrument_grpc(span, async move {
+        instrument_grpc(span.clone(), async move {
             let CreateWorkspaceOwnedIdentityRequest {
                 workspace,
                 name,
@@ -56,27 +58,51 @@ impl WorkspaceIdentityServiceApi for WorkspaceIdentityService {
             } = request.into_inner();
             let workspace = workspace_name_from_proto(workspace.as_ref())?;
             require_workspace(&workspaces, &workspace).await?;
-            let Some(create_workspace_owned_identity_request::Setup::FixedToken(
-                FixedTokenWorkspaceOwnedIdentitySetup { token },
-            )) = setup
-            else {
-                return Err(Status::unimplemented(
-                    "OAuth identity creation is not enabled by this server",
-                ));
-            };
-            let record = identities
-                .create_or_replace_workspace_fixed_token(&workspace, &name, &identity_spec, token)
-                .await
-                .map_err(app_status)?;
-            let response = CreateWorkspaceOwnedIdentityResponse {
-                event: Some(create_workspace_owned_identity_response::Event::Identity(
-                    identity_to_proto(record),
-                )),
-            };
-            let stream = Box::pin(tokio_stream::iter([Ok(response)]));
-            Ok(Response::new(
-                stream as CreateWorkspaceOwnedIdentityResponseStreamBox,
-            ))
+            match setup {
+                Some(create_workspace_owned_identity_request::Setup::FixedToken(
+                    FixedTokenWorkspaceOwnedIdentitySetup { token },
+                )) => {
+                    let record = identities
+                        .create_or_replace_workspace_fixed_token(
+                            &workspace,
+                            &name,
+                            &identity_spec,
+                            token,
+                        )
+                        .await
+                        .map_err(app_status)?;
+                    let stream = Box::pin(tokio_stream::iter([Ok(workspace_identity_response(
+                        record,
+                    ))]));
+                    Ok(Response::new(
+                        stream as CreateWorkspaceOwnedIdentityResponseStreamBox,
+                    ))
+                }
+                None => {
+                    let stream = acknowledged_operation_response_stream(
+                        "workspace identity OAuth response stream closed before creation completed",
+                        move |event_sender| {
+                            instrument_grpc(span, async move {
+                                identities
+                                    .create_or_replace_workspace_oauth(
+                                        &workspace,
+                                        &name,
+                                        &identity_spec,
+                                        move |event| {
+                                            let event_sender = event_sender.clone();
+                                            async move { event_sender.send(event).await }
+                                        },
+                                    )
+                                    .await
+                                    .map_err(app_status)
+                            })
+                        },
+                        workspace_oauth_event_response,
+                        workspace_identity_response,
+                    );
+                    Ok(Response::new(stream))
+                }
+            }
         })
         .await
     }
@@ -155,3 +181,23 @@ async fn require_workspace(
 
 type CreateWorkspaceOwnedIdentityResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateWorkspaceOwnedIdentityResponse, Status>> + Send>>;
+
+fn workspace_oauth_event_response(
+    event: IdentityOAuthCreationEvent,
+) -> CreateWorkspaceOwnedIdentityResponse {
+    use create_workspace_owned_identity_response::Event;
+
+    let event =
+        identity_oauth_event_to_proto(event, Event::OauthAuthorization, Event::OauthCompleted);
+    CreateWorkspaceOwnedIdentityResponse { event: Some(event) }
+}
+
+fn workspace_identity_response(
+    record: crate::state::db::IdentityRecord,
+) -> CreateWorkspaceOwnedIdentityResponse {
+    CreateWorkspaceOwnedIdentityResponse {
+        event: Some(create_workspace_owned_identity_response::Event::Identity(
+            identity_to_proto(record),
+        )),
+    }
+}

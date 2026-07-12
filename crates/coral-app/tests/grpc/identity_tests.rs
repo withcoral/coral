@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use coral_api::v1::create_user_owned_identity_response::Event as UserCreateEvent;
+use coral_api::v1::create_workspace_owned_identity_response::Event as WorkspaceCreateEvent;
 use coral_api::v1::{
     AddIdentitySpecRequest, CreateUserOwnedIdentityRequest, CreateWorkspaceOwnedIdentityRequest,
     CreateWorkspaceRequest, CredentialMetadata, DeleteIdentitySpecRequest,
@@ -17,11 +19,16 @@ use coral_api::{
 use coral_app::{ServerBuilder, UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError};
 use coral_client::AppClient;
 use tempfile::TempDir;
+use tokio_stream::StreamExt as _;
 use tonic::metadata::MetadataMap;
 use tonic::{Code, Request, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const USER_HEADER: &str = "x-test-user";
+const DEVICE_RESPONSE: &str = r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"https://provider.example/device","verification_uri_complete":"https://provider.example/device?user_code=ABCD-1234","expires_in":60,"interval":1}"#;
+const TOKEN_RESPONSE: &str = r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo user"}"#;
 
 #[derive(Debug)]
 struct HeaderPrincipalProvider;
@@ -145,6 +152,105 @@ async fn user_identity_service_is_scoped_validated_and_restart_safe() {
     assert_error_reason(&missing_delete, CORAL_ERROR_REASON_IDENTITY_NOT_FOUND);
     assert_eq!(get(&restarted, "bob", "shared").await, bob);
     server.shutdown().await.expect("shutdown restarted server");
+}
+
+#[tokio::test]
+async fn oauth_identity_creation_streams_ordered_user_and_workspace_events() {
+    let temp = TempDir::new().expect("temp dir");
+    let (server, app) = start(&temp.path().join("coral-config")).await;
+    let workspace = create_workspace(&app, "oauth_workspace").await;
+    let spec = "shared_oauth";
+    let provider = oauth_fixture(&app, &workspace, spec).await;
+
+    let user_events = app
+        .identity_client()
+        .create_user_owned_identity(user_oauth_request("user-oauth", spec, "alice"))
+        .await
+        .expect("create user OAuth identity")
+        .into_inner()
+        .map(|response| response.expect("OAuth event").event.expect("event"))
+        .collect::<Vec<_>>()
+        .await;
+    let [
+        UserCreateEvent::OauthAuthorization(user_authorization),
+        UserCreateEvent::OauthCompleted(user_completed),
+        UserCreateEvent::Identity(user),
+    ] = user_events.as_slice()
+    else {
+        panic!("expected authorization, completion, identity, and EOF: {user_events:?}");
+    };
+    assert_eq!(user.owner, IdentityOwner::User as i32);
+    assert_eq!(user.issuer, "global_oauth");
+    assert!(user.owner_workspace.is_none());
+    assert!(user.identity_spec_workspace.is_none());
+
+    let workspace_request = workspace_oauth_request(&workspace, "shared-oauth", spec, "bob");
+    let workspace_events = app
+        .workspace_identity_client()
+        .create_workspace_owned_identity(workspace_request)
+        .await
+        .expect("create workspace OAuth identity")
+        .into_inner()
+        .map(|response| response.expect("OAuth event").event.expect("event"))
+        .collect::<Vec<_>>()
+        .await;
+    let [
+        WorkspaceCreateEvent::OauthAuthorization(workspace_authorization),
+        WorkspaceCreateEvent::OauthCompleted(workspace_completed),
+        WorkspaceCreateEvent::Identity(shared),
+    ] = workspace_events.as_slice()
+    else {
+        panic!("expected authorization, completion, identity, and EOF: {workspace_events:?}");
+    };
+    assert_eq!(shared.owner, IdentityOwner::Workspace as i32);
+    assert_eq!(shared.issuer, "workspace_oauth");
+    assert_eq!(shared.owner_workspace.as_ref(), Some(&workspace));
+    assert_eq!(shared.identity_spec_workspace.as_ref(), Some(&workspace));
+
+    assert_eq!(workspace_authorization, user_authorization);
+    assert_eq!(
+        user_authorization.authorization_url,
+        "https://provider.example/device?user_code=ABCD-1234"
+    );
+    assert_eq!(user_authorization.expires_in_seconds, 60);
+    assert_eq!(user_authorization.user_code, "ABCD-1234");
+    assert_eq!(
+        user_authorization.verification_uri,
+        "https://provider.example/device"
+    );
+    assert_eq!(
+        user_authorization.verification_uri_complete,
+        user_authorization.authorization_url
+    );
+    let metadata =
+        [("scope", "repo user"), ("token_type", "Bearer")].map(|(key, value)| CredentialMetadata {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    assert_eq!(user_completed.metadata, metadata);
+    assert_eq!(workspace_completed.metadata, metadata);
+    assert_eq!(user.metadata, metadata);
+    assert_eq!(shared.metadata, metadata);
+
+    let requests = provider
+        .received_requests()
+        .await
+        .expect("recorded OAuth requests");
+    for (request, (endpoint, client)) in requests.iter().zip([
+        ("/device", "global-client"),
+        ("/token", "global-client"),
+        ("/device", "workspace-client"),
+        ("/token", "workspace-client"),
+    ]) {
+        assert_eq!(request.url.path(), endpoint);
+        assert!(String::from_utf8_lossy(&request.body).contains(&format!("client_id={client}")));
+    }
+    assert_eq!(requests.len(), 4);
+    let public_responses = format!("{user_events:?}{workspace_events:?}");
+    for secret in ["access-token", "refresh-token", "device-code"] {
+        assert!(!public_responses.contains(secret));
+    }
+    server.shutdown().await.expect("shutdown server");
 }
 
 #[tokio::test]
@@ -280,37 +386,19 @@ async fn workspace_identity_service_validates_workspace_boundaries() {
     let missing_identity = workspace_get_status(&app, "alice", &existing, "missing").await;
     assert_eq!(missing_identity.code(), Code::NotFound);
     assert_error_reason(&missing_identity, CORAL_ERROR_REASON_IDENTITY_NOT_FOUND);
-    let omitted = workspace_create_status(
+    let omitted = workspace_oauth_status(
         &app,
-        for_user(
-            CreateWorkspaceOwnedIdentityRequest {
-                workspace: Some(existing),
-                name: "shared".to_string(),
-                identity_spec: "missing".to_string(),
-                setup: None,
-            },
-            "alice",
-        ),
+        workspace_oauth_request(&existing, "shared", "missing", "alice"),
     )
     .await;
-    assert_eq!(omitted.code(), Code::Unimplemented);
+    assert_eq!(omitted.code(), Code::NotFound);
+    assert_error_reason(&omitted, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND);
     server.shutdown().await.expect("shutdown server");
 }
 
 async fn assert_create_validation(app: &AppClient) {
-    let omitted = create_status(
-        app,
-        for_user(
-            CreateUserOwnedIdentityRequest {
-                name: "shared".to_string(),
-                identity_spec: "oauth_spec".to_string(),
-                setup: None,
-            },
-            "alice",
-        ),
-    )
-    .await;
-    assert_eq!(omitted.code(), Code::Unimplemented);
+    let omitted = user_oauth_status(app, user_oauth_request("shared", "alice_spec", "alice")).await;
+    assert_eq!(omitted.code(), Code::InvalidArgument);
     assert_eq!(
         create_status(
             app,
@@ -330,7 +418,7 @@ async fn assert_create_validation(app: &AppClient) {
         );
     }
     let missing_spec =
-        create_status(app, create_request("shared", "missing", "token", "alice")).await;
+        user_oauth_status(app, user_oauth_request("shared", "missing", "alice")).await;
     assert_eq!(missing_spec.code(), Code::NotFound);
     assert_error_reason(&missing_spec, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND);
 }
@@ -395,6 +483,35 @@ async fn add_scoped_spec(
         .expect("add identity spec");
 }
 
+async fn oauth_fixture(app: &AppClient, workspace: &Workspace, spec: &str) -> MockServer {
+    let provider = MockServer::start().await;
+    for (endpoint, response) in [("/device", DEVICE_RESPONSE), ("/token", TOKEN_RESPONSE)] {
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(response, "application/json"))
+            .mount(&provider)
+            .await;
+    }
+    let workspace_scope = Some(workspace.clone());
+    for (scope, issuer, client) in [
+        (None, "global_oauth", "global-client"),
+        (workspace_scope, "workspace_oauth", "workspace-client"),
+    ] {
+        app.identity_spec_client()
+            .add_identity_spec(for_user(
+                AddIdentitySpecRequest {
+                    manifest_yaml: device_manifest(spec, issuer, &provider.uri(), client),
+                    input_values: Vec::new(),
+                    workspace: scope,
+                },
+                "alice",
+            ))
+            .await
+            .expect("add OAuth identity spec");
+    }
+    provider
+}
+
 async fn create_workspace(app: &AppClient, name: &str) -> Workspace {
     let workspace = workspace(name);
     app.workspace_client()
@@ -445,6 +562,20 @@ async fn workspace_create_status(
         .create_workspace_owned_identity(request)
         .await
         .expect_err("workspace identity creation must fail")
+}
+
+async fn workspace_oauth_status(
+    app: &AppClient,
+    request: Request<CreateWorkspaceOwnedIdentityRequest>,
+) -> Status {
+    app.workspace_identity_client()
+        .create_workspace_owned_identity(request)
+        .await
+        .expect("workspace OAuth stream")
+        .into_inner()
+        .message()
+        .await
+        .expect_err("workspace OAuth stream must fail")
 }
 
 async fn workspace_list(app: &AppClient, user: &str, workspace: &Workspace) -> Vec<Identity> {
@@ -548,6 +679,20 @@ async fn create_status(
         .expect_err("identity creation must fail")
 }
 
+async fn user_oauth_status(
+    app: &AppClient,
+    request: Request<CreateUserOwnedIdentityRequest>,
+) -> Status {
+    app.identity_client()
+        .create_user_owned_identity(request)
+        .await
+        .expect("user OAuth stream")
+        .into_inner()
+        .message()
+        .await
+        .expect_err("user OAuth stream must fail")
+}
+
 async fn create(app: &AppClient, user: &str, name: &str, spec: &str, token: &str) -> Identity {
     let mut stream = app
         .identity_client()
@@ -611,6 +756,21 @@ fn create_request(
     )
 }
 
+fn user_oauth_request(
+    name: &str,
+    spec: &str,
+    user: &str,
+) -> Request<CreateUserOwnedIdentityRequest> {
+    for_user(
+        CreateUserOwnedIdentityRequest {
+            name: name.to_string(),
+            identity_spec: spec.to_string(),
+            setup: None,
+        },
+        user,
+    )
+}
+
 fn workspace_create_request(
     workspace: &Workspace,
     name: &str,
@@ -628,6 +788,23 @@ fn workspace_create_request(
                     token: token.to_string(),
                 },
             )),
+        },
+        user,
+    )
+}
+
+fn workspace_oauth_request(
+    workspace: &Workspace,
+    name: &str,
+    spec: &str,
+    user: &str,
+) -> Request<CreateWorkspaceOwnedIdentityRequest> {
+    for_user(
+        CreateWorkspaceOwnedIdentityRequest {
+            workspace: Some(workspace.clone()),
+            name: name.to_string(),
+            identity_spec: spec.to_string(),
+            setup: None,
         },
         user,
     )
@@ -696,5 +873,11 @@ fn manifest(name: &str, issuer: &str, kind: &str) -> String {
     };
     format!(
         "kind: identity\nspec_version: 1\nname: {name}\nversion: 1.0.0\ndescription: {issuer} identity\nissuer: {issuer}\ntype: {kind}\n{oauth}"
+    )
+}
+
+fn device_manifest(name: &str, issuer: &str, base: &str, client: &str) -> String {
+    format!(
+        "kind: identity\nspec_version: 1\nname: {name}\nversion: 1.0.0\ndescription: {issuer} identity\nissuer: {issuer}\ntype: oauth\noauth:\n  method:\n    flow: {{type: device_code}}\n    endpoints:\n      device_authorization_url: {base}/device\n      token_url: {base}/token\n    client:\n      id: {{default: {client}}}\n"
     )
 }

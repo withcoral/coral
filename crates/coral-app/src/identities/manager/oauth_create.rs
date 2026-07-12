@@ -69,10 +69,6 @@ impl IdentityManager {
     }
 
     /// Authorize and atomically create or replace one workspace-owned OAuth identity.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "mounted by the follow-up service-surface PR")
-    )]
     pub(crate) async fn create_or_replace_workspace_oauth<E, EventFut>(
         &self,
         workspace: &WorkspaceName,

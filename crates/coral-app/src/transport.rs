@@ -1,5 +1,9 @@
 //! Shared gRPC transport helpers for app-owned services.
 
+mod acknowledged_stream;
+
+pub(crate) use acknowledged_stream::acknowledged_operation_response_stream;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
