@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use url::{Host, Url, form_urlencoded};
 use uuid::Uuid;
 
@@ -1229,31 +1229,32 @@ fn pkce_challenge(verifier: &str) -> String {
 }
 
 async fn receive_callback(session: &AuthorizationCodeSessionConfig) -> Result<Callback, AppError> {
-    let (result_tx, mut result_rx) = mpsc::channel(8);
+    let mut workers = JoinSet::new();
     let deadline = tokio::time::Instant::from_std(session.expires_at);
     loop {
         tokio::select! {
             accepted = session.listener.accept() => {
                 let (mut stream, _peer): (_, SocketAddr) = accepted?;
-                let result_tx = result_tx.clone();
                 let expected_path = session.callback_path.clone();
                 let expected_state = session.state.clone();
-                tokio::spawn(async move {
-                    let result = handle_callback_connection(
+                workers.spawn(async move {
+                    handle_callback_connection(
                         &mut stream,
                         &expected_path,
                         &expected_state,
                         deadline,
                     )
-                    .await;
-                    if result_tx.send(result).await.is_err() {
-                        tracing::debug!(
-                            "OAuth callback receiver closed before connection result was delivered"
-                        );
-                    }
+                    .await
                 });
             }
-            Some(result) = result_rx.recv() => {
+            Some(result) = workers.join_next() => {
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        tracing::debug!(%error, "OAuth callback connection task failed");
+                        continue;
+                    }
+                };
                 match result? {
                     CallbackConnectionResult::Callback(callback) => return Ok(callback),
                     CallbackConnectionResult::Ignored => {}
@@ -2170,9 +2171,11 @@ mod tests {
     )]
 
     use std::collections::BTreeMap;
-    use std::io::{Read as _, Write as _};
+    use std::future::{Future as _, poll_fn};
+    use std::io::{ErrorKind, Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
     use std::sync::LazyLock;
+    use std::task::Poll;
     use std::time::Duration;
 
     use super::{
@@ -4242,6 +4245,97 @@ mod tests {
 
         let (callback, ()) = tokio::join!(receive, send);
         assert_eq!(callback.expect("callback").code, "test-code");
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_drop_aborts_accepted_idle_preconnection() {
+        let redirect_port = free_loopback_port();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
+            .await
+            .expect("bind callback listener");
+        let oauth = oauth_spec(
+            "https://provider.example.com/oauth/token",
+            redirect_port,
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("client".to_string()),
+                    input: None,
+                },
+                secret: None,
+                dynamic_registration: None,
+            },
+        );
+        let endpoints = preflight_oauth_endpoints(
+            &oauth,
+            &oauth
+                .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+                .expect("render endpoints"),
+            &EMPTY_SOURCE_INPUTS,
+        )
+        .expect("preflight endpoints");
+        let session = AuthorizationCodeSessionConfig {
+            common: OAuthSessionCommon {
+                input_key: "API_TOKEN".to_string(),
+                endpoints,
+                client: ResolvedOAuthClient {
+                    client_id: "client".to_string(),
+                    client_secret: None,
+                    client_secret_transport: None,
+                    dynamic_client_registration: false,
+                },
+                resource: None,
+            },
+            state: "expected-state".to_string(),
+            code_verifier: None,
+            callback_path: "/oauth/callback".to_string(),
+            provider_redirect_uri: format!("http://127.0.0.1:{redirect_port}/oauth/callback"),
+            listener,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_mins(1),
+        };
+
+        let mut idle = tokio::net::TcpStream::connect(("127.0.0.1", redirect_port))
+            .await
+            .expect("connect idle preconnection");
+        let mut receive = Box::pin(receive_callback(&session));
+        poll_fn(|cx| {
+            assert!(receive.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(receive);
+        tokio::task::yield_now().await;
+
+        let request = b"GET /oauth/callback?state=expected-state&code=test-code HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n";
+        let reset = |kind| {
+            matches!(
+                kind,
+                ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::NotConnected
+            )
+        };
+        let mut response = Vec::new();
+        match idle.write_all(request).await {
+            Ok(()) => {
+                match tokio::time::timeout(Duration::from_secs(5), idle.read_to_end(&mut response))
+                    .await
+                    .expect("dropped callback receiver closes accepted connection")
+                {
+                    Ok(_) => {}
+                    Err(error) if reset(error.kind()) => {}
+                    Err(error) => panic!("unexpected callback read error: {error}"),
+                }
+            }
+            Err(error) if reset(error.kind()) => {}
+            Err(error) => panic!("unexpected callback write error: {error}"),
+        }
+        assert!(
+            response.is_empty(),
+            "dropped callback receiver emitted a response: {}",
+            String::from_utf8_lossy(&response)
+        );
     }
 
     #[tokio::test]
