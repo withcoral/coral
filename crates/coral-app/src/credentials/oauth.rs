@@ -31,6 +31,8 @@ use crate::credentials::OAUTH_INTERNAL_KEY_PREFIX;
 const SESSION_TTL: Duration = Duration::from_mins(10);
 const DEVICE_CODE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
+const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_DEVICE_CODE_SESSION_TTL: Duration = Duration::from_hours(1);
 // Refresh just before provider expiry so a token does not age out while Coral
 // is preparing or executing the query that needs it.
 const REFRESH_EXPIRY_SKEW_SECONDS: i64 = 60;
@@ -1088,23 +1090,18 @@ async fn register_dynamic_client(
         .post(registration_url)
         .header(ACCEPT, "application/json")
         .json(&payload);
-    let response = request.send().await.map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "OAuth dynamic client registration request failed: {error}"
-        ))
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| oauth_request_failure("OAuth dynamic client registration", &error))?;
     let status = response.status();
-    let body = response.text().await.map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "OAuth dynamic client registration response failed: {error}"
-        ))
-    })?;
     if !status.is_success() {
-        return Err(AppError::FailedPrecondition(format!(
-            "OAuth dynamic client registration failed with HTTP {status}: {}",
-            truncate_detail(&body)
-        )));
+        return Err(oauth_http_failure(
+            "OAuth dynamic client registration",
+            status,
+        ));
     }
+    let body = read_oauth_response_body(response, "OAuth dynamic client registration").await?;
     parse_dynamic_client_registration_response(&body, registration.token_endpoint_auth_method)
 }
 
@@ -1128,10 +1125,10 @@ fn parse_dynamic_client_registration_response(
             "OAuth dynamic client registration response was not JSON: {error}"
         ))
     })?;
-    if let Some(message) = oauth_error_message(&body) {
-        return Err(AppError::FailedPrecondition(format!(
-            "OAuth dynamic client registration returned error: {message}"
-        )));
+    if oauth_error_code(&body).is_some() {
+        return Err(AppError::FailedPrecondition(
+            "OAuth dynamic client registration returned a provider error".to_string(),
+        ));
     }
     let client_id = json_string_field(&body, "client_id")?.to_string();
     let client_secret = body
@@ -1169,9 +1166,10 @@ fn parse_dynamic_client_registration_auth_method(
         )
     })?;
     ManifestOAuthDynamicClientRegistrationAuthMethod::from_label(value).ok_or_else(|| {
-        AppError::FailedPrecondition(format!(
-            "OAuth dynamic client registration response token_endpoint_auth_method is unsupported: {value}"
-        ))
+        AppError::FailedPrecondition(
+            "OAuth dynamic client registration response token_endpoint_auth_method is unsupported"
+                .to_string(),
+        )
     })
 }
 
@@ -1373,14 +1371,10 @@ fn parse_callback_request(
             values
         },
     );
-    if let Some(error) = single_query_param(&params, "error")? {
-        let description = single_query_param(&params, "error_description")?.unwrap_or_default();
-        let message = if description.is_empty() {
-            format!("OAuth provider returned error '{error}'")
-        } else {
-            format!("OAuth provider returned error '{error}': {description}")
-        };
-        return Err(AppError::FailedPrecondition(message));
+    if single_query_param(&params, "error")?.is_some() {
+        return Err(AppError::FailedPrecondition(
+            "OAuth provider returned an authorization error".to_string(),
+        ));
     }
     let state = single_query_param(&params, "state")?.ok_or_else(|| {
         AppError::FailedPrecondition("OAuth callback was missing state".to_string())
@@ -1475,16 +1469,18 @@ async fn request_device_code(
             client.client_secret.as_deref(),
             client.client_secret_transport,
         )?;
-        let response = request.form(&form).send().await.map_err(|error| {
-            AppError::FailedPrecondition(format!("OAuth device code request failed: {error}"))
-        })?;
+        let response = request
+            .form(&form)
+            .send()
+            .await
+            .map_err(|error| oauth_request_failure("OAuth device code", &error))?;
         let status = response.status();
-        let body = response.text().await.map_err(|error| {
-            AppError::FailedPrecondition(format!("OAuth device code response failed: {error}"))
-        })?;
-        Ok::<_, AppError>((status, body))
+        if !status.is_success() {
+            return Err(oauth_http_failure("OAuth device code request", status));
+        }
+        read_oauth_response_body(response, "OAuth device code").await
     };
-    let (status, body) = tokio::time::timeout(timeout, request)
+    let body = tokio::time::timeout(timeout, request)
         .await
         .map_err(|_elapsed| {
             AppError::FailedPrecondition(format!(
@@ -1492,12 +1488,6 @@ async fn request_device_code(
                 timeout.as_secs()
             ))
         })??;
-    if !status.is_success() {
-        return Err(AppError::FailedPrecondition(format!(
-            "OAuth device code request failed with HTTP {status}: {}",
-            truncate_detail(&body)
-        )));
-    }
     parse_device_authorization_response(&body)
 }
 
@@ -1509,10 +1499,10 @@ fn parse_device_authorization_response(
             "OAuth device authorization response was not JSON: {error}"
         ))
     })?;
-    if let Some(message) = oauth_error_message(&body) {
-        return Err(AppError::FailedPrecondition(format!(
-            "OAuth device authorization failed: {message}"
-        )));
+    if oauth_error_code(&body).is_some() {
+        return Err(AppError::FailedPrecondition(
+            "OAuth device authorization failed with a provider error".to_string(),
+        ));
     }
     let device_code = json_string_field(&body, "device_code")?.to_string();
     let user_code = json_string_field(&body, "user_code")?.to_string();
@@ -1531,12 +1521,14 @@ fn parse_device_authorization_response(
                 .map(ValidatedOAuthEndpoint::into_string)
         })
         .transpose()?;
-    let expires_in = Duration::from_secs(json_u64_field(&body, "expires_in")?.max(1));
+    let expires_in = Duration::from_secs(json_u64_field(&body, "expires_in")?.max(1))
+        .min(MAX_DEVICE_CODE_SESSION_TTL);
     let interval = Duration::from_secs(
         optional_json_u64_field(&body, "interval")
             .unwrap_or(5)
             .max(1),
-    );
+    )
+    .min(expires_in);
     Ok(DeviceAuthorizationResponse {
         device_code,
         user_code,
@@ -1574,48 +1566,59 @@ async fn poll_device_token(
             session.common.client.client_secret.as_deref(),
             session.common.client.client_secret_transport,
         )?;
-        let response = request.form(&form).send().await.map_err(|error| {
-            AppError::FailedPrecondition(format!("OAuth device token request failed: {error}"))
-        })?;
+        let response = request
+            .form(&form)
+            .send()
+            .await
+            .map_err(|error| oauth_request_failure("OAuth device token", &error))?;
         let status = response.status();
-        let body = response.text().await.map_err(|error| {
-            AppError::FailedPrecondition(format!("OAuth device token response failed: {error}"))
-        })?;
+        let body = match read_oauth_response_body(response, "OAuth device token").await {
+            Ok(body) => body,
+            Err(_error) if !status.is_success() => {
+                return Err(oauth_http_failure("OAuth device token request", status));
+            }
+            Err(error) => return Err(error),
+        };
         let value: Value = serde_json::from_str(&body).map_err(|error| {
-            AppError::FailedPrecondition(format!(
-                "OAuth device token response was not JSON: {error}"
-            ))
+            if status.is_success() {
+                AppError::FailedPrecondition(format!(
+                    "OAuth device token response was not JSON: {error}"
+                ))
+            } else {
+                oauth_http_failure("OAuth device token request", status)
+            }
         })?;
-        if let Some(error) = value.get("error").and_then(Value::as_str) {
+        if let Some(error) = device_token_error_kind(&value) {
             match error {
-                "authorization_pending" => {}
-                "slow_down" => {
-                    interval += Duration::from_secs(5);
+                DeviceTokenErrorKind::AuthorizationPending => {}
+                DeviceTokenErrorKind::SlowDown => {
+                    interval = interval
+                        .saturating_add(Duration::from_secs(5))
+                        .min(MAX_DEVICE_CODE_SESSION_TTL);
                 }
-                "expired_token" => {
+                DeviceTokenErrorKind::ExpiredToken => {
                     return Err(AppError::FailedPrecondition(
                         "OAuth device code expired; start a new credential retrieval".to_string(),
                     ));
                 }
-                "access_denied" => {
+                DeviceTokenErrorKind::AccessDenied => {
                     return Err(AppError::FailedPrecondition(
                         "OAuth device authorization was denied".to_string(),
                     ));
                 }
-                _ => {
-                    let message = oauth_error_message(&value)
-                        .unwrap_or_else(|| format!("OAuth provider returned error '{error}'"));
-                    return Err(AppError::FailedPrecondition(format!(
-                        "OAuth device token request failed: {message}"
-                    )));
+                DeviceTokenErrorKind::Other => {
+                    return Err(if status.is_success() {
+                        AppError::FailedPrecondition(
+                            "OAuth device token request failed with a provider error".to_string(),
+                        )
+                    } else {
+                        oauth_http_failure("OAuth device token request", status)
+                    });
                 }
             }
         } else {
             if !status.is_success() {
-                return Err(AppError::FailedPrecondition(format!(
-                    "OAuth device token request failed with HTTP {status}: {}",
-                    truncate_detail(&body)
-                )));
+                return Err(oauth_http_failure("OAuth device token request", status));
             }
             return parse_token_response_value(&value);
         }
@@ -1713,19 +1716,16 @@ async fn send_token_request(
     form: Vec<(&'static str, String)>,
     label: &str,
 ) -> Result<TokenResponse, AppError> {
-    let response = request.form(&form).send().await.map_err(|error| {
-        AppError::FailedPrecondition(format!("{label} request failed: {error}"))
-    })?;
+    let response = request
+        .form(&form)
+        .send()
+        .await
+        .map_err(|error| oauth_request_failure(label, &error))?;
     let status = response.status();
-    let body = response.text().await.map_err(|error| {
-        AppError::FailedPrecondition(format!("{label} response failed: {error}"))
-    })?;
     if !status.is_success() {
-        return Err(AppError::FailedPrecondition(format!(
-            "{label} failed with HTTP {status}: {}",
-            truncate_detail(&body)
-        )));
+        return Err(oauth_http_failure(label, status));
     }
+    let body = read_oauth_response_body(response, label).await?;
     parse_token_response(&body)
 }
 
@@ -1745,10 +1745,10 @@ fn parse_token_response(body: &str) -> Result<TokenResponse, AppError> {
 }
 
 fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
-    if let Some(message) = oauth_error_message(body) {
-        return Err(AppError::FailedPrecondition(format!(
-            "OAuth token response returned error: {message}"
-        )));
+    if oauth_error_code(body).is_some() {
+        return Err(AppError::FailedPrecondition(
+            "OAuth token response returned a provider error".to_string(),
+        ));
     }
     let access_token = body
         .get("access_token")
@@ -1814,20 +1814,87 @@ fn optional_json_u64_field(body: &Value, field: &str) -> Option<u64> {
         .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
 }
 
-fn oauth_error_message(body: &Value) -> Option<String> {
-    let error = body
-        .get("error")
+/// Returns untrusted provider input for protocol control flow only.
+///
+/// Never include this value in an error, response, log, or telemetry field.
+fn oauth_error_code(body: &Value) -> Option<&str> {
+    body.get("error")
         .and_then(Value::as_str)
-        .and_then(trimmed_non_empty)?;
-    let description = body
-        .get("error_description")
-        .or_else(|| body.get("error_description_uri"))
-        .and_then(Value::as_str)
-        .and_then(trimmed_non_empty);
-    Some(match description {
-        Some(description) => format!("{error}: {description}"),
-        None => error.to_string(),
+        .and_then(trimmed_non_empty)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeviceTokenErrorKind {
+    AuthorizationPending,
+    SlowDown,
+    ExpiredToken,
+    AccessDenied,
+    Other,
+}
+
+fn device_token_error_kind(body: &Value) -> Option<DeviceTokenErrorKind> {
+    Some(match oauth_error_code(body)? {
+        "authorization_pending" => DeviceTokenErrorKind::AuthorizationPending,
+        "slow_down" => DeviceTokenErrorKind::SlowDown,
+        "expired_token" => DeviceTokenErrorKind::ExpiredToken,
+        "access_denied" => DeviceTokenErrorKind::AccessDenied,
+        _ => DeviceTokenErrorKind::Other,
     })
+}
+
+fn oauth_request_failure(label: &str, error: &reqwest::Error) -> AppError {
+    AppError::FailedPrecondition(format!(
+        "{label} request failed ({})",
+        oauth_transport_error_class(error)
+    ))
+}
+
+fn oauth_response_failure(label: &str, error: &reqwest::Error) -> AppError {
+    AppError::FailedPrecondition(format!(
+        "{label} response failed ({})",
+        oauth_transport_error_class(error)
+    ))
+}
+
+fn oauth_transport_error_class(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connection"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_builder() {
+        "request-build"
+    } else {
+        "transport"
+    }
+}
+
+fn oauth_http_failure(label: &str, status: reqwest::StatusCode) -> AppError {
+    AppError::FailedPrecondition(format!("{label} failed with HTTP {}", status.as_u16()))
+}
+
+async fn read_oauth_response_body(
+    mut response: reqwest::Response,
+    label: &str,
+) -> Result<String, AppError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| oauth_response_failure(label, &error))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_OAUTH_RESPONSE_BYTES {
+            return Err(AppError::FailedPrecondition(format!(
+                "{label} response exceeded {MAX_OAUTH_RESPONSE_BYTES} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body)
+        .map_err(|_error| AppError::FailedPrecondition(format!("{label} response was not UTF-8")))
 }
 
 fn oauth_credential_material(
@@ -2095,19 +2162,6 @@ fn safe_metadata(token: &TokenResponse) -> BTreeMap<String, String> {
     metadata
 }
 
-fn truncate_detail(value: &str) -> String {
-    const MAX: usize = 512;
-    if value.len() <= MAX {
-        return value.to_string();
-    }
-    let mut cut = MAX;
-    while cut > 0 && !value.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    let prefix = value.get(..cut).unwrap_or(value);
-    format!("{prefix}...")
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -2122,14 +2176,16 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthMetadataKey,
-        OAuthRefreshConfig, OAuthSessionCommon, RefreshOAuthCredentialRequest, ResolvedOAuthClient,
+        AuthorizationCodeSessionConfig, DeviceTokenErrorKind, MAX_DEVICE_CODE_SESSION_TTL,
+        MAX_OAUTH_RESPONSE_BYTES, OAuthCredentialService, OAuthMetadataKey, OAuthRefreshConfig,
+        OAuthSessionCommon, RefreshOAuthCredentialRequest, ResolvedOAuthClient,
         StartOAuthCredentialRequest, ValidatedOAuthEndpoint, basic_client_authorization,
-        bind_redirect_listener, dynamic_client_registration_grant_types,
+        bind_redirect_listener, device_token_error_kind, dynamic_client_registration_grant_types,
         join_dynamic_client_registration_scope_values, join_scope_values,
-        material_key_belongs_to_input, oauth_metadata_prefix, parse_device_authorization_response,
-        parse_dynamic_client_registration_response, parse_token_response, pkce_challenge,
-        preflight_oauth_endpoints, receive_callback, refresh_access_token, request_device_code,
+        material_key_belongs_to_input, oauth_metadata_prefix, parse_callback_request,
+        parse_device_authorization_response, parse_dynamic_client_registration_response,
+        parse_token_response, pkce_challenge, preflight_oauth_endpoints, read_oauth_response_body,
+        receive_callback, refresh_access_token, request_device_code, send_token_request,
         token_http_clients,
     };
     use coral_spec::{
@@ -2147,6 +2203,12 @@ mod tests {
     use url::Url;
 
     static EMPTY_SOURCE_INPUTS: LazyLock<BTreeMap<String, String>> = LazyLock::new(BTreeMap::new);
+
+    fn assert_redacted(detail: &str, secrets: &[&str]) {
+        for secret in secrets {
+            assert!(!detail.contains(secret), "{detail}");
+        }
+    }
 
     fn metadata_key(input_key: &str, key: OAuthMetadataKey) -> String {
         key.key(&oauth_metadata_prefix(input_key))
@@ -2531,6 +2593,74 @@ mod tests {
     }
 
     #[test]
+    fn provider_error_details_never_escape_app_or_grpc_errors() {
+        let provider_error = r#"{"error":"raw-error-secret","error_description":"description-secret","error_description_uri":"https://provider.example/uri-secret"}"#;
+        let callback = "GET /oauth/callback?error=raw-error-secret&error_description=description-secret&error_description_uri=https%3A%2F%2Fprovider.example%2Furi-secret HTTP/1.1";
+        let errors = [
+            parse_dynamic_client_registration_response(
+                provider_error,
+                ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+            )
+            .err()
+            .expect("DCR provider error"),
+            parse_device_authorization_response(provider_error)
+                .err()
+                .expect("device authorization provider error"),
+            parse_token_response(provider_error)
+                .err()
+                .expect("token provider error"),
+            parse_callback_request(callback, "/oauth/callback", "expected-state")
+                .err()
+                .expect("callback provider error"),
+        ];
+        let secrets = [
+            "raw-error-secret",
+            "description-secret",
+            "provider.example",
+            "uri-secret",
+        ];
+
+        for error in errors {
+            assert!(matches!(
+                &error,
+                crate::bootstrap::AppError::FailedPrecondition(_)
+            ));
+            let detail = error.to_string();
+            assert_redacted(&detail, &secrets);
+
+            let status = crate::bootstrap::app_status(error);
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+            assert_redacted(status.message(), &secrets);
+        }
+    }
+
+    #[test]
+    fn device_error_control_flow_is_allowlisted_and_provider_timers_are_bounded() {
+        for (code, expected) in [
+            (
+                "authorization_pending",
+                DeviceTokenErrorKind::AuthorizationPending,
+            ),
+            ("slow_down", DeviceTokenErrorKind::SlowDown),
+            ("expired_token", DeviceTokenErrorKind::ExpiredToken),
+            ("access_denied", DeviceTokenErrorKind::AccessDenied),
+            ("raw-error-secret", DeviceTokenErrorKind::Other),
+        ] {
+            assert_eq!(
+                device_token_error_kind(&serde_json::json!({ "error": code })),
+                Some(expected)
+            );
+        }
+
+        let response = parse_device_authorization_response(
+            r#"{"device_code":"code","user_code":"user","verification_uri":"https://provider.example/verify","expires_in":18446744073709551615,"interval":18446744073709551615}"#,
+        )
+        .expect("bounded provider timers");
+        assert_eq!(response.expires_in, MAX_DEVICE_CODE_SESSION_TTL);
+        assert_eq!(response.interval, MAX_DEVICE_CODE_SESSION_TTL);
+    }
+
+    #[test]
     fn device_response_rejects_unsafe_verification_urls_without_leaking_them() {
         for (body, expected_label) in [
             (
@@ -2576,11 +2706,140 @@ mod tests {
             panic!("unsupported DCR auth method should fail");
         };
 
+        let detail = error.to_string();
         assert!(
-            error
-                .to_string()
-                .contains("token_endpoint_auth_method is unsupported: private_key_jwt"),
+            detail.contains("token_endpoint_auth_method is unsupported"),
             "unexpected error: {error}"
+        );
+        assert!(!detail.contains("private_key_jwt"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn oauth_http_and_transport_failures_do_not_echo_provider_or_endpoint_secrets() {
+        let fixture = OAuthFixture::with_response(
+            "400 Bad Request",
+            r#"{"error":"authorization-code-secret","error_description":"body-secret","error_description_uri":"https://provider.example/uri-secret"}"#,
+        );
+        let endpoint = ValidatedOAuthEndpoint::untrusted(&fixture.token_url, "test token endpoint")
+            .expect("loopback token endpoint");
+        let http = token_http_clients(Duration::from_millis(250), None);
+        let error = send_token_request(
+            http.post(&endpoint),
+            vec![("code", "authorization-code-secret".to_string())],
+            "OAuth token exchange",
+        )
+        .await
+        .err()
+        .expect("provider HTTP failure");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert_eq!(
+            captured.form.get("code").map(String::as_str),
+            Some("authorization-code-secret")
+        );
+        let detail = error.to_string();
+        assert!(detail.contains("HTTP 400"), "{detail}");
+        assert_redacted(
+            &detail,
+            &[
+                "authorization-code-secret",
+                "body-secret",
+                "provider.example",
+                "uri-secret",
+            ],
+        );
+
+        let unavailable = format!(
+            "http://127.0.0.1:{}/token?credential=transport-secret",
+            free_loopback_port()
+        );
+        let unavailable =
+            ValidatedOAuthEndpoint::untrusted(&unavailable, "test unavailable token endpoint")
+                .expect("loopback token endpoint");
+        let error = send_token_request(http.post(&unavailable), Vec::new(), "OAuth token exchange")
+            .await
+            .err()
+            .expect("transport failure");
+        let detail = error.to_string();
+        assert!(detail.contains("OAuth token exchange request failed"));
+        assert!(detail.contains("(connection)"), "{detail}");
+        assert!(!detail.contains("transport-secret"), "{detail}");
+        assert!(!detail.contains("127.0.0.1"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn oauth_provider_response_body_is_bounded_without_echoing_content() {
+        let fixture = OAuthFixture::with_response(
+            "200 OK",
+            format!("{}body-secret", "x".repeat(MAX_OAUTH_RESPONSE_BYTES + 1)),
+        );
+        let endpoint = ValidatedOAuthEndpoint::untrusted(&fixture.token_url, "test token endpoint")
+            .expect("loopback token endpoint");
+        let http = token_http_clients(Duration::from_millis(250), None);
+        let response = http
+            .post(&endpoint)
+            .send()
+            .await
+            .expect("request oversized OAuth response");
+        let error = read_oauth_response_body(response, "OAuth token exchange")
+            .await
+            .expect_err("oversized OAuth response");
+        fixture.token_server.await.expect("token server");
+
+        let detail = error.to_string();
+        assert!(
+            detail.contains(&format!(
+                "response exceeded {MAX_OAUTH_RESPONSE_BYTES} bytes"
+            )),
+            "{detail}"
+        );
+        assert!(!detail.contains("body-secret"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn device_token_http_failure_preserves_status_without_echoing_provider_secrets() {
+        let fixture = DeviceOAuthFixture::with_token_response(
+            "400 Bad Request",
+            r#"{"error":"device-code","error_description":"body-secret","error_description_uri":"https://provider.example/uri-secret"}"#,
+        );
+        let oauth = device_oauth_spec(&fixture.device_url, &fixture.token_url);
+        let service = OAuthCredentialService::new();
+
+        let error = service
+            .authorize(
+                StartOAuthCredentialRequest {
+                    input_key: "API_TOKEN",
+                    oauth: &oauth,
+                    source_inputs: &EMPTY_SOURCE_INPUTS,
+                    credential_inputs: vec![(
+                        "OAUTH_CLIENT_ID".to_string(),
+                        "device-client".to_string(),
+                    )],
+                },
+                |authorization| async move {
+                    assert_eq!(authorization.user_code.as_deref(), Some("ABCD-1234"));
+                    Ok(())
+                },
+            )
+            .await
+            .err()
+            .expect("device token provider failure");
+        let captured = fixture.server.await.expect("device server");
+
+        assert_eq!(
+            captured.token.form.get("device_code").map(String::as_str),
+            Some("device-code")
+        );
+        let detail = error.to_string();
+        assert!(detail.contains("HTTP 400"), "{detail}");
+        assert_redacted(
+            &detail,
+            &[
+                "device-code",
+                "body-secret",
+                "provider.example",
+                "uri-secret",
+            ],
         );
     }
 
@@ -3121,10 +3380,9 @@ mod tests {
             .await
             .expect_err("stalled refresh should time out");
 
+        let detail = error.to_string();
         assert!(
-            error
-                .to_string()
-                .contains("OAuth token refresh request failed"),
+            detail.contains("OAuth token refresh request failed (timeout)"),
             "unexpected error: {error:#}"
         );
         assert_eq!(
@@ -4236,24 +4494,26 @@ mod tests {
 
     impl OAuthFixture {
         fn new(response_body: Option<&'static str>) -> Self {
+            Self::with_response(
+                "200 OK",
+                response_body.unwrap_or(
+                    r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo read:org","expires_in":3600}"#,
+                ),
+            )
+        }
+
+        fn with_response(status: &str, response_body: impl Into<String>) -> Self {
             let token_listener = StdTcpListener::bind("127.0.0.1:0").expect("token listener");
             let token_url = format!(
                 "http://{}/token",
                 token_listener.local_addr().expect("addr")
             );
+            let status = status.to_string();
+            let response_body = response_body.into();
             let token_server = tokio::task::spawn_blocking(move || {
                 let (mut stream, _) = token_listener.accept().expect("accept token request");
                 let request = read_http_request(&mut stream);
-                let response_body = response_body.unwrap_or(
-                    r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo read:org","expires_in":3600}"#,
-                );
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response_body}",
-                    response_body.len()
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("write token response");
+                write_json_response_with_status(&mut stream, &status, &response_body);
                 request
             });
             Self {
@@ -4296,10 +4556,19 @@ mod tests {
 
     impl DeviceOAuthFixture {
         fn new() -> Self {
+            Self::with_token_response(
+                "200 OK",
+                r#"{"access_token":"access-token","token_type":"Bearer","scope":"repo read:org"}"#,
+            )
+        }
+
+        fn with_token_response(status: &str, token_body: impl Into<String>) -> Self {
             let listener = StdTcpListener::bind("127.0.0.1:0").expect("device listener");
             let base_url = format!("http://{}", listener.local_addr().expect("addr"));
             let device_url = format!("{base_url}/device/code");
             let token_url = format!("{base_url}/access_token");
+            let status = status.to_string();
+            let token_body = token_body.into();
             let server = tokio::task::spawn_blocking(move || {
                 let (mut device_stream, _) = listener.accept().expect("accept device request");
                 let device = read_http_request(&mut device_stream);
@@ -4308,8 +4577,7 @@ mod tests {
 
                 let (mut token_stream, _) = listener.accept().expect("accept token request");
                 let token = read_http_request(&mut token_stream);
-                let token_body = r#"{"access_token":"access-token","token_type":"Bearer","scope":"repo read:org"}"#;
-                write_json_response(&mut token_stream, token_body);
+                write_json_response_with_status(&mut token_stream, &status, &token_body);
 
                 CapturedDeviceFlowRequests { device, token }
             });
@@ -4395,8 +4663,12 @@ mod tests {
     }
 
     fn write_json_response(stream: &mut std::net::TcpStream, body: &str) {
+        write_json_response_with_status(stream, "200 OK", body);
+    }
+
+    fn write_json_response_with_status(stream: &mut std::net::TcpStream, status: &str, body: &str) {
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()
         );
         stream
