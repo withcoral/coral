@@ -1,13 +1,5 @@
 //! Shared validation helpers for app-owned identifiers.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Identity document crypto lands before manager and repository consumers."
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::fmt;
 

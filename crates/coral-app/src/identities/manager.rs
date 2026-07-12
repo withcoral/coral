@@ -1,6 +1,12 @@
 //! Database-backed identity instance management.
 
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Identity use consumers land in B5.")
+)]
+
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,18 +17,81 @@ use crate::bootstrap::AppError;
 use crate::credentials::encryption::{CredentialKeyProvider, EncryptedEnvelopeDocument};
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::identity::{
-    IdentityDocumentBinding, UserPrincipal, encrypt_identity_document, run_key_operation,
+    IdentityDocumentBinding, UserPrincipal, decrypt_identity_document, encrypt_identity_document,
+    is_legacy_identity_document_aad_version, rewrap_identity_document,
+    rewrap_identity_spec_document, run_key_operation,
 };
 use crate::identity_specs::identity_spec_fingerprint;
-use crate::identity_specs::manager::{record_to_installed, spec_not_found};
+use crate::identity_specs::manager::{
+    InstalledIdentitySpec, ResolvedIdentitySpec, record_to_installed, resolve_installed_for_use,
+    spec_not_found,
+};
 use crate::state::db::{
-    CoralDb, CoralTx, DbRepos, IdentityDocumentWrite, IdentityRecord, IdentitySpecKey,
-    IdentitySpecRecord, now_unix_nanos_i64,
+    CoralDb, CoralTx, DbRepos, IdentityDocumentRecord, IdentityDocumentWrite, IdentityRecord,
+    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,
+    now_unix_nanos_i64,
 };
 use crate::workspaces::WorkspaceName;
 
 const FIXED_TOKEN_KEY: &str = "TOKEN";
 const MAX_MUTATION_ATTEMPTS: usize = 8;
+
+/// Coherent decrypted identity data prepared for one runtime use.
+pub(crate) struct ResolvedIdentityForUse {
+    pub(crate) identity: IdentityRecord,
+    pub(crate) identity_spec: ResolvedIdentitySpec,
+    material: BTreeMap<String, String>,
+    revision: IdentityForUseRevision,
+}
+
+impl ResolvedIdentityForUse {
+    pub(crate) fn material(&self) -> &BTreeMap<String, String> {
+        &self.material
+    }
+
+    pub(crate) fn revision(&self) -> &IdentityForUseRevision {
+        &self.revision
+    }
+}
+
+impl fmt::Debug for ResolvedIdentityForUse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedIdentityForUse")
+            .field("owner", &self.identity.owner)
+            .field("name", &self.identity.name)
+            .field("identity_spec", &self.identity_spec)
+            .field("material_value_count", &self.material.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Opaque complete database revision paired with resolved identity material.
+pub(crate) struct IdentityForUseRevision {
+    _snapshot: IdentityUseSnapshot,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct IdentityUseSnapshot {
+    workspace_created_at_unix_nanos: Option<i64>,
+    identity: Option<IdentityRecord>,
+    identity_document: Option<IdentityDocumentRecord>,
+    identity_spec: Option<IdentitySpecRecord>,
+    identity_spec_document: Option<IdentitySpecDocumentRecord>,
+}
+
+struct PreparedIdentityForUse {
+    identity: IdentityRecord,
+    identity_spec: ResolvedIdentitySpec,
+    material: BTreeMap<String, String>,
+    identity_rewrap: Option<IdentityDocumentWrite>,
+    identity_spec_rewrap: Option<IdentitySpecDocumentWrite>,
+}
+
+impl PreparedIdentityForUse {
+    fn needs_rewrap(&self) -> bool {
+        self.identity_rewrap.is_some() || self.identity_spec_rewrap.is_some()
+    }
+}
 
 /// Database-backed behavior for owner-scoped identity instances.
 #[derive(Clone)]
@@ -268,6 +337,122 @@ impl IdentityManager {
         record.ok_or_else(|| identity_not_found(&name))
     }
 
+    /// Resolve one identity and its exact installed spec from one coherent snapshot.
+    pub(crate) async fn get_for_use(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<ResolvedIdentityForUse, AppError> {
+        for _ in 0..MAX_MUTATION_ATTEMPTS {
+            let (name, snapshot) = match self.load_for_use_snapshot(owner, identity_name).await {
+                Ok(snapshot) => snapshot,
+                Err(AppError::RetryableTransactionConflict) => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let crypto_snapshot = snapshot.clone();
+            let crypto_name = name.clone();
+            let key_provider = Arc::clone(&self.key_provider);
+            let prepared = run_key_operation(move || {
+                prepare_identity_for_use(crypto_snapshot, &crypto_name, key_provider.as_ref())
+            })
+            .await?;
+            let revision = if prepared.needs_rewrap() {
+                match self
+                    .try_rewrap_for_use(owner, &name, &snapshot, &prepared)
+                    .await
+                {
+                    Ok(Some(revision)) => revision,
+                    Ok(None) | Err(AppError::RetryableTransactionConflict) => {
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                snapshot
+            };
+            return Ok(ResolvedIdentityForUse {
+                identity: prepared.identity,
+                identity_spec: prepared.identity_spec,
+                material: prepared.material,
+                revision: IdentityForUseRevision {
+                    _snapshot: revision,
+                },
+            });
+        }
+        Err(AppError::RetryableTransactionConflict)
+    }
+
+    async fn load_for_use_snapshot(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<(IdentityName, IdentityUseSnapshot), AppError> {
+        let mut tx = self.db.begin_read_snapshot().await?;
+        let workspace_created_at_unix_nanos = owner_workspace_created_at(&mut tx, owner).await?;
+        let name = IdentityName::parse(identity_name)?;
+        let snapshot =
+            load_identity_use_snapshot(&mut tx, owner, &name, workspace_created_at_unix_nanos)
+                .await?;
+        tx.commit().await?;
+        Ok((name, snapshot))
+    }
+
+    async fn try_rewrap_for_use(
+        &self,
+        owner: &IdentityOwner,
+        name: &IdentityName,
+        expected: &IdentityUseSnapshot,
+        prepared: &PreparedIdentityForUse,
+    ) -> Result<Option<IdentityUseSnapshot>, AppError> {
+        let mut tx = self.db.begin_serializable().await?;
+        let workspace_created_at_unix_nanos = owner_workspace_created_at(&mut tx, owner).await?;
+        let mut current =
+            load_identity_use_snapshot(&mut tx, owner, name, workspace_created_at_unix_nanos)
+                .await?;
+        if current != *expected {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        #[cfg(test)]
+        if let Some(gate) = &self.before_upsert_gate
+            && !gate.used.swap(true, Ordering::SeqCst)
+        {
+            gate.barrier.wait().await;
+        }
+        let now = now_unix_nanos_i64()?;
+        let result = async {
+            if let Some(write) = &prepared.identity_spec_rewrap {
+                let key = current
+                    .identity
+                    .as_ref()
+                    .expect("validated identity snapshot")
+                    .spec_reference
+                    .key();
+                current.identity_spec_document =
+                    Some(tx.identity_spec_documents().upsert(key, write, now).await?);
+            }
+            if let Some(write) = &prepared.identity_rewrap {
+                current.identity_document = Some(
+                    tx.identity_documents()
+                        .upsert(owner, name, write, now)
+                        .await?,
+                );
+            }
+            Ok::<_, AppError>(())
+        }
+        .await;
+        if let Err(error) = result {
+            tx.rollback().await?;
+            return Err(error);
+        }
+        tx.commit().await?;
+        Ok(Some(current))
+    }
+
     /// Delete one identity and its cascading encrypted document.
     pub(crate) async fn delete(
         &self,
@@ -409,6 +594,202 @@ impl IdentityManager {
     }
 }
 
+async fn load_identity_use_snapshot(
+    tx: &mut CoralTx<'_>,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+    workspace_created_at_unix_nanos: Option<i64>,
+) -> Result<IdentityUseSnapshot, AppError> {
+    let identity = tx.identities().load_optional(owner, name).await?;
+    let identity_document = tx.identity_documents().load_optional(owner, name).await?;
+    let (identity_spec, identity_spec_document) = match identity.as_ref() {
+        Some(identity) => {
+            let key = identity.spec_reference.key();
+            (
+                tx.identity_specs().load_optional(key).await?,
+                tx.identity_spec_documents().load_optional(key).await?,
+            )
+        }
+        None => (None, None),
+    };
+    Ok(IdentityUseSnapshot {
+        workspace_created_at_unix_nanos,
+        identity,
+        identity_document,
+        identity_spec,
+        identity_spec_document,
+    })
+}
+
+fn prepare_identity_for_use(
+    snapshot: IdentityUseSnapshot,
+    name: &IdentityName,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<PreparedIdentityForUse, AppError> {
+    let identity = snapshot.identity.ok_or_else(|| identity_not_found(name))?;
+    let identity_document = snapshot
+        .identity_document
+        .ok_or_else(|| recreate_identity(name, "has no encrypted material"))?;
+    if is_legacy_identity_document_aad_version(identity_document.aad_version) {
+        return Err(recreate_identity(
+            name,
+            "uses legacy encrypted material that is not bound to its identity spec",
+        ));
+    }
+    let identity_spec_record = snapshot.identity_spec.ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "identity '{name}' is orphaned because identity spec '{}' is not installed; restore the exact spec or recreate the identity",
+            identity.spec_reference.key().name(),
+        ))
+    })?;
+    let installed = record_to_installed(identity_spec_record)?;
+    validate_identity_reference(&identity, &installed)?;
+    let identity_spec = resolve_installed_for_use(
+        installed,
+        snapshot.identity_spec_document.clone(),
+        key_provider,
+    )?;
+    let binding =
+        identity_document_binding(&identity.owner, &identity.name, &identity.spec_reference);
+    let envelope = identity_envelope(&identity_document);
+    let material = decrypt_identity_document(&binding, &envelope, key_provider)?;
+    if material.len() != 1
+        || material
+            .get(FIXED_TOKEN_KEY)
+            .is_none_or(|token| token.trim().is_empty())
+    {
+        return Err(corrupt_identity_material(&identity));
+    }
+    let identity_rewrap = rewrap_identity_document(&binding, &envelope, key_provider)?
+        .map(identity_document_write)
+        .transpose()?;
+    let identity_spec_rewrap = match snapshot.identity_spec_document.as_ref() {
+        Some(document) => {
+            let envelope = identity_spec_envelope(document);
+            let (scope_kind, scope_id, spec_name) = document.key.document_aad_parts();
+            rewrap_identity_spec_document(scope_kind, scope_id, spec_name, &envelope, key_provider)?
+                .map(identity_spec_document_write)
+                .transpose()?
+        }
+        None => None,
+    };
+    Ok(PreparedIdentityForUse {
+        identity,
+        identity_spec,
+        material,
+        identity_rewrap,
+        identity_spec_rewrap,
+    })
+}
+
+fn validate_identity_reference(
+    identity: &IdentityRecord,
+    installed: &InstalledIdentitySpec,
+) -> Result<(), AppError> {
+    let expected = IdentitySpecReference::new(
+        &identity.owner,
+        installed.key.clone(),
+        identity_spec_fingerprint(&installed.manifest)?,
+        installed.manifest.issuer.clone(),
+        installed.manifest.identity_type.label(),
+    )?;
+    if identity.spec_reference != expected {
+        return Err(recreate_identity(
+            &identity.name,
+            "no longer matches its exact installed identity spec",
+        ));
+    }
+    if installed.manifest.identity_type != IdentitySpecType::FixedToken {
+        return Err(recreate_identity(
+            &identity.name,
+            "does not reference a fixed-token identity spec",
+        ));
+    }
+    Ok(())
+}
+
+fn identity_document_binding<'a>(
+    owner: &'a IdentityOwner,
+    name: &'a IdentityName,
+    reference: &'a IdentitySpecReference,
+) -> IdentityDocumentBinding<'a> {
+    let (spec_scope_kind, spec_scope_id, spec_name) = reference.key().document_aad_parts();
+    IdentityDocumentBinding::new(
+        owner.kind(),
+        owner.key(),
+        name.as_str(),
+        spec_scope_kind,
+        spec_scope_id,
+        spec_name,
+        reference.fingerprint(),
+    )
+}
+
+fn identity_envelope(document: &IdentityDocumentRecord) -> EncryptedEnvelopeDocument {
+    EncryptedEnvelopeDocument {
+        ciphertext: document.ciphertext.clone(),
+        nonce: document.nonce.clone(),
+        wrapped_dek: document.wrapped_dek.clone(),
+        wrapped_dek_nonce: document.wrapped_dek_nonce.clone(),
+        key_id: document.key_id.clone(),
+        algorithm: document.algorithm.clone(),
+        aad_version: document.aad_version,
+    }
+}
+
+fn identity_spec_envelope(document: &IdentitySpecDocumentRecord) -> EncryptedEnvelopeDocument {
+    EncryptedEnvelopeDocument {
+        ciphertext: document.ciphertext.clone(),
+        nonce: document.nonce.clone(),
+        wrapped_dek: document.wrapped_dek.clone(),
+        wrapped_dek_nonce: document.wrapped_dek_nonce.clone(),
+        key_id: document.key_id.clone(),
+        algorithm: document.algorithm.clone(),
+        aad_version: document.aad_version,
+    }
+}
+
+fn identity_document_write(
+    document: EncryptedEnvelopeDocument,
+) -> Result<IdentityDocumentWrite, AppError> {
+    IdentityDocumentWrite::new(
+        document.ciphertext,
+        document.nonce,
+        document.wrapped_dek,
+        document.wrapped_dek_nonce,
+        document.key_id,
+        document.algorithm,
+        document.aad_version,
+    )
+}
+
+fn identity_spec_document_write(
+    document: EncryptedEnvelopeDocument,
+) -> Result<IdentitySpecDocumentWrite, AppError> {
+    IdentitySpecDocumentWrite::new(
+        document.ciphertext,
+        document.nonce,
+        document.wrapped_dek,
+        document.wrapped_dek_nonce,
+        document.key_id,
+        document.algorithm,
+        document.aad_version,
+    )
+}
+
+fn recreate_identity(name: &IdentityName, detail: &str) -> AppError {
+    AppError::FailedPrecondition(format!("identity '{name}' {detail}; recreate the identity"))
+}
+
+fn corrupt_identity_material(identity: &IdentityRecord) -> AppError {
+    AppError::Database(format!(
+        "identity '{}:{}:{}' has invalid encrypted material",
+        identity.owner.kind(),
+        identity.owner.key(),
+        identity.name,
+    ))
+}
+
 async fn owner_workspace_created_at(
     tx: &mut CoralTx<'_>,
     owner: &IdentityOwner,
@@ -439,16 +820,7 @@ fn prepare_fixed_token_document(
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<IdentityDocumentWrite, AppError> {
     let values = BTreeMap::from([(FIXED_TOKEN_KEY.to_string(), token)]);
-    let (spec_scope_kind, spec_scope_id, spec_name) = reference.key().document_aad_parts();
-    let binding = IdentityDocumentBinding::new(
-        owner.kind(),
-        owner.key(),
-        name.as_str(),
-        spec_scope_kind,
-        spec_scope_id,
-        spec_name,
-        reference.fingerprint(),
-    );
+    let binding = identity_document_binding(owner, name, reference);
     let EncryptedEnvelopeDocument {
         ciphertext,
         nonce,

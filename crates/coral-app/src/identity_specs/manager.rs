@@ -670,6 +670,14 @@ fn resolve_record_for_use(
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<ResolvedIdentitySpec, AppError> {
     let spec = record_to_installed(record)?;
+    resolve_installed_for_use(spec, document, key_provider)
+}
+
+pub(crate) fn resolve_installed_for_use(
+    spec: InstalledIdentitySpec,
+    document: Option<IdentitySpecDocumentRecord>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<ResolvedIdentitySpec, AppError> {
     let material = decrypt_input_material(&spec.key, document, key_provider)?;
     let inputs = resolve_identity_spec_inputs_for_use(&spec.key, &spec.manifest, &material)?;
     Ok(ResolvedIdentitySpec { spec, inputs })

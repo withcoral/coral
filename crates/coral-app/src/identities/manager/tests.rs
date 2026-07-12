@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_spec::parse_identity_manifest_yaml;
+use sea_query::{Alias, Expr, ExprTrait, Query};
 use tempfile::tempdir;
 
 use super::IdentityManager;
@@ -17,7 +18,7 @@ use crate::identity::{
 };
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::state::db::{
-    CoralDb, DbError, DbRepos, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey,
+    CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey,
     IdentitySpecWrite, ResolvedDatabaseConfig,
 };
 use crate::workspaces::WorkspaceName;
@@ -29,7 +30,7 @@ impl CredentialKeyProvider for TestKeyProvider {
         self.0
             .last()
             .cloned()
-            .ok_or_else(|| CredentialsError::Crypto("missing test key".to_string()))
+            .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
     }
 
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -37,7 +38,7 @@ impl CredentialKeyProvider for TestKeyProvider {
             .iter()
             .find(|key| key.key_id() == key_id)
             .cloned()
-            .ok_or_else(|| CredentialsError::Crypto("missing test key".to_string()))
+            .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
     }
 }
 
@@ -56,8 +57,108 @@ async fn sqlite_fixed_token_manager_contract() {
 }
 
 pub(crate) async fn assert_fixed_token_manager_contract(db: &Arc<CoralDb>) {
+    Box::pin(assert_fixed_token_for_use_contract(db)).await;
     Box::pin(assert_user_global_fixed_token_manager_contract(db)).await;
     Box::pin(assert_workspace_fixed_token_manager_contract(db)).await;
+}
+
+async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let spec_name = format!("for_use_{suffix}");
+    let identity_name = format!("for-use-{suffix}");
+    let spec_key = IdentitySpecKey::global(&spec_name).unwrap();
+    let principal = UserPrincipal::for_user(&format!("for-use-{suffix}")).unwrap();
+    let owner = IdentityOwner::for_user(principal.clone());
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([61; 32]);
+    let old_provider = Arc::new(TestKeyProvider(vec![old_key.clone()]));
+    put_spec(db, &spec_key, &fixed_manifest(&spec_name, "use")).await;
+    let manager = IdentityManager::new(db.clone(), old_provider);
+    let created = manager
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &identity_name,
+            &spec_name,
+            " token-value ".into(),
+        )
+        .await
+        .expect("create identity for use");
+    let before_identity = load_pair(db, &owner, &identity_name).await.1.unwrap();
+
+    let resolved = manager
+        .get_for_use(&owner, &identity_name)
+        .await
+        .expect("resolve identity for use");
+    assert_eq!(resolved.identity, created);
+    assert_eq!(resolved.material().get("TOKEN").unwrap(), "token-value");
+    assert_eq!(resolved.identity_spec.spec.key, spec_key);
+    assert!(resolved.identity_spec.inputs.variables().is_empty());
+    assert!(resolved.identity_spec.inputs.secrets().is_empty());
+    let rendered = format!("{resolved:?}");
+    assert!(!rendered.contains("token-value"));
+    let _revision = resolved.revision();
+    assert_eq!(
+        load_pair(db, &owner, &identity_name).await.1.unwrap(),
+        before_identity
+    );
+
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([62; 32]);
+    let rotated = IdentityManager::new(
+        db.clone(),
+        Arc::new(TestKeyProvider(vec![old_key, new_key.clone()])),
+    );
+    let rotated_result = rotated
+        .get_for_use(&owner, &identity_name)
+        .await
+        .expect("resolve and rewrap identity for use");
+    assert_eq!(
+        rotated_result.material().get("TOKEN").unwrap(),
+        "token-value"
+    );
+    let after_identity = load_pair(db, &owner, &identity_name).await.1.unwrap();
+    assert_eq!(after_identity.document_version, 2);
+    assert_eq!(after_identity.key_id, new_key.key_id());
+    assert_eq!(after_identity.ciphertext, before_identity.ciphertext);
+    assert_eq!(after_identity.nonce, before_identity.nonce);
+    let reopened = rotated
+        .get_for_use(&owner, &identity_name)
+        .await
+        .expect("reopen rewrapped identity");
+    assert_eq!(reopened.material().get("TOKEN").unwrap(), "token-value");
+    assert_eq!(
+        load_pair(db, &owner, &identity_name).await.1.unwrap(),
+        after_identity
+    );
+
+    let unavailable = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(vec![])));
+    assert!(matches!(
+        unavailable.get_for_use(&owner, &identity_name).await,
+        Err(AppError::Credentials(CredentialsError::Unavailable(_)))
+    ));
+    assert_eq!(
+        load_pair(db, &owner, &identity_name).await.1.unwrap(),
+        after_identity
+    );
+
+    set_identity_aad_version(db, &owner, &identity_name, 1).await;
+    assert!(matches!(
+        unavailable.get_for_use(&owner, &identity_name).await,
+        Err(AppError::FailedPrecondition(detail))
+            if detail.contains("legacy") && detail.contains("recreate")
+    ));
+    set_identity_aad_version(db, &owner, &identity_name, IDENTITY_DOCUMENT_AAD_VERSION).await;
+    put_spec(db, &spec_key, &oauth_manifest(&spec_name)).await;
+    assert!(matches!(
+        unavailable.get_for_use(&owner, &identity_name).await,
+        Err(AppError::FailedPrecondition(detail))
+            if detail.contains("no longer matches") && detail.contains("recreate")
+    ));
+    delete_spec(db, &spec_key).await;
+    assert!(matches!(
+        rotated.get_for_use(&owner, &identity_name).await,
+        Err(AppError::FailedPrecondition(detail))
+            if detail.contains("orphaned") && detail.contains("restore")
+    ));
+    assert_eq!(rotated.get(&owner, &identity_name).await.unwrap(), created);
 }
 
 #[expect(
@@ -474,6 +575,15 @@ async fn assert_workspace_fixed_token_manager_contract(db: &Arc<CoralDb>) {
         manager.get(&owner, &fallback_identity).await.unwrap(),
         fallback_created
     );
+    let fallback_for_use = manager
+        .get_for_use(&owner, &fallback_identity)
+        .await
+        .expect("resolve persisted global fallback after late shadow");
+    assert_eq!(fallback_for_use.identity_spec.spec.key, fallback_global_key);
+    assert_eq!(
+        fallback_for_use.material().get("TOKEN").unwrap(),
+        "fallback-token"
+    );
 
     let selected = Arc::new(tokio::sync::Barrier::new(2));
     let resume = Arc::new(tokio::sync::Barrier::new(2));
@@ -840,6 +950,26 @@ async fn delete_spec(db: &Arc<CoralDb>, key: &IdentitySpecKey) {
     let mut tx = db.begin().await.unwrap();
     assert!(tx.identity_specs().delete(key).await.unwrap());
     tx.commit().await.unwrap();
+}
+
+async fn set_identity_aad_version(
+    db: &Arc<CoralDb>,
+    owner: &IdentityOwner,
+    name: &str,
+    aad_version: i64,
+) {
+    let mut db = db.as_ref();
+    db.execute(
+        Query::update()
+            .table(Alias::new("identity_documents"))
+            .value(Alias::new("aad_version"), aad_version)
+            .and_where(Expr::col(Alias::new("owner_kind")).eq(owner.kind()))
+            .and_where(Expr::col(Alias::new("owner_key")).eq(owner.key()))
+            .and_where(Expr::col(Alias::new("name")).eq(name))
+            .to_owned(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn load_pair(
