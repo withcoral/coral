@@ -10,8 +10,10 @@ use super::CredentialsError;
 use super::encryption::{
     CREDENTIAL_DOCUMENT_AAD_VERSION, CREDENTIAL_DOCUMENT_ALGORITHM, CredentialEncryptionKey,
     CredentialKeyProvider, LocalFileCredentialKeyProvider, decrypt_credential_values,
-    encrypt_credential_values, open_envelope_document, rewrap_credential_document,
-    rewrap_envelope_document, seal_envelope_document,
+    encrypt_credential_values, open_envelope_document, open_envelope_document_with_aad_version,
+    rewrap_credential_document, rewrap_envelope_document,
+    rewrap_envelope_document_with_aad_version, seal_envelope_document,
+    seal_envelope_document_with_aad_version,
 };
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
@@ -416,6 +418,67 @@ fn shared_envelope_helpers_round_trip_and_rewrap_current_documents() {
             .expect("rewrap current envelope")
             .is_none(),
         "active KEK should not produce another rewrap"
+    );
+}
+
+#[test]
+fn versioned_envelope_helpers_require_and_preserve_custom_aad_version() {
+    const AAD_VERSION: i64 = 2;
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([43; 32]);
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([47; 32]);
+    let old_provider = RotatingKeyProvider {
+        active: old_key.clone(),
+        keys: vec![old_key.clone()],
+    };
+    let rotating_provider = RotatingKeyProvider {
+        active: new_key.clone(),
+        keys: vec![old_key, new_key.clone()],
+    };
+    let aad = b"test-v2-envelope-aad".to_vec();
+    let encrypted = seal_envelope_document_with_aad_version(
+        AAD_VERSION,
+        aad.clone(),
+        Zeroizing::new(b"v2 envelope payload".to_vec()),
+        &old_provider,
+    )
+    .expect("seal v2 envelope");
+
+    open_envelope_document_with_aad_version(
+        CREDENTIAL_DOCUMENT_AAD_VERSION,
+        &encrypted,
+        aad.clone(),
+        &old_provider,
+    )
+    .expect_err("v1 reader must reject v2 envelope");
+    assert_open_failed(
+        &rewrap_envelope_document_with_aad_version(
+            AAD_VERSION,
+            &encrypted,
+            b"wrong-aad".to_vec(),
+            &old_provider,
+        )
+        .expect_err("same-key rewrap must authenticate payload AAD"),
+    );
+
+    let rewrapped = rewrap_envelope_document_with_aad_version(
+        AAD_VERSION,
+        &encrypted,
+        aad.clone(),
+        &rotating_provider,
+    )
+    .expect("rewrap v2 envelope")
+    .expect("stale key should rewrap");
+    assert_eq!(rewrapped.key_id, new_key.key_id());
+    assert_eq!(
+        open_envelope_document_with_aad_version(
+            AAD_VERSION,
+            &rewrapped,
+            aad.clone(),
+            &rotating_provider,
+        )
+        .expect("open rewrapped v2 envelope")
+        .as_slice(),
+        b"v2 envelope payload"
     );
 }
 

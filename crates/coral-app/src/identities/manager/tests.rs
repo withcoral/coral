@@ -11,7 +11,10 @@ use crate::credentials::encryption::{
     CredentialEncryptionKey, CredentialKeyProvider, EncryptedEnvelopeDocument,
 };
 use crate::identities::model::{IdentityName, IdentityOwner};
-use crate::identity::{UserPrincipal, decrypt_identity_document};
+use crate::identity::{
+    IDENTITY_DOCUMENT_AAD_VERSION, IdentityDocumentBinding, UserPrincipal,
+    decrypt_identity_document,
+};
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::state::db::{
     CoralDb, DbError, DbRepos, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey,
@@ -134,14 +137,14 @@ async fn assert_user_global_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     let before_a = load_pair(db, &owner_a, &identity).await;
     let before_b = load_pair(db, &owner_b, &identity).await;
     assert_material(
+        before_a.0.as_ref().unwrap(),
         before_a.1.as_ref().unwrap(),
-        &owner_a,
         "alpha-token",
         old_provider.as_ref(),
     );
     assert_material(
+        before_b.0.as_ref().unwrap(),
         before_b.1.as_ref().unwrap(),
-        &owner_b,
         "beta-token",
         old_provider.as_ref(),
     );
@@ -179,8 +182,8 @@ async fn assert_user_global_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     );
     assert_eq!(after_document.key_id, new_key.key_id());
     assert_material(
+        after_a.0.as_ref().unwrap(),
         after_document,
-        &owner_a,
         "gamma-token",
         rotated_provider.as_ref(),
     );
@@ -223,8 +226,8 @@ async fn assert_user_global_fixed_token_manager_contract(db: &Arc<CoralDb>) {
         name => panic!("unexpected winning spec {name}"),
     };
     assert_material(
+        conflict_record,
         conflict.1.as_ref().unwrap(),
-        &owner_a,
         expected_token,
         rotated_provider.as_ref(),
     );
@@ -278,11 +281,11 @@ async fn assert_user_global_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     .expect("race create");
     assert_reference(&race_result, &race, "after");
     let raced = load_pair(db, &owner_a, &raced_name).await;
-    assert_eq!(raced.0.unwrap(), race_result);
+    assert_eq!(raced.0.as_ref(), Some(&race_result));
     assert_eq!(raced.1.as_ref().unwrap().document_version, 1);
     assert_material(
+        raced.0.as_ref().unwrap(),
         raced.1.as_ref().unwrap(),
-        &owner_a,
         "race-token",
         rotated_provider.as_ref(),
     );
@@ -431,8 +434,8 @@ async fn assert_workspace_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     assert_eq!(fallback_pair.0.as_ref(), Some(&fallback_created));
     assert_eq!(fallback_pair.1.as_ref().unwrap().document_version, 1);
     assert_material(
+        fallback_pair.0.as_ref().unwrap(),
         fallback_pair.1.as_ref().unwrap(),
-        &owner,
         "fallback-token",
         provider.as_ref(),
     );
@@ -455,8 +458,8 @@ async fn assert_workspace_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     let shadowed_pair = load_pair(db, &owner, &shadowed_identity).await;
     assert_eq!(shadowed_pair.1.as_ref().unwrap().document_version, 1);
     assert_material(
+        shadowed_pair.0.as_ref().unwrap(),
         shadowed_pair.1.as_ref().unwrap(),
-        &owner,
         "workspace-token",
         provider.as_ref(),
     );
@@ -506,8 +509,8 @@ async fn assert_workspace_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     assert_eq!(exact_raced.0.as_ref(), Some(&exact_race_result));
     assert_eq!(exact_raced.1.as_ref().unwrap().document_version, 1);
     assert_material(
+        exact_raced.0.as_ref().unwrap(),
         exact_raced.1.as_ref().unwrap(),
-        &owner,
         "exact-race-token",
         provider.as_ref(),
     );
@@ -550,8 +553,8 @@ async fn assert_workspace_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     assert_eq!(shadow_raced.0.as_ref(), Some(&shadow_race_result));
     assert_eq!(shadow_raced.1.as_ref().unwrap().document_version, 1);
     assert_material(
+        shadow_raced.0.as_ref().unwrap(),
         shadow_raced.1.as_ref().unwrap(),
-        &owner,
         "shadow-race-token",
         provider.as_ref(),
     );
@@ -871,11 +874,23 @@ fn assert_reference_key(record: &IdentityRecord, key: &IdentitySpecKey, label: &
 }
 
 fn assert_material(
+    record: &IdentityRecord,
     document: &IdentityDocumentRecord,
-    owner: &IdentityOwner,
     token: &str,
     key_provider: &dyn CredentialKeyProvider,
 ) {
+    assert_eq!(document.aad_version, IDENTITY_DOCUMENT_AAD_VERSION);
+    let reference = &record.spec_reference;
+    let (spec_scope_kind, spec_scope_id, spec_name) = reference.key().document_aad_parts();
+    let binding = IdentityDocumentBinding::new(
+        record.owner.kind(),
+        record.owner.key(),
+        record.name.as_str(),
+        spec_scope_kind,
+        spec_scope_id,
+        spec_name,
+        reference.fingerprint(),
+    );
     let envelope = EncryptedEnvelopeDocument {
         ciphertext: document.ciphertext.clone(),
         nonce: document.nonce.clone(),
@@ -885,14 +900,8 @@ fn assert_material(
         algorithm: document.algorithm.clone(),
         aad_version: document.aad_version,
     };
-    let values = decrypt_identity_document(
-        owner.kind(),
-        owner.key(),
-        document.name.as_str(),
-        &envelope,
-        key_provider,
-    )
-    .expect("decrypt identity material");
+    let values = decrypt_identity_document(&binding, &envelope, key_provider)
+        .expect("decrypt identity material");
     assert_eq!(
         values,
         std::collections::BTreeMap::from([("TOKEN".to_string(), token.to_string())])

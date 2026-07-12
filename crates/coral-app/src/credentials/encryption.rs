@@ -293,7 +293,7 @@ pub(crate) fn rewrap_credential_document(
     document: &EncryptedCredentialDocument,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<Option<EncryptedCredentialDocument>, CredentialsError> {
-    validate_document_metadata(document)?;
+    validate_document_metadata(document, CREDENTIAL_DOCUMENT_AAD_VERSION)?;
     let old_kek = key_provider.key(&document.key_id)?;
     let active_kek = key_provider.active_key()?;
     if old_kek.key_id == active_kek.key_id {
@@ -319,7 +319,7 @@ pub(crate) fn rewrap_credential_document(
             .map(Some);
     }
 
-    rewrap_dek(document, &active_kek, &dek)
+    rewrap_dek(document, &active_kek, &dek, CREDENTIAL_DOCUMENT_AAD_VERSION)
 }
 
 fn decrypt_credential_document_bytes(
@@ -328,7 +328,7 @@ fn decrypt_credential_document_bytes(
     document: &EncryptedCredentialDocument,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
-    validate_document_metadata(document)?;
+    validate_document_metadata(document, CREDENTIAL_DOCUMENT_AAD_VERSION)?;
     let kek = key_provider.key(&document.key_id)?;
     let dek = unwrap_dek(document, &kek)?;
 
@@ -359,7 +359,7 @@ fn unwrap_dek(
     document: &EncryptedCredentialDocument,
     kek: &CredentialEncryptionKey,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
-    match unwrap_current_dek(document, kek) {
+    match unwrap_current_dek(document, kek, CREDENTIAL_DOCUMENT_AAD_VERSION) {
         Ok(dek) => Ok(dek),
         Err(primary_error) => {
             let mut legacy_dek = Zeroizing::new(document.wrapped_dek.clone());
@@ -379,12 +379,13 @@ fn unwrap_dek(
 fn unwrap_current_dek(
     document: &EncryptedEnvelopeDocument,
     kek: &CredentialEncryptionKey,
+    aad_version: i64,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
     let mut dek = Zeroizing::new(document.wrapped_dek.clone());
     open(
         &kek.bytes,
         document.wrapped_dek_nonce.as_slice(),
-        credential_dek_aad(&document.key_id),
+        envelope_dek_aad(aad_version, &document.key_id),
         dek.as_mut_slice(),
     )
     .and_then(validate_dek_plaintext)
@@ -408,13 +409,14 @@ fn rewrap_dek(
     document: &EncryptedEnvelopeDocument,
     active_kek: &CredentialEncryptionKey,
     dek: &[u8; KEY_LEN],
+    aad_version: i64,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
     let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
     let mut wrapped_dek = Zeroizing::new(dek.to_vec());
     seal(
         &active_kek.bytes,
         &wrapped_dek_nonce,
-        credential_dek_aad(active_kek.key_id()),
+        envelope_dek_aad(aad_version, active_kek.key_id()),
         &mut wrapped_dek,
     )?;
 
@@ -431,6 +433,7 @@ fn rewrap_dek(
 
 fn validate_document_metadata(
     document: &EncryptedCredentialDocument,
+    expected_aad_version: i64,
 ) -> Result<(), CredentialsError> {
     if document.algorithm != CREDENTIAL_DOCUMENT_ALGORITHM {
         return Err(CredentialsError::Crypto(format!(
@@ -438,7 +441,7 @@ fn validate_document_metadata(
             document.algorithm
         )));
     }
-    if document.aad_version != CREDENTIAL_DOCUMENT_AAD_VERSION {
+    if document.aad_version != expected_aad_version {
         return Err(CredentialsError::Crypto(format!(
             "unsupported credential AAD version {}",
             document.aad_version
@@ -449,6 +452,21 @@ fn validate_document_metadata(
 
 /// Seal serialized plaintext with a random DEK and wrap that DEK with the active KEK.
 pub(crate) fn seal_envelope_document(
+    document_aad: Vec<u8>,
+    document_bytes: Zeroizing<Vec<u8>>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
+    seal_envelope_document_with_aad_version(
+        CREDENTIAL_DOCUMENT_AAD_VERSION,
+        document_aad,
+        document_bytes,
+        key_provider,
+    )
+}
+
+/// Seal serialized plaintext under a caller-selected envelope AAD version.
+pub(crate) fn seal_envelope_document_with_aad_version(
+    aad_version: i64,
     document_aad: Vec<u8>,
     mut document_bytes: Zeroizing<Vec<u8>>,
     key_provider: &dyn CredentialKeyProvider,
@@ -464,7 +482,7 @@ pub(crate) fn seal_envelope_document(
     seal(
         &kek.bytes,
         &wrapped_dek_nonce,
-        credential_dek_aad(kek.key_id()),
+        envelope_dek_aad(aad_version, kek.key_id()),
         &mut wrapped_dek,
     )?;
 
@@ -475,7 +493,7 @@ pub(crate) fn seal_envelope_document(
         wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
         key_id: kek.key_id.clone(),
         algorithm: CREDENTIAL_DOCUMENT_ALGORITHM.to_string(),
-        aad_version: CREDENTIAL_DOCUMENT_AAD_VERSION,
+        aad_version,
     })
 }
 
@@ -485,9 +503,24 @@ pub(crate) fn open_envelope_document(
     document_aad: Vec<u8>,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
-    validate_document_metadata(document)?;
+    open_envelope_document_with_aad_version(
+        CREDENTIAL_DOCUMENT_AAD_VERSION,
+        document,
+        document_aad,
+        key_provider,
+    )
+}
+
+/// Open an envelope document only when its AAD version matches the caller's expectation.
+pub(crate) fn open_envelope_document_with_aad_version(
+    expected_aad_version: i64,
+    document: &EncryptedEnvelopeDocument,
+    document_aad: Vec<u8>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
+    validate_document_metadata(document, expected_aad_version)?;
     let kek = key_provider.key(&document.key_id)?;
-    let dek = unwrap_current_dek(document, &kek)?;
+    let dek = unwrap_current_dek(document, &kek, expected_aad_version)?;
 
     let mut ciphertext = Zeroizing::new(document.ciphertext.clone());
     open(
@@ -505,14 +538,46 @@ pub(crate) fn rewrap_envelope_document(
     document_aad: Vec<u8>,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
-    validate_document_metadata(document)?;
+    rewrap_envelope_document_inner(
+        CREDENTIAL_DOCUMENT_AAD_VERSION,
+        document,
+        document_aad,
+        key_provider,
+        false,
+    )
+}
+
+/// Rewrap an envelope document only when its AAD version matches the caller's expectation.
+pub(crate) fn rewrap_envelope_document_with_aad_version(
+    expected_aad_version: i64,
+    document: &EncryptedEnvelopeDocument,
+    document_aad: Vec<u8>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
+    rewrap_envelope_document_inner(
+        expected_aad_version,
+        document,
+        document_aad,
+        key_provider,
+        true,
+    )
+}
+
+fn rewrap_envelope_document_inner(
+    expected_aad_version: i64,
+    document: &EncryptedEnvelopeDocument,
+    document_aad: Vec<u8>,
+    key_provider: &dyn CredentialKeyProvider,
+    authenticate_current: bool,
+) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
+    validate_document_metadata(document, expected_aad_version)?;
     let old_kek = key_provider.key(&document.key_id)?;
     let active_kek = key_provider.active_key()?;
-    if old_kek.key_id == active_kek.key_id {
+    if !authenticate_current && old_kek.key_id == active_kek.key_id {
         return Ok(None);
     }
 
-    let dek = unwrap_current_dek(document, &old_kek)?;
+    let dek = unwrap_current_dek(document, &old_kek, expected_aad_version)?;
     let mut document_probe = Zeroizing::new(document.ciphertext.clone());
     open(
         &*dek,
@@ -521,7 +586,11 @@ pub(crate) fn rewrap_envelope_document(
         document_probe.as_mut_slice(),
     )?;
 
-    rewrap_dek(document, &active_kek, &dek)
+    if old_kek.key_id == active_kek.key_id {
+        return Ok(None);
+    }
+
+    rewrap_dek(document, &active_kek, &dek, expected_aad_version)
 }
 
 fn seal(
@@ -589,8 +658,8 @@ fn legacy_credential_document_aad(
     .into_bytes()
 }
 
-fn credential_dek_aad(key_id: &str) -> Vec<u8> {
-    let aad_version = CREDENTIAL_DOCUMENT_AAD_VERSION.to_string();
+fn envelope_dek_aad(aad_version: i64, key_id: &str) -> Vec<u8> {
+    let aad_version = aad_version.to_string();
     encode_aad_fields("coral-credential-dek", &[aad_version.as_str(), key_id])
 }
 

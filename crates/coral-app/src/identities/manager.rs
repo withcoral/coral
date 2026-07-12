@@ -10,7 +10,9 @@ use coral_spec::IdentitySpecType;
 use crate::bootstrap::AppError;
 use crate::credentials::encryption::{CredentialKeyProvider, EncryptedEnvelopeDocument};
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
-use crate::identity::{UserPrincipal, encrypt_identity_document, run_key_operation};
+use crate::identity::{
+    IdentityDocumentBinding, UserPrincipal, encrypt_identity_document, run_key_operation,
+};
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::identity_specs::manager::{record_to_installed, spec_not_found};
 use crate::state::db::{
@@ -161,7 +163,7 @@ impl IdentityManager {
                 "fixed-token identity token must not be blank".to_string(),
             ));
         }
-        let mut document = None;
+        let mut document: Option<(IdentitySpecReference, IdentityDocumentWrite)> = None;
         let mut pinned_workspace_created_at_unix_nanos = None;
         #[cfg(test)]
         let mut before_write_gate = self.before_write_gate.clone();
@@ -183,22 +185,26 @@ impl IdentityManager {
             if pinned_workspace_created_at_unix_nanos.is_none() {
                 pinned_workspace_created_at_unix_nanos = selected.workspace_created_at_unix_nanos;
             }
-            if document.is_none() {
+            if document
+                .as_ref()
+                .is_none_or(|(reference, _document)| reference != &selected.reference)
+            {
                 let document_owner = owner.clone();
                 let document_name = name.clone();
+                let document_reference = selected.reference.clone();
                 let document_token = token.clone();
                 let key_provider = Arc::clone(&self.key_provider);
-                document = Some(
-                    run_key_operation(move || {
-                        prepare_fixed_token_document(
-                            &document_owner,
-                            &document_name,
-                            document_token,
-                            key_provider.as_ref(),
-                        )
-                    })
-                    .await?,
-                );
+                let prepared = run_key_operation(move || {
+                    prepare_fixed_token_document(
+                        &document_owner,
+                        &document_name,
+                        &document_reference,
+                        document_token,
+                        key_provider.as_ref(),
+                    )
+                })
+                .await?;
+                document = Some((selected.reference.clone(), prepared));
             }
             #[cfg(test)]
             if let Some(gate) = before_write_gate.take() {
@@ -210,7 +216,7 @@ impl IdentityManager {
                     &owner,
                     &name,
                     &selected,
-                    document.as_ref().expect("document prepared above"),
+                    &document.as_ref().expect("document prepared above").1,
                 )
                 .await
             {
@@ -428,10 +434,21 @@ fn owner_workspace_not_found(owner: &IdentityOwner) -> AppError {
 fn prepare_fixed_token_document(
     owner: &IdentityOwner,
     name: &IdentityName,
+    reference: &IdentitySpecReference,
     token: String,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<IdentityDocumentWrite, AppError> {
     let values = BTreeMap::from([(FIXED_TOKEN_KEY.to_string(), token)]);
+    let (spec_scope_kind, spec_scope_id, spec_name) = reference.key().document_aad_parts();
+    let binding = IdentityDocumentBinding::new(
+        owner.kind(),
+        owner.key(),
+        name.as_str(),
+        spec_scope_kind,
+        spec_scope_id,
+        spec_name,
+        reference.fingerprint(),
+    );
     let EncryptedEnvelopeDocument {
         ciphertext,
         nonce,
@@ -440,13 +457,7 @@ fn prepare_fixed_token_document(
         key_id,
         algorithm,
         aad_version,
-    } = encrypt_identity_document(
-        owner.kind(),
-        owner.key(),
-        name.as_str(),
-        &values,
-        key_provider,
-    )?;
+    } = encrypt_identity_document(&binding, &values, key_provider)?;
     IdentityDocumentWrite::new(
         ciphertext,
         nonce,

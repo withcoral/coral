@@ -16,15 +16,19 @@ use zeroize::Zeroizing;
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
-    CREDENTIAL_DOCUMENT_AAD_VERSION, CREDENTIAL_DOCUMENT_ALGORITHM, CredentialKeyProvider,
-    EncryptedEnvelopeDocument, encode_aad_fields, open_envelope_document, rewrap_envelope_document,
-    seal_envelope_document,
+    CREDENTIAL_DOCUMENT_ALGORITHM, CredentialKeyProvider, EncryptedEnvelopeDocument,
+    encode_aad_fields, open_envelope_document_with_aad_version,
+    rewrap_envelope_document_with_aad_version, seal_envelope_document_with_aad_version,
 };
 
 /// Envelope algorithm identifier for encrypted identity documents.
 pub(crate) const IDENTITY_DOCUMENT_ALGORITHM: &str = CREDENTIAL_DOCUMENT_ALGORITHM;
-/// AAD layout version for encrypted identity documents.
-pub(crate) const IDENTITY_DOCUMENT_AAD_VERSION: i64 = CREDENTIAL_DOCUMENT_AAD_VERSION;
+/// AAD layout version for encrypted identity-spec setup-input documents.
+pub(crate) const IDENTITY_SPEC_DOCUMENT_AAD_VERSION: i64 = 1;
+/// Legacy owner/name-only AAD layout version for encrypted identity instance documents.
+pub(crate) const LEGACY_IDENTITY_DOCUMENT_AAD_VERSION: i64 = 1;
+/// Exact-reference AAD layout version for encrypted identity instance documents.
+pub(crate) const IDENTITY_DOCUMENT_AAD_VERSION: i64 = 2;
 
 const IDENTITY_DOCUMENT_VERSION: u32 = 1;
 
@@ -44,6 +48,40 @@ pub(crate) struct PlaintextIdentityDocument {
     pub(crate) version: u32,
     /// Identity instance values serialized before envelope encryption.
     pub(crate) values: BTreeMap<String, String>,
+}
+
+/// Complete durable binding authenticated by an identity instance document.
+#[derive(Clone, Copy)]
+pub(crate) struct IdentityDocumentBinding<'a> {
+    owner_kind: &'a str,
+    owner_key: &'a str,
+    identity_name: &'a str,
+    spec_scope_kind: &'a str,
+    spec_scope_id: &'a str,
+    spec_name: &'a str,
+    spec_fingerprint: &'a str,
+}
+
+impl<'a> IdentityDocumentBinding<'a> {
+    pub(crate) fn new(
+        owner_kind: &'a str,
+        owner_key: &'a str,
+        identity_name: &'a str,
+        spec_scope_kind: &'a str,
+        spec_scope_id: &'a str,
+        spec_name: &'a str,
+        spec_fingerprint: &'a str,
+    ) -> Self {
+        Self {
+            owner_kind,
+            owner_key,
+            identity_name,
+            spec_scope_kind,
+            spec_scope_id,
+            spec_name,
+            spec_fingerprint,
+        }
+    }
 }
 
 /// Stable local user used by single-user local mode.
@@ -228,7 +266,7 @@ pub(crate) fn parse_path_segment(kind: &str, value: &str) -> Result<String, AppE
 
 /// Build AAD for an encrypted identity-spec setup-input document.
 pub(crate) fn identity_spec_document_aad(scope_kind: &str, scope_id: &str, name: &str) -> Vec<u8> {
-    let aad_version = IDENTITY_DOCUMENT_AAD_VERSION.to_string();
+    let aad_version = IDENTITY_SPEC_DOCUMENT_AAD_VERSION.to_string();
     encode_aad_fields(
         "coral-identity-spec-document",
         &[
@@ -241,16 +279,25 @@ pub(crate) fn identity_spec_document_aad(scope_kind: &str, scope_id: &str, name:
     )
 }
 
-/// Build AAD for an encrypted identity instance document.
-pub(crate) fn identity_document_aad(owner_kind: &str, owner_key: &str, name: &str) -> Vec<u8> {
+/// Return whether persisted identity material uses the legacy owner/name-only AAD.
+pub(crate) fn is_legacy_identity_document_aad_version(aad_version: i64) -> bool {
+    aad_version == LEGACY_IDENTITY_DOCUMENT_AAD_VERSION
+}
+
+/// Build exact-reference AAD for an encrypted identity instance document.
+fn identity_document_aad(binding: IdentityDocumentBinding<'_>) -> Vec<u8> {
     let aad_version = IDENTITY_DOCUMENT_AAD_VERSION.to_string();
     encode_aad_fields(
         "coral-identity-document",
         &[
             aad_version.as_str(),
-            owner_kind,
-            owner_key,
-            name,
+            binding.owner_kind,
+            binding.owner_key,
+            binding.identity_name,
+            binding.spec_scope_kind,
+            binding.spec_scope_id,
+            binding.spec_name,
+            binding.spec_fingerprint,
             IDENTITY_DOCUMENT_ALGORITHM,
         ],
     )
@@ -269,7 +316,8 @@ pub(crate) fn encrypt_identity_spec_document(
         values: values.clone(),
     };
     let document_bytes = serialize_identity_document(&plaintext)?;
-    seal_envelope_document(
+    seal_envelope_document_with_aad_version(
+        IDENTITY_SPEC_DOCUMENT_AAD_VERSION,
         identity_spec_document_aad(scope_kind, scope_id, name),
         document_bytes,
         key_provider,
@@ -284,7 +332,8 @@ pub(crate) fn decrypt_identity_spec_document(
     document: &EncryptedEnvelopeDocument,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
-    let plaintext = open_envelope_document(
+    let plaintext = open_envelope_document_with_aad_version(
+        IDENTITY_SPEC_DOCUMENT_AAD_VERSION,
         document,
         identity_spec_document_aad(scope_kind, scope_id, name),
         key_provider,
@@ -303,7 +352,8 @@ pub(crate) fn rewrap_identity_spec_document(
     document: &EncryptedEnvelopeDocument,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
-    rewrap_envelope_document(
+    rewrap_envelope_document_with_aad_version(
+        IDENTITY_SPEC_DOCUMENT_AAD_VERSION,
         document,
         identity_spec_document_aad(scope_kind, scope_id, name),
         key_provider,
@@ -312,9 +362,7 @@ pub(crate) fn rewrap_identity_spec_document(
 
 /// Encrypt an identity instance document with the shared app KEK.
 pub(crate) fn encrypt_identity_document(
-    owner_kind: &str,
-    owner_key: &str,
-    name: &str,
+    binding: &IdentityDocumentBinding<'_>,
     values: &BTreeMap<String, String>,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
@@ -323,8 +371,9 @@ pub(crate) fn encrypt_identity_document(
         values: values.clone(),
     };
     let document_bytes = serialize_identity_document(&plaintext)?;
-    seal_envelope_document(
-        identity_document_aad(owner_kind, owner_key, name),
+    seal_envelope_document_with_aad_version(
+        IDENTITY_DOCUMENT_AAD_VERSION,
+        identity_document_aad(*binding),
         document_bytes,
         key_provider,
     )
@@ -332,15 +381,14 @@ pub(crate) fn encrypt_identity_document(
 
 /// Decrypt an identity instance document with the shared app KEK.
 pub(crate) fn decrypt_identity_document(
-    owner_kind: &str,
-    owner_key: &str,
-    name: &str,
+    binding: &IdentityDocumentBinding<'_>,
     document: &EncryptedEnvelopeDocument,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
-    let plaintext = open_envelope_document(
+    let plaintext = open_envelope_document_with_aad_version(
+        IDENTITY_DOCUMENT_AAD_VERSION,
         document,
-        identity_document_aad(owner_kind, owner_key, name),
+        identity_document_aad(*binding),
         key_provider,
     )?;
     let decoded: PlaintextIdentityDocument = serde_json::from_slice(&plaintext)
@@ -351,15 +399,14 @@ pub(crate) fn decrypt_identity_document(
 
 /// Rewrap an identity instance document when its KEK is stale.
 pub(crate) fn rewrap_identity_document(
-    owner_kind: &str,
-    owner_key: &str,
-    name: &str,
+    binding: &IdentityDocumentBinding<'_>,
     document: &EncryptedEnvelopeDocument,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
-    rewrap_envelope_document(
+    rewrap_envelope_document_with_aad_version(
+        IDENTITY_DOCUMENT_AAD_VERSION,
         document,
-        identity_document_aad(owner_kind, owner_key, name),
+        identity_document_aad(*binding),
         key_provider,
     )
 }
@@ -398,6 +445,8 @@ mod tests {
     };
     use crate::sources::SourceName;
     use crate::workspaces::WorkspaceName;
+
+    const TEST_SPEC_FINGERPRINT: &str = "identity-manifest-v1:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     #[derive(Clone)]
     struct StaticKeyProvider {
@@ -505,14 +554,15 @@ mod tests {
     fn identity_documents_round_trip_and_pin_metadata() {
         let provider = static_provider(43);
         let values = secret_values();
+        let binding = user_identity_binding();
         let spec =
             encrypt_identity_spec_document("global", "__global__", "github", &values, &provider)
                 .expect("encrypt identity spec");
-        let identity = encrypt_identity_document("user", "member-1", "github", &values, &provider)
-            .expect("encrypt identity");
+        let identity =
+            encrypt_identity_document(&binding, &values, &provider).expect("encrypt identity");
 
         assert_eq!(spec.algorithm, IDENTITY_DOCUMENT_ALGORITHM);
-        assert_eq!(spec.aad_version, IDENTITY_DOCUMENT_AAD_VERSION);
+        assert_eq!(spec.aad_version, IDENTITY_SPEC_DOCUMENT_AAD_VERSION);
         assert_eq!(identity.algorithm, IDENTITY_DOCUMENT_ALGORITHM);
         assert_eq!(identity.aad_version, IDENTITY_DOCUMENT_AAD_VERSION);
         assert_eq!(
@@ -521,8 +571,7 @@ mod tests {
             values
         );
         assert_eq!(
-            decrypt_identity_document("user", "member-1", "github", &identity, &provider)
-                .expect("decrypt identity"),
+            decrypt_identity_document(&binding, &identity, &provider).expect("decrypt identity"),
             values
         );
     }
@@ -538,15 +587,24 @@ mod tests {
         let spec =
             encrypt_identity_spec_document("workspace", "acme", "github", &values, &provider)
                 .expect("encrypt identity spec");
-        let identity = encrypt_identity_document("workspace", "acme", "github", &values, &provider)
-            .expect("encrypt identity");
+        let binding = IdentityDocumentBinding::new(
+            "workspace",
+            "acme",
+            "github",
+            "workspace",
+            "acme",
+            "github",
+            TEST_SPEC_FINGERPRINT,
+        );
+        let identity =
+            encrypt_identity_document(&binding, &values, &provider).expect("encrypt identity");
 
         assert_open_failed(
             &decrypt_identity_spec_document("workspace", "acme", "github", &credential, &provider)
                 .expect_err("credential must not open as an identity spec"),
         );
         assert_open_failed(
-            &decrypt_identity_document("workspace", "acme", "github", &credential, &provider)
+            &decrypt_identity_document(&binding, &credential, &provider)
                 .expect_err("credential must not open as an identity"),
         );
         assert_open_failed(
@@ -554,7 +612,7 @@ mod tests {
                 .expect_err("identity spec must not open as a credential"),
         );
         assert_open_failed(
-            &decrypt_identity_document("workspace", "acme", "github", &spec, &provider)
+            &decrypt_identity_document(&binding, &spec, &provider)
                 .expect_err("identity spec must not open as an identity"),
         );
         assert_open_failed(
@@ -586,21 +644,52 @@ mod tests {
                 .expect_err("spec name must authenticate"),
         );
 
+        let binding = IdentityDocumentBinding::new(
+            "owner:kind",
+            "owner",
+            "primary",
+            "scope:kind",
+            "scope",
+            "github",
+            TEST_SPEC_FINGERPRINT,
+        );
         let identity =
-            encrypt_identity_document("owner:kind", "owner", "github", &values, &provider)
-                .expect("encrypt identity");
-        assert_open_failed(
-            &decrypt_identity_document("owner", "kind:owner", "github", &identity, &provider)
-                .expect_err("colon-bearing owner fields must stay distinct"),
-        );
-        assert_open_failed(
-            &decrypt_identity_document("owner", "owner:kind", "github", &identity, &provider)
-                .expect_err("owner field order must authenticate"),
-        );
-        assert_open_failed(
-            &decrypt_identity_document("owner:kind", "owner", "gitlab", &identity, &provider)
-                .expect_err("identity name must authenticate"),
-        );
+            encrypt_identity_document(&binding, &values, &provider).expect("encrypt identity");
+        for tampered_binding in [
+            IdentityDocumentBinding {
+                owner_kind: "owner",
+                ..binding
+            },
+            IdentityDocumentBinding {
+                owner_key: "kind:owner",
+                ..binding
+            },
+            IdentityDocumentBinding {
+                identity_name: "secondary",
+                ..binding
+            },
+            IdentityDocumentBinding {
+                spec_scope_kind: "scope",
+                ..binding
+            },
+            IdentityDocumentBinding {
+                spec_scope_id: "kind:scope",
+                ..binding
+            },
+            IdentityDocumentBinding {
+                spec_name: "gitlab",
+                ..binding
+            },
+            IdentityDocumentBinding {
+                spec_fingerprint: "identity-manifest-v1:sha256:tampered",
+                ..binding
+            },
+        ] {
+            assert_open_failed(
+                &decrypt_identity_document(&tampered_binding, &identity, &provider)
+                    .expect_err("every exact-reference AAD field must authenticate"),
+            );
+        }
     }
 
     #[test]
@@ -637,6 +726,37 @@ mod tests {
     }
 
     #[test]
+    fn identity_instance_v1_is_detected_but_never_opened_or_rewrapped() {
+        let old_key = CredentialEncryptionKey::from_static_bytes_for_test([60; 32]);
+        let new_key = CredentialEncryptionKey::from_static_bytes_for_test([62; 32]);
+        let old_provider = StaticKeyProvider {
+            key: old_key.clone(),
+        };
+        let rotating_provider = RotatingKeyProvider {
+            active: new_key.clone(),
+            keys: vec![old_key, new_key],
+        };
+        let legacy = seal_test_document(
+            &PlaintextIdentityDocument {
+                version: IDENTITY_DOCUMENT_VERSION,
+                values: secret_values(),
+            },
+            legacy_identity_document_aad("user", "member-1", "github"),
+            &old_provider,
+        );
+        assert_eq!(legacy.aad_version, LEGACY_IDENTITY_DOCUMENT_AAD_VERSION);
+        assert!(is_legacy_identity_document_aad_version(legacy.aad_version));
+
+        let binding = user_identity_binding();
+        let open_error = decrypt_identity_document(&binding, &legacy, &rotating_provider)
+            .expect_err("v1 identity material must not open through the v2 path");
+        assert_unsupported_aad_version(&open_error, LEGACY_IDENTITY_DOCUMENT_AAD_VERSION);
+        let rewrap_error = rewrap_identity_document(&binding, &legacy, &rotating_provider)
+            .expect_err("v1 identity material must not be rewrapped through the v2 path");
+        assert_unsupported_aad_version(&rewrap_error, LEGACY_IDENTITY_DOCUMENT_AAD_VERSION);
+    }
+
+    #[test]
     fn identity_documents_reject_unknown_plaintext_versions() {
         let provider = static_provider(61);
         let values = secret_values();
@@ -656,15 +776,19 @@ mod tests {
                 .contains("identity spec document version 2")
         );
 
-        let identity = seal_test_document(
-            &PlaintextIdentityDocument {
+        let binding = user_identity_binding();
+        let identity = seal_envelope_document_with_aad_version(
+            IDENTITY_DOCUMENT_AAD_VERSION,
+            identity_document_aad(binding),
+            serialize_identity_document(&PlaintextIdentityDocument {
                 version: IDENTITY_DOCUMENT_VERSION + 1,
                 values,
-            },
-            identity_document_aad("user", "member-1", "github"),
+            })
+            .expect("serialize test document"),
             &provider,
-        );
-        let error = decrypt_identity_document("user", "member-1", "github", &identity, &provider)
+        )
+        .expect("seal test document");
+        let error = decrypt_identity_document(&binding, &identity, &provider)
             .expect_err("unknown identity version must fail");
         assert!(error.to_string().contains("identity document version 2"));
     }
@@ -702,35 +826,30 @@ mod tests {
             values
         );
 
+        let binding = user_identity_binding();
         let identity =
-            encrypt_identity_document("user", "member-1", "github", &values, &old_provider)
-                .expect("encrypt identity");
-        let rewrapped_identity =
-            rewrap_identity_document("user", "member-1", "github", &identity, &rotating_provider)
-                .expect("rewrap identity")
-                .expect("stale identity key must rewrap");
+            encrypt_identity_document(&binding, &values, &old_provider).expect("encrypt identity");
+        let rewrapped_identity = rewrap_identity_document(&binding, &identity, &rotating_provider)
+            .expect("rewrap identity")
+            .expect("stale identity key must rewrap");
         assert_rewrapped_document(&identity, &rewrapped_identity, new_key.key_id());
         assert_eq!(
-            decrypt_identity_document(
-                "user",
-                "member-1",
-                "github",
-                &rewrapped_identity,
-                &rotating_provider,
-            )
-            .expect("decrypt rewrapped identity"),
+            decrypt_identity_document(&binding, &rewrapped_identity, &rotating_provider,)
+                .expect("decrypt rewrapped identity"),
             values
         );
         assert!(
-            rewrap_identity_document(
-                "user",
-                "member-1",
-                "github",
-                &rewrapped_identity,
-                &rotating_provider,
-            )
-            .expect("rewrap current identity")
-            .is_none()
+            rewrap_identity_document(&binding, &rewrapped_identity, &rotating_provider,)
+                .expect("rewrap current identity")
+                .is_none()
+        );
+        let wrong_binding = IdentityDocumentBinding {
+            spec_fingerprint: "identity-manifest-v1:sha256:tampered",
+            ..binding
+        };
+        assert_open_failed(
+            &rewrap_identity_document(&wrong_binding, &rewrapped_identity, &rotating_provider)
+                .expect_err("same-key rewrap must authenticate the exact spec reference"),
         );
         assert_open_failed(
             &rewrap_identity_spec_document(
@@ -754,12 +873,39 @@ mod tests {
         BTreeMap::from([("token".to_string(), "secret".to_string())])
     }
 
+    fn user_identity_binding() -> IdentityDocumentBinding<'static> {
+        IdentityDocumentBinding::new(
+            "user",
+            "member-1",
+            "github",
+            "global",
+            "__global__",
+            "github",
+            TEST_SPEC_FINGERPRINT,
+        )
+    }
+
+    fn legacy_identity_document_aad(owner_kind: &str, owner_key: &str, name: &str) -> Vec<u8> {
+        let aad_version = LEGACY_IDENTITY_DOCUMENT_AAD_VERSION.to_string();
+        encode_aad_fields(
+            "coral-identity-document",
+            &[
+                aad_version.as_str(),
+                owner_kind,
+                owner_key,
+                name,
+                IDENTITY_DOCUMENT_ALGORITHM,
+            ],
+        )
+    }
+
     fn seal_test_document(
         document: &impl serde::Serialize,
         aad: Vec<u8>,
         provider: &StaticKeyProvider,
     ) -> EncryptedEnvelopeDocument {
-        seal_envelope_document(
+        seal_envelope_document_with_aad_version(
+            LEGACY_IDENTITY_DOCUMENT_AAD_VERSION,
             aad,
             serialize_identity_document(document).expect("serialize test document"),
             provider,
@@ -784,6 +930,14 @@ mod tests {
         assert!(error.to_string().contains("unsupported"));
     }
 
+    fn assert_unsupported_aad_version(error: &CredentialsError, aad_version: i64) {
+        let message = error.to_string();
+        assert!(message.contains("unsupported credential AAD version"));
+        assert!(message.contains(&aad_version.to_string()));
+        assert!(!message.contains("secret"));
+        assert!(!message.contains(TEST_SPEC_FINGERPRINT));
+    }
+
     fn assert_rewrapped_document(
         original: &EncryptedEnvelopeDocument,
         rewrapped: &EncryptedEnvelopeDocument,
@@ -797,8 +951,10 @@ mod tests {
     }
 
     fn assert_open_failed(error: &CredentialsError) {
+        let message = error.to_string();
         assert!(
-            error.to_string().contains("open failed"),
+            message.contains("open failed")
+                || message.contains("unsupported credential AAD version"),
             "unexpected error: {error}"
         );
     }
