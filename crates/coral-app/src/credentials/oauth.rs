@@ -22,7 +22,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use url::{Url, form_urlencoded};
+use url::{Host, Url, form_urlencoded};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
@@ -38,7 +38,24 @@ const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct OAuthCredentialService {
-    http: reqwest::Client,
+    http: OAuthHttpClients,
+}
+
+#[derive(Clone)]
+struct OAuthHttpClients {
+    proxied: reqwest::Client,
+    direct: reqwest::Client,
+}
+
+impl OAuthHttpClients {
+    fn post(&self, endpoint: &ValidatedOAuthEndpoint) -> reqwest::RequestBuilder {
+        let client = if endpoint.is_loopback_http() {
+            &self.direct
+        } else {
+            &self.proxied
+        };
+        client.post(endpoint.request_url())
+    }
 }
 
 pub(crate) struct StartOAuthCredentialRequest<'a> {
@@ -85,7 +102,7 @@ pub(crate) struct OAuthCredentialMaterial {
 
 struct OAuthSessionCommon {
     input_key: String,
-    endpoints: ManifestOAuthEndpointUrls,
+    endpoints: ValidatedOAuthEndpoints,
     client: ResolvedOAuthClient,
     resource: Option<String>,
 }
@@ -157,7 +174,7 @@ struct DynamicClientRegistrationResponse {
 }
 
 struct OAuthRefreshConfig {
-    token_url: String,
+    token_url: ValidatedOAuthEndpoint,
     client_id: String,
     client_secret: Option<String>,
     client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
@@ -165,13 +182,98 @@ struct OAuthRefreshConfig {
     resource: Option<String>,
 }
 
-struct OAuthAuthorizationRequest<'a> {
+struct OAuthAuthorizationRequest {
     input_key: String,
     oauth: ManifestOAuthCredentialSpec,
-    endpoints: ManifestOAuthEndpointUrls,
-    source_inputs: &'a BTreeMap<String, String>,
+    endpoints: ValidatedOAuthEndpoints,
     credential_inputs: BTreeMap<String, String>,
     resource: Option<String>,
+}
+
+#[derive(Clone)]
+struct ValidatedOAuthEndpoint(Url);
+
+#[derive(Clone)]
+struct ValidatedOAuthEndpoints {
+    authorization: Option<ValidatedOAuthEndpoint>,
+    device_authorization: Option<ValidatedOAuthEndpoint>,
+    token: ValidatedOAuthEndpoint,
+    registration: Option<ValidatedOAuthEndpoint>,
+}
+
+#[derive(Clone, Copy)]
+enum OAuthEndpointErrorKind {
+    InvalidInput,
+    FailedPrecondition,
+}
+
+impl ValidatedOAuthEndpoint {
+    fn authored(value: &str, label: &'static str) -> Result<Self, AppError> {
+        Self::parse(value, label, OAuthEndpointErrorKind::InvalidInput)
+    }
+
+    fn untrusted(value: &str, label: &'static str) -> Result<Self, AppError> {
+        Self::parse(value, label, OAuthEndpointErrorKind::FailedPrecondition)
+    }
+
+    fn parse(
+        value: &str,
+        label: &'static str,
+        error_kind: OAuthEndpointErrorKind,
+    ) -> Result<Self, AppError> {
+        let error = |reason: &str| {
+            let message = format!("OAuth {label} {reason}");
+            match error_kind {
+                OAuthEndpointErrorKind::InvalidInput => AppError::InvalidInput(message),
+                OAuthEndpointErrorKind::FailedPrecondition => AppError::FailedPrecondition(message),
+            }
+        };
+        let url = Url::parse(value).map_err(|_error| error("is invalid"))?;
+        if !url.username().is_empty() || url.password().is_some() || oauth_url_has_userinfo(value) {
+            return Err(error("must not include user information"));
+        }
+        if url.fragment().is_some() {
+            return Err(error("must not include a fragment"));
+        }
+        let host = url.host().ok_or_else(|| error("must include a host"))?;
+        let transport_is_allowed = match (url.scheme(), host) {
+            ("https", _) => true,
+            ("http", Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            ("http", Host::Ipv4(address)) => address.is_loopback(),
+            ("http", Host::Ipv6(address)) => address.is_loopback(),
+            _ => false,
+        };
+        if !transport_is_allowed {
+            return Err(error(
+                "must use HTTPS, except that HTTP is allowed for exact localhost or loopback IP hosts",
+            ));
+        }
+        Ok(Self(url))
+    }
+
+    fn request_url(&self) -> Url {
+        self.0.clone()
+    }
+
+    fn is_loopback_http(&self) -> bool {
+        self.0.scheme() == "http"
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    fn into_string(self) -> String {
+        self.0.into()
+    }
+}
+
+fn oauth_url_has_userinfo(value: &str) -> bool {
+    value
+        .split_once(':')
+        .and_then(|(_scheme, remainder)| remainder.strip_prefix("//"))
+        .and_then(|remainder| remainder.split(['/', '?', '#']).next())
+        .is_some_and(|authority| authority.contains('@'))
 }
 
 const OAUTH_METADATA_METHOD_VALUE: &str = "oauth";
@@ -244,14 +346,21 @@ impl OAuthMetadataKey {
 impl OAuthCredentialService {
     pub(crate) fn new() -> Self {
         Self {
-            http: token_http_client(TOKEN_REQUEST_TIMEOUT),
+            http: token_http_clients(TOKEN_REQUEST_TIMEOUT, None),
         }
     }
 
     #[cfg(test)]
     fn with_token_request_timeout(timeout: Duration) -> Self {
         Self {
-            http: token_http_client(timeout),
+            http: token_http_clients(timeout, None),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_token_request_proxy(timeout: Duration, proxy: reqwest::Proxy) -> Self {
+        Self {
+            http: token_http_clients(timeout, Some(proxy)),
         }
     }
 
@@ -282,7 +391,11 @@ impl OAuthCredentialService {
         CallbackFut: Future<Output = Result<(), AppError>>,
     {
         let oauth = request.oauth.clone();
-        let endpoints = oauth_endpoint_urls(&oauth, request.source_inputs)?;
+        let endpoints = preflight_oauth_endpoints(
+            &oauth,
+            &oauth_endpoint_urls(&oauth, request.source_inputs)?,
+            request.source_inputs,
+        )?;
         let resource = oauth_resource(&oauth, request.source_inputs)?;
         let credential_inputs = normalize_credential_inputs(request.credential_inputs)?;
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
@@ -293,7 +406,6 @@ impl OAuthCredentialService {
                         input_key: request.input_key.to_string(),
                         oauth,
                         endpoints,
-                        source_inputs: request.source_inputs,
                         credential_inputs,
                         resource,
                     },
@@ -308,7 +420,6 @@ impl OAuthCredentialService {
                         input_key: request.input_key.to_string(),
                         oauth,
                         endpoints,
-                        source_inputs: request.source_inputs,
                         credential_inputs,
                         resource,
                     },
@@ -321,7 +432,7 @@ impl OAuthCredentialService {
 
     async fn authorize_authorization_code<F, Fut, C, CallbackFut>(
         &self,
-        request: OAuthAuthorizationRequest<'_>,
+        request: OAuthAuthorizationRequest,
         on_authorization: F,
         on_callback_received: C,
     ) -> Result<OAuthCredentialMaterial, AppError>
@@ -335,7 +446,6 @@ impl OAuthCredentialService {
             input_key,
             oauth,
             endpoints,
-            source_inputs,
             credential_inputs,
             resource,
         } = request;
@@ -344,7 +454,7 @@ impl OAuthCredentialService {
         let client = resolve_oauth_client(
             &self.http,
             &oauth,
-            source_inputs,
+            endpoints.registration.as_ref(),
             &credential_inputs,
             Some(&provider_redirect_uri),
         )
@@ -393,7 +503,11 @@ impl OAuthCredentialService {
         source_inputs: &BTreeMap<String, String>,
         credential_inputs: Vec<(String, String)>,
     ) -> Result<(), AppError> {
-        let endpoints = oauth_endpoint_urls(oauth, source_inputs)?;
+        let endpoints = preflight_oauth_endpoints(
+            oauth,
+            &oauth_endpoint_urls(oauth, source_inputs)?,
+            source_inputs,
+        )?;
         let _resource = oauth_resource(oauth, source_inputs)?;
         let credential_inputs = normalize_credential_inputs(credential_inputs)?;
         reject_unknown_credential_inputs(oauth, &credential_inputs)?;
@@ -403,7 +517,7 @@ impl OAuthCredentialService {
                 oauth
                     .redirect_bind_port()
                     .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                endpoints.authorization_url.as_ref().ok_or_else(|| {
+                endpoints.authorization.as_ref().ok_or_else(|| {
                     AppError::InvalidInput(
                         "authorization_code OAuth method is missing authorization_url".to_string(),
                     )
@@ -415,7 +529,7 @@ impl OAuthCredentialService {
                         "device_code OAuth methods must not declare a client secret".to_string(),
                     ));
                 }
-                endpoints.device_authorization_url.as_ref().ok_or_else(|| {
+                endpoints.device_authorization.as_ref().ok_or_else(|| {
                     AppError::InvalidInput(
                         "device_code OAuth method is missing device_authorization_url".to_string(),
                     )
@@ -453,7 +567,7 @@ impl OAuthCredentialService {
 
     async fn authorize_device_code<F, Fut>(
         &self,
-        request: OAuthAuthorizationRequest<'_>,
+        request: OAuthAuthorizationRequest,
         on_authorization: F,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
@@ -464,13 +578,17 @@ impl OAuthCredentialService {
             input_key,
             oauth,
             endpoints,
-            source_inputs,
             credential_inputs,
             resource,
         } = request;
-        let client =
-            resolve_oauth_client(&self.http, &oauth, source_inputs, &credential_inputs, None)
-                .await?;
+        let client = resolve_oauth_client(
+            &self.http,
+            &oauth,
+            endpoints.registration.as_ref(),
+            &credential_inputs,
+            None,
+        )
+        .await?;
         let device = request_device_code(
             &self.http,
             &oauth,
@@ -546,11 +664,25 @@ impl OAuthCredentialService {
     }
 }
 
-fn token_http_client(timeout: Duration) -> reqwest::Client {
+fn token_http_client_builder(timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+fn token_http_clients(timeout: Duration, proxy: Option<reqwest::Proxy>) -> OAuthHttpClients {
+    let proxied = if let Some(proxy) = proxy {
+        token_http_client_builder(timeout).proxy(proxy)
+    } else {
+        token_http_client_builder(timeout)
+    }
+    .build()
+    .expect("OAuth proxied HTTP client configuration should be valid");
+    let direct = token_http_client_builder(timeout)
+        .no_proxy()
         .build()
-        .expect("OAuth token HTTP client configuration should be valid")
+        .expect("OAuth direct HTTP client configuration should be valid");
+    OAuthHttpClients { proxied, direct }
 }
 
 fn oauth_endpoint_urls(
@@ -560,6 +692,41 @@ fn oauth_endpoint_urls(
     oauth
         .endpoint_urls(source_inputs)
         .map_err(|error| AppError::InvalidInput(error.to_string()))
+}
+
+fn preflight_oauth_endpoints(
+    oauth: &ManifestOAuthCredentialSpec,
+    endpoints: &ManifestOAuthEndpointUrls,
+    source_inputs: &BTreeMap<String, String>,
+) -> Result<ValidatedOAuthEndpoints, AppError> {
+    let authorization_url = endpoints
+        .authorization_url
+        .as_deref()
+        .map(|url| ValidatedOAuthEndpoint::authored(url, "authorization URL"))
+        .transpose()?;
+    let device_authorization_url = endpoints
+        .device_authorization_url
+        .as_deref()
+        .map(|url| ValidatedOAuthEndpoint::authored(url, "device authorization URL"))
+        .transpose()?;
+    let token_url = ValidatedOAuthEndpoint::authored(&endpoints.token_url, "token URL")?;
+    let registration_url = oauth
+        .client
+        .dynamic_registration
+        .as_ref()
+        .map(|registration| {
+            registration
+                .registration_url(source_inputs)
+                .map_err(|error| AppError::InvalidInput(error.to_string()))
+                .and_then(|url| ValidatedOAuthEndpoint::authored(&url, "dynamic registration URL"))
+        })
+        .transpose()?;
+    Ok(ValidatedOAuthEndpoints {
+        authorization: authorization_url,
+        device_authorization: device_authorization_url,
+        token: token_url,
+        registration: registration_url,
+    })
 }
 
 fn oauth_resource(
@@ -577,7 +744,10 @@ fn normalize_credential_inputs(
     let mut normalized = BTreeMap::new();
     for (key, value) in inputs {
         let key = normalize_credential_input_key(&key)?;
-        if normalized.insert(key.clone(), value).is_some() {
+        if normalized
+            .insert(key.clone(), value.trim().to_string())
+            .is_some()
+        {
             return Err(AppError::InvalidInput(format!(
                 "credential input '{key}' is repeated"
             )));
@@ -657,17 +827,18 @@ fn maybe_resolve_client_id(
     inputs: &BTreeMap<String, String>,
 ) -> Option<String> {
     if let Some(input_key) = oauth.client.id.input.as_deref()
-        && let Some(value) = inputs.get(input_key)
-        && !value.is_empty()
+        && let Some(value) = inputs
+            .get(input_key)
+            .and_then(|value| trimmed_non_empty(value))
     {
-        return Some(value.clone());
+        return Some(value.to_string());
     }
     oauth
         .client
         .id
         .default
         .as_deref()
-        .filter(|default| !default.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string)
 }
 
@@ -690,19 +861,22 @@ fn resolve_client_secret(
     let Some(secret) = oauth.client.secret.as_ref() else {
         return Ok(None);
     };
-    let Some(value) = inputs.get(&secret.input).filter(|value| !value.is_empty()) else {
+    let Some(value) = inputs
+        .get(&secret.input)
+        .and_then(|value| trimmed_non_empty(value))
+    else {
         return Err(AppError::FailedPrecondition(format!(
             "missing OAuth client secret input '{}'",
             secret.input
         )));
     };
-    Ok(Some(value.clone()))
+    Ok(Some(value.to_string()))
 }
 
 async fn resolve_oauth_client(
-    http: &reqwest::Client,
+    http: &OAuthHttpClients,
     oauth: &ManifestOAuthCredentialSpec,
-    source_inputs: &BTreeMap<String, String>,
+    registration_url: Option<&ValidatedOAuthEndpoint>,
     credential_inputs: &BTreeMap<String, String>,
     redirect_uri: Option<&str>,
 ) -> Result<ResolvedOAuthClient, AppError> {
@@ -717,8 +891,11 @@ async fn resolve_oauth_client(
     let Some(registration) = oauth.client.dynamic_registration.as_ref() else {
         return Err(missing_client_id_error(oauth));
     };
+    let registration_url = registration_url.ok_or_else(|| {
+        AppError::InvalidInput("OAuth dynamic registration URL was not preflighted".to_string())
+    })?;
     let registered =
-        register_dynamic_client(http, oauth, registration, source_inputs, redirect_uri).await?;
+        register_dynamic_client(http, oauth, registration, registration_url, redirect_uri).await?;
     Ok(ResolvedOAuthClient {
         client_id: registered.id,
         client_secret: registered.secret,
@@ -779,21 +956,19 @@ async fn bind_redirect_listener(
 
 fn build_authorization_url(
     oauth: &ManifestOAuthCredentialSpec,
-    endpoints: &ManifestOAuthEndpointUrls,
+    endpoints: &ValidatedOAuthEndpoints,
     provider_redirect_uri: &str,
     client_id: &str,
     state: &str,
     code_verifier: Option<&str>,
     resource: Option<&str>,
 ) -> Result<String, AppError> {
-    let authorization_url = endpoints.authorization_url.as_deref().ok_or_else(|| {
+    let authorization_url = endpoints.authorization.as_ref().ok_or_else(|| {
         AppError::InvalidInput(
             "authorization_code OAuth method is missing authorization_url".to_string(),
         )
     })?;
-    let mut url = Url::parse(authorization_url).map_err(|error| {
-        AppError::InvalidInput(format!("invalid OAuth authorization URL: {error}"))
-    })?;
+    let mut url = authorization_url.request_url();
     {
         let mut query = url.query_pairs_mut();
         query
@@ -820,15 +995,12 @@ fn build_authorization_url(
 }
 
 async fn register_dynamic_client(
-    http: &reqwest::Client,
+    http: &OAuthHttpClients,
     oauth: &ManifestOAuthCredentialSpec,
     registration: &coral_spec::ManifestOAuthDynamicClientRegistrationSpec,
-    source_inputs: &BTreeMap<String, String>,
+    registration_url: &ValidatedOAuthEndpoint,
     redirect_uri: Option<&str>,
 ) -> Result<DynamicClientRegistrationResponse, AppError> {
-    let registration_url = registration
-        .registration_url(source_inputs)
-        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     let mut payload = serde_json::Map::new();
     payload.insert(
         "client_name".to_string(),
@@ -932,7 +1104,7 @@ fn parse_dynamic_client_registration_response(
     let client_secret = body
         .get("client_secret")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let response_auth_method =
         parse_dynamic_client_registration_auth_method(&body, requested_auth_method)?;
@@ -957,7 +1129,7 @@ fn parse_dynamic_client_registration_auth_method(
     let Some(value) = body.get("token_endpoint_auth_method") else {
         return Ok(requested_auth_method);
     };
-    let value = value.as_str().ok_or_else(|| {
+    let value = value.as_str().and_then(trimmed_non_empty).ok_or_else(|| {
         AppError::FailedPrecondition(
             "OAuth dynamic client registration response token_endpoint_auth_method was not a string"
                 .to_string(),
@@ -1236,22 +1408,18 @@ async fn write_callback_response(
 }
 
 async fn request_device_code(
-    http: &reqwest::Client,
+    http: &OAuthHttpClients,
     oauth: &ManifestOAuthCredentialSpec,
-    endpoints: &ManifestOAuthEndpointUrls,
+    endpoints: &ValidatedOAuthEndpoints,
     client: &ResolvedOAuthClient,
     resource: Option<&str>,
     timeout: Duration,
 ) -> Result<DeviceAuthorizationResponse, AppError> {
-    let device_authorization_url =
-        endpoints
-            .device_authorization_url
-            .as_deref()
-            .ok_or_else(|| {
-                AppError::InvalidInput(
-                    "device_code OAuth method is missing device_authorization_url".to_string(),
-                )
-            })?;
+    let device_authorization_url = endpoints.device_authorization.as_ref().ok_or_else(|| {
+        AppError::InvalidInput(
+            "device_code OAuth method is missing device_authorization_url".to_string(),
+        )
+    })?;
     let mut form = Vec::new();
     if let Some(scopes) = oauth.scopes.as_ref() {
         form.push((
@@ -1315,14 +1483,21 @@ fn parse_device_authorization_response(
     }
     let device_code = json_string_field(&body, "device_code")?.to_string();
     let user_code = json_string_field(&body, "user_code")?.to_string();
-    let verification_uri = json_string_field(&body, "verification_uri")
-        .or_else(|_| json_string_field(&body, "verification_url"))?
-        .to_string();
+    let verification_uri = ValidatedOAuthEndpoint::untrusted(
+        json_string_field(&body, "verification_uri")
+            .or_else(|_| json_string_field(&body, "verification_url"))?,
+        "provider verification URL",
+    )?
+    .into_string();
     let verification_uri_complete = body
         .get("verification_uri_complete")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
+        .and_then(trimmed_non_empty)
+        .map(|url| {
+            ValidatedOAuthEndpoint::untrusted(url, "provider complete verification URL")
+                .map(ValidatedOAuthEndpoint::into_string)
+        })
+        .transpose()?;
     let expires_in = Duration::from_secs(json_u64_field(&body, "expires_in")?.max(1));
     let interval = Duration::from_secs(
         optional_json_u64_field(&body, "interval")
@@ -1340,7 +1515,7 @@ fn parse_device_authorization_response(
 }
 
 async fn poll_device_token(
-    http: &reqwest::Client,
+    http: &OAuthHttpClients,
     session: &DeviceCodeSessionConfig,
 ) -> Result<TokenResponse, AppError> {
     let deadline = Instant::now() + session.expires_in;
@@ -1357,7 +1532,7 @@ async fn poll_device_token(
             form.push(("resource", resource.to_string()));
         }
         let request = http
-            .post(&session.common.endpoints.token_url)
+            .post(&session.common.endpoints.token)
             .header(ACCEPT, "application/json");
         let request = apply_oauth_client_auth(
             request,
@@ -1422,7 +1597,7 @@ async fn poll_device_token(
 }
 
 async fn exchange_authorization_code(
-    http: &reqwest::Client,
+    http: &OAuthHttpClients,
     session: &AuthorizationCodeSessionConfig,
     code: &str,
 ) -> Result<TokenResponse, AppError> {
@@ -1435,7 +1610,7 @@ async fn exchange_authorization_code(
         form.push(("resource", resource.to_string()));
     }
     let mut request = http
-        .post(&session.common.endpoints.token_url)
+        .post(&session.common.endpoints.token)
         .header(ACCEPT, "application/json");
     request = apply_oauth_client_auth(
         request,
@@ -1451,7 +1626,7 @@ async fn exchange_authorization_code(
 }
 
 async fn refresh_access_token(
-    http: &reqwest::Client,
+    http: &OAuthHttpClients,
     refresh: &OAuthRefreshConfig,
 ) -> Result<TokenResponse, AppError> {
     let mut form = vec![
@@ -1545,7 +1720,7 @@ fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
     let access_token = body
         .get("access_token")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .ok_or_else(|| {
             AppError::FailedPrecondition(
                 "OAuth token response did not include access_token".to_string(),
@@ -1555,17 +1730,17 @@ fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
     let refresh_token = body
         .get("refresh_token")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let token_type = body
         .get("token_type")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let scope = body
         .get("scope")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let expires_at = body
         .get("expires_in")
@@ -1584,10 +1759,15 @@ fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
 fn json_string_field<'a>(body: &'a Value, field: &str) -> Result<&'a str, AppError> {
     body.get(field)
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .ok_or_else(|| {
             AppError::FailedPrecondition(format!("OAuth response did not include {field}"))
         })
+}
+
+fn trimmed_non_empty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 fn json_u64_field(body: &Value, field: &str) -> Result<u64, AppError> {
@@ -1602,12 +1782,15 @@ fn optional_json_u64_field(body: &Value, field: &str) -> Option<u64> {
 }
 
 fn oauth_error_message(body: &Value) -> Option<String> {
-    let error = body.get("error").and_then(Value::as_str)?;
+    let error = body
+        .get("error")
+        .and_then(Value::as_str)
+        .and_then(trimmed_non_empty)?;
     let description = body
         .get("error_description")
         .or_else(|| body.get("error_description_uri"))
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
+        .and_then(trimmed_non_empty);
     Some(match description {
         Some(description) => format!("{error}: {description}"),
         None => error.to_string(),
@@ -1645,7 +1828,7 @@ fn oauth_credential_material(
     OAuthMetadataKey::TokenUrl.insert(
         &prefix,
         &mut internal_metadata,
-        session.endpoints.token_url.clone(),
+        session.endpoints.token.as_str(),
     );
     OAuthMetadataKey::Resource.insert_optional(
         &prefix,
@@ -1714,7 +1897,7 @@ fn oauth_refresh_config(
     }
     let Some(refresh_token) = OAuthMetadataKey::RefreshToken
         .get(metadata_prefix, material)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string)
     else {
         if expires_at > now {
@@ -1726,10 +1909,17 @@ fn oauth_refresh_config(
     };
     let client_id = OAuthMetadataKey::ClientId
         .get(metadata_prefix, material)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string)
-        .or_else(|| oauth.client.id.default.clone())
-        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            oauth
+                .client
+                .id
+                .default
+                .as_deref()
+                .and_then(trimmed_non_empty)
+                .map(ToString::to_string)
+        })
         .ok_or_else(|| {
             AppError::FailedPrecondition(format!(
                 "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client ID metadata is missing"
@@ -1737,12 +1927,14 @@ fn oauth_refresh_config(
         })?;
     let token_url = OAuthMetadataKey::TokenUrl
         .get(metadata_prefix, material)
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| oauth.token_url.clone(), ToString::to_string);
+        .and_then(trimmed_non_empty)
+        .unwrap_or(&oauth.token_url);
+    let token_url = ValidatedOAuthEndpoint::untrusted(token_url, "stored token URL")?;
     let resource =
         oauth_refresh_resource(access_token_material_key, metadata_prefix, oauth, material)?;
     let client_secret_transport = OAuthMetadataKey::ClientSecretTransport
         .get(metadata_prefix, material)
+        .and_then(trimmed_non_empty)
         .map(|value| {
             ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
@@ -1754,7 +1946,7 @@ fn oauth_refresh_config(
         .or_else(|| oauth.client.secret.as_ref().map(|secret| secret.transport));
     let client_secret = OAuthMetadataKey::ClientSecret
         .get(metadata_prefix, material)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     if client_secret_transport.is_some() && client_secret.is_none() {
         return Err(AppError::FailedPrecondition(format!(
@@ -1779,7 +1971,7 @@ fn oauth_refresh_resource(
 ) -> Result<Option<String>, AppError> {
     if let Some(resource) = OAuthMetadataKey::Resource
         .get(metadata_prefix, material)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
     {
         return Ok(Some(resource.to_string()));
     }
@@ -1899,11 +2091,11 @@ mod tests {
     use super::{
         AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthMetadataKey,
         OAuthSessionCommon, RefreshOAuthCredentialRequest, ResolvedOAuthClient,
-        StartOAuthCredentialRequest, basic_client_authorization,
+        StartOAuthCredentialRequest, ValidatedOAuthEndpoint, basic_client_authorization,
         dynamic_client_registration_grant_types, join_dynamic_client_registration_scope_values,
         join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
         parse_dynamic_client_registration_response, parse_token_response, pkce_challenge,
-        receive_callback, request_device_code,
+        preflight_oauth_endpoints, receive_callback, request_device_code, token_http_clients,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -2019,6 +2211,54 @@ mod tests {
     }
 
     #[test]
+    fn oauth_endpoint_policy_allows_secure_and_loopback_urls_only() {
+        for url in [
+            "https://provider.example/oauth/token",
+            "http://localhost:8080/token",
+            "http://LOCALHOST/token",
+            "http://127.23.45.67/token",
+            "http://[::1]/token",
+        ] {
+            ValidatedOAuthEndpoint::authored(url, "test URL").expect(url);
+        }
+        for url in [
+            "http://provider.example/token",
+            "http://localhost.example/token",
+            "http://[::2]/token",
+            "ftp://localhost/token",
+            "file:///tmp/token",
+            "https://provider.example/token#fragment",
+            "https:/alice-credential:hunter-credential@provider.example/token",
+            "https:////alice-credential:hunter-credential@provider.example/token",
+        ] {
+            assert!(
+                ValidatedOAuthEndpoint::authored(url, "test URL").is_err(),
+                "{url}"
+            );
+        }
+
+        let Err(error) = ValidatedOAuthEndpoint::authored(
+            "https://alice-credential:hunter-credential@provider.example/private-route?token=query-credential",
+            "test URL",
+        ) else {
+            panic!("userinfo should fail");
+        };
+        let detail = error.to_string();
+        assert!(matches!(error, crate::bootstrap::AppError::InvalidInput(_)));
+        for secret in [
+            "alice-credential",
+            "hunter-credential",
+            "private-route",
+            "query-credential",
+        ] {
+            assert!(
+                !detail.contains(secret),
+                "diagnostic leaked {secret}: {detail}"
+            );
+        }
+    }
+
+    #[test]
     fn oauth_metadata_key_matching_is_exact_for_dotted_inputs() {
         let dotted_key = format!("{}refresh_token", oauth_metadata_prefix("A.B"));
 
@@ -2029,11 +2269,14 @@ mod tests {
     #[test]
     fn token_response_ignores_unrepresentable_expires_in() {
         let token = parse_token_response(
-            r#"{"access_token":"access-token","expires_in":9223372036854775807}"#,
+            r#"{"access_token":" access-token ","refresh_token":" refresh-token ","token_type":" Bearer ","scope":" repo ","expires_in":9223372036854775807}"#,
         )
         .expect("parse token response");
 
         assert_eq!(token.access_token, "access-token");
+        assert_eq!(token.refresh_token.as_deref(), Some("refresh-token"));
+        assert_eq!(token.token_type.as_deref(), Some("Bearer"));
+        assert_eq!(token.scope.as_deref(), Some("repo"));
         assert!(token.expires_at.is_none());
     }
 
@@ -2054,11 +2297,52 @@ mod tests {
         );
     }
 
+    async fn assert_unsafe_stored_refresh_url_is_rejected(
+        service: &OAuthCredentialService,
+        oauth: &ManifestOAuthCredentialSpec,
+        material: &mut BTreeMap<String, String>,
+        token_url_key: &str,
+    ) {
+        let safe_token_url = material
+            .insert(
+                token_url_key.to_string(),
+                "https://alice-credential:hunter-credential@provider.example/token?secret=query-credential"
+                    .to_string(),
+            )
+            .expect("safe token URL");
+        let original = material.clone();
+        let error = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", oauth),
+                material,
+            )
+            .await
+            .expect_err("unsafe stored URL should fail before refresh");
+        let detail = error.to_string();
+        assert!(matches!(
+            error,
+            crate::bootstrap::AppError::FailedPrecondition(_)
+        ));
+        assert_eq!(*material, original);
+        for secret in [
+            "alice-credential",
+            "hunter-credential",
+            "provider.example",
+            "query-credential",
+        ] {
+            assert!(!detail.contains(secret), "diagnostic leaked {secret}");
+        }
+        material.insert(token_url_key.to_string(), safe_token_url);
+    }
+
     #[tokio::test]
     async fn expired_oauth_material_refreshes_access_token() {
         let fixture = OAuthFixture::new(Some(
             r#"{"access_token":"refreshed-token","refresh_token":"rotated-refresh-token","token_type":"Bearer","scope":"repo read:org","expires_in":3600}"#,
         ));
+        let proxy = StdTcpListener::bind("127.0.0.1:0").expect("hostile proxy");
+        proxy.set_nonblocking(true).expect("nonblocking proxy");
+        let proxy_url = format!("http://{}", proxy.local_addr().expect("proxy addr"));
         let oauth = oauth_spec(
             &fixture.token_url,
             free_loopback_port(),
@@ -2082,12 +2366,27 @@ mod tests {
             ),
             (
                 format!("{prefix}refresh_token"),
-                "stored-refresh-token".to_string(),
+                " stored-refresh-token ".to_string(),
             ),
-            (format!("{prefix}client_id"), "stored-client".to_string()),
-            (format!("{prefix}token_url"), fixture.token_url.clone()),
+            (format!("{prefix}client_id"), " stored-client ".to_string()),
+            (
+                format!("{prefix}token_url"),
+                format!(" {} ", fixture.token_url),
+            ),
         ]);
-        let service = OAuthCredentialService::new();
+        let service = OAuthCredentialService::with_token_request_proxy(
+            Duration::from_secs(1),
+            reqwest::Proxy::all(&proxy_url).expect("proxy URL"),
+        );
+
+        let token_url_key = format!("{prefix}token_url");
+        assert_unsafe_stored_refresh_url_is_rejected(
+            &service,
+            &oauth,
+            &mut material,
+            &token_url_key,
+        )
+        .await;
 
         let refreshed = service
             .refresh_if_needed(
@@ -2122,6 +2421,10 @@ mod tests {
             Some("rotated-refresh-token")
         );
         assert!(captured.authorization.is_none());
+        assert!(
+            matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "loopback refresh must bypass the hostile proxy"
+        );
     }
 
     #[tokio::test]
@@ -2159,7 +2462,7 @@ mod tests {
             (format!("{prefix}token_url"), fixture.token_url.clone()),
             (
                 format!("{prefix}resource"),
-                "https://mcp.example.com/mcp".to_string(),
+                " https://mcp.example.com/mcp ".to_string(),
             ),
         ]);
         let service = OAuthCredentialService::new();
@@ -2517,11 +2820,11 @@ mod tests {
             (format!("{prefix}client_id"), "stored-client".to_string()),
             (
                 format!("{prefix}client_secret"),
-                "stored-secret".to_string(),
+                " stored-secret ".to_string(),
             ),
             (
                 format!("{prefix}client_secret_transport"),
-                "basic_auth".to_string(),
+                " basic_auth ".to_string(),
             ),
             (format!("{prefix}token_url"), fixture.token_url.clone()),
         ]);
@@ -2576,7 +2879,7 @@ mod tests {
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![(
                     "OAUTH_CLIENT_ID".to_string(),
-                    "override-client".to_string(),
+                    " override-client ".to_string(),
                 )],
             },
             move |authorization| async move {
@@ -2951,9 +3254,14 @@ mod tests {
             request
         });
         let oauth = device_oauth_spec(&device_url, "http://127.0.0.1/token");
-        let endpoints = oauth
-            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
-            .expect("render endpoints");
+        let endpoints = preflight_oauth_endpoints(
+            &oauth,
+            &oauth
+                .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+                .expect("render endpoints"),
+            &EMPTY_SOURCE_INPUTS,
+        )
+        .expect("preflight endpoints");
         let client = ResolvedOAuthClient {
             client_id: "device-client".to_string(),
             client_secret: None,
@@ -2961,8 +3269,9 @@ mod tests {
             dynamic_client_registration: false,
         };
 
+        let http = token_http_clients(Duration::from_secs(1), None);
         let result = request_device_code(
-            &reqwest::Client::new(),
+            &http,
             &oauth,
             &endpoints,
             &client,
@@ -3068,9 +3377,14 @@ mod tests {
                 dynamic_registration: None,
             },
         );
-        let endpoints = oauth
-            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
-            .expect("render endpoints");
+        let endpoints = preflight_oauth_endpoints(
+            &oauth,
+            &oauth
+                .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+                .expect("render endpoints"),
+            &EMPTY_SOURCE_INPUTS,
+        )
+        .expect("preflight endpoints");
         let session = AuthorizationCodeSessionConfig {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
@@ -3140,9 +3454,14 @@ mod tests {
                 dynamic_registration: None,
             },
         );
-        let endpoints = oauth
-            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
-            .expect("render endpoints");
+        let endpoints = preflight_oauth_endpoints(
+            &oauth,
+            &oauth
+                .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+                .expect("render endpoints"),
+            &EMPTY_SOURCE_INPUTS,
+        )
+        .expect("preflight endpoints");
         let session = AuthorizationCodeSessionConfig {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
