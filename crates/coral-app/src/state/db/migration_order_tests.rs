@@ -5,6 +5,8 @@ use tempfile::tempdir;
 
 use super::{CoralDbBackend, MIGRATOR};
 use crate::bootstrap;
+use crate::identities::model::{IdentityName, IdentityOwner};
+use crate::identity::UserPrincipal;
 use crate::state::db::repositories::identities_contract_tests::assert_identity_repository_contract;
 use crate::state::db::repositories::identities_negative_contract_tests::assert_identity_repository_negative_contract;
 use crate::state::db::repositories::identity_specs_contract_tests::{
@@ -254,6 +256,7 @@ async fn assert_migration_order_contract(db: &CoralDb) {
     assert_eq!(migration_versions(&sparse), vec![1, 10, 11]);
     run_migrator(db, &sparse).await;
     assert_eq!(migration_ledger(db).await, vec![1, 10, 11]);
+    insert_pre_safe_metadata_identity(db).await;
     let mut session = db;
     let identity_specs = session
         .identity_specs()
@@ -266,6 +269,19 @@ async fn assert_migration_order_contract(db: &CoralDb) {
     let expected = migration_versions(&MIGRATOR);
     assert!(expected.iter().any(|version| 1 < *version && *version < 10));
     assert_eq!(migration_ledger(db).await, expected);
+    let owner = IdentityOwner::for_user(UserPrincipal::local());
+    let name = IdentityName::parse("legacy-metadata-backfill").expect("legacy identity name");
+    let legacy = session
+        .identities()
+        .load_optional(&owner, &name)
+        .await
+        .expect("load migrated identity")
+        .expect("migrated identity");
+    assert!(legacy.safe_metadata.is_empty());
+    assert_eq!(
+        (legacy.created_at_unix_nanos, legacy.updated_at_unix_nanos),
+        (41, 42)
+    );
 
     let marker = format!("b1d-order-{}", uuid::Uuid::new_v4().simple());
     let mut tx = db.begin().await.expect("begin state-migration tx");
@@ -291,6 +307,40 @@ async fn assert_migration_order_contract(db: &CoralDb) {
             .await
             .expect("marker survives idempotent migrate")
     );
+
+    let mut tx = db.begin().await.expect("begin legacy cleanup tx");
+    tx.identities()
+        .delete(&owner, &name)
+        .await
+        .expect("delete migrated identity");
+    tx.commit().await.expect("commit legacy cleanup");
+}
+
+async fn insert_pre_safe_metadata_identity(db: &CoralDb) {
+    let sql = "INSERT INTO identities (
+        owner_kind, owner_key, workspace_id, name,
+        identity_spec_scope_kind, identity_spec_scope_id, identity_spec_name,
+        identity_spec_fingerprint, issuer, identity_type,
+        created_at_unix_nanos, updated_at_unix_nanos
+    ) VALUES (
+        'user', 'local', NULL, 'legacy-metadata-backfill',
+        'global', '__global__', 'legacy_spec',
+        'legacy-fingerprint', 'legacy-issuer', 'fixed_token', 41, 42
+    )";
+    match &db.backend {
+        CoralDbBackend::Sqlite(backend) => {
+            sqlx::query(sql)
+                .execute(&backend.pool)
+                .await
+                .expect("seed pre-0012 SQLite identity");
+        }
+        CoralDbBackend::Postgres(backend) => {
+            sqlx::query(sql)
+                .execute(&backend.pool)
+                .await
+                .expect("seed pre-0012 Postgres identity");
+        }
+    }
 }
 
 type IdentityRow<'a> = (&'a str, &'a str, Option<&'a str>, &'a str, &'a str, &'a str);

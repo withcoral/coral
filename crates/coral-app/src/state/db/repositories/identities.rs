@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use sea_query::{Alias, Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::bootstrap::AppError;
@@ -13,6 +15,7 @@ pub(crate) struct IdentityRecord {
     pub(crate) owner: IdentityOwner,
     pub(crate) name: IdentityName,
     pub(crate) spec_reference: IdentitySpecReference,
+    pub(crate) safe_metadata: BTreeMap<String, String>,
     pub(crate) created_at_unix_nanos: i64,
     pub(crate) updated_at_unix_nanos: i64,
 }
@@ -29,6 +32,7 @@ struct IdentityRow {
     identity_spec_fingerprint: String,
     issuer: String,
     identity_type: String,
+    safe_metadata_json: String,
     created_at_unix_nanos: i64,
     updated_at_unix_nanos: i64,
 }
@@ -56,10 +60,12 @@ impl IdentityRow {
             self.issuer,
             self.identity_type,
         )?;
+        let safe_metadata = decode_safe_metadata(&self.safe_metadata_json)?;
         Ok(IdentityRecord {
             owner,
             name,
             spec_reference,
+            safe_metadata,
             created_at_unix_nanos: self.created_at_unix_nanos,
             updated_at_unix_nanos: self.updated_at_unix_nanos,
         })
@@ -169,10 +175,12 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
         owner: &IdentityOwner,
         name: &IdentityName,
         spec_reference: &IdentitySpecReference,
+        safe_metadata: &BTreeMap<String, String>,
         now_unix_nanos: i64,
     ) -> Result<IdentityRecord, AppError> {
         validate_write_timestamp(now_unix_nanos)?;
         spec_reference.validate_for_owner(owner)?;
+        let safe_metadata_json = serde_json::to_string(safe_metadata)?;
         let current_updated_at = Expr::col((Identities::Table, Identities::UpdatedAtUnixNanos));
         let key = spec_reference.key();
         let statement = Query::insert()
@@ -193,6 +201,7 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
                 Expr::val(spec_reference.fingerprint()),
                 Expr::val(spec_reference.issuer()),
                 Expr::val(spec_reference.identity_type()),
+                Expr::val(safe_metadata_json),
                 Expr::val(now_unix_nanos),
                 Expr::val(now_unix_nanos),
             ])
@@ -209,6 +218,7 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
                     Identities::IdentitySpecFingerprint,
                     Identities::Issuer,
                     Identities::IdentityType,
+                    Identities::SafeMetadataJson,
                 ])
                 .value(
                     Identities::UpdatedAtUnixNanos,
@@ -260,6 +270,20 @@ fn validate_write_timestamp(now_unix_nanos: i64) -> Result<(), AppError> {
     }
 }
 
+fn decode_safe_metadata(value: &str) -> Result<BTreeMap<String, String>, DbError> {
+    let metadata: BTreeMap<String, String> =
+        serde_json::from_str(value).map_err(|_error| invalid_safe_metadata())?;
+    let canonical = serde_json::to_string(&metadata).map_err(|_error| invalid_safe_metadata())?;
+    if canonical != value {
+        return Err(invalid_safe_metadata());
+    }
+    Ok(metadata)
+}
+
+fn invalid_safe_metadata() -> DbError {
+    DbError::CorruptData("identity row has invalid safe metadata JSON".to_string())
+}
+
 fn zero_or_one_affected(rows_affected: u64, operation: &str) -> Result<bool, DbError> {
     match rows_affected {
         0 => Ok(false),
@@ -277,7 +301,7 @@ fn identity_select() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-fn identity_columns() -> [Identities; 12] {
+fn identity_columns() -> [Identities; 13] {
     [
         Identities::OwnerKind,
         Identities::OwnerKey,
@@ -289,6 +313,7 @@ fn identity_columns() -> [Identities; 12] {
         Identities::IdentitySpecFingerprint,
         Identities::Issuer,
         Identities::IdentityType,
+        Identities::SafeMetadataJson,
         Identities::CreatedAtUnixNanos,
         Identities::UpdatedAtUnixNanos,
     ]
@@ -313,6 +338,8 @@ fn identity_spec_where(key: &IdentitySpecKey) -> sea_query::SimpleExpr {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use tempfile::tempdir;
 
     use super::IdentityRow;
@@ -337,6 +364,7 @@ mod tests {
             identity_spec_fingerprint: "fingerprint".to_string(),
             issuer: "issuer".to_string(),
             identity_type: "fixed_token".to_string(),
+            safe_metadata_json: "{}".to_string(),
             created_at_unix_nanos: 1,
             updated_at_unix_nanos: 1,
         };
@@ -400,7 +428,7 @@ mod tests {
             (&workspace_owner, &charlie, &workspace_local, 13),
         ] {
             tx.identities()
-                .upsert(owner, name, spec, now)
+                .upsert(owner, name, spec, &BTreeMap::new(), now)
                 .await
                 .expect("upsert identity");
         }
@@ -425,7 +453,7 @@ mod tests {
         let mut tx = db.begin().await.expect("begin replacement tx");
         let replaced = tx
             .identities()
-            .upsert(&user, &alpha, &replacement, 20)
+            .upsert(&user, &alpha, &replacement, &BTreeMap::new(), 20)
             .await
             .expect("replace all mutable fields");
         assert_eq!(
@@ -438,7 +466,7 @@ mod tests {
         assert_eq!(replaced.spec_reference, replacement);
         let regressed = tx
             .identities()
-            .upsert(&user, &alpha, &replacement, 5)
+            .upsert(&user, &alpha, &replacement, &BTreeMap::new(), 5)
             .await
             .expect("preserve update time under regressed clock");
         assert_eq!(regressed.updated_at_unix_nanos, 20);
@@ -455,13 +483,13 @@ mod tests {
         assert!(deleted && !missing);
         let wrong_owner = tx
             .identities()
-            .upsert(&other_owner, &alpha, &workspace_local, 20)
+            .upsert(&other_owner, &alpha, &workspace_local, &BTreeMap::new(), 20)
             .await
             .expect_err("cross-workspace reference must fail");
         assert!(matches!(wrong_owner, AppError::InvalidInput(_)));
         let negative_time = tx
             .identities()
-            .upsert(&user, &alpha, &user_f2, -1)
+            .upsert(&user, &alpha, &user_f2, &BTreeMap::new(), -1)
             .await
             .expect_err("negative timestamp must fail");
         assert!(matches!(negative_time, AppError::InvalidInput(_)));

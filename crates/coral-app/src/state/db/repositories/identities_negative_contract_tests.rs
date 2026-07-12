@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use sea_query::{Expr, ExprTrait, Query, SimpleExpr, UpdateStatement};
@@ -5,7 +6,8 @@ use tempfile::tempdir;
 
 use super::identities_contract_tests::{
     assert_document, assert_identity, assert_identity_absent, document, expected_document,
-    identity_name, parsed_workspace, reference, seed_document, seed_identity,
+    identity_name, metadata, parsed_workspace, reference, seed_document, seed_identity,
+    seed_identity_with_metadata,
 };
 use crate::bootstrap::AppError;
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
@@ -27,6 +29,7 @@ async fn identity_repository_negative_contract_holds_against_sqlite() {
     assert_identity_repository_negative_contract(&db).await;
 }
 
+#[expect(clippy::too_many_lines, reason = "Shared backend contract fixture.")]
 pub(in crate::state::db) async fn assert_identity_repository_negative_contract(db: &CoralDb) {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let workspace = parsed_workspace(&format!("negative{suffix}"));
@@ -43,10 +46,25 @@ pub(in crate::state::db) async fn assert_identity_repository_negative_contract(d
         .ensure(workspace.as_str(), 1)
         .await
         .expect("ensure workspace");
-    let original_identity =
-        seed_identity(&mut tx, &owner, &corrupt_name, &spec_reference, 10).await;
+    let original_identity = seed_identity_with_metadata(
+        &mut tx,
+        &owner,
+        &corrupt_name,
+        &spec_reference,
+        &metadata([("scope", "original"), ("token_type", "Bearer")]),
+        10,
+    )
+    .await;
     seed_identity(&mut tx, &owner, &constraint_name, &spec_reference, 11).await;
-    seed_identity(&mut tx, &owner, &material_name, &spec_reference, 12).await;
+    let original_material_identity = seed_identity_with_metadata(
+        &mut tx,
+        &owner,
+        &material_name,
+        &spec_reference,
+        &metadata([("scope", "material")]),
+        12,
+    )
+    .await;
     let original_document = seed_document(&mut tx, &owner, &material_name, "material", 12).await;
     tx.commit().await.expect("commit seed tx");
 
@@ -101,13 +119,30 @@ pub(in crate::state::db) async fn assert_identity_repository_negative_contract(d
         zero_i64(),
     )
     .await;
+    for value in [
+        "",
+        "[]",
+        "null",
+        r#"{"scope":1}"#,
+        r#"{"scope":"secret\u002dsentinel"}"#,
+        r#"{"token_type":"Bearer", "scope":"secret-sentinel"}"#,
+        r#"{"scope":"secret-sentinel","scope":"secret-sentinel"}"#,
+    ] {
+        assert_corrupt_safe_metadata(db, &owner, &corrupt_name, value).await;
+    }
     assert_identity(db, &owner, &corrupt_name, &original_identity).await;
 
     assert_document_corruption_matrix(db, &owner, &material_name).await;
     assert_document(db, &owner, &material_name, Some(&original_document)).await;
     assert_constraint_violations(db, &suffix, &owner, &constraint_name, &material_name).await;
-    assert_max_version_is_typed_and_nonmutating(db, &owner, &material_name, &original_document)
-        .await;
+    assert_max_version_is_typed_and_nonmutating(
+        db,
+        &owner,
+        &material_name,
+        &original_material_identity,
+        &original_document,
+    )
+    .await;
     let concurrent_name = identity_name(&format!("concurrent{suffix}"));
     assert_concurrent_document_versions(db, &owner, &concurrent_name, &spec_reference).await;
 
@@ -134,7 +169,13 @@ async fn assert_foreign_keys_and_rollback(
     let mut tx = db.begin().await.expect("begin missing workspace tx");
     assert!(matches!(
         tx.identities()
-            .upsert(&missing_owner, &missing_name, &missing_reference, 20)
+            .upsert(
+                &missing_owner,
+                &missing_name,
+                &missing_reference,
+                &BTreeMap::new(),
+                20,
+            )
             .await,
         Err(AppError::Database(_))
     ));
@@ -277,6 +318,38 @@ async fn assert_corrupt_identity_name(
     tx.rollback().await.expect("restore identity name");
 }
 
+async fn assert_corrupt_safe_metadata(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+    value: &str,
+) {
+    let mut tx = db.begin().await.expect("begin corrupt metadata tx");
+    tx.execute(
+        Query::update()
+            .table(Identities::Table)
+            .value(Identities::SafeMetadataJson, value)
+            .and_where(identity_where(owner, name))
+            .to_owned(),
+    )
+    .await
+    .expect("corrupt safe metadata");
+    for error in [
+        tx.identities()
+            .load_optional(owner, name)
+            .await
+            .expect_err("point read must reject corrupt safe metadata"),
+        tx.identities()
+            .list_for_owner(owner)
+            .await
+            .expect_err("list must reject corrupt safe metadata"),
+    ] {
+        assert!(matches!(&error, DbError::CorruptData(_)));
+        assert!(!error.to_string().contains("secret-sentinel"));
+    }
+    tx.rollback().await.expect("restore safe metadata");
+}
+
 async fn assert_corrupt_document(
     db: &CoralDb,
     owner: &IdentityOwner,
@@ -322,6 +395,16 @@ async fn assert_constraint_violations(
         db,
         Query::update()
             .table(Identities::Table)
+            .value(Identities::SafeMetadataJson, Option::<String>::None)
+            .and_where(identity_where(owner, constraint_name))
+            .to_owned(),
+        Violation::NotNull,
+    )
+    .await;
+    assert_violation(
+        db,
+        Query::update()
+            .table(Identities::Table)
             .value(Identities::IdentitySpecScopeId, format!("other{suffix}"))
             .and_where(identity_where(owner, constraint_name))
             .to_owned(),
@@ -357,7 +440,8 @@ async fn assert_max_version_is_typed_and_nonmutating(
     db: &CoralDb,
     owner: &IdentityOwner,
     name: &IdentityName,
-    original: &IdentityDocumentRecord,
+    original_identity: &crate::state::db::IdentityRecord,
+    original_document: &IdentityDocumentRecord,
 ) {
     let mut tx = db.begin().await.expect("begin max-version tx");
     tx.execute(
@@ -375,6 +459,19 @@ async fn assert_max_version_is_typed_and_nonmutating(
         .await
         .expect("load max-version document")
         .expect("max-version document");
+    let changed_metadata = metadata([("scope", "must-roll-back")]);
+    let changed_identity = tx
+        .identities()
+        .upsert(
+            owner,
+            name,
+            &original_identity.spec_reference,
+            &changed_metadata,
+            70,
+        )
+        .await
+        .expect("stage changed safe metadata");
+    assert_eq!(changed_identity.safe_metadata, changed_metadata);
     let error = tx
         .identity_documents()
         .upsert(owner, name, &document("overflow"), 70)
@@ -389,12 +486,14 @@ async fn assert_max_version_is_typed_and_nonmutating(
         .expect("max-version document remains");
     assert_eq!(after, before);
     tx.rollback().await.expect("rollback max version");
-    assert_document(db, owner, name, Some(original)).await;
+    assert_identity(db, owner, name, original_identity).await;
+    assert_document(db, owner, name, Some(original_document)).await;
 }
 
 enum Violation {
     Check,
     ForeignKey,
+    NotNull,
 }
 
 async fn assert_violation(db: &CoralDb, statement: UpdateStatement, expected: Violation) {
@@ -410,6 +509,7 @@ async fn assert_violation(db: &CoralDb, statement: UpdateStatement, expected: Vi
     assert!(match expected {
         Violation::Check => database.is_check_violation(),
         Violation::ForeignKey => database.is_foreign_key_violation(),
+        Violation::NotNull => database.kind() == sqlx::error::ErrorKind::NotNullViolation,
     });
     tx.rollback().await.expect("rollback failed Postgres tx");
 }

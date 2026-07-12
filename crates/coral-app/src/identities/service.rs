@@ -4,7 +4,7 @@ use std::pin::Pin;
 
 use coral_api::v1::identity_service_server::IdentityService as IdentityServiceApi;
 use coral_api::v1::{
-    CreateUserOwnedIdentityRequest, CreateUserOwnedIdentityResponse,
+    CreateUserOwnedIdentityRequest, CreateUserOwnedIdentityResponse, CredentialMetadata,
     DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse,
     FixedTokenUserOwnedIdentitySetup, GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse,
     Identity as ProtoIdentity, IdentityOwner as ProtoIdentityOwner, ListUserOwnedIdentitiesRequest,
@@ -144,6 +144,7 @@ pub(super) fn identity_to_proto(record: IdentityRecord) -> ProtoIdentity {
         owner,
         name,
         spec_reference,
+        safe_metadata,
         ..
     } = record;
     let (owner, owner_workspace) = match owner {
@@ -163,8 +164,62 @@ pub(super) fn identity_to_proto(record: IdentityRecord) -> ProtoIdentity {
         issuer: spec_reference.issuer().to_string(),
         identity_type: spec_reference.identity_type().to_string(),
         owner: owner as i32,
-        metadata: Vec::new(),
+        metadata: safe_metadata
+            .into_iter()
+            .map(|(key, value)| CredentialMetadata { key, value })
+            .collect(),
         owner_workspace,
         identity_spec_workspace,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use coral_api::v1::CredentialMetadata;
+
+    use super::identity_to_proto;
+    use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
+    use crate::identity::UserPrincipal;
+    use crate::state::db::{IdentityRecord, IdentitySpecKey};
+
+    #[test]
+    fn identity_to_proto_exposes_only_ordered_safe_metadata() {
+        let owner = IdentityOwner::for_user(UserPrincipal::local());
+        let spec_reference = IdentitySpecReference::new(
+            &owner,
+            IdentitySpecKey::global("github_oauth").expect("valid identity spec key"),
+            "fingerprint",
+            "github",
+            "oauth2",
+        )
+        .expect("valid identity spec reference");
+        let safe_metadata = BTreeMap::from([
+            ("token_type".to_string(), "Bearer".to_string()),
+            ("scope".to_string(), "repo user".to_string()),
+        ]);
+        let proto = identity_to_proto(IdentityRecord {
+            owner,
+            name: IdentityName::parse("github").expect("valid identity name"),
+            spec_reference,
+            safe_metadata,
+            created_at_unix_nanos: 1,
+            updated_at_unix_nanos: 1,
+        });
+
+        assert_eq!(
+            proto.metadata,
+            vec![
+                CredentialMetadata {
+                    key: "scope".to_string(),
+                    value: "repo user".to_string(),
+                },
+                CredentialMetadata {
+                    key: "token_type".to_string(),
+                    value: "Bearer".to_string(),
+                },
+            ]
+        );
     }
 }

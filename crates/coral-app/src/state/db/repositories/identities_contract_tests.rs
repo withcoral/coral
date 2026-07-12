@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use tempfile::tempdir;
 
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
@@ -71,10 +73,30 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
         .upsert(&replacement_key, &spec("replacement"), 4)
         .await
         .expect("seed replacement spec");
-    let user_row = seed_identity(&mut tx, &user, &shared_name, &user_ref, 10).await;
-    let mut workspace_row =
-        seed_identity(&mut tx, &workspace_owner, &shared_name, &workspace_ref, 11).await;
-    let other_row = seed_identity(&mut tx, &other_owner, &shared_name, &other_ref, 12).await;
+    let user_metadata = metadata([("scope", "user"), ("token_type", "Bearer")]);
+    let workspace_metadata = metadata([("scope", "workspace"), ("token_type", "Bearer")]);
+    let other_metadata = metadata([("scope", "other"), ("token_type", "DPoP")]);
+    let mut user_row =
+        seed_identity_with_metadata(&mut tx, &user, &shared_name, &user_ref, &user_metadata, 10)
+            .await;
+    let mut workspace_row = seed_identity_with_metadata(
+        &mut tx,
+        &workspace_owner,
+        &shared_name,
+        &workspace_ref,
+        &workspace_metadata,
+        11,
+    )
+    .await;
+    let other_row = seed_identity_with_metadata(
+        &mut tx,
+        &other_owner,
+        &shared_name,
+        &other_ref,
+        &other_metadata,
+        12,
+    )
+    .await;
     let fallback_row =
         seed_identity(&mut tx, &workspace_owner, &fallback_name, &fallback_ref, 13).await;
     let user_document = seed_document(&mut tx, &user, &shared_name, "user", 20).await;
@@ -112,10 +134,12 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
     assert_counts(db, &workspace_key, [("f1", 1)], 1).await;
     assert_counts(db, &replacement_key, [("f3", 0)], 0).await;
 
+    let replacement_metadata = metadata([("token_type", "DPoP")]);
     let expected_replaced_identity = IdentityRecord {
         owner: workspace_owner.clone(),
         name: shared_name.clone(),
         spec_reference: replacement_identity_ref.clone(),
+        safe_metadata: replacement_metadata.clone(),
         created_at_unix_nanos: 11,
         updated_at_unix_nanos: 30,
     };
@@ -126,6 +150,7 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
             &workspace_owner,
             &shared_name,
             &replacement_identity_ref,
+            &replacement_metadata,
             30,
         )
         .await
@@ -133,7 +158,13 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
     assert_eq!(replaced_identity, expected_replaced_identity);
     let regressed_identity = tx
         .identities()
-        .upsert(&workspace_owner, &shared_name, &replacement_identity_ref, 5)
+        .upsert(
+            &workspace_owner,
+            &shared_name,
+            &replacement_identity_ref,
+            &replacement_metadata,
+            5,
+        )
         .await
         .expect("replace identity under regressed clock");
     assert_eq!(regressed_identity, expected_replaced_identity);
@@ -159,13 +190,20 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
     let mut tx = db.begin().await.expect("begin identity restore tx");
     let restored_identity = tx
         .identities()
-        .upsert(&workspace_owner, &shared_name, &workspace_ref, 31)
+        .upsert(
+            &workspace_owner,
+            &shared_name,
+            &workspace_ref,
+            &BTreeMap::new(),
+            31,
+        )
         .await
         .expect("restore workspace identity reference");
     workspace_row = IdentityRecord {
         owner: workspace_owner.clone(),
         name: shared_name.clone(),
         spec_reference: workspace_ref.clone(),
+        safe_metadata: BTreeMap::new(),
         created_at_unix_nanos: 11,
         updated_at_unix_nanos: 31,
     };
@@ -177,7 +215,16 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
     assert_counts(db, &replacement_key, [("f3", 0)], 0).await;
 
     let replacement_write = document("user-replacement");
+    let updated_user_metadata = metadata([
+        ("access_token_expires_at", "2030-01-02T03:04:05Z"),
+        ("token_type", "Bearer"),
+    ]);
     let mut tx = db.begin().await.expect("begin replacement tx");
+    user_row = tx
+        .identities()
+        .upsert(&user, &shared_name, &user_ref, &updated_user_metadata, 30)
+        .await
+        .expect("replace user safe metadata");
     let replaced = tx
         .identity_documents()
         .upsert(&user, &shared_name, &replacement_write, 30)
@@ -193,6 +240,7 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
         .await
         .expect("replace under regressed clock");
     tx.commit().await.expect("commit replacement tx");
+    assert_identity(db, &user, &shared_name, &user_row).await;
     assert_eq!(
         replacement,
         expected_document(&user, &shared_name, "user-replacement", 3, 20, 30)
@@ -324,9 +372,20 @@ pub(super) async fn seed_identity(
     reference: &IdentitySpecReference,
     now: i64,
 ) -> IdentityRecord {
+    seed_identity_with_metadata(tx, owner, name, reference, &BTreeMap::new(), now).await
+}
+
+pub(super) async fn seed_identity_with_metadata(
+    tx: &mut CoralTx<'_>,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+    reference: &IdentitySpecReference,
+    safe_metadata: &BTreeMap<String, String>,
+    now: i64,
+) -> IdentityRecord {
     let record = tx
         .identities()
-        .upsert(owner, name, reference, now)
+        .upsert(owner, name, reference, safe_metadata, now)
         .await
         .expect("seed identity");
     assert_eq!(
@@ -335,11 +394,19 @@ pub(super) async fn seed_identity(
             owner: owner.clone(),
             name: name.clone(),
             spec_reference: reference.clone(),
+            safe_metadata: safe_metadata.clone(),
             created_at_unix_nanos: now,
             updated_at_unix_nanos: now,
         }
     );
     record
+}
+
+pub(super) fn metadata<const N: usize>(entries: [(&str, &str); N]) -> BTreeMap<String, String> {
+    entries
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 pub(super) async fn seed_document(

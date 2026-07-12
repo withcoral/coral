@@ -328,6 +328,8 @@ fn identity_document_key_where(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use tempfile::tempdir;
 
     use super::IdentityDocumentRow;
@@ -385,7 +387,7 @@ mod tests {
             .await
             .expect("seed workspace");
         tx.identities()
-            .upsert(&owner, &name, &reference, 2)
+            .upsert(&owner, &name, &reference, &BTreeMap::new(), 2)
             .await
             .expect("seed identity");
         assert!(

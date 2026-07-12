@@ -598,7 +598,7 @@ impl IdentityManager {
         let result = async {
             let record = tx
                 .identities()
-                .upsert(owner, name, &selected.reference, now)
+                .upsert(owner, name, &selected.reference, &BTreeMap::new(), now)
                 .await?;
             tx.identity_documents()
                 .upsert(owner, name, document, now)

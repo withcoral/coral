@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -185,7 +186,7 @@ pub(crate) async fn assert_identity_spec_lifecycle_contract(db: &Arc<CoralDb>) {
     .expect("mixed legacy reference");
     let mut tx = db.begin().await.expect("begin mixed reference write");
     tx.identities()
-        .upsert(&owner, &identity_name, &mixed, 51)
+        .upsert(&owner, &identity_name, &mixed, &BTreeMap::new(), 51)
         .await
         .unwrap();
     tx.commit().await.expect("commit mixed reference write");

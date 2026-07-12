@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use coral_api::v1::{
     AddIdentitySpecRequest, CreateUserOwnedIdentityRequest, CreateWorkspaceOwnedIdentityRequest,
-    CreateWorkspaceRequest, DeleteIdentitySpecRequest, DeleteUserOwnedIdentityRequest,
-    DeleteWorkspaceOwnedIdentityRequest, FixedTokenUserOwnedIdentitySetup,
-    FixedTokenWorkspaceOwnedIdentitySetup, GetUserOwnedIdentityRequest,
-    GetWorkspaceOwnedIdentityRequest, Identity, IdentityOwner, ListUserOwnedIdentitiesRequest,
-    ListWorkspaceOwnedIdentitiesRequest, Workspace, create_user_owned_identity_request,
-    create_user_owned_identity_response, create_workspace_owned_identity_request,
-    create_workspace_owned_identity_response,
+    CreateWorkspaceRequest, CredentialMetadata, DeleteIdentitySpecRequest,
+    DeleteUserOwnedIdentityRequest, DeleteWorkspaceOwnedIdentityRequest,
+    FixedTokenUserOwnedIdentitySetup, FixedTokenWorkspaceOwnedIdentitySetup,
+    GetUserOwnedIdentityRequest, GetWorkspaceOwnedIdentityRequest, Identity, IdentityOwner,
+    ListUserOwnedIdentitiesRequest, ListWorkspaceOwnedIdentitiesRequest, Workspace,
+    create_user_owned_identity_request, create_user_owned_identity_response,
+    create_workspace_owned_identity_request, create_workspace_owned_identity_response,
 };
 use coral_api::{
     CORAL_ERROR_REASON_IDENTITY_NOT_FOUND, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND,
@@ -59,7 +59,7 @@ async fn user_identity_service_is_scoped_validated_and_restart_safe() {
     add_spec(&app, "oauth_spec", "oauth", "oauth").await;
     assert_create_validation(&app).await;
 
-    let alice = create(&app, "alice", "shared", "alice_spec", "alice-token").await;
+    let mut alice = create(&app, "alice", "shared", "alice_spec", "alice-token").await;
     let bob = create(&app, "bob", "shared", "bob_spec", "bob-token").await;
     assert_identity(&alice, "alice_spec", "alice");
     assert_identity(&bob, "bob_spec", "bob");
@@ -82,8 +82,32 @@ async fn user_identity_service_is_scoped_validated_and_restart_safe() {
     assert_eq!(orphaned.orphaned_identities, 1);
     server.shutdown().await.expect("shutdown first server");
 
+    persist_safe_metadata(&config_dir, "alice", "shared").await;
+    let encryption_key = config_dir.join("credentials").join("encryption.key");
+    std::fs::rename(
+        &encryption_key,
+        config_dir
+            .join("credentials")
+            .join("encryption.key.unavailable"),
+    )
+    .expect("make original identity encryption key unavailable");
+    alice.metadata = vec![
+        CredentialMetadata {
+            key: "scope".to_string(),
+            value: "repo user".to_string(),
+        },
+        CredentialMetadata {
+            key: "token_type".to_string(),
+            value: "Bearer".to_string(),
+        },
+    ];
+
     let (server, restarted) = start(&config_dir).await;
-    assert_eq!(get(&restarted, "alice", "shared").await, alice);
+    let listed = list(&restarted, "alice").await;
+    let loaded = get(&restarted, "alice", "shared").await;
+    assert_eq!(listed, vec![alice.clone()]);
+    assert_eq!(loaded, alice);
+    assert!(!format!("{listed:?}{loaded:?}").contains("alice-token"));
     assert_eq!(get(&restarted, "bob", "shared").await, bob);
     restarted
         .identity_client()
@@ -322,6 +346,25 @@ async fn start(config_dir: &std::path::Path) -> (coral_app::RunningServer, AppCl
         .await
         .expect("connect client");
     (server, app)
+}
+
+async fn persist_safe_metadata(config_dir: &std::path::Path, owner_key: &str, name: &str) {
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(config_dir.join("coral.db"));
+    let pool = sqlx::SqlitePool::connect_with(options)
+        .await
+        .expect("open identity database for metadata fixture");
+    let result = sqlx::query(
+        "UPDATE identities SET safe_metadata_json = ?
+         WHERE owner_kind = 'user' AND owner_key = ? AND name = ?",
+    )
+    .bind(r#"{"scope":"repo user","token_type":"Bearer"}"#)
+    .bind(owner_key)
+    .bind(name)
+    .execute(&pool)
+    .await
+    .expect("persist canonical safe metadata fixture");
+    assert_eq!(result.rows_affected(), 1);
+    pool.close().await;
 }
 
 async fn add_spec(app: &AppClient, name: &str, issuer: &str, kind: &str) {

@@ -60,10 +60,75 @@ async fn sqlite_fixed_token_manager_contract() {
 }
 
 pub(crate) async fn assert_fixed_token_manager_contract(db: &Arc<CoralDb>) {
+    Box::pin(assert_safe_metadata_keyless_read_contract(db)).await;
     Box::pin(assert_fixed_token_for_use_contract(db)).await;
     Box::pin(assert_fixed_token_for_use_race_contract(db)).await;
     Box::pin(assert_user_global_fixed_token_manager_contract(db)).await;
     Box::pin(assert_workspace_fixed_token_manager_contract(db)).await;
+}
+
+async fn assert_safe_metadata_keyless_read_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let spec_name = format!("keyless_metadata_{suffix}");
+    let identity_name = format!("keyless-metadata-{suffix}");
+    let principal = UserPrincipal::for_user(&format!("keyless-metadata-{suffix}")).unwrap();
+    let owner = IdentityOwner::for_user(principal.clone());
+    let key = CredentialEncryptionKey::from_static_bytes_for_test([60; 32]);
+    put_spec(
+        db,
+        &IdentitySpecKey::global(&spec_name).unwrap(),
+        &fixed_manifest(&spec_name, "keyless"),
+    )
+    .await;
+    let manager = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(vec![key])));
+    let created = manager
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &identity_name,
+            &spec_name,
+            "secret-token".into(),
+        )
+        .await
+        .expect("create identity with encrypted material");
+    let expected_metadata = BTreeMap::from([
+        ("scope".to_string(), "repo:read user:email".to_string()),
+        ("token_type".to_string(), "Bearer".to_string()),
+    ]);
+    let name = IdentityName::parse(&identity_name).unwrap();
+    let mut tx = db.begin_serializable().await.expect("begin metadata seed");
+    let seeded = tx
+        .identities()
+        .upsert(
+            &owner,
+            &name,
+            &created.spec_reference,
+            &expected_metadata,
+            created.updated_at_unix_nanos + 1,
+        )
+        .await
+        .expect("persist safe metadata");
+    tx.commit().await.expect("commit safe metadata");
+
+    let unavailable = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(vec![])));
+    let listed = unavailable
+        .list_for_owner(&owner)
+        .await
+        .expect("list safe metadata without a key");
+    assert_eq!(listed, vec![seeded.clone()]);
+    assert_eq!(
+        listed.first().expect("listed identity").safe_metadata,
+        expected_metadata
+    );
+    let loaded = unavailable
+        .get(&owner, &identity_name)
+        .await
+        .expect("get safe metadata without a key");
+    assert_eq!(loaded, seeded);
+    assert_eq!(loaded.safe_metadata, expected_metadata);
+    assert!(matches!(
+        unavailable.get_for_use(&owner, &identity_name).await,
+        Err(AppError::Credentials(CredentialsError::Unavailable(_)))
+    ));
 }
 
 async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
@@ -170,7 +235,10 @@ async fn assert_fixed_token_for_use_race_contract(db: &Arc<CoralDb>) {
     let old_key = CredentialEncryptionKey::from_static_bytes_for_test([63; 32]);
     let new_key = CredentialEncryptionKey::from_static_bytes_for_test([64; 32]);
     Box::pin(assert_use_replacement_race(db, &suffix, &old_key, &new_key)).await;
-    assert_use_delete_recreate_race(db, &suffix, &old_key, &new_key).await;
+    Box::pin(assert_use_delete_recreate_race(
+        db, &suffix, &old_key, &new_key,
+    ))
+    .await;
     assert_use_spec_mutation_race(db, &suffix, &old_key, &new_key).await;
     Box::pin(assert_concurrent_rewrap_race(
         db, &suffix, &old_key, &new_key,
