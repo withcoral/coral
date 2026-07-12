@@ -317,13 +317,38 @@ fn identity_spec_where(key: &IdentitySpecKey) -> sea_query::SimpleExpr {
 mod tests {
     use tempfile::tempdir;
 
+    use super::IdentityRow;
     use crate::bootstrap::AppError;
     use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
     use crate::identity::UserPrincipal;
     use crate::state::db::{
-        CoralDb, DbRepos, IdentityRecord, IdentitySpecKey, ResolvedDatabaseConfig,
+        CoralDb, DbError, DbRepos, IdentityRecord, IdentitySpecKey, ResolvedDatabaseConfig,
     };
     use crate::workspaces::WorkspaceName;
+
+    #[test]
+    fn persisted_identity_key_columns_fail_closed() {
+        let row = |owner_key: &str, scope_kind: &str, scope_id: &str| IdentityRow {
+            owner_kind: "user".to_string(),
+            owner_key: owner_key.to_string(),
+            workspace_id: None,
+            name: "github".to_string(),
+            identity_spec_scope_kind: scope_kind.to_string(),
+            identity_spec_scope_id: scope_id.to_string(),
+            identity_spec_name: "github".to_string(),
+            identity_spec_fingerprint: "fingerprint".to_string(),
+            issuer: "issuer".to_string(),
+            identity_type: "fixed_token".to_string(),
+            created_at_unix_nanos: 1,
+            updated_at_unix_nanos: 1,
+        };
+        for corrupt in [
+            row(" member ", "global", "__global__"),
+            row("member", "workspace", "other"),
+        ] {
+            assert!(matches!(corrupt.validate(), Err(DbError::CorruptData(_))));
+        }
+    }
 
     #[tokio::test]
     #[expect(clippy::too_many_lines, reason = "Repository contract.")]

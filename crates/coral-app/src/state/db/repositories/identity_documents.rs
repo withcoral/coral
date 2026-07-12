@@ -332,13 +332,36 @@ fn identity_document_key_where(
 mod tests {
     use tempfile::tempdir;
 
+    use super::IdentityDocumentRow;
     use crate::bootstrap::AppError;
     use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
     use crate::state::db::{
-        CoralDb, DbRepos, IdentityDocumentRecord, IdentityDocumentWrite, IdentitySpecKey,
+        CoralDb, DbError, DbRepos, IdentityDocumentRecord, IdentityDocumentWrite, IdentitySpecKey,
         ResolvedDatabaseConfig,
     };
     use crate::workspaces::WorkspaceName;
+
+    #[test]
+    fn persisted_identity_document_key_columns_fail_closed() {
+        let row = |owner_key: &str, name: &str| IdentityDocumentRow {
+            owner_kind: "user".to_string(),
+            owner_key: owner_key.to_string(),
+            name: name.to_string(),
+            document_version: 1,
+            ciphertext: vec![1],
+            nonce: vec![2],
+            wrapped_dek: vec![3],
+            wrapped_dek_nonce: vec![4],
+            key_id: "key".to_string(),
+            algorithm: "algorithm".to_string(),
+            aad_version: 1,
+            created_at_unix_nanos: 1,
+            updated_at_unix_nanos: 1,
+        };
+        for corrupt in [row(" member ", "github"), row("member", " github ")] {
+            assert!(matches!(corrupt.validate(), Err(DbError::CorruptData(_))));
+        }
+    }
 
     #[tokio::test]
     #[expect(clippy::too_many_lines, reason = "Repository contract.")]

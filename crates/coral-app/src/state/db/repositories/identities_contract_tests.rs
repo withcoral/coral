@@ -317,7 +317,7 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
     tx.commit().await.expect("commit cleanup tx");
 }
 
-async fn seed_identity(
+pub(super) async fn seed_identity(
     tx: &mut CoralTx<'_>,
     owner: &IdentityOwner,
     name: &IdentityName,
@@ -342,7 +342,7 @@ async fn seed_identity(
     record
 }
 
-async fn seed_document(
+pub(super) async fn seed_document(
     tx: &mut CoralTx<'_>,
     owner: &IdentityOwner,
     name: &IdentityName,
@@ -358,7 +358,7 @@ async fn seed_document(
     record
 }
 
-fn expected_document(
+pub(super) fn expected_document(
     owner: &IdentityOwner,
     name: &IdentityName,
     label: &str,
@@ -382,7 +382,7 @@ fn expected_document(
     }
 }
 
-async fn assert_identity(
+pub(super) async fn assert_identity(
     db: &CoralDb,
     owner: &IdentityOwner,
     name: &IdentityName,
@@ -400,7 +400,11 @@ async fn assert_identity(
     );
 }
 
-async fn assert_identity_absent(db: &CoralDb, owner: &IdentityOwner, name: &IdentityName) {
+pub(super) async fn assert_identity_absent(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+) {
     let mut session = db;
     assert!(
         session
@@ -412,7 +416,7 @@ async fn assert_identity_absent(db: &CoralDb, owner: &IdentityOwner, name: &Iden
     );
 }
 
-async fn assert_document(
+pub(super) async fn assert_document(
     db: &CoralDb,
     owner: &IdentityOwner,
     name: &IdentityName,
@@ -474,15 +478,15 @@ async fn assert_counts<const N: usize>(
     }
 }
 
-fn parsed_workspace(value: &str) -> WorkspaceName {
+pub(super) fn parsed_workspace(value: &str) -> WorkspaceName {
     WorkspaceName::parse(value).expect("workspace")
 }
 
-fn identity_name(value: &str) -> IdentityName {
+pub(super) fn identity_name(value: &str) -> IdentityName {
     IdentityName::parse(value).expect("identity name")
 }
 
-fn reference(
+pub(super) fn reference(
     owner: &IdentityOwner,
     key: IdentitySpecKey,
     fingerprint: &str,
@@ -502,7 +506,7 @@ fn spec(label: &str) -> IdentitySpecWrite {
     .expect("identity spec write")
 }
 
-fn document(label: &str) -> IdentityDocumentWrite {
+pub(super) fn document(label: &str) -> IdentityDocumentWrite {
     IdentityDocumentWrite::new(
         format!("cipher-{label}").into_bytes(),
         format!("nonce-{label}").into_bytes(),
