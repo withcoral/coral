@@ -29,6 +29,10 @@ use crate::state::db::{
 };
 use crate::workspaces::WorkspaceName;
 
+mod oauth_create_races;
+
+pub(crate) use oauth_create_races::assert_oauth_creation_race_contract;
+
 struct TestKeyProvider(Vec<CredentialEncryptionKey>);
 
 impl CredentialKeyProvider for TestKeyProvider {
@@ -520,7 +524,7 @@ async fn assert_concurrent_rewrap_race(
     let race = seed_user_use_race(db, suffix, "rewrap", old_key).await;
     let before_identity = load_pair(db, &race.owner, &race.name).await.1.unwrap();
     let old_provider = TestKeyProvider(vec![old_key.clone()]);
-    let before_spec = put_empty_spec_document(db, &race.key, &old_provider, 1).await;
+    let before_spec = put_spec_document(db, &race.key, &BTreeMap::new(), &old_provider, 1).await;
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let base = manager_with_keys(db, vec![old_key.clone(), new_key.clone()]);
     let left = base.clone().with_before_upsert_gate(Arc::clone(&barrier));
@@ -1381,16 +1385,16 @@ async fn delete_spec(db: &Arc<CoralDb>, key: &IdentitySpecKey) {
     tx.commit().await.unwrap();
 }
 
-async fn put_empty_spec_document(
+async fn put_spec_document(
     db: &Arc<CoralDb>,
     key: &IdentitySpecKey,
+    values: &BTreeMap<String, String>,
     key_provider: &dyn CredentialKeyProvider,
     now: i64,
 ) -> IdentitySpecDocumentRecord {
     let (scope_kind, scope_id, name) = key.document_aad_parts();
     let document =
-        encrypt_identity_spec_document(scope_kind, scope_id, name, &BTreeMap::new(), key_provider)
-            .unwrap();
+        encrypt_identity_spec_document(scope_kind, scope_id, name, values, key_provider).unwrap();
     let write = IdentitySpecDocumentWrite::new(
         document.ciphertext,
         document.nonce,

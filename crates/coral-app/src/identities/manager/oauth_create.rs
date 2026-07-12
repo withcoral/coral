@@ -69,7 +69,10 @@ impl IdentityManager {
     }
 
     /// Authorize and atomically create or replace one workspace-owned OAuth identity.
-    #[expect(dead_code, reason = "mounted by the follow-up service-surface PR")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "mounted by the follow-up service-surface PR")
+    )]
     pub(crate) async fn create_or_replace_workspace_oauth<E, EventFut>(
         &self,
         workspace: &WorkspaceName,
@@ -241,6 +244,10 @@ impl IdentityManager {
                 .identities()
                 .upsert(owner, name, &selected.reference, safe_metadata, now)
                 .await?;
+            #[cfg(test)]
+            if let Some(gate) = &self.before_write_gate {
+                gate.wait_once().await;
+            }
             tx.identity_documents()
                 .upsert(owner, name, document, now)
                 .await?;
