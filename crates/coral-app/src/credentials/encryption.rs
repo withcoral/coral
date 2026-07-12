@@ -217,7 +217,7 @@ impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
 
 pub(crate) fn configured_key_required() -> CredentialsError {
     CredentialsError::Unavailable(
-        "Postgres identity inputs require [credentials].encryption_key_env to provide a shared credential encryption key".to_string(),
+        "Postgres identity material requires [credentials].encryption_key_env to provide a shared credential encryption key".to_string(),
     )
 }
 

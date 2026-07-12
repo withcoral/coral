@@ -7,9 +7,11 @@
 
 use std::fs;
 
-use coral_client::local::ServerBuilder;
+use coral_api::v1::ListUserOwnedIdentitiesRequest;
+use coral_client::{AppClient, local::ServerBuilder};
 use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
+use tonic::Request;
 
 #[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run configured Postgres startup coverage"]
@@ -31,6 +33,16 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
         .start()
         .await
         .expect("start server with Postgres config");
+    let app = AppClient::connect(server.endpoint_uri())
+        .await
+        .expect("connect Postgres-backed client");
+    let identities = app
+        .identity_client()
+        .list_user_owned_identities(Request::new(ListUserOwnedIdentitiesRequest {}))
+        .await
+        .expect("keyless Postgres supports safe identity reads")
+        .into_inner();
+    assert!(identities.identities.is_empty());
     assert_postgres_db_is_migrated(&database_url).await;
 
     server.shutdown().await.expect("shutdown server");

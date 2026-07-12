@@ -16,6 +16,7 @@ use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
+use coral_api::v1::identity_service_server::IdentityServiceServer;
 use coral_api::v1::identity_spec_service_server::IdentitySpecServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
@@ -24,9 +25,9 @@ use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
-    IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
-    TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    IDENTITY_RESPONSE_MAX_MESSAGE_SIZE, IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE,
+    QUERY_RESPONSE_MAX_MESSAGE_SIZE, SEARCH_RESPONSE_MAX_MESSAGE_SIZE,
+    SOURCE_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -55,6 +56,8 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::identities::IdentityService;
+use crate::identities::manager::IdentityManager;
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::identity_specs::IdentitySpecService;
 use crate::identity_specs::manager::IdentitySpecManager;
@@ -293,14 +296,15 @@ impl ServerBuilder {
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_encryption_key = credential_encryption_key(&credential_config)?;
         let database_config = resolve_database_config(&layout)?;
-        let (identity_spec_key_provider, postgres_identity_inputs_disabled) =
-            identity_spec_key_provider(&layout, &database_config, credential_encryption_key);
+        let (identity_key_provider, postgres_identity_material_disabled) =
+            identity_key_provider(&layout, &database_config, credential_encryption_key);
         let coral_db = init_database(database_config).await?;
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store).await?;
         let coral_db = Arc::new(coral_db);
         let identity_spec_manager =
-            IdentitySpecManager::new(Arc::clone(&coral_db), identity_spec_key_provider);
+            IdentitySpecManager::new(Arc::clone(&coral_db), Arc::clone(&identity_key_provider));
+        let identity_manager = IdentityManager::new(Arc::clone(&coral_db), identity_key_provider);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -311,12 +315,12 @@ impl ServerBuilder {
             self.config.enable_stderr_logs,
             internal_trace_store_dir.clone(),
         )?;
-        if postgres_identity_inputs_disabled {
+        if postgres_identity_material_disabled {
             tracing::warn!(
                 backend = "postgres",
-                capability = "identity_inputs",
+                capability = "identity_material",
                 remediation = "[credentials].encryption_key_env",
-                "Postgres identity inputs are disabled until a shared credential encryption key is configured"
+                "Postgres identity material is disabled until a shared credential encryption key is configured"
             );
         }
         let active_trace_store = telemetry_config
@@ -373,6 +377,7 @@ impl ServerBuilder {
                 source: source_manager,
                 workspace: workspace_manager,
                 identity_spec: identity_spec_manager,
+                identity: identity_manager,
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -391,7 +396,7 @@ async fn init_database(database_config: ResolvedDatabaseConfig) -> Result<CoralD
     Ok(coral_db)
 }
 
-fn identity_spec_key_provider(
+fn identity_key_provider(
     layout: &AppStateLayout,
     database_config: &ResolvedDatabaseConfig,
     configured_key: Option<CredentialEncryptionKey>,
@@ -405,9 +410,9 @@ fn identity_spec_key_provider(
             Arc::new(ReloadingConfiguredKeyProvider(layout.clone()))
         }
     };
-    let postgres_identity_inputs_disabled =
+    let postgres_identity_material_disabled =
         matches!(database_config, ResolvedDatabaseConfig::Postgres { .. }) && !configured;
-    (provider, postgres_identity_inputs_disabled)
+    (provider, postgres_identity_material_disabled)
 }
 
 struct ReloadingConfiguredKeyProvider(AppStateLayout);
@@ -575,6 +580,7 @@ struct ServerManagers {
     source: SourceManager,
     workspace: WorkspaceManager,
     identity_spec: IdentitySpecManager,
+    identity: IdentityManager,
     query: QueryManager,
     search: SearchManager,
     feedback: FeedbackManager,
@@ -594,6 +600,7 @@ async fn start_server(
         source,
         workspace,
         identity_spec,
+        identity,
         query,
         search,
         feedback,
@@ -601,6 +608,7 @@ async fn start_server(
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let identity_spec_service = IdentitySpecService::new(identity_spec);
+    let identity_service = IdentityService::new(identity);
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
     let search_service = SearchService::new(search);
@@ -614,6 +622,10 @@ async fn start_server(
         .add_service(
             IdentitySpecServiceServer::new(identity_spec_service)
                 .max_encoding_message_size(IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE),
+        )
+        .add_service(
+            IdentityServiceServer::new(identity_service)
+                .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(
             CatalogServiceServer::new(catalog_service)
@@ -885,13 +897,13 @@ mod tests {
     use super::{
         RunningServer, ServerBuilder, ServerManagers, ServerMode, StaticAsset,
         StaticAssetsProvider, TraceServerComponents, credential_encryption_key,
-        identity_spec_key_provider, is_grpc_web_content_type, is_native_grpc_content_type,
-        start_server,
+        identity_key_provider, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::config::CredentialStorageConfig;
     use crate::credentials::encryption::LocalFileCredentialKeyProvider;
     use crate::credentials::{CredentialManager, CredentialStore, CredentialsError};
     use crate::feedback::manager::FeedbackManager;
+    use crate::identities::manager::IdentityManager;
     use crate::identity_specs::manager::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
@@ -1055,6 +1067,13 @@ enabled = false
         )
     }
 
+    fn test_identity_manager(layout: &AppStateLayout, db: &Arc<CoralDb>) -> IdentityManager {
+        IdentityManager::new(
+            Arc::clone(db),
+            Arc::new(LocalFileCredentialKeyProvider::new(layout, None)),
+        )
+    }
+
     #[tokio::test]
     async fn trace_service_is_unregistered_when_local_store_is_disabled() {
         let temp = TempDir::new().expect("temp dir");
@@ -1115,7 +1134,7 @@ backend = "unsupported"
     }
 
     #[tokio::test]
-    async fn server_builder_rejects_invalid_explicit_identity_spec_key() {
+    async fn server_builder_rejects_invalid_explicit_identity_key() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
@@ -1141,7 +1160,7 @@ backend = "unsupported"
     }
 
     #[test]
-    fn postgres_identity_spec_key_provider_reloads_config_and_never_falls_back() {
+    fn postgres_identity_key_provider_reloads_config_and_never_falls_back() {
         const RUN_FLAG: &str = "CORAL_RUN_POSTGRES_KEY_RELOAD_TEST";
         const KEY_ENV: &str = "CORAL_TEST_POSTGRES_IDENTITY_KEY";
         const KEY_VALUE: &str = "v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -1156,7 +1175,7 @@ backend = "unsupported"
                     .env(KEY_ENV, KEY_VALUE)
                     .arg("--exact")
                     .arg(
-                        "bootstrap::server::tests::postgres_identity_spec_key_provider_reloads_config_and_never_falls_back",
+                        "bootstrap::server::tests::postgres_identity_key_provider_reloads_config_and_never_falls_back",
                     )
                     .arg("--nocapture")
                     .status()
@@ -1180,7 +1199,7 @@ backend = "unsupported"
         .expect("resolve configured key")
         .expect("configured key");
         let configured_key_id = configured_key.key_id().to_string();
-        let (provider, disabled) = identity_spec_key_provider(
+        let (provider, disabled) = identity_key_provider(
             &layout,
             &ResolvedDatabaseConfig::Postgres {
                 url: "postgres://unused".to_string(),
@@ -1292,6 +1311,7 @@ backend = "unsupported"
                 source: source_manager,
                 workspace: workspace_manager,
                 identity_spec: test_identity_spec_manager(&layout, &db),
+                identity: test_identity_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -1721,6 +1741,7 @@ tables:
                 source: source_manager,
                 workspace: workspace_manager,
                 identity_spec: test_identity_spec_manager(&layout, &db),
+                identity: test_identity_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -1837,6 +1858,7 @@ tables:
                 source: source_manager,
                 workspace: workspace_manager,
                 identity_spec: test_identity_spec_manager(&layout, &db),
+                identity: test_identity_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,
@@ -1953,6 +1975,7 @@ tables:
                 source: source_manager,
                 workspace: workspace_manager,
                 identity_spec: test_identity_spec_manager(&layout, &db),
+                identity: test_identity_manager(&layout, &db),
                 query: query_manager,
                 search: search_manager,
                 feedback: feedback_manager,

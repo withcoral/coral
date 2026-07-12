@@ -1,13 +1,5 @@
 //! Database-backed identity instance management.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "B4h wires identity managers into public services."
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(test)]
@@ -126,6 +118,10 @@ impl IdentityManager {
     }
 
     /// Create or replace a workspace-owned fixed-token identity using workspace-first resolution.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "B4i wires the workspace identity service.")
+    )]
     pub(crate) async fn create_or_replace_workspace_fixed_token(
         &self,
         workspace: &WorkspaceName,
