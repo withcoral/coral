@@ -103,6 +103,8 @@ pub(crate) struct IdentityManager {
     #[cfg(test)]
     before_upsert_gate: Option<BeforeUpsertGate>,
     #[cfg(test)]
+    before_use_cas_gate: Option<BeforeWriteGate>,
+    #[cfg(test)]
     before_retry_gate: Option<BeforeWriteGate>,
 }
 
@@ -148,6 +150,8 @@ impl IdentityManager {
             #[cfg(test)]
             before_upsert_gate: None,
             #[cfg(test)]
+            before_use_cas_gate: None,
+            #[cfg(test)]
             before_retry_gate: None,
         }
     }
@@ -170,6 +174,20 @@ impl IdentityManager {
     pub(crate) fn with_before_upsert_gate(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
         self.before_upsert_gate = Some(BeforeUpsertGate {
             barrier,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_use_cas_gate(
+        mut self,
+        selected: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_use_cas_gate = Some(BeforeWriteGate {
+            selected,
+            resume,
             used: Arc::new(AtomicBool::new(false)),
         });
         self
@@ -359,6 +377,12 @@ impl IdentityManager {
                 prepare_identity_for_use(crypto_snapshot, &crypto_name, key_provider.as_ref())
             })
             .await?;
+            #[cfg(test)]
+            if prepared.needs_rewrap()
+                && let Some(gate) = &self.before_use_cas_gate
+            {
+                gate.wait_once().await;
+            }
             let revision = if prepared.needs_rewrap() {
                 match self
                     .try_rewrap_for_use(owner, &name, &snapshot, &prepared)

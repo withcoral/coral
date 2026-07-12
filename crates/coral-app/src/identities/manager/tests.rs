@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,7 +7,7 @@ use coral_spec::parse_identity_manifest_yaml;
 use sea_query::{Alias, Expr, ExprTrait, Query};
 use tempfile::tempdir;
 
-use super::IdentityManager;
+use super::{IdentityManager, ResolvedIdentityForUse};
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
@@ -14,12 +16,13 @@ use crate::credentials::encryption::{
 use crate::identities::model::{IdentityName, IdentityOwner};
 use crate::identity::{
     IDENTITY_DOCUMENT_AAD_VERSION, IdentityDocumentBinding, UserPrincipal,
-    decrypt_identity_document,
+    decrypt_identity_document, encrypt_identity_spec_document,
 };
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::state::db::{
-    CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey,
-    IdentitySpecWrite, ResolvedDatabaseConfig,
+    CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityRecord,
+    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecWrite,
+    ResolvedDatabaseConfig,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -58,6 +61,7 @@ async fn sqlite_fixed_token_manager_contract() {
 
 pub(crate) async fn assert_fixed_token_manager_contract(db: &Arc<CoralDb>) {
     Box::pin(assert_fixed_token_for_use_contract(db)).await;
+    Box::pin(assert_fixed_token_for_use_race_contract(db)).await;
     Box::pin(assert_user_global_fixed_token_manager_contract(db)).await;
     Box::pin(assert_workspace_fixed_token_manager_contract(db)).await;
 }
@@ -159,6 +163,256 @@ async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
             if detail.contains("orphaned") && detail.contains("restore")
     ));
     assert_eq!(rotated.get(&owner, &identity_name).await.unwrap(), created);
+}
+
+async fn assert_fixed_token_for_use_race_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([63; 32]);
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([64; 32]);
+    Box::pin(assert_use_replacement_race(db, &suffix, &old_key, &new_key)).await;
+    assert_use_delete_recreate_race(db, &suffix, &old_key, &new_key).await;
+    assert_use_spec_mutation_race(db, &suffix, &old_key, &new_key).await;
+    Box::pin(assert_concurrent_rewrap_race(
+        db, &suffix, &old_key, &new_key,
+    ))
+    .await;
+}
+
+struct UserUseRace {
+    principal: UserPrincipal,
+    owner: IdentityOwner,
+    name: String,
+    key: IdentitySpecKey,
+}
+
+async fn seed_user_use_race(
+    db: &Arc<CoralDb>,
+    suffix: &str,
+    label: &str,
+    old_key: &CredentialEncryptionKey,
+) -> UserUseRace {
+    let name = format!("use_{label}_{suffix}");
+    let key = IdentitySpecKey::global(&name).unwrap();
+    let principal = UserPrincipal::for_user(&format!("{label}-{suffix}")).unwrap();
+    let owner = IdentityOwner::for_user(principal.clone());
+    put_spec(db, &key, &fixed_manifest(&name, "race")).await;
+    manager_with_keys(db, vec![old_key.clone()])
+        .create_or_replace_user_fixed_token(&principal, &name, &name, "stale-token".into())
+        .await
+        .expect("seed identity-use race");
+    UserUseRace {
+        principal,
+        owner,
+        name,
+        key,
+    }
+}
+
+fn manager_with_keys(db: &Arc<CoralDb>, keys: Vec<CredentialEncryptionKey>) -> IdentityManager {
+    IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(keys)))
+}
+
+async fn race_before_use_cas<T, F, Fut>(
+    manager: IdentityManager,
+    owner: &IdentityOwner,
+    name: &str,
+    mutate: F,
+) -> (Result<ResolvedIdentityForUse, AppError>, T)
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager.with_before_use_cas_gate(selected.clone(), resume.clone());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(gated.get_for_use(owner, name), async {
+            selected.wait().await;
+            let result = mutate().await;
+            resume.wait().await;
+            result
+        })
+    })
+    .await
+    .expect("identity-use race must not deadlock")
+}
+
+async fn assert_use_replacement_race(
+    db: &Arc<CoralDb>,
+    suffix: &str,
+    old_key: &CredentialEncryptionKey,
+    new_key: &CredentialEncryptionKey,
+) {
+    let race = seed_user_use_race(db, suffix, "replace", old_key).await;
+    let replacement_spec = format!("{}_winner", race.name);
+    let replacement_key = IdentitySpecKey::global(&replacement_spec).unwrap();
+    put_spec(
+        db,
+        &replacement_key,
+        &fixed_manifest(&replacement_spec, "winner"),
+    )
+    .await;
+    let writer = manager_with_keys(db, vec![old_key.clone()]);
+    let (resolved, replacement) = race_before_use_cas(
+        manager_with_keys(db, vec![old_key.clone(), new_key.clone()]),
+        &race.owner,
+        &race.name,
+        || {
+            writer.create_or_replace_user_fixed_token(
+                &race.principal,
+                &race.name,
+                &replacement_spec,
+                "winner-token".into(),
+            )
+        },
+    )
+    .await;
+    replacement.expect("concurrent replacement");
+    let resolved = resolved.expect("replacement race resolution");
+    assert_use_token(&resolved, "winner-token");
+    assert_eq!(resolved.identity.spec_reference.key(), &replacement_key);
+    assert_identity_document(db, &race.owner, &race.name, 3, new_key).await;
+    let reopened =
+        assert_reopens_without_repair(db, &race.owner, &race.name, new_key, "winner-token").await;
+    assert_eq!(reopened.identity.spec_reference.key(), &replacement_key);
+}
+
+async fn assert_use_delete_recreate_race(
+    db: &Arc<CoralDb>,
+    suffix: &str,
+    old_key: &CredentialEncryptionKey,
+    new_key: &CredentialEncryptionKey,
+) {
+    let race = seed_user_use_race(db, suffix, "recreate", old_key).await;
+    let writer = manager_with_keys(db, vec![old_key.clone()]);
+    let (resolved, recreated) = race_before_use_cas(
+        manager_with_keys(db, vec![old_key.clone(), new_key.clone()]),
+        &race.owner,
+        &race.name,
+        || async {
+            writer.delete(&race.owner, &race.name).await.unwrap();
+            writer
+                .create_or_replace_user_fixed_token(
+                    &race.principal,
+                    &race.name,
+                    &race.name,
+                    "winner-token".into(),
+                )
+                .await
+        },
+    )
+    .await;
+    recreated.expect("concurrent delete/recreate");
+    assert_use_token(&resolved.expect("ABA race resolution"), "winner-token");
+    assert_identity_document(db, &race.owner, &race.name, 2, new_key).await;
+    assert_reopens_without_repair(db, &race.owner, &race.name, new_key, "winner-token").await;
+}
+
+async fn assert_use_spec_mutation_race(
+    db: &Arc<CoralDb>,
+    suffix: &str,
+    old_key: &CredentialEncryptionKey,
+    new_key: &CredentialEncryptionKey,
+) {
+    let race = seed_user_use_race(db, suffix, "spec", old_key).await;
+    let before = load_pair(db, &race.owner, &race.name).await.1.unwrap();
+    let (resolved, ()) = race_before_use_cas(
+        manager_with_keys(db, vec![old_key.clone(), new_key.clone()]),
+        &race.owner,
+        &race.name,
+        || async {
+            let changed = fixed_manifest(&race.name, "changed");
+            put_spec(db, &race.key, &changed).await;
+        },
+    )
+    .await;
+    assert!(matches!(
+        resolved,
+        Err(AppError::FailedPrecondition(detail)) if detail.contains("no longer matches")
+    ));
+    assert_eq!(
+        load_pair(db, &race.owner, &race.name).await.1.unwrap(),
+        before
+    );
+}
+
+async fn assert_concurrent_rewrap_race(
+    db: &Arc<CoralDb>,
+    suffix: &str,
+    old_key: &CredentialEncryptionKey,
+    new_key: &CredentialEncryptionKey,
+) {
+    let race = seed_user_use_race(db, suffix, "rewrap", old_key).await;
+    let before_identity = load_pair(db, &race.owner, &race.name).await.1.unwrap();
+    let old_provider = TestKeyProvider(vec![old_key.clone()]);
+    let before_spec = put_empty_spec_document(db, &race.key, &old_provider, 1).await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let base = manager_with_keys(db, vec![old_key.clone(), new_key.clone()]);
+    let left = base.clone().with_before_upsert_gate(Arc::clone(&barrier));
+    let right = base.with_before_upsert_gate(barrier);
+    let (left, right) = Box::pin(tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            left.get_for_use(&race.owner, &race.name),
+            right.get_for_use(&race.owner, &race.name),
+        )
+    }))
+    .await
+    .expect("concurrent rewrap must not deadlock");
+    assert_use_token(&left.expect("left rewrap"), "stale-token");
+    assert_use_token(&right.expect("right rewrap"), "stale-token");
+    let after_identity = assert_identity_document(db, &race.owner, &race.name, 2, new_key).await;
+    assert_eq!(after_identity.ciphertext, before_identity.ciphertext);
+    assert_eq!(after_identity.nonce, before_identity.nonce);
+    assert_ne!(after_identity.wrapped_dek, before_identity.wrapped_dek);
+    assert_ne!(
+        after_identity.wrapped_dek_nonce,
+        before_identity.wrapped_dek_nonce
+    );
+    let after_spec = load_spec_document(db, &race.key).await;
+    assert_eq!(after_spec.document_version, 2);
+    assert_eq!(after_spec.key_id, new_key.key_id());
+    assert_eq!(after_spec.ciphertext, before_spec.ciphertext);
+    assert_eq!(after_spec.nonce, before_spec.nonce);
+    assert_ne!(after_spec.wrapped_dek, before_spec.wrapped_dek);
+    assert_ne!(after_spec.wrapped_dek_nonce, before_spec.wrapped_dek_nonce);
+    assert_reopens_without_repair(db, &race.owner, &race.name, new_key, "stale-token").await;
+    assert_eq!(load_spec_document(db, &race.key).await, after_spec);
+}
+
+fn assert_use_token(resolved: &ResolvedIdentityForUse, token: &str) {
+    assert_eq!(resolved.material().get("TOKEN").unwrap(), token);
+}
+
+async fn assert_identity_document(
+    db: &Arc<CoralDb>,
+    owner: &IdentityOwner,
+    name: &str,
+    version: i64,
+    key: &CredentialEncryptionKey,
+) -> IdentityDocumentRecord {
+    let document = load_pair(db, owner, name).await.1.unwrap();
+    assert_eq!(document.document_version, version);
+    assert_eq!(document.key_id, key.key_id());
+    document
+}
+
+async fn assert_reopens_without_repair(
+    db: &Arc<CoralDb>,
+    owner: &IdentityOwner,
+    name: &str,
+    key: &CredentialEncryptionKey,
+    token: &str,
+) -> ResolvedIdentityForUse {
+    let before = load_pair(db, owner, name).await;
+    let resolved = manager_with_keys(db, vec![key.clone()])
+        .get_for_use(owner, name)
+        .await
+        .expect("reopen raced identity with only the new key");
+    assert_use_token(&resolved, token);
+    assert!(resolved.identity_spec.inputs.variables().is_empty());
+    assert!(resolved.identity_spec.inputs.secrets().is_empty());
+    assert_eq!(load_pair(db, owner, name).await, before);
+    resolved
 }
 
 #[expect(
@@ -950,6 +1204,48 @@ async fn delete_spec(db: &Arc<CoralDb>, key: &IdentitySpecKey) {
     let mut tx = db.begin().await.unwrap();
     assert!(tx.identity_specs().delete(key).await.unwrap());
     tx.commit().await.unwrap();
+}
+
+async fn put_empty_spec_document(
+    db: &Arc<CoralDb>,
+    key: &IdentitySpecKey,
+    key_provider: &dyn CredentialKeyProvider,
+    now: i64,
+) -> IdentitySpecDocumentRecord {
+    let (scope_kind, scope_id, name) = key.document_aad_parts();
+    let document =
+        encrypt_identity_spec_document(scope_kind, scope_id, name, &BTreeMap::new(), key_provider)
+            .unwrap();
+    let write = IdentitySpecDocumentWrite::new(
+        document.ciphertext,
+        document.nonce,
+        document.wrapped_dek,
+        document.wrapped_dek_nonce,
+        document.key_id,
+        document.algorithm,
+        document.aad_version,
+    )
+    .unwrap();
+    let mut tx = db.begin().await.unwrap();
+    let record = tx
+        .identity_spec_documents()
+        .upsert(key, &write, now)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    record
+}
+
+async fn load_spec_document(
+    db: &Arc<CoralDb>,
+    key: &IdentitySpecKey,
+) -> IdentitySpecDocumentRecord {
+    let mut db = db.as_ref();
+    db.identity_spec_documents()
+        .load_optional(key)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 async fn set_identity_aad_version(
