@@ -45,6 +45,17 @@ impl<'a> CoralTx<'a> {
         Ok(tx)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn disable_sqlite_busy_wait(&mut self) -> Result<bool, DbError> {
+        let CoralTxBackend::Sqlite(sqlite) = &mut self.backend else {
+            return Ok(false);
+        };
+        sqlx::query("PRAGMA busy_timeout = 0")
+            .execute(&mut **sqlite)
+            .await?;
+        Ok(true)
+    }
+
     pub(crate) async fn commit(self) -> Result<(), DbError> {
         match self.backend {
             CoralTxBackend::Sqlite(tx) => tx.commit().await?,

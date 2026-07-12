@@ -14,8 +14,8 @@ use crate::identities::model::{IdentityName, IdentityOwner};
 use crate::identity::{UserPrincipal, decrypt_identity_document};
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::state::db::{
-    CoralDb, DbRepos, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey, IdentitySpecWrite,
-    ResolvedDatabaseConfig,
+    CoralDb, DbError, DbRepos, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey,
+    IdentitySpecWrite, ResolvedDatabaseConfig,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -53,8 +53,8 @@ async fn sqlite_fixed_token_manager_contract() {
 }
 
 pub(crate) async fn assert_fixed_token_manager_contract(db: &Arc<CoralDb>) {
-    assert_user_global_fixed_token_manager_contract(db).await;
-    assert_workspace_fixed_token_manager_contract(db).await;
+    Box::pin(assert_user_global_fixed_token_manager_contract(db)).await;
+    Box::pin(assert_workspace_fixed_token_manager_contract(db)).await;
 }
 
 #[expect(
@@ -683,7 +683,110 @@ async fn assert_workspace_fixed_token_manager_contract(db: &Arc<CoralDb>) {
             .await,
         Err(AppError::WorkspaceNotFound(name)) if name == retry_workspace.as_str()
     ));
-    assert_eq!(manager.list_for_owner(&owner).await.unwrap().len(), 4);
+
+    let atomic_delete_name = format!("delete-retry-{suffix}");
+    manager
+        .create_or_replace_workspace_fixed_token(
+            &retry_workspace,
+            &atomic_delete_name,
+            &fallback,
+            "delete-token".into(),
+        )
+        .await
+        .expect("create identity for delete race");
+    assert_workspace_delete_race(db, &manager, &retry_workspace, &atomic_delete_name).await;
+    assert_workspace_list_race(db, &manager, &workspace, &owner).await;
+}
+
+async fn assert_workspace_list_race(
+    db: &Arc<CoralDb>,
+    manager: &IdentityManager,
+    workspace: &WorkspaceName,
+    owner: &IdentityOwner,
+) {
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(selected.clone(), resume.clone());
+    let (listed, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(gated.list_for_owner(owner), async {
+            selected.wait().await;
+            let mut tx = db.begin().await.expect("begin concurrent workspace delete");
+            let sqlite = tx
+                .disable_sqlite_busy_wait()
+                .await
+                .expect("configure concurrent workspace delete");
+            tx.workspaces()
+                .delete(workspace.as_str())
+                .await
+                .expect("stage concurrent workspace delete");
+            let commit = tx.commit().await;
+            if sqlite {
+                assert!(matches!(
+                    commit,
+                    Err(DbError::RetryableTransactionConflict(_))
+                ));
+            } else {
+                commit.expect("commit concurrent Postgres workspace delete");
+            }
+            resume.wait().await;
+        })
+    })
+    .await
+    .expect("workspace list/delete race must not deadlock");
+    assert_eq!(listed.expect("list from one workspace snapshot").len(), 4);
+}
+
+async fn assert_workspace_delete_race(
+    db: &Arc<CoralDb>,
+    manager: &IdentityManager,
+    workspace: &WorkspaceName,
+    identity: &str,
+) {
+    let selected = Arc::new(tokio::sync::Barrier::new(2));
+    let resume_write = Arc::new(tokio::sync::Barrier::new(2));
+    let retry_reached = Arc::new(tokio::sync::Barrier::new(2));
+    let resume_retry = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(selected.clone(), resume_write.clone())
+        .with_before_retry_gate(retry_reached.clone(), resume_retry.clone());
+    let owner = IdentityOwner::workspace(workspace.clone());
+    let (deleted, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(gated.delete(&owner, identity), async {
+            selected.wait().await;
+            let mut tx = db.begin().await.expect("begin raced workspace delete");
+            let sqlite = tx
+                .disable_sqlite_busy_wait()
+                .await
+                .expect("configure raced workspace delete");
+            tx.workspaces()
+                .delete(workspace.as_str())
+                .await
+                .expect("stage raced workspace delete");
+            if sqlite {
+                resume_write.wait().await;
+                retry_reached.wait().await;
+                tx.commit()
+                    .await
+                    .expect("commit raced SQLite workspace delete");
+            } else {
+                tx.commit()
+                    .await
+                    .expect("commit raced Postgres workspace delete");
+                resume_write.wait().await;
+                retry_reached.wait().await;
+            }
+            resume_retry.wait().await;
+        })
+    })
+    .await
+    .expect("workspace identity delete race must not deadlock");
+    assert!(matches!(
+        deleted,
+        Err(AppError::WorkspaceNotFound(name)) if name == workspace.as_str()
+    ));
 }
 
 async fn put_workspace(db: &Arc<CoralDb>, workspace: &WorkspaceName) {

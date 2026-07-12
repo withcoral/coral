@@ -40,6 +40,17 @@ pub(crate) struct IdentityManager {
 struct BeforeWriteGate {
     selected: Arc<tokio::sync::Barrier>,
     resume: Arc<tokio::sync::Barrier>,
+    used: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+impl BeforeWriteGate {
+    async fn wait_once(&self) {
+        if !self.used.swap(true, Ordering::SeqCst) {
+            self.selected.wait().await;
+            self.resume.wait().await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -76,7 +87,11 @@ impl IdentityManager {
         selected: Arc<tokio::sync::Barrier>,
         resume: Arc<tokio::sync::Barrier>,
     ) -> Self {
-        self.before_write_gate = Some(BeforeWriteGate { selected, resume });
+        self.before_write_gate = Some(BeforeWriteGate {
+            selected,
+            resume,
+            used: Arc::new(AtomicBool::new(false)),
+        });
         self
     }
 
@@ -98,6 +113,7 @@ impl IdentityManager {
         self.before_retry_gate = Some(BeforeWriteGate {
             selected: reached,
             resume,
+            used: Arc::new(AtomicBool::new(false)),
         });
         self
     }
@@ -220,6 +236,10 @@ impl IdentityManager {
     ) -> Result<Vec<IdentityRecord>, AppError> {
         let mut tx = self.db.begin_read_snapshot().await?;
         owner_workspace_created_at(&mut tx, owner).await?;
+        #[cfg(test)]
+        if let Some(gate) = &self.before_write_gate {
+            gate.wait_once().await;
+        }
         let records = tx.identities().list_for_owner(owner).await?;
         tx.commit().await?;
         Ok(records)
@@ -255,6 +275,10 @@ impl IdentityManager {
             match self.try_delete(owner, identity_name).await {
                 Ok(()) => return Ok(()),
                 Err(AppError::RetryableTransactionConflict) => {
+                    #[cfg(test)]
+                    if let Some(gate) = &self.before_retry_gate {
+                        gate.wait_once().await;
+                    }
                     tokio::task::yield_now().await;
                 }
                 Err(error) => return Err(error),
@@ -266,6 +290,10 @@ impl IdentityManager {
     async fn try_delete(&self, owner: &IdentityOwner, identity_name: &str) -> Result<(), AppError> {
         let mut tx = self.db.begin_serializable().await?;
         owner_workspace_created_at(&mut tx, owner).await?;
+        #[cfg(test)]
+        if let Some(gate) = &self.before_write_gate {
+            gate.wait_once().await;
+        }
         let name = IdentityName::parse(identity_name)?;
         let deleted = match tx.identities().delete(owner, &name).await {
             Ok(deleted) => deleted,
