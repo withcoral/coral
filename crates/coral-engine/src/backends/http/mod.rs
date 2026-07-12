@@ -123,8 +123,11 @@ impl CompiledBackendSource for HttpCompiledSource {
         registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
         let credential_safe = self.manifest.common.dsl_version == 4;
-        let http =
-            client::default_http_client(registration, &self.manifest.common.name, credential_safe)?;
+        let http = client::default_http_clients(
+            registration,
+            &self.manifest.common.name,
+            credential_safe,
+        )?;
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),

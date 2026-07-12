@@ -18,6 +18,7 @@ use crate::backends::http::auth::{
     ensure_auth_uses_credential_safe_transport, request_requires_credential_safe_transport,
     resolve_auth_headers,
 };
+use crate::backends::http::client::HttpClients;
 use crate::backends::http::error::provider_error;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
@@ -70,7 +71,7 @@ pub(super) struct DecodedHttpResponse {
     reason = "HTTP request execution keeps retry, auth, logging, and response handling in one audited flow"
 )]
 pub(super) async fn execute_request(
-    http: &reqwest::Client,
+    http: &HttpClients,
     request_timeout: Duration,
     request: OutgoingHttpRequest<'_>,
 ) -> Result<Option<DecodedHttpResponse>> {
@@ -104,7 +105,7 @@ pub(super) async fn execute_request(
     let mut decode_retries = 0usize;
     loop {
         let method_label = http_method_label(method);
-        let mut request = build_http_request(http, method, url);
+        let mut request = build_http_request(http.proxy_aware(), method, url);
 
         let mut header_map = HeaderMap::new();
         for header in request_headers.iter().chain(table_headers.iter()) {
@@ -202,7 +203,7 @@ pub(super) async fn execute_request(
         }
 
         body_capture.record_request(&request_span, request_id, body);
-        let mut built = match resolve_auth_headers(
+        let (mut built, has_auth_headers) = match resolve_auth_headers(
             auth,
             request,
             request_authenticators,
@@ -222,6 +223,14 @@ pub(super) async fn execute_request(
             record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
             return Err(error);
         }
+        if require_credential_safe_auth_transport
+            && request_identity_http_authenticator.is_some()
+            && let Err(error) = ensure_auth_uses_credential_safe_transport(built.url())
+        {
+            record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+            return Err(error);
+        }
+        let mut has_identity_headers = false;
         if let Some(authenticator) = request_identity_http_authenticator {
             let identity_headers = match authenticator(&built, render_context.resolved_inputs).await
             {
@@ -233,8 +242,9 @@ pub(super) async fn execute_request(
                     return Err(error);
                 }
             };
+            has_identity_headers = !identity_headers.is_empty();
             if require_credential_safe_auth_transport
-                && !identity_headers.is_empty()
+                && has_identity_headers
                 && let Err(error) = ensure_auth_uses_credential_safe_transport(built.url())
             {
                 record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
@@ -249,7 +259,21 @@ pub(super) async fn execute_request(
                 built.headers_mut().insert(name, value);
             }
         }
-        let response = match http.execute(built).instrument(request_span.clone()).await {
+        let credential_bearing = has_auth_headers
+            || has_identity_headers
+            || request_requires_credential_safe_transport(&built, has_authored_headers);
+        let request_http = match http.for_request(built.url(), credential_bearing) {
+            Ok(http) => http,
+            Err(error) => {
+                record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                return Err(error);
+            }
+        };
+        let response = match request_http
+            .execute(built)
+            .instrument(request_span.clone())
+            .await
+        {
             Ok(response) => response,
             Err(error) => {
                 record_http_processing_error(
@@ -526,14 +550,18 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+    use wiremock::MockServer;
 
     use super::{OutgoingHttpRequest as TestOutgoingHttpRequest, execute_request};
     use crate::backends::http::ProviderQueryError;
+    use crate::backends::http::client::HttpClients;
     use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
     use crate::{BoundRequestIdentityHttpAuthenticator, RequestIdentityHttpAuthenticatorError};
     use coral_spec::backends::http::RateLimitSpec;
-    use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat, ValueSourceSpec};
+    use coral_spec::{
+        AuthSpec, HeaderAuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat, ValueSourceSpec,
+    };
 
     async fn spawn_hanging_http_server() -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -587,10 +615,12 @@ mod tests {
     async fn execute_request_times_out_when_upstream_stalls() {
         let (base_url, task) = spawn_hanging_http_server().await;
         let request_timeout = Duration::from_millis(100);
-        let http = reqwest::Client::builder()
-            .timeout(request_timeout)
-            .build()
-            .expect("build test client");
+        let http = HttpClients::legacy(
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .build()
+                .expect("build test client"),
+        );
         let url = format!("{base_url}/items");
         let query_pairs = vec![("api_key".to_string(), "secret-token".to_string())];
         let filters = HashMap::new();
@@ -662,10 +692,12 @@ mod tests {
     #[tokio::test]
     async fn request_identity_headers_cannot_overwrite_existing_headers() {
         let request_timeout = Duration::from_secs(1);
-        let http = reqwest::Client::builder()
-            .timeout(request_timeout)
-            .build()
-            .expect("build test client");
+        let http = HttpClients::legacy(
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .build()
+                .expect("build test client"),
+        );
         let base_url = "https://api.example.test";
         let url = format!("{base_url}/items");
         let filters = HashMap::new();
@@ -733,11 +765,22 @@ mod tests {
     #[tokio::test]
     async fn request_identity_headers_are_injected() {
         let (base_url, task) = spawn_header_recorder(r#"{"ok":true}"#).await;
+        let proxy = MockServer::start().await;
         let request_timeout = Duration::from_secs(1);
-        let http = reqwest::Client::builder()
-            .timeout(request_timeout)
-            .build()
-            .expect("build test client");
+        let http = HttpClients::credential_safe(
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .proxy(reqwest::Proxy::all(proxy.uri()).expect("proxy URL"))
+                .build()
+                .expect("build proxy-aware client"),
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .build()
+                .expect("build direct client"),
+        );
         let url = format!("{base_url}/items");
         let filters = HashMap::new();
         let args = HashMap::new();
@@ -786,6 +829,91 @@ mod tests {
         assert!(
             raw_request.contains("\r\nx-identity-token: identity-token\r\n"),
             "{raw_request}"
+        );
+        assert!(
+            proxy
+                .received_requests()
+                .await
+                .expect("proxy request recording")
+                .is_empty(),
+            "the loopback identity request and token must bypass the proxy"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_authorization_auth_headers_bypass_a_hostile_proxy() {
+        let (base_url, task) = spawn_header_recorder(r#"{"ok":true}"#).await;
+        let proxy = MockServer::start().await;
+        let request_timeout = Duration::from_secs(1);
+        let http = HttpClients::credential_safe(
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .proxy(reqwest::Proxy::all(proxy.uri()).expect("proxy URL"))
+                .build()
+                .expect("build proxy-aware client"),
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .build()
+                .expect("build direct client"),
+        );
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let auth = AuthSpec::HeaderAuth(HeaderAuthSpec {
+            headers: vec![HeaderSpec {
+                name: "X-Api-Key".to_string(),
+                value: ValueSourceSpec::Literal {
+                    value: serde_json::Value::String("runtime-secret".to_string()),
+                },
+            }],
+        });
+
+        let response = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &auth,
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                require_credential_safe_auth_transport: true,
+                request_identity_http_authenticator: None,
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect("API-key request should succeed");
+
+        assert!(response.is_some());
+        let raw_request = task.await.expect("header recorder should finish");
+        assert!(
+            raw_request.contains("\r\nx-api-key: runtime-secret\r\n"),
+            "{raw_request}"
+        );
+        assert!(
+            proxy
+                .received_requests()
+                .await
+                .expect("proxy request recording")
+                .is_empty(),
+            "the loopback API-key request and credential must bypass the proxy"
         );
     }
 }

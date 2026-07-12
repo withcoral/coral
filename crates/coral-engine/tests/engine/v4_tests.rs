@@ -335,6 +335,14 @@ async fn v4_identity_http_authenticator_rejects_non_loopback_plain_http() {
         "{message}"
     );
     assert!(message.contains("http://api.example.test"), "{message}");
+    assert!(
+        observed
+            .lock()
+            .expect("observed identity lock")
+            .authentications
+            .is_empty(),
+        "unsafe transport must fail before requesting identity headers"
+    );
 }
 #[tokio::test]
 async fn v4_identity_requirements_fail_closed_without_selector() {

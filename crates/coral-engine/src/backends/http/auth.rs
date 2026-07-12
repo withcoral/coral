@@ -113,7 +113,7 @@ pub(crate) fn resolve_auth_headers(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     resolved_inputs: &BTreeMap<String, String>,
     require_credential_safe_transport: bool,
-) -> Result<reqwest::Request> {
+) -> Result<(reqwest::Request, bool)> {
     let mut built = request.build().map_err(|error| {
         DataFusionError::Execution(format!("failed to build HTTP request: {error}"))
     })?;
@@ -127,13 +127,14 @@ pub(crate) fn resolve_auth_headers(
                 .map_err(|error| authenticator_error(&spec.authenticator, &error))
         }
     }?;
-    if require_credential_safe_transport && !headers.is_empty() {
+    let has_auth_headers = !headers.is_empty();
+    if require_credential_safe_transport && has_auth_headers {
         ensure_auth_uses_credential_safe_transport(built.url())?;
     }
     for (name, value) in headers {
         built.headers_mut().insert(name, value);
     }
-    Ok(built)
+    Ok((built, has_auth_headers))
 }
 
 pub(super) fn ensure_auth_uses_credential_safe_transport(url: &reqwest::Url) -> Result<()> {
@@ -227,6 +228,7 @@ mod tests {
             &resolved_inputs,
             require_credential_safe_transport,
         )
+        .map(|(request, _)| request)
     }
 
     #[test]
@@ -306,6 +308,35 @@ mod tests {
         assert_eq!(
             built.headers().get(reqwest::header::AUTHORIZATION),
             Some(&HeaderValue::from_static("Bearer secret"))
+        );
+    }
+
+    #[test]
+    fn non_authorization_auth_headers_are_classified_as_credentials() {
+        let http = reqwest::Client::new();
+        let auth = AuthSpec::HeaderAuth(HeaderAuthSpec {
+            headers: vec![HeaderSpec {
+                name: "X-Api-Key".to_string(),
+                value: ValueSourceSpec::Template {
+                    template: ParsedTemplate::parse("{{input.API_TOKEN}}").expect("auth template"),
+                },
+            }],
+        });
+        let resolved_inputs = BTreeMap::from([("API_TOKEN".to_string(), "secret".to_string())]);
+
+        let (request, has_auth_headers) = resolve_auth_headers(
+            &auth,
+            http.get("https://api.example.test/items"),
+            &HashMap::new(),
+            &resolved_inputs,
+            true,
+        )
+        .expect("API key auth request");
+
+        assert!(has_auth_headers);
+        assert_eq!(
+            request.headers().get("x-api-key"),
+            Some(&HeaderValue::from_static("secret"))
         );
     }
 }

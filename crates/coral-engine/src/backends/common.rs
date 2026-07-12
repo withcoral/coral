@@ -141,8 +141,9 @@ pub(crate) struct BackendCompileRequest<'a> {
 /// runtime build.
 #[derive(Default)]
 pub(crate) struct BackendRegistrationContext {
-    default_http_client: OnceLock<Result<reqwest::Client, String>>,
-    credential_safe_http_client: OnceLock<Result<reqwest::Client, String>>,
+    default: OnceLock<Result<reqwest::Client, String>>,
+    credential_safe: OnceLock<Result<reqwest::Client, String>>,
+    direct_credential_safe: OnceLock<Result<reqwest::Client, String>>,
 }
 
 impl BackendRegistrationContext {
@@ -152,11 +153,22 @@ impl BackendRegistrationContext {
         build_client: impl FnOnce() -> Result<reqwest::Client, String>,
     ) -> Result<reqwest::Client, String> {
         let cache = if credential_safe {
-            &self.credential_safe_http_client
+            &self.credential_safe
         } else {
-            &self.default_http_client
+            &self.default
         };
         cache
+            .get_or_init(build_client)
+            .as_ref()
+            .cloned()
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn direct_credential_safe_http_client(
+        &self,
+        build_client: impl FnOnce() -> Result<reqwest::Client, String>,
+    ) -> Result<reqwest::Client, String> {
+        self.direct_credential_safe
             .get_or_init(build_client)
             .as_ref()
             .cloned()
@@ -469,6 +481,39 @@ mod tests {
             build_count.load(Ordering::SeqCst),
             2,
             "default HTTP clients should not be process-global"
+        );
+    }
+
+    #[test]
+    fn credential_safe_http_clients_have_distinct_registration_scoped_caches() {
+        let build_count = AtomicUsize::new(0);
+        let first_context = BackendRegistrationContext::default();
+
+        for _ in 0..2 {
+            first_context
+                .default_http_client(true, || build_counted_client(&build_count))
+                .expect("proxy-aware credential client");
+            first_context
+                .direct_credential_safe_http_client(|| build_counted_client(&build_count))
+                .expect("direct credential client");
+        }
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            2,
+            "one registration context should build each credential client once"
+        );
+
+        let second_context = BackendRegistrationContext::default();
+        second_context
+            .default_http_client(true, || build_counted_client(&build_count))
+            .expect("new proxy-aware credential client");
+        second_context
+            .direct_credential_safe_http_client(|| build_counted_client(&build_count))
+            .expect("new direct credential client");
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            4,
+            "credential clients should not be process-global"
         );
     }
 
