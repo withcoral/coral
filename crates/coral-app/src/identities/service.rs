@@ -1,5 +1,6 @@
 //! Implements the gRPC `IdentityService` for user-owned identities.
 
+use std::future::Future;
 use std::pin::Pin;
 
 use coral_api::v1::identity_service_server::IdentityService as IdentityServiceApi;
@@ -13,10 +14,13 @@ use coral_api::v1::{
     create_user_owned_identity_response,
 };
 use tokio_stream::Stream;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::app_status;
-use crate::identities::manager::{IdentityManager, IdentityOAuthCreationEvent};
+use crate::bootstrap::{AppError, app_status};
+use crate::identities::manager::{
+    IdentityManager, IdentityOAuthCommitPhase, IdentityOAuthCreationEvent,
+};
 use crate::identities::model::IdentityOwner;
 use crate::request_context::RequestContext;
 use crate::state::db::{IdentityRecord, IdentitySpecScope};
@@ -27,11 +31,15 @@ use crate::transport::{
 #[derive(Clone)]
 pub(crate) struct IdentityService {
     identities: IdentityManager,
+    oauth_shutdown: CancellationToken,
 }
 
 impl IdentityService {
-    pub(crate) fn new(identities: IdentityManager) -> Self {
-        Self { identities }
+    pub(crate) fn new(identities: IdentityManager, oauth_shutdown: CancellationToken) -> Self {
+        Self {
+            identities,
+            oauth_shutdown,
+        }
     }
 }
 
@@ -45,6 +53,7 @@ impl IdentityServiceApi for IdentityService {
     ) -> Result<Response<Self::CreateUserOwnedIdentityStream>, Status> {
         let span = grpc_span(&request);
         let identities = self.identities.clone();
+        let oauth_shutdown = self.oauth_shutdown.clone();
         instrument_grpc(span.clone(), async move {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let CreateUserOwnedIdentityRequest {
@@ -71,22 +80,26 @@ impl IdentityServiceApi for IdentityService {
                     ))
                 }
                 None => {
+                    let commit_phase = IdentityOAuthCommitPhase::default();
                     let stream = acknowledged_operation_response_stream(
                         "identity OAuth response stream closed before creation completed",
                         move |event_sender| {
                             instrument_grpc(span, async move {
-                                identities
-                                    .create_or_replace_user_oauth(
+                                run_identity_oauth_until_shutdown(
+                                    oauth_shutdown,
+                                    commit_phase.clone(),
+                                    identities.create_or_replace_user_oauth(
                                         &principal,
                                         &name,
                                         &identity_spec,
+                                        commit_phase,
                                         move |event| {
                                             let event_sender = event_sender.clone();
                                             async move { event_sender.send(event).await }
                                         },
-                                    )
-                                    .await
-                                    .map_err(app_status)
+                                    ),
+                                )
+                                .await
                             })
                         },
                         user_oauth_event_response,
@@ -158,6 +171,25 @@ impl IdentityServiceApi for IdentityService {
             Ok(Response::new(DeleteUserOwnedIdentityResponse {}))
         })
         .await
+    }
+}
+
+pub(super) async fn run_identity_oauth_until_shutdown<T>(
+    oauth_shutdown: CancellationToken,
+    commit_phase: IdentityOAuthCommitPhase,
+    operation: impl Future<Output = Result<T, AppError>>,
+) -> Result<T, Status> {
+    tokio::pin!(operation);
+    tokio::select! {
+        biased;
+        result = operation.as_mut() => result.map_err(app_status),
+        () = oauth_shutdown.cancelled() => {
+            if commit_phase.has_started() {
+                operation.await.map_err(app_status)
+            } else {
+                Err(Status::cancelled("server is shutting down"))
+            }
+        },
     }
 }
 
@@ -248,13 +280,54 @@ pub(super) fn identity_to_proto(record: IdentityRecord) -> ProtoIdentity {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::future::Future as _;
+    use std::task::Poll;
 
     use coral_api::v1::CredentialMetadata;
 
-    use super::identity_to_proto;
+    use super::{identity_to_proto, run_identity_oauth_until_shutdown};
+    use crate::bootstrap::AppError;
+    use crate::identities::manager::IdentityOAuthCommitPhase;
     use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
     use crate::identity::UserPrincipal;
     use crate::state::db::{IdentityRecord, IdentitySpecKey};
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn oauth_shutdown_prefers_ready_manager_result_on_tie() {
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        let result = run_identity_oauth_until_shutdown(
+            shutdown,
+            IdentityOAuthCommitPhase::default(),
+            std::future::ready(Ok::<_, AppError>("manager-result")),
+        )
+        .await;
+        assert_eq!(result.expect("ready manager result wins"), "manager-result");
+    }
+
+    #[tokio::test]
+    async fn oauth_shutdown_waits_for_started_commit() {
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        let commit_phase = IdentityOAuthCommitPhase::default();
+        assert!(!commit_phase.has_started());
+        let operation_phase = commit_phase.clone();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let guarded = run_identity_oauth_until_shutdown(shutdown, commit_phase, async move {
+            operation_phase.mark_started();
+            release_rx.await.expect("release commit");
+            Ok::<_, AppError>("committed")
+        });
+        tokio::pin!(guarded);
+        std::future::poll_fn(|cx| {
+            assert!(guarded.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        release_tx.send(()).expect("finish commit");
+        assert_eq!(guarded.await.expect("commit result"), "committed");
+    }
 
     #[test]
     fn identity_to_proto_exposes_only_ordered_safe_metadata() {

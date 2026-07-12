@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_spec::{IdentitySpecConfig, IdentitySpecType, ManifestOAuthCredentialSpec};
 
@@ -30,6 +31,19 @@ use super::{
 
 const OAUTH_ACCESS_TOKEN_KEY: &str = "ACCESS_TOKEN";
 
+#[derive(Clone, Default)]
+pub(crate) struct IdentityOAuthCommitPhase(Arc<AtomicBool>);
+
+impl IdentityOAuthCommitPhase {
+    pub(crate) fn mark_started(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn has_started(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct OAuthCreateSnapshot {
     workspace_created_at_unix_nanos: Option<i64>,
@@ -55,6 +69,7 @@ impl IdentityManager {
         principal: &UserPrincipal,
         identity_name: &str,
         identity_spec_name: &str,
+        commit_phase: IdentityOAuthCommitPhase,
         events: E,
     ) -> Result<IdentityRecord, AppError>
     where
@@ -64,7 +79,7 @@ impl IdentityManager {
         let owner = IdentityOwner::for_user(principal.clone());
         let name = IdentityName::parse(identity_name)?;
         let requested_key = IdentitySpecKey::global(identity_spec_name)?;
-        self.create_or_replace_oauth(owner, name, requested_key, events)
+        self.create_or_replace_oauth(owner, name, requested_key, commit_phase, events)
             .await
     }
 
@@ -74,6 +89,7 @@ impl IdentityManager {
         workspace: &WorkspaceName,
         identity_name: &str,
         identity_spec_name: &str,
+        commit_phase: IdentityOAuthCommitPhase,
         events: E,
     ) -> Result<IdentityRecord, AppError>
     where
@@ -83,7 +99,7 @@ impl IdentityManager {
         let owner = IdentityOwner::workspace(workspace.clone());
         let name = IdentityName::parse(identity_name)?;
         let requested_key = IdentitySpecKey::workspace(workspace.clone(), identity_spec_name)?;
-        self.create_or_replace_oauth(owner, name, requested_key, events)
+        self.create_or_replace_oauth(owner, name, requested_key, commit_phase, events)
             .await
     }
 
@@ -92,6 +108,7 @@ impl IdentityManager {
         owner: IdentityOwner,
         name: IdentityName,
         requested_key: IdentitySpecKey,
+        commit_phase: IdentityOAuthCommitPhase,
         events: E,
     ) -> Result<IdentityRecord, AppError>
     where
@@ -137,7 +154,14 @@ impl IdentityManager {
 
         for _ in 0..MAX_MUTATION_ATTEMPTS {
             match self
-                .try_commit_oauth(&owner, &name, &selected, &document, &safe_metadata)
+                .try_commit_oauth(
+                    &owner,
+                    &name,
+                    &selected,
+                    &commit_phase,
+                    &document,
+                    &safe_metadata,
+                )
                 .await
             {
                 Ok(Some(record)) => return Ok(record),
@@ -217,10 +241,12 @@ impl IdentityManager {
         owner: &IdentityOwner,
         name: &IdentityName,
         selected: &SelectedOAuthSpec,
+        commit_phase: &IdentityOAuthCommitPhase,
         document: &IdentityDocumentWrite,
         safe_metadata: &BTreeMap<String, String>,
     ) -> Result<Option<IdentityRecord>, AppError> {
         let mut tx = self.db.begin_serializable().await?;
+        commit_phase.mark_started();
         let current =
             load_oauth_create_snapshot(&mut tx, owner, name, &selected.requested_key).await?;
         if current.workspace_created_at_unix_nanos

@@ -12,11 +12,14 @@ use coral_api::v1::{
     create_workspace_owned_identity_response,
 };
 use tokio_stream::Stream;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 
-use super::manager::{IdentityManager, IdentityOAuthCreationEvent};
+use super::manager::{IdentityManager, IdentityOAuthCommitPhase, IdentityOAuthCreationEvent};
 use super::model::IdentityOwner;
-use super::service::{identity_oauth_event_to_proto, identity_to_proto};
+use super::service::{
+    identity_oauth_event_to_proto, identity_to_proto, run_identity_oauth_until_shutdown,
+};
 use crate::bootstrap::app_status;
 use crate::transport::{
     acknowledged_operation_response_stream, grpc_span, instrument_grpc, workspace_name_from_proto,
@@ -27,13 +30,19 @@ use crate::workspaces::{WorkspaceManager, WorkspaceName};
 pub(crate) struct WorkspaceIdentityService {
     identities: IdentityManager,
     workspaces: WorkspaceManager,
+    oauth_shutdown: CancellationToken,
 }
 
 impl WorkspaceIdentityService {
-    pub(crate) fn new(identities: IdentityManager, workspaces: WorkspaceManager) -> Self {
+    pub(crate) fn new(
+        identities: IdentityManager,
+        workspaces: WorkspaceManager,
+        oauth_shutdown: CancellationToken,
+    ) -> Self {
         Self {
             identities,
             workspaces,
+            oauth_shutdown,
         }
     }
 }
@@ -49,6 +58,7 @@ impl WorkspaceIdentityServiceApi for WorkspaceIdentityService {
         let span = grpc_span(&request);
         let identities = self.identities.clone();
         let workspaces = self.workspaces.clone();
+        let oauth_shutdown = self.oauth_shutdown.clone();
         instrument_grpc(span.clone(), async move {
             let CreateWorkspaceOwnedIdentityRequest {
                 workspace,
@@ -79,22 +89,26 @@ impl WorkspaceIdentityServiceApi for WorkspaceIdentityService {
                     ))
                 }
                 None => {
+                    let commit_phase = IdentityOAuthCommitPhase::default();
                     let stream = acknowledged_operation_response_stream(
                         "workspace identity OAuth response stream closed before creation completed",
                         move |event_sender| {
                             instrument_grpc(span, async move {
-                                identities
-                                    .create_or_replace_workspace_oauth(
+                                run_identity_oauth_until_shutdown(
+                                    oauth_shutdown,
+                                    commit_phase.clone(),
+                                    identities.create_or_replace_workspace_oauth(
                                         &workspace,
                                         &name,
                                         &identity_spec,
+                                        commit_phase,
                                         move |event| {
                                             let event_sender = event_sender.clone();
                                             async move { event_sender.send(event).await }
                                         },
-                                    )
-                                    .await
-                                    .map_err(app_status)
+                                    ),
+                                )
+                                .await
                             })
                         },
                         workspace_oauth_event_response,

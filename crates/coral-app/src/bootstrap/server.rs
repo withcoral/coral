@@ -34,6 +34,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
+use tokio_util::sync::CancellationToken;
 use tonic::codegen::http::header::CONTENT_TYPE;
 use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
 use tonic::service::Routes;
@@ -501,6 +502,7 @@ fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseCo
 pub struct RunningServer {
     endpoint_uri: String,
     local_trace_store_dir: Option<PathBuf>,
+    identity_oauth_shutdown: CancellationToken,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
@@ -533,18 +535,7 @@ impl RunningServer {
     }
 
     async fn shutdown_inner(&self) -> Result<(), AppError> {
-        if let Some(shutdown_tx) = self
-            .shutdown_tx
-            .lock()
-            .expect("shutdown mutex poisoned")
-            .take()
-        {
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "send error means the receiver is already dropped, which is fine during shutdown"
-            )]
-            let _ = shutdown_tx.send(());
-        }
+        self.signal_shutdown();
 
         let task = self.task.lock().expect("task mutex poisoned").take();
         if let Some(task) = task {
@@ -552,10 +543,9 @@ impl RunningServer {
         }
         Ok(())
     }
-}
 
-impl Drop for RunningServer {
-    fn drop(&mut self) {
+    fn signal_shutdown(&self) {
+        self.identity_oauth_shutdown.cancel();
         if let Some(shutdown_tx) = self
             .shutdown_tx
             .lock()
@@ -568,6 +558,12 @@ impl Drop for RunningServer {
             )]
             let _ = shutdown_tx.send(());
         }
+    }
+}
+
+impl Drop for RunningServer {
+    fn drop(&mut self) {
+        self.signal_shutdown();
     }
 }
 
@@ -609,8 +605,11 @@ async fn start_server(
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace.clone());
     let identity_spec_service = IdentitySpecService::new(identity_spec);
-    let identity_service = IdentityService::new(identity.clone());
-    let workspace_identity_service = WorkspaceIdentityService::new(identity, workspace);
+    let identity_oauth_shutdown = CancellationToken::new();
+    let identity_service =
+        IdentityService::new(identity.clone(), identity_oauth_shutdown.child_token());
+    let workspace_identity_service =
+        WorkspaceIdentityService::new(identity, workspace, identity_oauth_shutdown.child_token());
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
     let search_service = SearchService::new(search);
@@ -676,6 +675,7 @@ async fn start_server(
     Ok(RunningServer {
         endpoint_uri,
         local_trace_store_dir,
+        identity_oauth_shutdown,
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })

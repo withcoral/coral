@@ -35,6 +35,7 @@ sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
+tokio-util.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 tonic.workspace = true

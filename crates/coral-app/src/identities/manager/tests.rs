@@ -9,7 +9,9 @@ use tempfile::tempdir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{IdentityManager, IdentityOAuthCreationEvent, ResolvedIdentityForUse};
+use super::{
+    IdentityManager, IdentityOAuthCommitPhase, IdentityOAuthCreationEvent, ResolvedIdentityForUse,
+};
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
@@ -69,6 +71,10 @@ async fn sqlite_fixed_token_manager_contract() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps the complete OAuth creation and encrypted persistence contract together"
+)]
 async fn sqlite_oauth_creation_core_contract() {
     let temp = tempdir().expect("temp dir");
     let db = Arc::new(
@@ -105,13 +111,19 @@ async fn sqlite_oauth_creation_core_contract() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let captured_events = events.clone();
     let created = manager
-        .create_or_replace_user_oauth(&principal, &identity_name, &oauth_spec, move |event| {
-            let events = captured_events.clone();
-            async move {
-                events.lock().expect("event lock").push(event);
-                Ok(())
-            }
-        })
+        .create_or_replace_user_oauth(
+            &principal,
+            &identity_name,
+            &oauth_spec,
+            IdentityOAuthCommitPhase::default(),
+            move |event| {
+                let events = captured_events.clone();
+                async move {
+                    events.lock().expect("event lock").push(event);
+                    Ok(())
+                }
+            },
+        )
         .await
         .expect("create user OAuth identity");
     let expected_safe = BTreeMap::from([

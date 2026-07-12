@@ -185,14 +185,18 @@ async fn assert_creation_cancellation(
     let resume = Arc::new(tokio::sync::Barrier::new(2));
     let manager = IdentityManager::new(db.clone(), key_provider.clone())
         .with_before_write_gate(reached.clone(), resume);
+    let commit_phase = IdentityOAuthCommitPhase::default();
     let task_principal = principal.clone();
     let task_identity_name = identity_name.clone();
+    let task_spec_name = spec_name.clone();
+    let task_commit_phase = commit_phase.clone();
     let task = tokio::spawn(async move {
         manager
             .create_or_replace_user_oauth(
                 &task_principal,
                 &task_identity_name,
-                &spec_name,
+                &task_spec_name,
+                task_commit_phase,
                 |_| async { Ok(()) },
             )
             .await
@@ -200,6 +204,7 @@ async fn assert_creation_cancellation(
     tokio::time::timeout(Duration::from_secs(10), reached.wait())
         .await
         .expect("OAuth cancellation must reach the transactional identity upsert");
+    assert!(commit_phase.has_started());
     task.abort();
     let cancelled = tokio::time::timeout(Duration::from_secs(10), task)
         .await
@@ -478,6 +483,7 @@ async fn create_gated_oauth(
                     &principal,
                     &identity_name,
                     &spec_name,
+                    IdentityOAuthCommitPhase::default(),
                     move |event| {
                         let reached = reached.clone();
                         let resume = resume.clone();
@@ -498,6 +504,7 @@ async fn create_gated_oauth(
                     &workspace,
                     &identity_name,
                     &spec_name,
+                    IdentityOAuthCommitPhase::default(),
                     move |event| {
                         let reached = reached.clone();
                         let resume = resume.clone();

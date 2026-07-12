@@ -7,6 +7,8 @@
 
 mod oauth_create;
 
+pub(crate) use oauth_create::IdentityOAuthCommitPhase;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
