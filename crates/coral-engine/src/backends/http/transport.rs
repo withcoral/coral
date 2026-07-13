@@ -19,7 +19,7 @@ use crate::backends::http::auth::{
     resolve_auth_headers,
 };
 use crate::backends::http::client::HttpClients;
-use crate::backends::http::error::provider_error;
+use crate::backends::http::error::{CredentialTransportError, provider_error};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
@@ -37,12 +37,21 @@ use coral_spec::backends::http::RateLimitSpec;
 use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat};
 
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+const REDACTED_SECRET_URL: &str = "[redacted secret-derived URL]";
+
+#[derive(Clone, Copy)]
+pub(super) enum SecretProvenance {
+    Public,
+    Request,
+    Url,
+}
 
 pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) auth: &'a AuthSpec,
     pub(super) request_headers: &'a [HeaderSpec],
     pub(super) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     pub(super) require_credential_safe_auth_transport: bool,
+    pub(super) secret_provenance: SecretProvenance,
     pub(super) request_identity_http_authenticator:
         Option<&'a BoundRequestIdentityHttpAuthenticator>,
     pub(super) trace_context: Option<&'a OtelContext>,
@@ -85,6 +94,7 @@ pub(super) async fn execute_request(
         request_headers,
         request_authenticators,
         require_credential_safe_auth_transport,
+        secret_provenance,
         request_identity_http_authenticator,
         trace_context,
         table_headers,
@@ -100,6 +110,10 @@ pub(super) async fn execute_request(
         render_context,
         allow_404_empty,
     } = request;
+    let contains_secret_value = require_credential_safe_auth_transport
+        && !matches!(secret_provenance, SecretProvenance::Public);
+    let redact_url = require_credential_safe_auth_transport
+        && matches!(secret_provenance, SecretProvenance::Url);
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
     let mut decode_retries = 0usize;
@@ -135,7 +149,11 @@ pub(super) async fn execute_request(
                 HeaderValue::from_static("text/plain"),
             );
         }
-        let logged_url = build_logged_url(url, query_pairs);
+        let logged_url = if redact_url {
+            REDACTED_SECRET_URL.to_string()
+        } else {
+            build_logged_url(url, query_pairs)
+        };
 
         let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         let attempt = server_error_retries + throttle_retries + decode_retries + 1;
@@ -181,6 +199,12 @@ pub(super) async fn execute_request(
                 "http.request.resend_count",
                 i64::try_from(attempt - 1).unwrap_or(i64::MAX),
             );
+        }
+        if contains_secret_value
+            && let Err(error) = ensure_secret_values_use_credential_safe_transport(url)
+        {
+            record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+            return Err(error);
         }
 
         inject_trace_context(&request_span, &mut header_map);
@@ -259,7 +283,8 @@ pub(super) async fn execute_request(
                 built.headers_mut().insert(name, value);
             }
         }
-        let credential_bearing = has_auth_headers
+        let credential_bearing = contains_secret_value
+            || has_auth_headers
             || has_identity_headers
             || request_requires_credential_safe_transport(&built, has_authored_headers);
         let request_http = match http.for_request(built.url(), credential_bearing) {
@@ -436,6 +461,19 @@ pub(super) async fn execute_request(
     }
 }
 
+fn ensure_secret_values_use_credential_safe_transport(url: &str) -> Result<()> {
+    let url = reqwest::Url::parse(url).map_err(|_error| {
+        DataFusionError::External(Box::new(CredentialTransportError(
+            "DSL v4 secret values require a valid HTTPS or loopback HTTP URL".to_string(),
+        )))
+    })?;
+    ensure_auth_uses_credential_safe_transport(&url).map_err(|_error| {
+        DataFusionError::External(Box::new(CredentialTransportError(
+            "DSL v4 secret values require HTTPS or loopback HTTP".to_string(),
+        )))
+    })
+}
+
 fn identity_http_authenticator_error(
     source_schema: &str,
     table_name: &str,
@@ -552,7 +590,9 @@ mod tests {
     use tokio::task::JoinHandle;
     use wiremock::MockServer;
 
-    use super::{OutgoingHttpRequest as TestOutgoingHttpRequest, execute_request};
+    use super::{
+        OutgoingHttpRequest as TestOutgoingHttpRequest, SecretProvenance, execute_request,
+    };
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::client::HttpClients;
     use crate::backends::http::trace::HttpBodyCapture;
@@ -637,6 +677,7 @@ mod tests {
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
                 require_credential_safe_auth_transport: false,
+                secret_provenance: SecretProvenance::Url,
                 request_identity_http_authenticator: None,
                 trace_context: None,
                 table_headers: &[],
@@ -729,6 +770,7 @@ mod tests {
                 request_headers: &request_headers,
                 request_authenticators: &HashMap::new(),
                 require_credential_safe_auth_transport: true,
+                secret_provenance: SecretProvenance::Public,
                 request_identity_http_authenticator: Some(&identity_authenticator),
                 trace_context: None,
                 table_headers: &[],
@@ -805,6 +847,7 @@ mod tests {
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
                 require_credential_safe_auth_transport: true,
+                secret_provenance: SecretProvenance::Public,
                 request_identity_http_authenticator: Some(&identity_authenticator),
                 trace_context: None,
                 table_headers: &[],
@@ -882,6 +925,7 @@ mod tests {
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
                 require_credential_safe_auth_transport: true,
+                secret_provenance: SecretProvenance::Public,
                 request_identity_http_authenticator: None,
                 trace_context: None,
                 table_headers: &[],

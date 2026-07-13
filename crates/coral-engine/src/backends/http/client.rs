@@ -1,6 +1,6 @@
 //! HTTP client orchestration for manifest-driven HTTP sources.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -105,6 +105,7 @@ pub(crate) struct HttpSourceClient {
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     pub(super) request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
     pub(super) rate_limit: RateLimitSpec,
+    pub(super) secret_input_names: Arc<BTreeSet<String>>,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
     pub(super) body_capture: HttpBodyCapture,
     pub(super) trace_context: Option<OtelContext>,
@@ -296,6 +297,7 @@ impl HttpSourceClient {
             source_input_resolver: runtime.source_input_resolver,
             request_identity_http_authenticator: runtime.request_identity_http_authenticator,
             rate_limit: manifest.rate_limit.clone(),
+            secret_input_names: Arc::new(manifest.declared_secret_names()),
             resolved_inputs: Arc::new(resolved_inputs),
             body_capture: HttpBodyCapture::new(runtime.body_capture_max_bytes),
             trace_context: runtime.trace_context,

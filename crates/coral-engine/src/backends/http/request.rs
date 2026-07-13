@@ -1,9 +1,13 @@
 //! Request query and body construction for HTTP-backed sources.
 
+use std::collections::BTreeSet;
+
 use datafusion::error::{DataFusionError, Result};
 use serde_json::{Map, Value};
 
-use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
+use crate::backends::shared::template::{
+    RenderContext, Resolved, resolve_value_source_with_secret_provenance, value_to_string,
+};
 use coral_spec::BodySpec;
 
 #[derive(Debug, Clone)]
@@ -12,33 +16,74 @@ pub(super) enum RequestBody {
     Text(String),
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct RenderedRequestBody {
+    pub(super) value: Option<RequestBody>,
+    secret_paths: Vec<Vec<String>>,
+    text_depends_on_secret: bool,
+}
+
+impl RenderedRequestBody {
+    pub(super) fn depends_on_secret(&self) -> bool {
+        self.text_depends_on_secret || !self.secret_paths.is_empty()
+    }
+
+    pub(super) fn overwrite_with_public_path(&mut self, path: &[String]) {
+        self.secret_paths
+            .retain(|secret_path| !paths_overlap(secret_path, path));
+    }
+}
+
+fn paths_overlap(left: &[String], right: &[String]) -> bool {
+    for (left, right) in left.iter().zip(right) {
+        match (left.parse::<usize>(), right.parse::<usize>()) {
+            (Ok(left), Ok(right)) if left == right => {}
+            (Err(_), Err(_)) if left == right => {}
+            (Ok(_), Ok(_)) | (Err(_), Err(_)) => return false,
+            (Ok(_), Err(_)) | (Err(_), Ok(_)) => return true,
+        }
+    }
+    true
+}
+
 pub(super) fn build_query_pairs(
     request: &coral_spec::RequestSpec,
     render_context: &RenderContext<'_>,
-) -> Result<Vec<(String, String)>> {
+    secret_input_names: &BTreeSet<String>,
+) -> Result<Resolved<Vec<(String, String)>>> {
     let mut params = Vec::new();
+    let mut depends_on_secret = false;
 
     for param in &request.query {
-        let value = resolve_value_source(&param.value, render_context)?;
-        if let Some(value) = value {
-            params.push((param.name.clone(), value_to_string(&value)));
+        if let Some(resolved) = resolve_value_source_with_secret_provenance(
+            &param.value,
+            render_context,
+            secret_input_names,
+        )? {
+            depends_on_secret |= resolved.depends_on_secret;
+            params.push((param.name.clone(), value_to_string(&resolved.value)));
         }
     }
 
-    Ok(params)
+    Ok(Resolved {
+        value: params,
+        depends_on_secret,
+    })
 }
 
 pub(super) fn build_request_body(
     request: &coral_spec::RequestSpec,
     render_context: &RenderContext<'_>,
-) -> Result<Option<RequestBody>> {
+    secret_input_names: &BTreeSet<String>,
+) -> Result<RenderedRequestBody> {
     match &request.body {
         BodySpec::Json { fields } => {
             if fields.is_empty() {
-                return Ok(None);
+                return Ok(RenderedRequestBody::default());
             }
             let mut root = Value::Object(Map::new());
             let mut rendered_any_field = false;
+            let mut secret_paths = Vec::<Vec<String>>::new();
             for field in fields {
                 if field
                     .when_arg
@@ -47,22 +92,44 @@ pub(super) fn build_request_body(
                 {
                     continue;
                 }
-                if let Some(value) = resolve_value_source(&field.value, render_context)? {
+                if let Some(resolved) = resolve_value_source_with_secret_provenance(
+                    &field.value,
+                    render_context,
+                    secret_input_names,
+                )? {
                     rendered_any_field = true;
-                    set_path_value(&mut root, &field.path, value)?;
+                    secret_paths.retain(|path| !paths_overlap(path, &field.path));
+                    set_path_value(&mut root, &field.path, resolved.value)?;
+                    if resolved.depends_on_secret {
+                        secret_paths.push(field.path.clone());
+                    }
                 }
             }
-            if rendered_any_field {
-                Ok(Some(RequestBody::Json(root)))
+            let value = if rendered_any_field {
+                Some(RequestBody::Json(root))
             } else {
-                Ok(None)
-            }
+                None
+            };
+            Ok(RenderedRequestBody {
+                value,
+                secret_paths,
+                text_depends_on_secret: false,
+            })
         }
         BodySpec::Text { content } => {
-            let Some(value) = resolve_value_source(content, render_context)? else {
-                return Ok(None);
+            let Some(resolved) = resolve_value_source_with_secret_provenance(
+                content,
+                render_context,
+                secret_input_names,
+            )?
+            else {
+                return Ok(RenderedRequestBody::default());
             };
-            Ok(Some(RequestBody::Text(value_to_string(&value))))
+            Ok(RenderedRequestBody {
+                value: Some(RequestBody::Text(value_to_string(&resolved.value))),
+                secret_paths: Vec::new(),
+                text_depends_on_secret: resolved.depends_on_secret,
+            })
         }
     }
 }
@@ -116,14 +183,15 @@ fn set_path_value_at(cursor: &mut Value, path: &[String], value: Value) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     use serde_json::json;
 
-    use super::{RequestBody, build_request_body, set_path_value};
+    use super::{RequestBody, build_query_pairs, build_request_body, set_path_value};
     use crate::backends::shared::template::RenderContext;
     use coral_spec::{
-        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, RequestSpec, ValueSourceSpec,
+        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, QueryParamSpec, RequestSpec,
+        ValueSourceSpec,
     };
 
     #[test]
@@ -150,7 +218,9 @@ mod tests {
         let resolved_inputs = BTreeMap::new();
         let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
 
-        let body = build_request_body(&request, &context).expect("request body should render");
+        let body = build_request_body(&request, &context, &BTreeSet::new())
+            .expect("request body should render")
+            .value;
 
         assert!(body.is_none());
     }
@@ -179,7 +249,9 @@ mod tests {
         let resolved_inputs = BTreeMap::new();
         let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
 
-        let body = build_request_body(&request, &context).expect("request body should render");
+        let body = build_request_body(&request, &context, &BTreeSet::new())
+            .expect("request body should render")
+            .value;
 
         assert!(
             matches!(body, Some(RequestBody::Json(value)) if value == json!({"required": "value"}))
@@ -213,13 +285,68 @@ mod tests {
         let resolved_inputs = BTreeMap::new();
         let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
 
-        let body = build_request_body(&request, &context).expect("request body should render");
+        let body = build_request_body(&request, &context, &BTreeSet::new())
+            .expect("request body should render")
+            .value;
 
         assert!(
             matches!(body, Some(RequestBody::Json(value)) if value == json!({
                 "logStreamNames": ["stream-a", "stream-b"]
             }))
         );
+    }
+
+    #[test]
+    fn request_provenance_tracks_only_emitted_secret_values() {
+        let request = RequestSpec {
+            method: HttpMethod::POST,
+            path: ParsedTemplate::parse("/items").expect("template"),
+            query: vec![QueryParamSpec {
+                name: "token".to_string(),
+                value: ValueSourceSpec::Input {
+                    key: "SECRET".to_string(),
+                },
+            }],
+            body: BodySpec::Json {
+                fields: vec![
+                    BodyFieldSpec {
+                        path: vec!["secret".to_string()],
+                        when_arg: Some("include_secret".to_string()),
+                        value: ValueSourceSpec::Input {
+                            key: "SECRET".to_string(),
+                        },
+                    },
+                    BodyFieldSpec {
+                        path: vec!["public".to_string()],
+                        when_arg: None,
+                        value: ValueSourceSpec::Input {
+                            key: "PUBLIC".to_string(),
+                        },
+                    },
+                ],
+            },
+            headers: vec![],
+        };
+        let inputs = BTreeMap::from([
+            ("SECRET".to_string(), "hidden".to_string()),
+            ("PUBLIC".to_string(), "visible".to_string()),
+        ]);
+        let secret_names = BTreeSet::from(["SECRET".to_string()]);
+        let empty = HashMap::new();
+        let context = RenderContext::new(&empty, &empty, &empty, &inputs);
+
+        let query = build_query_pairs(&request, &context, &secret_names).expect("query");
+        assert!(query.depends_on_secret);
+        let body = build_request_body(&request, &context, &secret_names).expect("body");
+        assert!(
+            !body.depends_on_secret(),
+            "skipped secret field must not taint"
+        );
+
+        let args = HashMap::from([("include_secret".to_string(), "true".to_string())]);
+        let context = RenderContext::new(&empty, &args, &empty, &inputs);
+        let body = build_request_body(&request, &context, &secret_names).expect("body");
+        assert!(body.depends_on_secret());
     }
 
     #[test]

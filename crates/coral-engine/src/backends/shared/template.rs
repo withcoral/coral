@@ -1,6 +1,6 @@
 //! Backend-agnostic template and value-source rendering.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use datafusion::error::{DataFusionError, Result};
@@ -10,6 +10,29 @@ use coral_spec::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken,
 
 /// Shared empty filter/state map for source-scoped rendering.
 pub(crate) static EMPTY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+static EMPTY_SECRET_INPUT_NAMES: LazyLock<BTreeSet<String>> = LazyLock::new(BTreeSet::new);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Resolved<T> {
+    pub(crate) value: T,
+    pub(crate) depends_on_secret: bool,
+}
+
+impl<T> Resolved<T> {
+    fn public(value: T) -> Self {
+        Self {
+            value,
+            depends_on_secret: false,
+        }
+    }
+
+    fn map<U>(self, map: impl FnOnce(T) -> U) -> Resolved<U> {
+        Resolved {
+            value: map(self.value),
+            depends_on_secret: self.depends_on_secret,
+        }
+    }
+}
 
 /// Runtime values available while rendering one backend request.
 #[derive(Clone, Copy)]
@@ -67,39 +90,61 @@ pub(crate) fn resolve_value_source(
     value: &ValueSourceSpec,
     context: &RenderContext<'_>,
 ) -> Result<Option<Value>> {
+    Ok(
+        resolve_value_source_with_secret_provenance(value, context, &EMPTY_SECRET_INPUT_NAMES)?
+            .map(|resolved| resolved.value),
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "One exhaustive pass must keep value resolution and secret provenance identical"
+)]
+pub(crate) fn resolve_value_source_with_secret_provenance(
+    value: &ValueSourceSpec,
+    context: &RenderContext<'_>,
+    secret_input_names: &BTreeSet<String>,
+) -> Result<Option<Resolved<Value>>> {
     match value {
         ValueSourceSpec::Template { template } => {
-            let rendered = render_template(template, context)?;
-            Ok(Some(Value::String(rendered)))
+            let rendered =
+                render_template_with_secret_provenance(template, context, secret_input_names)?;
+            Ok(Some(rendered.map(Value::String)))
         }
-        ValueSourceSpec::OneOf { values } => resolve_one_of(values, context),
-        ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
+        ValueSourceSpec::OneOf { values } => resolve_one_of(values, context, secret_input_names),
+        ValueSourceSpec::Literal { value } => Ok(Some(Resolved::public(value.clone()))),
         ValueSourceSpec::Filter { key, default } => Ok(string_runtime_value(
             context,
             RuntimeValueNamespace::Filter,
             key,
             default.as_ref(),
-        )),
+        )
+        .map(Resolved::public)),
         ValueSourceSpec::Arg { key, default } => Ok(string_runtime_value(
             context,
             RuntimeValueNamespace::FunctionArgument,
             key,
             default.as_ref(),
-        )),
+        )
+        .map(Resolved::public)),
         ValueSourceSpec::FilterInt { key, default } => {
             parse_i64_value(context, RuntimeValueNamespace::Filter, key, *default)
+                .map(|value| value.map(Resolved::public))
         }
         ValueSourceSpec::ArgInt { key, default } => parse_i64_value(
             context,
             RuntimeValueNamespace::FunctionArgument,
             key,
             *default,
-        ),
+        )
+        .map(|value| value.map(Resolved::public)),
         ValueSourceSpec::FilterBool { key, default } => {
             parse_bool_value(context, RuntimeValueNamespace::Filter, key, *default)
+                .map(|value| value.map(Resolved::public))
         }
         ValueSourceSpec::FilterStringArray { key, default } => {
             parse_filter_strings(context, key, default.as_deref())
+                .map(|value| value.map(Resolved::public))
         }
         ValueSourceSpec::FilterSplit {
             key,
@@ -112,7 +157,7 @@ pub(crate) fn resolve_value_source(
             separator,
             *part,
         )
-        .map(|value| value.map(Value::String)),
+        .map(|value| value.map(|value| Resolved::public(Value::String(value)))),
         ValueSourceSpec::FilterSplitInt {
             key,
             separator,
@@ -123,13 +168,15 @@ pub(crate) fn resolve_value_source(
             key,
             separator,
             *part,
-        ),
+        )
+        .map(|value| value.map(Resolved::public)),
         ValueSourceSpec::ArgBool { key, default } => parse_bool_value(
             context,
             RuntimeValueNamespace::FunctionArgument,
             key,
             *default,
-        ),
+        )
+        .map(|value| value.map(Resolved::public)),
         ValueSourceSpec::ArgSplit {
             key,
             separator,
@@ -141,7 +188,7 @@ pub(crate) fn resolve_value_source(
             separator,
             *part,
         )
-        .map(|value| value.map(Value::String)),
+        .map(|value| value.map(|value| Resolved::public(Value::String(value)))),
         ValueSourceSpec::ArgSplitInt {
             key,
             separator,
@@ -152,31 +199,48 @@ pub(crate) fn resolve_value_source(
             key,
             separator,
             *part,
-        ),
+        )
+        .map(|value| value.map(Resolved::public)),
         ValueSourceSpec::Input { key } => {
-            Ok(context.resolved_inputs.get(key).cloned().map(Value::String))
+            Ok(context
+                .resolved_inputs
+                .get(key)
+                .cloned()
+                .map(|value| Resolved {
+                    value: Value::String(value),
+                    depends_on_secret: secret_input_names.contains(key),
+                }))
         }
         ValueSourceSpec::Bearer { key } => Ok(context
             .resolved_inputs
             .get(key)
             .filter(|value| !value.is_empty())
-            .map(|value| Value::String(format!("Bearer {value}")))),
-        ValueSourceSpec::State { key } => {
-            Ok(context.state.get(key).map(|v| Value::String(v.clone())))
+            .map(|value| Resolved {
+                value: Value::String(format!("Bearer {value}")),
+                depends_on_secret: true,
+            })),
+        ValueSourceSpec::State { key } => Ok(context
+            .state
+            .get(key)
+            .map(|value| Resolved::public(Value::String(value.clone())))),
+        ValueSourceSpec::NowEpochMinusSeconds { seconds } => {
+            Ok(Some(Resolved::public(now_minus_seconds(*seconds))))
         }
-        ValueSourceSpec::NowEpochMinusSeconds { seconds } => Ok(Some(now_minus_seconds(*seconds))),
     }
 }
 
 fn resolve_one_of(
     values: &[ValueSourceSpec],
     context: &RenderContext<'_>,
-) -> Result<Option<Value>> {
+    secret_input_names: &BTreeSet<String>,
+) -> Result<Option<Resolved<Value>>> {
     for value in values {
-        let Some(resolved) = resolve_value_source(value, context)? else {
+        let Some(resolved) =
+            resolve_value_source_with_secret_provenance(value, context, secret_input_names)?
+        else {
             continue;
         };
-        if !value_to_string(&resolved).is_empty() {
+        if !value_to_string(&resolved.value).is_empty() {
             return Ok(Some(resolved));
         }
     }
@@ -315,16 +379,31 @@ pub(crate) fn render_template(
     template: &ParsedTemplate,
     context: &RenderContext<'_>,
 ) -> Result<String> {
+    Ok(render_template_with_secret_provenance(template, context, &EMPTY_SECRET_INPUT_NAMES)?.value)
+}
+
+pub(crate) fn render_template_with_secret_provenance(
+    template: &ParsedTemplate,
+    context: &RenderContext<'_>,
+    secret_input_names: &BTreeSet<String>,
+) -> Result<Resolved<String>> {
     let mut out = String::with_capacity(template.raw().len());
+    let mut depends_on_secret = false;
     for part in template.parts() {
         match part {
             TemplatePart::Literal(part) => out.push_str(part),
             TemplatePart::Token(token) => {
                 out.push_str(&resolve_template_token(token, context)?);
+                depends_on_secret |= token.namespace() == &TemplateNamespace::Input
+                    && context.resolved_inputs.contains_key(token.key())
+                    && secret_input_names.contains(token.key());
             }
         }
     }
-    Ok(out)
+    Ok(Resolved {
+        value: out,
+        depends_on_secret,
+    })
 }
 
 fn resolve_template_token(token: &TemplateToken, context: &RenderContext<'_>) -> Result<String> {
@@ -472,12 +551,15 @@ pub(crate) fn validate_value_source_inputs(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-    use coral_spec::ValueSourceSpec;
+    use coral_spec::{ParsedTemplate, ValueSourceSpec};
     use serde_json::json;
 
-    use super::{EMPTY_MAP, RenderContext, resolve_value_source, validate_value_source_inputs};
+    use super::{
+        EMPTY_MAP, RenderContext, render_template_with_secret_provenance, resolve_value_source,
+        resolve_value_source_with_secret_provenance, validate_value_source_inputs,
+    };
 
     fn inputs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
@@ -829,6 +911,83 @@ mod tests {
         .expect("one_of should resolve");
 
         assert_eq!(value, None);
+    }
+
+    #[test]
+    fn one_of_provenance_follows_only_the_selected_branch() {
+        let resolved_inputs = inputs(&[
+            ("EMPTY_SECRET", ""),
+            ("PUBLIC", "visible"),
+            ("OAUTH_TOKEN", "secret"),
+        ]);
+        let secret_names = BTreeSet::from(["EMPTY_SECRET".to_string(), "OAUTH_TOKEN".to_string()]);
+        let context = RenderContext::source_scoped(&resolved_inputs);
+
+        let public = resolve_value_source_with_secret_provenance(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "EMPTY_SECRET".to_string(),
+                    },
+                    ValueSourceSpec::Input {
+                        key: "PUBLIC".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &context,
+            &secret_names,
+        )
+        .expect("one_of should resolve")
+        .expect("public fallback should be selected");
+        assert_eq!(public.value, json!("visible"));
+        assert!(!public.depends_on_secret);
+
+        let secret = resolve_value_source_with_secret_provenance(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "MISSING".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &context,
+            &secret_names,
+        )
+        .expect("one_of should resolve")
+        .expect("secret fallback should be selected");
+        assert_eq!(secret.value, json!("Bearer secret"));
+        assert!(secret.depends_on_secret);
+    }
+
+    #[test]
+    fn template_provenance_tracks_rendered_secret_tokens() {
+        let resolved_inputs = inputs(&[("HOST", "api.example.test"), ("PATH", "items")]);
+        let secret_names = BTreeSet::from(["HOST".to_string()]);
+        let context = RenderContext::source_scoped(&resolved_inputs);
+
+        let secret = render_template_with_secret_provenance(
+            &ParsedTemplate::parse("https://{{input.HOST}}/{{input.PATH}}")
+                .expect("secret template"),
+            &context,
+            &secret_names,
+        )
+        .expect("template should render");
+        assert_eq!(secret.value, "https://api.example.test/items");
+        assert!(secret.depends_on_secret);
+
+        let public = render_template_with_secret_provenance(
+            &ParsedTemplate::parse("/{{input.PATH}}").expect("public template"),
+            &context,
+            &secret_names,
+        )
+        .expect("template should render");
+        assert!(!public.depends_on_secret);
     }
 
     #[test]

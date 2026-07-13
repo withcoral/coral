@@ -6,7 +6,7 @@ use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderMap, HeaderName};
 use serde_json::{Map, Value, json};
 
-use crate::backends::http::request::{RequestBody, set_path_value};
+use crate::backends::http::request::{RenderedRequestBody, RequestBody, set_path_value};
 use crate::backends::shared::json_path::get_path_value;
 use coral_spec::{BodySpec, PageSizeSpec, ValidatedPagination, ValidatedPaginationMode};
 
@@ -98,7 +98,7 @@ pub(super) fn apply_pagination_query_pairs(
 }
 
 pub(super) fn apply_pagination_body_fields(
-    body: &mut Option<RequestBody>,
+    body: &mut RenderedRequestBody,
     body_spec: &BodySpec,
     pagination: &ValidatedPagination,
     state: &PageState,
@@ -115,16 +115,26 @@ pub(super) fn apply_pagination_body_fields(
         return Ok(());
     }
 
-    if matches!(body_spec, BodySpec::Text { .. }) || matches!(body, Some(RequestBody::Text(_))) {
+    if matches!(body_spec, BodySpec::Text { .. })
+        || matches!(body.value, Some(RequestBody::Text(_)))
+    {
         return Err(DataFusionError::Execution(
             "pagination body fields are not supported with text request bodies".to_string(),
         ));
     }
 
-    if body.is_none() {
-        *body = Some(RequestBody::Json(Value::Object(Map::new())));
+    if body.value.is_none() {
+        body.value = Some(RequestBody::Json(Value::Object(Map::new())));
     }
-    let root = match body.as_mut().expect("body is present") {
+    if let (Some(_), Some(spec)) = (page_size, pagination.page_size.as_ref())
+        && !spec.body_path.is_empty()
+    {
+        body.overwrite_with_public_path(&spec.body_path);
+    }
+    if needs_cursor_body {
+        body.overwrite_with_public_path(&pagination.cursor_body_path);
+    }
+    let root = match body.value.as_mut().expect("body is present") {
         RequestBody::Json(root) => root,
         RequestBody::Text(_) => unreachable!("text body rejected above"),
     };
@@ -402,6 +412,7 @@ mod tests {
         apply_pagination_body_fields, apply_pagination_query_pairs, extract_next_link_url,
         extract_next_url_header, extract_response_cursor_header, page_is_exhausted,
     };
+    use crate::backends::http::request::RenderedRequestBody;
     use crate::backends::http::test_support::test_http_table_spec;
     use coral_spec::{
         BodySpec, HttpMethod, PaginationMode, PaginationSpec, ParsedTemplate, RequestSpec,
@@ -726,7 +737,7 @@ mod tests {
         }
         .validated("demo", "items")
         .unwrap();
-        let mut body = None;
+        let mut body = RenderedRequestBody::default();
         let error = apply_pagination_body_fields(
             &mut body,
             &body_spec,
@@ -741,7 +752,7 @@ mod tests {
                 .to_string()
                 .contains("pagination body fields are not supported with text request bodies")
         );
-        assert!(body.is_none());
+        assert!(body.value.is_none());
     }
 
     #[test]

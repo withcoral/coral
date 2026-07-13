@@ -14,11 +14,11 @@ use crate::backends::http::pagination::{
 };
 use crate::backends::http::request::{build_query_pairs, build_request_body};
 use crate::backends::http::target::HttpFetchTarget;
-use crate::backends::http::transport::{OutgoingHttpRequest, execute_request};
+use crate::backends::http::transport::{OutgoingHttpRequest, SecretProvenance, execute_request};
 use crate::backends::http::url::{join_url, normalize_base_url};
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
-use crate::backends::shared::template::{RenderContext, render_template};
+use crate::backends::shared::template::{RenderContext, render_template_with_secret_provenance};
 use coral_spec::{HttpMethod, ValidatedPaginationMode};
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -68,6 +68,7 @@ pub(super) async fn fetch_rows(
     let active_request = target.resolved_request();
 
     let mut state = initial_page_state(&pagination);
+    let mut next_link_depends_on_secret = false;
 
     let mut page_count = 0usize;
     let max_pages = pagination.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
@@ -92,40 +93,61 @@ pub(super) async fn fetch_rows(
             &state_values,
             resolved_inputs.as_ref(),
         );
-        let base_url = render_template(&client.base_url, &render_context)?;
-        let base_url = normalize_base_url(&base_url);
+        let base_url = render_template_with_secret_provenance(
+            &client.base_url,
+            &render_context,
+            &client.secret_input_names,
+        )?;
+        let normalized_base_url = normalize_base_url(&base_url.value);
         let following_link_header = matches!(
             pagination.mode,
             ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
         ) && state.next_url.is_some();
 
-        let url = if matches!(
+        let (url, url_depends_on_secret) = if matches!(
             pagination.mode,
             ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
         ) && let Some(next) = state.next_url.clone()
         {
-            next
+            (next, next_link_depends_on_secret)
         } else {
-            let rendered_path = render_template(&active_request.path, &render_context)?;
-            join_url(&base_url, &rendered_path)?
+            let rendered_path = render_template_with_secret_provenance(
+                &active_request.path,
+                &render_context,
+                &client.secret_input_names,
+            )?;
+            (
+                join_url(&normalized_base_url, &rendered_path.value)?,
+                client.require_credential_safe_auth_transport
+                    && (base_url.depends_on_secret || rendered_path.depends_on_secret),
+            )
         };
 
-        let (query_pairs, body) = if following_link_header {
-            (Vec::new(), None)
+        let (query_pairs, body, contains_secret_value, redact_url) = if following_link_header {
+            (
+                Vec::new(),
+                None,
+                url_depends_on_secret,
+                url_depends_on_secret,
+            )
         } else {
-            let mut query_pairs = build_query_pairs(active_request, &render_context)?;
-            apply_pagination_query_pairs(&mut query_pairs, &pagination, &state, page_size)
+            let mut query_pairs =
+                build_query_pairs(active_request, &render_context, &client.secret_input_names)?;
+            let redact_url = url_depends_on_secret
+                || (client.require_credential_safe_auth_transport && query_pairs.depends_on_secret);
+            apply_pagination_query_pairs(&mut query_pairs.value, &pagination, &state, page_size)
                 .map_err(|error| {
                     pagination_error(
                         &client.source_schema,
                         target.name(),
                         None,
-                        Some(&url),
+                        (!redact_url).then_some(url.as_str()),
                         &error,
                     )
                 })?;
 
-            let mut body = build_request_body(active_request, &render_context)?;
+            let mut body =
+                build_request_body(active_request, &render_context, &client.secret_input_names)?;
             apply_pagination_body_fields(
                 &mut body,
                 &active_request.body,
@@ -138,11 +160,27 @@ pub(super) async fn fetch_rows(
                     &client.source_schema,
                     target.name(),
                     None,
-                    Some(&url),
+                    (!redact_url).then_some(url.as_str()),
                     &error,
                 )
             })?;
-            (query_pairs, body)
+            let contains_secret_value = client.require_credential_safe_auth_transport
+                && (url_depends_on_secret
+                    || query_pairs.depends_on_secret
+                    || body.depends_on_secret());
+            (
+                query_pairs.value,
+                body.value,
+                contains_secret_value,
+                redact_url,
+            )
+        };
+        let secret_provenance = if redact_url {
+            SecretProvenance::Url
+        } else if contains_secret_value {
+            SecretProvenance::Request
+        } else {
+            SecretProvenance::Public
         };
 
         let request = execute_request(
@@ -154,6 +192,7 @@ pub(super) async fn fetch_rows(
                 request_authenticators: &client.request_authenticators,
                 require_credential_safe_auth_transport: client
                     .require_credential_safe_auth_transport,
+                secret_provenance,
                 request_identity_http_authenticator: client
                     .request_identity_http_authenticator
                     .as_ref(),
@@ -238,20 +277,68 @@ pub(super) async fn fetch_rows(
             },
         )
         .map_err(|error| {
+            let error = if contains_secret_value {
+                redacted_pagination_error(&error)
+            } else {
+                error
+            };
             pagination_error(
                 &client.source_schema,
                 target.name(),
                 Some(http_method_label(active_request.method)),
-                Some(&url),
+                (!redact_url).then_some(url.as_str()),
                 &error,
             )
         })?;
         if page_advance == PageAdvance::Stop {
             break;
         }
+        next_link_depends_on_secret = state.next_url.is_some() && contains_secret_value;
     }
 
     Ok(all_rows)
+}
+
+fn redacted_pagination_error(error: &DataFusionError) -> DataFusionError {
+    let detail = error.to_string();
+    let category = [
+        (
+            "next link must stay on origin",
+            "pagination next link must stay on request origin",
+        ),
+        (
+            "next URL header value must stay on origin",
+            "pagination next URL header must stay on request origin",
+        ),
+        (
+            "invalid pagination Link header item",
+            "invalid pagination Link header",
+        ),
+        (
+            "invalid pagination next link",
+            "invalid pagination next link",
+        ),
+        (
+            "invalid pagination next URL header value",
+            "invalid pagination next URL header",
+        ),
+        (
+            "invalid pagination next URL header",
+            "invalid pagination next URL header",
+        ),
+        (
+            "invalid pagination response cursor header",
+            "invalid pagination response cursor header",
+        ),
+        (
+            "invalid request URL for pagination links",
+            "invalid request URL for pagination links",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(needle, category)| detail.contains(needle).then_some(category))
+    .unwrap_or("pagination failed for request with secret-derived URL");
+    DataFusionError::Execution(category.to_string())
 }
 
 fn http_method_label(method: HttpMethod) -> &'static str {
