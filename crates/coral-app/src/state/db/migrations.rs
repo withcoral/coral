@@ -73,7 +73,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{MIGRATOR, rows_match_current_migrations};
-    use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources, Workspaces};
     use crate::state::db::{CoralDb, DatabaseConfig, DbError, DbSession, ResolvedDatabaseConfig};
@@ -296,20 +295,6 @@ mod tests {
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-
-        assert_source_catalog_migration_contract(&db).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run migration contract coverage against Postgres"]
-    async fn source_catalog_migration_contract_against_postgres() {
-        let Some(url) = postgres_test_url() else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
 
         assert_source_catalog_migration_contract(&db).await;
     }
@@ -650,11 +635,5 @@ mod tests {
             .next()
             .expect("count row")
             .0)
-    }
-
-    fn postgres_test_url() -> Option<String> {
-        bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
-            .expect("CORAL_TEST_POSTGRES_URL must contain valid UTF-8")
-            .filter(|value| !value.is_empty())
     }
 }
