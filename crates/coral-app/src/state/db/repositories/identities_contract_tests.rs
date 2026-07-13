@@ -5,8 +5,9 @@ use tempfile::tempdir;
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::identity::UserPrincipal;
 use crate::state::db::{
-    CoralDb, CoralTx, DbRepos, IdentityDocumentRecord, IdentityDocumentWrite, IdentityRecord,
-    IdentitySpecKey, IdentitySpecWrite, ResolvedDatabaseConfig,
+    CoralDb, CoralTx, DbRepos, IdentityDocumentRecord, IdentityDocumentWrite,
+    IdentityOAuthRefreshClaim, IdentityRecord, IdentitySpecKey, IdentitySpecWrite,
+    ResolvedDatabaseConfig,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -134,6 +135,64 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
     assert_counts(db, &workspace_key, [("f1", 1)], 1).await;
     assert_counts(db, &replacement_key, [("f3", 0)], 0).await;
 
+    let claim = IdentityOAuthRefreshClaim::new(uuid::Uuid::new_v4(), 40)
+        .expect("valid OAuth refresh claim");
+    let competing_claim =
+        IdentityOAuthRefreshClaim::new(uuid::Uuid::new_v4(), 41).expect("valid competing claim");
+    let mut tx = db.begin().await.expect("begin refresh claim tx");
+    assert!(
+        tx.identities()
+            .try_claim_oauth_refresh(&workspace_owner, &shared_name, &claim)
+            .await
+            .expect("claim identity OAuth refresh")
+    );
+    assert!(
+        !tx.identities()
+            .try_claim_oauth_refresh(&workspace_owner, &shared_name, &competing_claim)
+            .await
+            .expect("do not replace a live claim")
+    );
+    assert!(
+        tx.identities()
+            .has_oauth_refresh_claimed_dependents(&workspace_key)
+            .await
+            .expect("count claimed dependents")
+    );
+    tx.commit().await.expect("commit refresh claim");
+    assert_eq!(
+        load_refresh_claim(db, &workspace_owner, &shared_name).await,
+        Some(claim.clone())
+    );
+    assert_eq!(load_refresh_claim(db, &user, &shared_name).await, None);
+
+    let mut tx = db.begin().await.expect("begin refresh claim expiry tx");
+    assert!(
+        !tx.identities()
+            .expire_oauth_refresh_claim(&workspace_owner, &shared_name, competing_claim.id(), 14,)
+            .await
+            .expect("wrong claimant cannot expire")
+    );
+    assert!(
+        tx.identities()
+            .expire_oauth_refresh_claim(&workspace_owner, &shared_name, claim.id(), 14)
+            .await
+            .expect("claimant expires its claim")
+    );
+    assert!(
+        !tx.identities()
+            .try_claim_oauth_refresh(&workspace_owner, &shared_name, &competing_claim)
+            .await
+            .expect("expired claims are never stolen")
+    );
+    tx.commit().await.expect("commit refresh claim expiry");
+    assert_eq!(
+        load_refresh_claim(db, &workspace_owner, &shared_name)
+            .await
+            .expect("expired claim remains durable")
+            .deadline_unix_nanos(),
+        14
+    );
+
     let replacement_metadata = metadata([("token_type", "DPoP")]);
     let expected_replaced_identity = IdentityRecord {
         owner: workspace_owner.clone(),
@@ -169,6 +228,11 @@ pub(in crate::state::db) async fn assert_identity_repository_contract(db: &Coral
         .expect("replace identity under regressed clock");
     assert_eq!(regressed_identity, expected_replaced_identity);
     tx.commit().await.expect("commit identity replacement tx");
+    assert_eq!(
+        load_refresh_claim(db, &workspace_owner, &shared_name).await,
+        None,
+        "explicit replacement must clear refresh coordination"
+    );
     assert_identity(
         db,
         &workspace_owner,
@@ -465,6 +529,19 @@ pub(super) async fn assert_identity(
             .as_ref(),
         Some(expected)
     );
+}
+
+async fn load_refresh_claim(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+) -> Option<IdentityOAuthRefreshClaim> {
+    let mut session = db;
+    session
+        .identities()
+        .load_oauth_refresh_claim(owner, name)
+        .await
+        .expect("load identity OAuth refresh claim")
 }
 
 pub(super) async fn assert_identity_absent(

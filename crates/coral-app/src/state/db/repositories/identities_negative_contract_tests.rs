@@ -130,6 +130,7 @@ pub(in crate::state::db) async fn assert_identity_repository_negative_contract(d
     ] {
         assert_corrupt_safe_metadata(db, &owner, &corrupt_name, value).await;
     }
+    assert_corrupt_oauth_refresh_claim(db, &owner, &corrupt_name).await;
     assert_identity(db, &owner, &corrupt_name, &original_identity).await;
 
     assert_document_corruption_matrix(db, &owner, &material_name).await;
@@ -350,6 +351,32 @@ async fn assert_corrupt_safe_metadata(
     tx.rollback().await.expect("restore safe metadata");
 }
 
+async fn assert_corrupt_oauth_refresh_claim(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+) {
+    let mut tx = db.begin().await.expect("begin corrupt refresh claim tx");
+    tx.execute(
+        Query::update()
+            .table(Identities::Table)
+            .value(Identities::OauthRefreshClaimId, "not-a-uuid")
+            .value(Identities::OauthRefreshClaimDeadlineUnixNanos, 50_i64)
+            .and_where(identity_where(owner, name))
+            .to_owned(),
+    )
+    .await
+    .expect("seed structurally valid corrupt claim");
+    let error = tx
+        .identities()
+        .load_oauth_refresh_claim(owner, name)
+        .await
+        .expect_err("runtime claim read must reject noncanonical IDs");
+    assert!(matches!(error, DbError::CorruptData(_)));
+    assert!(!error.to_string().contains("not-a-uuid"));
+    tx.rollback().await.expect("restore refresh claim");
+}
+
 async fn assert_corrupt_document(
     db: &CoralDb,
     owner: &IdentityOwner,
@@ -399,6 +426,33 @@ async fn assert_constraint_violations(
             .and_where(identity_where(owner, constraint_name))
             .to_owned(),
         Violation::NotNull,
+    )
+    .await;
+    assert_violation(
+        db,
+        Query::update()
+            .table(Identities::Table)
+            .value(
+                Identities::OauthRefreshClaimId,
+                uuid::Uuid::new_v4().simple().to_string(),
+            )
+            .and_where(identity_where(owner, constraint_name))
+            .to_owned(),
+        Violation::Check,
+    )
+    .await;
+    assert_violation(
+        db,
+        Query::update()
+            .table(Identities::Table)
+            .value(
+                Identities::OauthRefreshClaimId,
+                uuid::Uuid::new_v4().simple().to_string(),
+            )
+            .value(Identities::OauthRefreshClaimDeadlineUnixNanos, -1_i64)
+            .and_where(identity_where(owner, constraint_name))
+            .to_owned(),
+        Violation::Check,
     )
     .await;
     assert_violation(

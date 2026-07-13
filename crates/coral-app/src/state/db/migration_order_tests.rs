@@ -283,6 +283,14 @@ async fn assert_migration_order_contract(db: &CoralDb) {
         .expect("load migrated identity")
         .expect("migrated identity");
     assert!(legacy.safe_metadata.is_empty());
+    assert!(
+        session
+            .identities()
+            .load_oauth_refresh_claim(&owner, &name)
+            .await
+            .expect("load migrated refresh claim")
+            .is_none()
+    );
     assert_eq!(
         (legacy.created_at_unix_nanos, legacy.updated_at_unix_nanos),
         (41, 42)

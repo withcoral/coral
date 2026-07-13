@@ -32,9 +32,9 @@ use crate::identity_specs::manager::{
     spec_not_found,
 };
 use crate::state::db::{
-    CoralDb, CoralTx, DbRepos, IdentityDocumentRecord, IdentityDocumentWrite, IdentityRecord,
-    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,
-    now_unix_nanos_i64,
+    CoralDb, CoralTx, DbRepos, IdentityDocumentRecord, IdentityDocumentWrite,
+    IdentityOAuthRefreshClaim, IdentityRecord, IdentitySpecDocumentRecord,
+    IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord, now_unix_nanos_i64,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -89,6 +89,7 @@ struct IdentityUseSnapshot {
     identity_document: Option<IdentityDocumentRecord>,
     identity_spec: Option<IdentitySpecRecord>,
     identity_spec_document: Option<IdentitySpecDocumentRecord>,
+    oauth_refresh_claim: Option<IdentityOAuthRefreshClaim>,
 }
 
 struct PreparedIdentityForUse {
@@ -397,7 +398,7 @@ impl IdentityManager {
             {
                 gate.wait_once().await;
             }
-            let revision = if prepared.needs_rewrap() {
+            let revision = if prepared.needs_rewrap() && snapshot.oauth_refresh_claim.is_none() {
                 match self
                     .try_rewrap_for_use(owner, &name, &snapshot, &prepared)
                     .await
@@ -455,6 +456,23 @@ impl IdentityManager {
             tx.rollback().await?;
             return Ok(None);
         }
+        let spec_rewrap_blocked = if prepared.identity_spec_rewrap.is_some() {
+            let key = current
+                .identity
+                .as_ref()
+                .expect("validated identity snapshot")
+                .spec_reference
+                .key();
+            tx.identities()
+                .has_oauth_refresh_claimed_dependents(key)
+                .await?
+        } else {
+            false
+        };
+        if spec_rewrap_blocked && prepared.identity_rewrap.is_none() {
+            tx.rollback().await?;
+            return Ok(Some(current));
+        }
         #[cfg(test)]
         if let Some(gate) = &self.before_upsert_gate
             && !gate.used.swap(true, Ordering::SeqCst)
@@ -463,7 +481,9 @@ impl IdentityManager {
         }
         let now = now_unix_nanos_i64()?;
         let result = async {
-            if let Some(write) = &prepared.identity_spec_rewrap {
+            if let Some(write) = &prepared.identity_spec_rewrap
+                && !spec_rewrap_blocked
+            {
                 let key = current
                     .identity
                     .as_ref()
@@ -639,6 +659,10 @@ async fn load_identity_use_snapshot(
     workspace_created_at_unix_nanos: Option<i64>,
 ) -> Result<IdentityUseSnapshot, AppError> {
     let identity = tx.identities().load_optional(owner, name).await?;
+    let oauth_refresh_claim = tx
+        .identities()
+        .load_oauth_refresh_claim(owner, name)
+        .await?;
     let identity_document = tx.identity_documents().load_optional(owner, name).await?;
     let (identity_spec, identity_spec_document) = match identity.as_ref() {
         Some(identity) => {
@@ -656,6 +680,7 @@ async fn load_identity_use_snapshot(
         identity_document,
         identity_spec,
         identity_spec_document,
+        oauth_refresh_claim,
     })
 }
 

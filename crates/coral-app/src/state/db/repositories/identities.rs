@@ -9,6 +9,51 @@ use crate::state::db::{CoralTx, DbError, DbSession, IdentitySpecKey};
 
 const IDENTITY_COUNT: &str = "identity_count";
 
+/// Internal cross-process ownership of one in-flight identity OAuth refresh.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct IdentityOAuthRefreshClaim {
+    id: String,
+    deadline_unix_nanos: i64,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "OAuth refresh claim construction and ownership land in B5f"
+    )
+)]
+impl IdentityOAuthRefreshClaim {
+    pub(crate) fn new(id: uuid::Uuid, deadline_unix_nanos: i64) -> Result<Self, AppError> {
+        if deadline_unix_nanos < 0 {
+            return Err(AppError::InvalidInput(
+                "identity OAuth refresh claim deadline is negative".to_string(),
+            ));
+        }
+        Ok(Self {
+            id: id.simple().to_string(),
+            deadline_unix_nanos,
+        })
+    }
+
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn deadline_unix_nanos(&self) -> i64 {
+        self.deadline_unix_nanos
+    }
+}
+
+impl std::fmt::Debug for IdentityOAuthRefreshClaim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentityOAuthRefreshClaim")
+            .field("id", &"<opaque>")
+            .field("deadline_unix_nanos", &self.deadline_unix_nanos)
+            .finish()
+    }
+}
+
 /// Safe persisted fields for one owner-scoped identity instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IdentityRecord {
@@ -77,6 +122,33 @@ struct IdentityCountRow {
     identity_count: i64,
 }
 
+#[derive(sqlx::FromRow)]
+struct IdentityOAuthRefreshClaimRow {
+    oauth_refresh_claim_id: Option<String>,
+    oauth_refresh_claim_deadline_unix_nanos: Option<i64>,
+}
+
+impl IdentityOAuthRefreshClaimRow {
+    fn validate(self) -> Result<Option<IdentityOAuthRefreshClaim>, DbError> {
+        let (id, deadline_unix_nanos) = match (
+            self.oauth_refresh_claim_id,
+            self.oauth_refresh_claim_deadline_unix_nanos,
+        ) {
+            (None, None) => return Ok(None),
+            (Some(id), Some(deadline_unix_nanos)) => (id, deadline_unix_nanos),
+            _ => return Err(invalid_oauth_refresh_claim()),
+        };
+        let parsed = uuid::Uuid::parse_str(&id).map_err(|_error| invalid_oauth_refresh_claim())?;
+        if parsed.simple().to_string() != id || deadline_unix_nanos < 0 {
+            return Err(invalid_oauth_refresh_claim());
+        }
+        Ok(Some(IdentityOAuthRefreshClaim {
+            id,
+            deadline_unix_nanos,
+        }))
+    }
+}
+
 /// Repository shell for durable owner-scoped identity rows.
 pub(crate) struct IdentitiesRepo<'a, S> {
     session: &'a mut S,
@@ -124,6 +196,30 @@ where
         rows.into_iter().map(IdentityRow::validate).collect()
     }
 
+    /// Load internal OAuth refresh coordination without widening public identity fields.
+    pub(crate) async fn load_oauth_refresh_claim(
+        &mut self,
+        owner: &IdentityOwner,
+        name: &IdentityName,
+    ) -> Result<Option<IdentityOAuthRefreshClaim>, DbError> {
+        let row: Option<IdentityOAuthRefreshClaimRow> = self
+            .session
+            .fetch_optional(
+                Query::select()
+                    .columns([
+                        Identities::OauthRefreshClaimId,
+                        Identities::OauthRefreshClaimDeadlineUnixNanos,
+                    ])
+                    .from(Identities::Table)
+                    .and_where(identity_key_where(owner, name))
+                    .to_owned(),
+            )
+            .await?;
+        row.map(IdentityOAuthRefreshClaimRow::validate)
+            .transpose()
+            .map(Option::flatten)
+    }
+
     /// Count all identities pinned to one exact spec scope and name.
     pub(crate) async fn count_dependents(&mut self, key: &IdentitySpecKey) -> Result<u64, DbError> {
         self.count_where(identity_spec_where(key)).await
@@ -140,6 +236,18 @@ where
                 .and(Expr::col(Identities::IdentitySpecFingerprint).eq(fingerprint)),
         )
         .await
+    }
+
+    /// Report whether any exact dependent currently owns an OAuth refresh claim.
+    pub(crate) async fn has_oauth_refresh_claimed_dependents(
+        &mut self,
+        key: &IdentitySpecKey,
+    ) -> Result<bool, DbError> {
+        self.count_where(
+            identity_spec_where(key).and(Expr::col(Identities::OauthRefreshClaimId).is_not_null()),
+        )
+        .await
+        .map(|count| count != 0)
     }
 
     async fn count_where(&mut self, predicate: sea_query::SimpleExpr) -> Result<u64, DbError> {
@@ -169,6 +277,67 @@ where
 }
 
 impl IdentitiesRepo<'_, CoralTx<'_>> {
+    /// Acquire an unclaimed identity refresh slot without stealing stale claims.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "OAuth refresh claim acquisition lands in B5f")
+    )]
+    pub(crate) async fn try_claim_oauth_refresh(
+        &mut self,
+        owner: &IdentityOwner,
+        name: &IdentityName,
+        claim: &IdentityOAuthRefreshClaim,
+    ) -> Result<bool, DbError> {
+        let rows_affected = self
+            .session
+            .execute_affected(
+                Query::update()
+                    .table(Identities::Table)
+                    .value(Identities::OauthRefreshClaimId, claim.id.clone())
+                    .value(
+                        Identities::OauthRefreshClaimDeadlineUnixNanos,
+                        claim.deadline_unix_nanos,
+                    )
+                    .and_where(identity_key_where(owner, name))
+                    .and_where(Expr::col(Identities::OauthRefreshClaimId).is_null())
+                    .and_where(Expr::col(Identities::OauthRefreshClaimDeadlineUnixNanos).is_null())
+                    .to_owned(),
+            )
+            .await?;
+        zero_or_one_affected(rows_affected, "identity OAuth refresh claim")
+    }
+
+    /// Make a matching claim immediately fail closed without releasing ownership.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "OAuth refresh failure handling lands in B5f")
+    )]
+    pub(crate) async fn expire_oauth_refresh_claim(
+        &mut self,
+        owner: &IdentityOwner,
+        name: &IdentityName,
+        claim_id: &str,
+        now_unix_nanos: i64,
+    ) -> Result<bool, AppError> {
+        validate_write_timestamp(now_unix_nanos)?;
+        let rows_affected = self
+            .session
+            .execute_affected(
+                Query::update()
+                    .table(Identities::Table)
+                    .value(
+                        Identities::OauthRefreshClaimDeadlineUnixNanos,
+                        now_unix_nanos,
+                    )
+                    .and_where(identity_key_where(owner, name))
+                    .and_where(Expr::col(Identities::OauthRefreshClaimId).eq(claim_id))
+                    .to_owned(),
+            )
+            .await?;
+        zero_or_one_affected(rows_affected, "identity OAuth refresh claim expiry")
+            .map_err(Into::into)
+    }
+
     /// Insert or replace one identity while preserving its creation time.
     pub(crate) async fn upsert(
         &mut self,
@@ -220,6 +389,14 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
                     Identities::IdentityType,
                     Identities::SafeMetadataJson,
                 ])
+                .value(
+                    Identities::OauthRefreshClaimId,
+                    Expr::val(Option::<String>::None),
+                )
+                .value(
+                    Identities::OauthRefreshClaimDeadlineUnixNanos,
+                    Expr::val(Option::<i64>::None),
+                )
                 .value(
                     Identities::UpdatedAtUnixNanos,
                     Expr::case(
@@ -282,6 +459,10 @@ fn decode_safe_metadata(value: &str) -> Result<BTreeMap<String, String>, DbError
 
 fn invalid_safe_metadata() -> DbError {
     DbError::CorruptData("identity row has invalid safe metadata JSON".to_string())
+}
+
+fn invalid_oauth_refresh_claim() -> DbError {
+    DbError::CorruptData("identity row has invalid OAuth refresh claim".to_string())
 }
 
 fn zero_or_one_affected(rows_affected: u64, operation: &str) -> Result<bool, DbError> {

@@ -27,9 +27,9 @@ use crate::identity::{
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::identity_specs::manager::{IdentitySpecInputValue, IdentitySpecManager};
 use crate::state::db::{
-    CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityRecord,
-    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecScope,
-    IdentitySpecWrite, ResolvedDatabaseConfig,
+    CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityOAuthRefreshClaim,
+    IdentityRecord, IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey,
+    IdentitySpecScope, IdentitySpecWrite, ResolvedDatabaseConfig,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -372,32 +372,16 @@ async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
     assert_fixed_bearer_runtime(&manager, &owner, &principal, &identity_name, &spec_name).await;
 
     let new_key = CredentialEncryptionKey::from_static_bytes_for_test([62; 32]);
-    let rotated = IdentityManager::new(
-        db.clone(),
-        Arc::new(TestKeyProvider(vec![old_key, new_key.clone()])),
-    );
-    let rotated_result = rotated
-        .get_for_use(&owner, &identity_name)
-        .await
-        .expect("resolve and rewrap identity for use");
-    assert_eq!(
-        rotated_result.material().get("TOKEN").unwrap(),
-        "token-value"
-    );
-    let after_identity = load_pair(db, &owner, &identity_name).await.1.unwrap();
-    assert_eq!(after_identity.document_version, 2);
-    assert_eq!(after_identity.key_id, new_key.key_id());
-    assert_eq!(after_identity.ciphertext, before_identity.ciphertext);
-    assert_eq!(after_identity.nonce, before_identity.nonce);
-    let reopened = rotated
-        .get_for_use(&owner, &identity_name)
-        .await
-        .expect("reopen rewrapped identity");
-    assert_eq!(reopened.material().get("TOKEN").unwrap(), "token-value");
-    assert_eq!(
-        load_pair(db, &owner, &identity_name).await.1.unwrap(),
-        after_identity
-    );
+    let (rotated, after_identity) = Box::pin(assert_refresh_claim_fences_rewrap(
+        db,
+        &owner,
+        &identity_name,
+        &created,
+        &before_identity,
+        &old_key,
+        &new_key,
+    ))
+    .await;
 
     let unavailable = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(vec![])));
     assert!(matches!(
@@ -429,6 +413,75 @@ async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
             if detail.contains("orphaned") && detail.contains("restore")
     ));
     assert_eq!(rotated.get(&owner, &identity_name).await.unwrap(), created);
+}
+
+async fn assert_refresh_claim_fences_rewrap(
+    db: &Arc<CoralDb>,
+    owner: &IdentityOwner,
+    identity_name: &str,
+    created: &IdentityRecord,
+    before_document: &IdentityDocumentRecord,
+    old_key: &CredentialEncryptionKey,
+    new_key: &CredentialEncryptionKey,
+) -> (IdentityManager, IdentityDocumentRecord) {
+    let name = IdentityName::parse(identity_name).unwrap();
+    let claim = IdentityOAuthRefreshClaim::new(uuid::Uuid::new_v4(), i64::MAX)
+        .expect("valid refresh claim");
+    let mut tx = db.begin_serializable().await.expect("begin claim tx");
+    assert!(
+        tx.identities()
+            .try_claim_oauth_refresh(owner, &name, &claim)
+            .await
+            .expect("claim identity refresh")
+    );
+    tx.commit().await.expect("commit refresh claim");
+
+    let rotated = manager_with_keys(db, vec![old_key.clone(), new_key.clone()]);
+    let claimed_result = rotated
+        .get_for_use(owner, identity_name)
+        .await
+        .expect("resolve claimed identity without rewrap");
+    assert_use_token(&claimed_result, "token-value");
+    assert_eq!(
+        load_pair(db, owner, identity_name).await.1.as_ref(),
+        Some(before_document),
+        "active refresh claim must fence opportunistic rewrap"
+    );
+    let mut tx = db.begin_serializable().await.expect("begin replacement tx");
+    let cleared = tx
+        .identities()
+        .upsert(
+            owner,
+            &name,
+            &created.spec_reference,
+            &created.safe_metadata,
+            created.updated_at_unix_nanos,
+        )
+        .await
+        .expect("same-value replacement clears claim");
+    assert_eq!(&cleared, created);
+    tx.commit().await.expect("commit replacement");
+
+    let rotated_result = rotated
+        .get_for_use(owner, identity_name)
+        .await
+        .expect("resolve and rewrap identity for use");
+    assert_use_token(&rotated_result, "token-value");
+    let after_document = load_pair(db, owner, identity_name).await.1.unwrap();
+    assert_eq!(after_document.document_version, 2);
+    assert_eq!(after_document.key_id, new_key.key_id());
+    assert_eq!(after_document.ciphertext, before_document.ciphertext);
+    assert_eq!(after_document.nonce, before_document.nonce);
+    let reopened = rotated
+        .get_for_use(owner, identity_name)
+        .await
+        .expect("reopen rewrapped identity");
+    assert_use_token(&reopened, "token-value");
+    assert_eq!(
+        load_pair(db, owner, identity_name).await.1.unwrap(),
+        after_document
+    );
+    (rotated, after_document)
 }
 
 async fn assert_fixed_bearer_runtime(
@@ -655,7 +708,7 @@ async fn assert_use_delete_recreate_race(
 ) {
     let race = seed_user_use_race(db, suffix, "recreate", old_key).await;
     let writer = manager_with_keys(db, vec![old_key.clone()]);
-    let (resolved, recreated) = race_before_use_cas(
+    let (resolved, recreated) = Box::pin(race_before_use_cas(
         manager_with_keys(db, vec![old_key.clone(), new_key.clone()]),
         &race.owner,
         &race.name,
@@ -670,7 +723,7 @@ async fn assert_use_delete_recreate_race(
                 )
                 .await
         },
-    )
+    ))
     .await;
     recreated.expect("concurrent delete/recreate");
     assert_use_token(&resolved.expect("ABA race resolution"), "winner-token");

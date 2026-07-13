@@ -62,6 +62,8 @@ pub(in crate::state::db) enum Identities {
     Issuer,
     IdentityType,
     SafeMetadataJson,
+    OauthRefreshClaimId,
+    OauthRefreshClaimDeadlineUnixNanos,
     CreatedAtUnixNanos,
     UpdatedAtUnixNanos,
 }
