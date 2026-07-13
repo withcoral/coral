@@ -40,6 +40,7 @@ jobs:
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
       reef-checks: ${{ steps.filter.outputs.reef-checks }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
+      desktop-package-macos: ${{ steps.filter.outputs.desktop-package-macos }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
@@ -96,6 +97,15 @@ jobs:
             desktop-checks:
               - '.github/workflows/validate.yml'
               - 'apps/desktop/**'
+            desktop-package-macos:
+              - '.github/workflows/validate.yml'
+              - '.github/workflows/release.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'crates/**'
+              - 'apps/desktop/**'
+              - 'apps/reef/**'
+              - 'apps/ui/**'
             proto-lint:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -507,6 +517,77 @@ jobs:
       - name: Type-check desktop
         run: npm run check --prefix apps/desktop
 
+  desktop-package-macos:
+    name: Desktop macOS package
+    runs-on: macos-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.desktop-package-macos == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: apps/desktop/.node-version
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      - name: Package desktop app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run package:mac --prefix apps/desktop
+
+      - name: Verify desktop package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s apps/desktop/dist/latest-mac.yml
+
+          shopt -s nullglob
+          dmg_artifacts=(apps/desktop/dist/coral-desktop-*.dmg)
+          zip_artifacts=(apps/desktop/dist/coral-desktop-*.zip)
+          blockmap_artifacts=(apps/desktop/dist/coral-desktop-*.blockmap)
+          if [ "${#dmg_artifacts[@]}" -ne 1 ] || [ "${#zip_artifacts[@]}" -ne 1 ]; then
+            echo "Expected exactly one desktop DMG and one desktop ZIP artifact." >&2
+            printf 'DMGs: %s\n' "${dmg_artifacts[*]:-<none>}" >&2
+            printf 'ZIPs: %s\n' "${zip_artifacts[*]:-<none>}" >&2
+            exit 1
+          fi
+          if [ "${#blockmap_artifacts[@]}" -eq 0 ]; then
+            echo "Expected at least one desktop blockmap artifact." >&2
+            exit 1
+          fi
+          grep -q "$(basename "${zip_artifacts[0]}")" apps/desktop/dist/latest-mac.yml
+
+      # Unsigned build for manual inspection; the run page serves it for a week.
+      - name: Upload desktop package artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-desktop-macos-unsigned
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            apps/desktop/dist/coral-desktop-*.dmg
+            apps/desktop/dist/coral-desktop-*.zip
+            apps/desktop/dist/coral-desktop-*.blockmap
+            apps/desktop/dist/latest-mac.yml
+
   proto-lint:
     name: Lint protobuf API
     runs-on: ubuntu-latest
@@ -732,6 +813,7 @@ jobs:
         ui-tests,
         reef-checks,
         desktop-checks,
+        desktop-package-macos,
         proto-lint,
         gha-security-audit-pr,
         gha-security-audit-sarif,
@@ -755,6 +837,7 @@ jobs:
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
+          DESKTOP_PACKAGE_MACOS_RESULT: ${{ needs.desktop-package-macos.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
           GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
@@ -773,6 +856,7 @@ jobs:
             "ui-tests:$UI_TESTS_RESULT"
             "reef-checks:$REEF_CHECKS_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
+            "desktop-package-macos:$DESKTOP_PACKAGE_MACOS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
             "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"
