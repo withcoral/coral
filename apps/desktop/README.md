@@ -15,6 +15,10 @@ process serves Reef through React Router's server build over a custom
 the same scheme, points the window at it, and handles the native shell concerns:
 app lifecycle, window and menu, and MCP client configuration.
 
+The renderer never receives a Coral endpoint. Browser interactions reach Coral
+through React Router loaders, actions, or resource routes, and the server build
+uses `CORAL_ENDPOINT` to reach the supervised sidecar.
+
 ## Scope
 
 - Electron shell running Reef in-window with a supervised Coral CLI sidecar

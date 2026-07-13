@@ -44,6 +44,9 @@ const COMPONENTS_DIR = path.join(APP_SRC, 'components')
 const ROUTE_CONFIG_FILE = path.join(APP_SRC, 'routes.ts')
 const ROUTES_DIR = path.join(APP_SRC, 'routes')
 const WAX_COMPONENTS_DIR = path.join(APP_SRC, 'wax', 'components')
+const REEF_ROOT = path.resolve(APP_SRC, '..')
+const DESKTOP_SRC_DIR = path.resolve(REEF_ROOT, '..', 'desktop', 'src')
+const DESKTOP_MAIN_DIR = path.join(DESKTOP_SRC_DIR, 'main')
 
 // Rules that apply to both the wax design system and app-level components.
 const ALL_COMPONENT_DIRS = [WAX_COMPONENTS_DIR, COMPONENTS_DIR]
@@ -279,6 +282,14 @@ function getFilesRecursively(dir: string, pattern: RegExp): string[] {
 
   walk(dir)
   return files
+}
+
+function sourceSection(content: string, startMarker: string, endMarker: string): string {
+  const start = content.indexOf(startMarker)
+  const end = content.indexOf(endMarker, start)
+  expect(start, `Missing source marker: ${startMarker}`).toBeGreaterThanOrEqual(0)
+  expect(end, `Missing source marker: ${endMarker}`).toBeGreaterThan(start)
+  return content.slice(start, end).replace(/\s/g, '')
 }
 
 describe('Architectural Tests', () => {
@@ -542,6 +553,108 @@ describe('Architectural Tests', () => {
             `Please update BASELINES.storybookCoverageComponents to ${violations.length} in this file.`,
         )
       }
+    })
+  })
+
+  describe('5. Coral Transport Boundaries', () => {
+    it('keeps Connect transport construction out of browser application source', () => {
+      const browserSourceFiles = getFilesRecursively(APP_SRC, /\.tsx?$/).filter(
+        (file) =>
+          !file.includes('.server.') &&
+          !file.includes('.test.') &&
+          !file.includes('.stories.') &&
+          !file.includes(`${path.sep}__tests__${path.sep}`),
+      )
+      const violations = browserSourceFiles
+        .filter((file) => {
+          const content = fs.readFileSync(file, 'utf-8')
+          return (
+            extractImports(content).includes('@connectrpc/connect-web') ||
+            /\bcreateGrpcWebTransport\s*\(/.test(content)
+          )
+        })
+        .map((file) => path.relative(APP_SRC, file))
+
+      expect(violations).toEqual([])
+    })
+
+    it('keeps Source and Trace clients behind the request-scoped server boundary', () => {
+      const requestClient = fs.readFileSync(
+        path.join(APP_SRC, 'lib', 'coral-request.server.ts'),
+        'utf-8',
+      )
+
+      expect(extractImports(requestClient)).toContain('@connectrpc/connect-web')
+      expect(requestClient).toMatch(/export function sourceClientForRequest\s*\(/)
+      expect(requestClient).toMatch(/export function traceClientForRequest\s*\(/)
+    })
+
+    it('retains root sidebar hydration without warming a browser Coral runtime', () => {
+      const root = fs.readFileSync(path.join(APP_SRC, 'root.tsx'), 'utf-8')
+
+      expect(root).not.toMatch(/ensureCoralRuntime|coral-runtime/)
+      expect(root).toMatch(/readSidebarCollapsedCookieValue\(document\.cookie\)/)
+      expect(root).toMatch(/clientLoader\.hydrate\s*=\s*true as const/)
+    })
+
+    it('keeps Desktop main responsible for sidecar readiness', () => {
+      const desktopIndex = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'index.ts'), 'utf-8')
+      const appRenderer = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'app-renderer.ts'), 'utf-8')
+      const devEntry = sourceSection(
+        desktopIndex,
+        'async function rendererEntryUrl()',
+        'function urlOrigin',
+      )
+      const readyHandler = sourceSection(
+        desktopIndex,
+        'app.whenReady().then',
+        "app.on('before-quit'",
+      )
+      const responseHandler = sourceSection(
+        appRenderer,
+        'async function reactRouterResponse',
+        'async function secureDocumentResponse',
+      )
+      const endpointRefresh = sourceSection(
+        appRenderer,
+        'async function refreshServerSidecarEndpoint',
+        'async function reactRouterResponse',
+      )
+      const refreshIndex = responseHandler.indexOf(
+        'awaitrefreshServerSidecarEndpoint(resolveSidecarBaseUrl)',
+      )
+      const handlerIndex = responseHandler.indexOf('awaitloadReactRouterHandler()')
+
+      expect(devEntry).toContain('awaitensureSidecar()')
+      expect(readyHandler).toContain(
+        'registerAppProtocol(()=>ensureSidecar().then((started)=>started.url))',
+      )
+      expect(readyHandler).toContain('voidensureSidecar().catch(')
+      expect(endpointRefresh).toContain('process.env.CORAL_ENDPOINT=awaitresolveSidecarBaseUrl()')
+      expect(refreshIndex).toBeGreaterThanOrEqual(0)
+      expect(handlerIndex).toBeGreaterThanOrEqual(0)
+      expect(refreshIndex).toBeLessThan(handlerIndex)
+    })
+
+    it('does not expose Coral transport through the renderer or Desktop preload', () => {
+      const appRenderer = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'app-renderer.ts'), 'utf-8')
+      const desktopIndex = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'index.ts'), 'utf-8')
+      const preload = fs.readFileSync(path.join(DESKTOP_SRC_DIR, 'preload', 'index.ts'), 'utf-8')
+      const sharedTypes = fs.readFileSync(path.join(DESKTOP_SRC_DIR, 'shared', 'types.ts'), 'utf-8')
+      const viteConfig = fs.readFileSync(path.join(REEF_ROOT, 'vite.config.ts'), 'utf-8')
+      const transportSurfaces = [appRenderer, desktopIndex, preload, sharedTypes, viteConfig]
+
+      for (const source of transportSurfaces) {
+        expect(source).not.toMatch(
+          /\/__coral__|GRPC_PATH_PREFIX|APP_GRPC_BASE|grpcBaseUrl|awaitInitialization|coral:await-initialization|proxyToSidecar/,
+        )
+      }
+      expect(viteConfig).toContain("'/coral.v1'")
+      expect(preload).toContain("contextBridge.exposeInMainWorld('coralDesktop', api)")
+      expect(preload).toContain('listMcpClients:')
+      expect(preload).toContain('configureMcp:')
+      expect(sharedTypes).toMatch(/interface CoralDesktopApi[\s\S]*listMcpClients\(\)/)
+      expect(sharedTypes).toMatch(/interface CoralDesktopApi[\s\S]*configureMcp\(/)
     })
   })
 })

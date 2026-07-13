@@ -67,6 +67,10 @@
 - Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
   should compile generic runtime components, not interpret DSL v4 authored
   manifests, materialized fingerprints, semantic IR, or projection catalogs.
+- Keep Reef Coral access behind React Router server loaders, actions, or
+  resource routes using `apps/reef/app/lib/coral-request.server.ts`. Do not
+  expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
+  explicit server route when browser-triggered Coral behavior is needed.
 - For DSL v4 materialization, the user owns when a source is generated or
   regenerated. Coral materializes at source add, queries only from the
   installed materialized package, never silently refreshes descriptors or

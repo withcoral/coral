@@ -6,7 +6,6 @@ import {
   readSidebarCollapsedCookieValue,
 } from './components/sidebar/sidebar-state'
 import { NavigationProgressBar } from './components/navigation-progress-bar'
-import { ensureCoralRuntime } from './lib/coral-runtime'
 import './styles/globals.css'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
@@ -94,10 +93,6 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function clientLoader(_args: Route.ClientLoaderArgs) {
-  // Warm the runtime in the background — do NOT await it, or the app shell blanks
-  // until the sidecar finishes starting (there's no HydrateFallback). Route-level
-  // fetches surface connectivity errors with inline loading/error states.
-  void ensureCoralRuntime()
   return {
     sidebarIsMinimized: readSidebarCollapsedCookieValue(document.cookie),
   }

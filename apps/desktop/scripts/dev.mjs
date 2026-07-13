@@ -12,11 +12,11 @@ const electronViteBin = resolve(
   process.platform === 'win32' ? 'electron-vite.cmd' : 'electron-vite',
 )
 
-// Shared between the Vite dev server (which proxies `/__coral__` to the sidecar)
-// and the sidecar spawn in the Electron main process. Fixed so Vite's config,
-// loaded before the sidecar exists, has a known proxy target.
+// Shared between the Reef React Router server (through CORAL_ENDPOINT) and the
+// sidecar spawn in the Electron main process. The fixed port lets the server
+// know its endpoint before Electron finishes starting the sidecar.
 // `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back to the
-// default rather than propagating an empty port to the sidecar and Vite proxy.
+// default rather than propagating an empty port to either process.
 const sidecarPort = process.env.CORAL_DEV_SIDECAR_PORT || '8778'
 
 // A missing electron/path.txt (skipped/interrupted postinstall binary download)
@@ -126,7 +126,6 @@ const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/reef'], 
     CORAL_DESKTOP_APP: '1',
     CORAL_ENDPOINT: `http://127.0.0.1:${sidecarPort}`,
     VITE_CORAL_DESKTOP_APP: '1',
-    CORAL_DEV_SIDECAR_PORT: sidecarPort,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
