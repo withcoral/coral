@@ -6,11 +6,15 @@
 )]
 
 mod oauth_create;
+mod oauth_refresh;
 
 pub(crate) use oauth_create::IdentityOAuthCommitPhase;
+use oauth_refresh::IdentityOAuthRefreshOutcome;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -371,7 +375,15 @@ impl IdentityManager {
     }
 
     /// Resolve one identity and its exact installed spec from one coherent snapshot.
-    pub(crate) async fn get_for_use(
+    pub(crate) fn get_for_use<'a>(
+        &'a self,
+        owner: &'a IdentityOwner,
+        identity_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ResolvedIdentityForUse, AppError>> + Send + 'a>> {
+        Box::pin(self.get_for_use_inner(owner, identity_name))
+    }
+
+    async fn get_for_use_inner(
         &self,
         owner: &IdentityOwner,
         identity_name: &str,
@@ -392,6 +404,17 @@ impl IdentityManager {
                 prepare_identity_for_use(crypto_snapshot, &crypto_name, key_provider.as_ref())
             })
             .await?;
+            let (snapshot, prepared) = match self
+                .refresh_prepared_identity(owner, &name, snapshot, prepared)
+                .await?
+            {
+                IdentityOAuthRefreshOutcome::Unchanged(state) => *state,
+                IdentityOAuthRefreshOutcome::Retry => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                IdentityOAuthRefreshOutcome::Refreshed(resolved) => return Ok(*resolved),
+            };
             #[cfg(test)]
             if prepared.needs_rewrap()
                 && let Some(gate) = &self.before_use_cas_gate

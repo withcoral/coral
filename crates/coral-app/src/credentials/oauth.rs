@@ -39,7 +39,6 @@ const REFRESH_EXPIRY_SKEW_SECONDS: i64 = 60;
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Duration used for the durable claim that fences one provider refresh.
-#[expect(dead_code, reason = "consumed by B5f")]
 pub(crate) fn oauth_refresh_claim_duration() -> Duration {
     TOKEN_REQUEST_TIMEOUT
 }
@@ -97,7 +96,6 @@ impl<'a> RefreshOAuthCredentialRequest<'a> {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "consumed by B5f"))]
     pub(crate) fn for_identity(
         identity_name: &str,
         access_token_material_key: &'a str,

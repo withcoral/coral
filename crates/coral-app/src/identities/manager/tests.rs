@@ -12,7 +12,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    IdentityManager, IdentityOAuthCommitPhase, IdentityOAuthCreationEvent, ResolvedIdentityForUse,
+    IdentityManager, IdentityOAuthCommitPhase, IdentityOAuthCreationEvent, IdentityUseSnapshot,
+    ResolvedIdentityForUse, identity_document_write, identity_envelope, load_identity_use_snapshot,
 };
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
@@ -27,9 +28,10 @@ use crate::identity::{
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::identity_specs::manager::{IdentitySpecInputValue, IdentitySpecManager};
 use crate::state::db::{
-    CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityOAuthRefreshClaim,
-    IdentityRecord, IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey,
-    IdentitySpecScope, IdentitySpecWrite, ResolvedDatabaseConfig,
+    CoralDb, DbError, DbRepos, DbSession, IdentityDocumentRecord, IdentityDocumentWrite,
+    IdentityOAuthRefreshClaim, IdentityRecord, IdentitySpecDocumentRecord,
+    IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecScope, IdentitySpecWrite,
+    ResolvedDatabaseConfig, now_unix_nanos_i64,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -59,7 +61,7 @@ impl CredentialKeyProvider for TestKeyProvider {
 }
 
 #[tokio::test]
-async fn sqlite_fixed_token_manager_contract() {
+async fn sqlite_identity_manager_contracts() {
     let temp = tempdir().expect("temp dir");
     let db = Arc::new(
         CoralDb::open(ResolvedDatabaseConfig::Sqlite {
@@ -70,6 +72,7 @@ async fn sqlite_fixed_token_manager_contract() {
     );
     db.migrate().await.expect("migrate sqlite");
     Box::pin(assert_fixed_token_manager_contract(&db)).await;
+    Box::pin(assert_oauth_refresh_manager_contract(&db)).await;
 }
 
 #[tokio::test]
@@ -255,6 +258,233 @@ async fn sqlite_oauth_creation_core_contract() {
     assert!(requests.iter().all(|request| {
         String::from_utf8_lossy(&request.body).contains("client_id=spec-client-id")
     }));
+}
+
+struct RefreshManagerFixture {
+    provider: MockServer,
+    manager: IdentityManager,
+    owner: IdentityOwner,
+    name: IdentityName,
+    keys: Arc<TestKeyProvider>,
+}
+
+#[expect(clippy::too_many_lines, reason = "shared refresh manager contract")]
+#[expect(clippy::used_underscore_binding, reason = "opaque revision contract")]
+pub(crate) async fn assert_oauth_refresh_manager_contract(db: &Arc<CoralDb>) {
+    let success = create_refresh_manager_fixture(db, false).await;
+    let before = load_pair(db, &success.owner, success.name.as_str()).await;
+    let prepared = success
+        .manager
+        .prepare_bearer_for_use(&success.owner, success.name.as_str())
+        .await
+        .expect("refresh expired OAuth identity");
+    assert_eq!(
+        prepared.resolved_for_refresh().material()["ACCESS_TOKEN"],
+        "refreshed-token"
+    );
+    let (Some(record), Some(document)) = load_pair(db, &success.owner, success.name.as_str()).await
+    else {
+        panic!("refreshed identity pair must remain durable");
+    };
+    let expected_safe = BTreeMap::from([
+        ("scope".to_string(), "repo refreshed".to_string()),
+        ("token_type".to_string(), "Bearer".to_string()),
+    ]);
+    assert_eq!(record.safe_metadata, expected_safe);
+    assert_eq!(
+        document.document_version,
+        before.1.as_ref().unwrap().document_version + 1
+    );
+    let material = decrypt_material(&record, &document, success.keys.as_ref());
+    assert!(matches!(material.get("ACCESS_TOKEN"), Some(token) if token == "refreshed-token"));
+    assert!(
+        material
+            .keys()
+            .all(|key| !key.ends_with(".access_token_expires_at"))
+    );
+    let committed = load_use_snapshot(db, &success.owner, &success.name).await;
+    assert_eq!(prepared.resolved_for_refresh().identity, record);
+    assert!(prepared.resolved_for_refresh().revision()._snapshot == committed);
+    assert!(committed.oauth_refresh_claim.is_none());
+    success
+        .manager
+        .prepare_bearer_for_use(&success.owner, success.name.as_str())
+        .await
+        .expect("reopen without a second refresh");
+    let requests = success.provider.received_requests().await.unwrap();
+    let refresh_request = |request: &&wiremock::Request| {
+        String::from_utf8_lossy(&request.body).contains("grant_type=refresh_token")
+    };
+    assert_eq!(requests.iter().filter(refresh_request).count(), 1);
+    assert!(requests.iter().filter(refresh_request).all(|request| {
+        String::from_utf8_lossy(&request.body).contains("client_id=spec-client-id")
+    }));
+
+    let failed = create_refresh_manager_fixture(db, true).await;
+    let before = load_pair(db, &failed.owner, failed.name.as_str()).await;
+    let error = failed
+        .manager
+        .prepare_bearer_for_use(&failed.owner, failed.name.as_str())
+        .await
+        .expect_err("provider failure must fail closed");
+    let detail = error.to_string();
+    for canary in ["provider-secret-canary", "access-token", "refresh-token"] {
+        assert!(!detail.contains(canary), "diagnostic leaked {canary}");
+    }
+    assert_eq!(
+        load_pair(db, &failed.owner, failed.name.as_str()).await,
+        before
+    );
+    let failed_snapshot = load_use_snapshot(db, &failed.owner, &failed.name).await;
+    let failed_claim = failed_snapshot.oauth_refresh_claim.clone().unwrap();
+    assert!(failed_claim.deadline_unix_nanos() <= now_unix_nanos_i64().unwrap());
+    let candidate = identity_document_write(identity_envelope(
+        failed_snapshot.identity_document.as_ref().unwrap(),
+    ))
+    .unwrap();
+    let candidate_safe = BTreeMap::from([("scope".to_string(), "candidate".to_string())]);
+    let finalized = finish_refresh_candidate(
+        &failed,
+        &failed_claim,
+        &failed_snapshot,
+        &candidate,
+        &candidate_safe,
+    )
+    .await
+    .expect("matching claimant may finalize after its deadline");
+    assert!(finalized.oauth_refresh_claim.is_none());
+    assert_eq!(finalized.identity.unwrap().safe_metadata, candidate_safe);
+
+    let expected = claim_refresh_snapshot(db, &failed.owner, &failed.name).await;
+    let claim = expected.oauth_refresh_claim.clone().unwrap();
+    let wrong_claim = IdentityOAuthRefreshClaim::new(uuid::Uuid::new_v4(), i64::MAX).unwrap();
+    assert!(
+        finish_refresh_candidate(
+            &failed,
+            &wrong_claim,
+            &expected,
+            &candidate,
+            &candidate_safe
+        )
+        .await
+        .is_err()
+    );
+    assert!(load_use_snapshot(db, &failed.owner, &failed.name).await == expected);
+    let mut tx = db.begin_serializable().await.unwrap();
+    tx.identity_documents()
+        .upsert(
+            &failed.owner,
+            &failed.name,
+            &candidate,
+            now_unix_nanos_i64().unwrap(),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let changed = load_use_snapshot(db, &failed.owner, &failed.name).await;
+    assert!(changed != expected);
+    assert!(
+        finish_refresh_candidate(&failed, &claim, &expected, &candidate, &candidate_safe)
+            .await
+            .is_err()
+    );
+    assert!(load_use_snapshot(db, &failed.owner, &failed.name).await == changed);
+}
+
+async fn create_refresh_manager_fixture(
+    db: &Arc<CoralDb>,
+    fail_refresh: bool,
+) -> RefreshManagerFixture {
+    let provider = refresh_device_oauth_provider(fail_refresh).await;
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let spec_name = format!("refresh_{suffix}");
+    let name = IdentityName::parse(&format!("refresh-{suffix}")).unwrap();
+    let key = CredentialEncryptionKey::from_static_bytes_for_test([71; 32]);
+    let keys = Arc::new(TestKeyProvider(vec![key.clone()]));
+    IdentitySpecManager::new(db.clone(), keys.clone())
+        .add_or_replace_exact(
+            IdentitySpecScope::global(),
+            &device_oauth_manifest(&spec_name, &provider.uri()),
+            vec![IdentitySpecInputValue::new(
+                "OAUTH_CLIENT_ID",
+                "spec-client-id",
+            )],
+        )
+        .await
+        .unwrap();
+    let manager = IdentityManager::new(db.clone(), keys.clone());
+    let principal = UserPrincipal::for_user(&format!("refresh-{suffix}")).unwrap();
+    manager
+        .create_or_replace_user_oauth(
+            &principal,
+            name.as_str(),
+            &spec_name,
+            IdentityOAuthCommitPhase::default(),
+            |_event| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+    RefreshManagerFixture {
+        provider,
+        manager,
+        owner: IdentityOwner::for_user(principal),
+        name,
+        keys,
+    }
+}
+
+async fn load_use_snapshot(
+    db: &Arc<CoralDb>,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+) -> IdentityUseSnapshot {
+    let mut tx = db.begin_read_snapshot().await.unwrap();
+    let snapshot = load_identity_use_snapshot(&mut tx, owner, name, None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    snapshot
+}
+
+async fn claim_refresh_snapshot(
+    db: &Arc<CoralDb>,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+) -> IdentityUseSnapshot {
+    let claim = IdentityOAuthRefreshClaim::new(uuid::Uuid::new_v4(), i64::MAX).unwrap();
+    let mut tx = db.begin_serializable().await.unwrap();
+    let mut snapshot = load_identity_use_snapshot(&mut tx, owner, name, None)
+        .await
+        .unwrap();
+    assert!(
+        tx.identities()
+            .try_claim_oauth_refresh(owner, name, &claim)
+            .await
+            .unwrap()
+    );
+    snapshot.oauth_refresh_claim = Some(claim);
+    tx.commit().await.unwrap();
+    snapshot
+}
+
+async fn finish_refresh_candidate(
+    fixture: &RefreshManagerFixture,
+    claim: &IdentityOAuthRefreshClaim,
+    expected: &IdentityUseSnapshot,
+    document: &IdentityDocumentWrite,
+    safe_metadata: &BTreeMap<String, String>,
+) -> Result<IdentityUseSnapshot, AppError> {
+    fixture
+        .manager
+        .finish_claimed_oauth_refresh(
+            &fixture.owner,
+            &fixture.name,
+            claim,
+            expected,
+            document,
+            safe_metadata,
+        )
+        .await
 }
 
 pub(crate) async fn assert_fixed_token_manager_contract(db: &Arc<CoralDb>) {
@@ -1808,5 +2038,31 @@ async fn device_oauth_provider() -> MockServer {
             .mount(&provider)
             .await;
     }
+    provider
+}
+
+async fn refresh_device_oauth_provider(fail_refresh: bool) -> MockServer {
+    let provider = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            if request.url.path() == "/device" {
+                return ResponseTemplate::new(200).set_body_raw(
+                    r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"https://provider.example/device","verification_uri_complete":"https://provider.example/device?user_code=ABCD-1234","expires_in":60,"interval":1}"#,
+                    "application/json",
+                );
+            }
+            let refresh = String::from_utf8_lossy(&request.body).contains("grant_type=refresh_token");
+            if refresh && fail_refresh {
+                return ResponseTemplate::new(500).set_body_string("provider-secret-canary");
+            }
+            let response = if refresh {
+                r#"{"access_token":"refreshed-token","refresh_token":"rotated-refresh-token","scope":"repo refreshed"}"#
+            } else {
+                r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo user","expires_in":-300}"#
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "application/json")
+        })
+        .mount(&provider)
+        .await;
     provider
 }

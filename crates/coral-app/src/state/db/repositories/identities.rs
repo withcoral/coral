@@ -16,13 +16,6 @@ pub(crate) struct IdentityOAuthRefreshClaim {
     deadline_unix_nanos: i64,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "OAuth refresh claim construction and ownership land in B5f"
-    )
-)]
 impl IdentityOAuthRefreshClaim {
     pub(crate) fn new(id: uuid::Uuid, deadline_unix_nanos: i64) -> Result<Self, AppError> {
         if deadline_unix_nanos < 0 {
@@ -278,10 +271,6 @@ where
 
 impl IdentitiesRepo<'_, CoralTx<'_>> {
     /// Acquire an unclaimed identity refresh slot without stealing stale claims.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "OAuth refresh claim acquisition lands in B5f")
-    )]
     pub(crate) async fn try_claim_oauth_refresh(
         &mut self,
         owner: &IdentityOwner,
@@ -308,10 +297,6 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
     }
 
     /// Make a matching claim immediately fail closed without releasing ownership.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "OAuth refresh failure handling lands in B5f")
-    )]
     pub(crate) async fn expire_oauth_refresh_claim(
         &mut self,
         owner: &IdentityOwner,

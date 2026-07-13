@@ -164,6 +164,7 @@ async fn postgres_identity_database_contracts() {
     )
     .await;
     Box::pin(crate::identities::manager::tests::assert_fixed_token_manager_contract(&db)).await;
+    Box::pin(crate::identities::manager::tests::assert_oauth_refresh_manager_contract(&db)).await;
     Box::pin(crate::identities::manager::tests::assert_oauth_creation_race_contract(&db)).await;
     Box::pin(
         crate::identities::manager::tests::assert_oauth_creation_document_rewrap_race_contract(&db),

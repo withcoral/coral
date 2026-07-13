@@ -314,7 +314,7 @@ async fn load_oauth_create_snapshot(
     })
 }
 
-fn oauth_client_inputs(
+pub(super) fn oauth_client_inputs(
     oauth: &ManifestOAuthCredentialSpec,
     inputs: &crate::identity_specs::manager::ResolvedIdentitySpecInputs,
 ) -> Vec<(String, String)> {
@@ -352,7 +352,7 @@ fn oauth_identity_values(
     (safe_metadata, internal_metadata)
 }
 
-fn prepare_oauth_document(
+pub(super) fn prepare_oauth_document(
     owner: &IdentityOwner,
     name: &IdentityName,
     reference: &IdentitySpecReference,

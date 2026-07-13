@@ -112,7 +112,7 @@ impl fmt::Debug for PreparedBearerIdentity {
 }
 
 impl IdentityManager {
-    /// Resolves and prepares one fixed-token or OAuth bearer identity without refreshing it.
+    /// Resolves and prepares one fixed-token or OAuth bearer identity, refreshing when necessary.
     pub(crate) async fn prepare_bearer_for_use(
         &self,
         owner: &IdentityOwner,
