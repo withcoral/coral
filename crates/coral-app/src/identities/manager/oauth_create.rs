@@ -25,11 +25,10 @@ use crate::state::db::{
 use crate::workspaces::WorkspaceName;
 
 use super::{
-    IdentityManager, IdentityOAuthCreationEvent, MAX_MUTATION_ATTEMPTS, identity_document_binding,
-    identity_document_write, owner_workspace_created_at, owner_workspace_not_found,
+    IdentityManager, IdentityOAuthCreationEvent, MAX_MUTATION_ATTEMPTS, OAUTH_ACCESS_TOKEN_KEY,
+    identity_document_binding, identity_document_write, owner_workspace_created_at,
+    owner_workspace_not_found,
 };
-
-const OAUTH_ACCESS_TOKEN_KEY: &str = "ACCESS_TOKEN";
 
 #[derive(Clone, Default)]
 pub(crate) struct IdentityOAuthCommitPhase(Arc<AtomicBool>);

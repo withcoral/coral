@@ -38,7 +38,8 @@ use crate::state::db::{
 };
 use crate::workspaces::WorkspaceName;
 
-const FIXED_TOKEN_KEY: &str = "TOKEN";
+pub(super) const FIXED_TOKEN_KEY: &str = "TOKEN";
+pub(super) const OAUTH_ACCESS_TOKEN_KEY: &str = "ACCESS_TOKEN";
 const MAX_MUTATION_ATTEMPTS: usize = 8;
 
 /// App-private progress emitted before an OAuth identity becomes durable.
@@ -690,11 +691,18 @@ fn prepare_identity_for_use(
         identity_document_binding(&identity.owner, &identity.name, &identity.spec_reference);
     let envelope = identity_envelope(&identity_document);
     let material = decrypt_identity_document(&binding, &envelope, key_provider)?;
-    if material.len() != 1
-        || material
-            .get(FIXED_TOKEN_KEY)
-            .is_none_or(|token| token.trim().is_empty())
-    {
+    let material_is_valid = match identity_spec.spec.manifest.identity_type {
+        IdentitySpecType::FixedToken => {
+            material.len() == 1
+                && material
+                    .get(FIXED_TOKEN_KEY)
+                    .is_some_and(|token| !token.trim().is_empty())
+        }
+        IdentitySpecType::OAuth => material
+            .get(OAUTH_ACCESS_TOKEN_KEY)
+            .is_some_and(|token| !token.trim().is_empty()),
+    };
+    if !material_is_valid {
         return Err(corrupt_identity_material(&identity));
     }
     let identity_rewrap = rewrap_identity_document(&binding, &envelope, key_provider)?
@@ -734,12 +742,6 @@ fn validate_identity_reference(
         return Err(recreate_identity(
             &identity.name,
             "no longer matches its exact installed identity spec",
-        ));
-    }
-    if installed.manifest.identity_type != IdentitySpecType::FixedToken {
-        return Err(recreate_identity(
-            &identity.name,
-            "does not reference a fixed-token identity spec",
         ));
     }
     Ok(())

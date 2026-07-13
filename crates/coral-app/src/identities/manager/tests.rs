@@ -3,7 +3,9 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use coral_engine::SelectedRequestIdentity;
 use coral_spec::parse_identity_manifest_yaml;
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use sea_query::{Alias, Expr, ExprTrait, Query};
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
@@ -89,7 +91,10 @@ async fn sqlite_oauth_creation_core_contract() {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let oauth_spec = format!("oauth_{suffix}");
     let oauth_key = IdentitySpecKey::global(&oauth_spec).unwrap();
-    let oauth_yaml = device_oauth_manifest(&oauth_spec, &provider.uri());
+    let oauth_yaml = device_oauth_manifest(&oauth_spec, &provider.uri()).replace(
+        "type: oauth\n",
+        "type: oauth\naudience:\n  host: api.example.test\n  tenant:\n    id: 7\n",
+    );
     let key_provider = Arc::new(TestKeyProvider(vec![
         CredentialEncryptionKey::from_static_bytes_for_test([70; 32]),
     ]));
@@ -147,7 +152,8 @@ async fn sqlite_oauth_creation_core_contract() {
                     && metadata == &expected_safe
         ));
     }
-    let (_, document) = load_pair(&db, &owner, &identity_name).await;
+    let pair_before_use = load_pair(&db, &owner, &identity_name).await;
+    let document = &pair_before_use.1;
     let material = decrypt_material(
         &created,
         document.as_ref().expect("OAuth identity document"),
@@ -171,6 +177,71 @@ async fn sqlite_oauth_creation_core_contract() {
         material
             .values()
             .all(|value| value != "spec-client-id" && !value.contains(&provider.uri()))
+    );
+    let prepared = manager
+        .prepare_bearer_for_use(&owner, &identity_name)
+        .await
+        .expect("prepare OAuth identity for request use");
+    let selected = prepared.selected_identity();
+    assert!(selected.identity_id().starts_with("request-identity-"));
+    assert_eq!(selected.identity_spec_id(), oauth_spec);
+    assert_eq!(
+        selected.audience(),
+        &BTreeMap::from([
+            ("host".to_string(), serde_json::json!("api.example.test")),
+            ("tenant".to_string(), serde_json::json!({"id": 7})),
+        ])
+    );
+    let bound = prepared
+        .bind(&selected)
+        .expect("bind exact OAuth selection");
+    let request = reqwest::Request::new(
+        reqwest::Method::GET,
+        "https://api.example.test/user".parse().unwrap(),
+    );
+    let resolved_inputs = BTreeMap::new();
+    let headers = bound(&request, &resolved_inputs)
+        .await
+        .expect("OAuth bearer header");
+    let [(name, value)] = headers.as_slice() else {
+        panic!("OAuth identity must produce exactly one header");
+    };
+    assert_eq!(name, AUTHORIZATION);
+    assert_eq!(value, HeaderValue::from_static("Bearer access-token"));
+    assert!(value.is_sensitive());
+    let resolved = prepared.resolved_for_refresh();
+    assert_eq!(resolved.identity.safe_metadata, expected_safe);
+    assert_eq!(resolved.material(), &material);
+    let _full_revision = resolved.revision();
+    let rendered = format!("{prepared:?}");
+    for canary in ["access-token", "refresh-token", "spec-client-id"] {
+        assert!(!rendered.contains(canary));
+    }
+    for substituted in [
+        SelectedRequestIdentity::new(
+            "substituted-runtime-identity",
+            selected.identity_spec_id().to_string(),
+            selected.audience().clone(),
+        ),
+        SelectedRequestIdentity::new(
+            selected.identity_id().to_string(),
+            "other_spec",
+            selected.audience().clone(),
+        ),
+        SelectedRequestIdentity::new(
+            selected.identity_id().to_string(),
+            selected.identity_spec_id().to_string(),
+            BTreeMap::from([("host".to_string(), serde_json::json!("api.example.test"))]),
+        ),
+    ] {
+        let Err(error) = prepared.bind(&substituted) else {
+            panic!("substituted selection must not bind");
+        };
+        assert!(!error.to_string().contains("access-token"));
+    }
+    assert_eq!(
+        load_pair(&db, &owner, &identity_name).await,
+        pair_before_use
     );
     let keyless = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(vec![])));
     assert_eq!(keyless.get(&owner, &identity_name).await.unwrap(), created);
@@ -265,7 +336,11 @@ async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
     let owner = IdentityOwner::for_user(principal.clone());
     let old_key = CredentialEncryptionKey::from_static_bytes_for_test([61; 32]);
     let old_provider = Arc::new(TestKeyProvider(vec![old_key.clone()]));
-    put_spec(db, &spec_key, &fixed_manifest(&spec_name, "use")).await;
+    let manifest = fixed_manifest(&spec_name, "use").replace(
+        "type: fixed_token\n",
+        "type: fixed_token\naudience:\n  host: api.example.test\n",
+    );
+    put_spec(db, &spec_key, &manifest).await;
     let manager = IdentityManager::new(db.clone(), old_provider);
     let created = manager
         .create_or_replace_user_fixed_token(
@@ -294,6 +369,7 @@ async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
         load_pair(db, &owner, &identity_name).await.1.unwrap(),
         before_identity
     );
+    assert_fixed_bearer_runtime(&manager, &owner, &principal, &identity_name, &spec_name).await;
 
     let new_key = CredentialEncryptionKey::from_static_bytes_for_test([62; 32]);
     let rotated = IdentityManager::new(
@@ -353,6 +429,107 @@ async fn assert_fixed_token_for_use_contract(db: &Arc<CoralDb>) {
             if detail.contains("orphaned") && detail.contains("restore")
     ));
     assert_eq!(rotated.get(&owner, &identity_name).await.unwrap(), created);
+}
+
+async fn assert_fixed_bearer_runtime(
+    manager: &IdentityManager,
+    owner: &IdentityOwner,
+    principal: &UserPrincipal,
+    identity_name: &str,
+    spec_name: &str,
+) {
+    let prepared = manager
+        .prepare_bearer_for_use(owner, identity_name)
+        .await
+        .expect("prepare fixed-token identity for request use");
+    let bound = prepared
+        .bind(&prepared.selected_identity())
+        .expect("bind fixed-token identity");
+    let request = reqwest::Request::new(
+        reqwest::Method::GET,
+        "https://api.example.test/repos".parse().unwrap(),
+    );
+    let headers = bound(&request, &BTreeMap::new())
+        .await
+        .expect("fixed bearer header");
+    let [(_, value)] = headers.as_slice() else {
+        panic!("fixed identity must produce exactly one header");
+    };
+    assert_eq!(value, HeaderValue::from_static("Bearer token-value"));
+    let mut existing_authorization = reqwest::Request::new(
+        reqwest::Method::GET,
+        "https://api.example.test/repos".parse().unwrap(),
+    );
+    existing_authorization.headers_mut().insert(
+        AUTHORIZATION,
+        HeaderValue::from_static("Basic existing-credential"),
+    );
+    for unsafe_request in [
+        reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://attacker.example.test/repos".parse().unwrap(),
+        ),
+        reqwest::Request::new(
+            reqwest::Method::GET,
+            "http://api.example.test/repos".parse().unwrap(),
+        ),
+        existing_authorization,
+    ] {
+        let error = bound(&unsafe_request, &BTreeMap::new())
+            .await
+            .expect_err("unsafe request must not receive a bearer header");
+        assert!(!error.to_string().contains("token-value"));
+    }
+
+    let other_name = format!("{identity_name}-other");
+    manager
+        .create_or_replace_user_fixed_token(principal, &other_name, spec_name, "other-token".into())
+        .await
+        .expect("create same-spec identity");
+    let other = manager
+        .prepare_bearer_for_use(owner, &other_name)
+        .await
+        .expect("prepare same-spec identity");
+    assert_ne!(
+        prepared.selected_identity().identity_id(),
+        other.selected_identity().identity_id()
+    );
+    assert!(prepared.bind(&other.selected_identity()).is_err());
+    let other_bound = other
+        .bind(&other.selected_identity())
+        .expect("bind same-spec identity snapshot");
+    manager
+        .create_or_replace_user_fixed_token(
+            principal,
+            &other_name,
+            spec_name,
+            "replacement-token".into(),
+        )
+        .await
+        .expect("replace prepared identity");
+    let replacement = manager
+        .prepare_bearer_for_use(owner, &other_name)
+        .await
+        .expect("prepare replacement identity");
+    let replacement_bound = replacement
+        .bind(&replacement.selected_identity())
+        .expect("bind replacement identity snapshot");
+    for (authenticator, expected) in [
+        (&other_bound, "Bearer other-token"),
+        (&replacement_bound, "Bearer replacement-token"),
+    ] {
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api.example.test/repos".parse().unwrap(),
+        );
+        let headers = authenticator(&request, &BTreeMap::new())
+            .await
+            .expect("snapshot bearer header");
+        let [(_, value)] = headers.as_slice() else {
+            panic!("snapshot identity must produce exactly one header");
+        };
+        assert_eq!(value.to_str().unwrap(), expected);
+    }
 }
 
 async fn assert_fixed_token_for_use_race_contract(db: &Arc<CoralDb>) {
