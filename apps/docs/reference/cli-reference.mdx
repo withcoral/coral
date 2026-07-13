@@ -108,6 +108,9 @@ Clear Coral's local search data for one workspace.
 Clear deletes local search data, so Coral requires both `--yes` and an explicit
 `--workspace NAME`.
 
+`all` is currently the only supported scope. It clears all local search data
+for the selected workspace.
+
 ```shellscript
 coral search-index clear --scope all --workspace work --yes
 ```
@@ -116,7 +119,7 @@ coral search-index clear --scope all --workspace work --yes
 
 | Option                    | Type   | Default  | Description                               |
 | ------------------------- | ------ | -------- | ----------------------------------------- |
-| `--scope all`             | enum   | required | Search data scope to clear                |
+| `--scope <SCOPE>`         | enum   | required | Scope to clear. Supported value: `all`    |
 | global `--workspace NAME` | string | required | Workspace whose search data will be cleared |
 | `--yes`                   | flag   | required | Confirm destructive search-data deletion  |
 
