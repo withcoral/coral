@@ -20,6 +20,8 @@
     "package:dir": "electron-builder --dir --config electron-builder.config.ts",
     "prepackage:dmg": "npm run build",
     "package:dmg": "electron-builder --mac dmg --config electron-builder.config.ts",
+    "prepackage:mac": "CORAL_DESKTOP_UNIVERSAL=1 npm run build",
+    "package:mac": "electron-builder --mac --universal --publish never --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
   "dependencies": {
