@@ -19,7 +19,9 @@ use crate::backends::http::auth::{
     resolve_auth_headers,
 };
 use crate::backends::http::client::HttpClients;
-use crate::backends::http::error::{CredentialTransportError, provider_error};
+use crate::backends::http::error::{
+    CredentialTransportError, REDACTED_CREDENTIAL_RESPONSE_DETAIL, provider_error,
+};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
@@ -73,6 +75,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
 pub(super) struct DecodedHttpResponse {
     pub(super) payload: Value,
     pub(super) headers: HeaderMap,
+    pub(super) credential_tainted: bool,
 }
 
 #[expect(
@@ -117,6 +120,7 @@ pub(super) async fn execute_request(
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
     let mut decode_retries = 0usize;
+    let mut credential_tainted = false;
     loop {
         let method_label = http_method_label(method);
         let mut request = build_http_request(http.proxy_aware(), method, url);
@@ -287,6 +291,7 @@ pub(super) async fn execute_request(
             || has_auth_headers
             || has_identity_headers
             || request_requires_credential_safe_transport(&built, has_authored_headers);
+        credential_tainted |= credential_bearing;
         let request_http = match http.for_request(built.url(), credential_bearing) {
             Ok(http) => http,
             Err(error) => {
@@ -384,6 +389,11 @@ pub(super) async fn execute_request(
                 );
                 request_span.record("http.response.body.size", body.len());
                 body_capture.record_response(&request_span, request_id, &body);
+                let detail = if credential_tainted {
+                    REDACTED_CREDENTIAL_RESPONSE_DETAIL.to_string()
+                } else {
+                    body
+                };
                 break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
                     ProviderQueryError::ApiRequest {
                         source_schema: source_schema.to_string(),
@@ -392,7 +402,7 @@ pub(super) async fn execute_request(
                         method: Some(method_label.to_string()),
                         url: Some(logged_url.clone()),
                         filters: render_context.filters.clone(),
-                        detail: body,
+                        detail,
                     },
                 ))));
             }
@@ -418,6 +428,7 @@ pub(super) async fn execute_request(
                 Ok(payload) => ResponseOutcome::Done(Ok(Some(DecodedHttpResponse {
                     payload,
                     headers: response_headers,
+                    credential_tainted,
                 }))),
                 Err(mut error) => {
                     // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
@@ -584,10 +595,13 @@ mod tests {
     use std::time::Duration;
 
     use datafusion::error::DataFusionError;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use reqwest::header::{AUTHORIZATION, HeaderValue};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+    use tracing_subscriber::layer::SubscriberExt as _;
     use wiremock::MockServer;
 
     use super::{
@@ -804,6 +818,121 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "auditable retry and non-egress contract"
+    )]
+    async fn credential_tainted_body_read_errors_strip_response_url() {
+        let canary = "credential-read-url-canary";
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind truncated response server");
+        let addr = listener.local_addr().expect("truncated server address");
+        let server = tokio::spawn(async move {
+            for _ in 0..6 {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let read = socket.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend(buffer.iter().take(read).copied());
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 64\r\nconnection: close\r\n\r\n{",
+                    )
+                    .await
+                    .expect("write truncated response");
+            }
+        });
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("decode-url-test")));
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let request_timeout = Duration::from_secs(1);
+        let http = HttpClients::credential_safe(
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .build()
+                .expect("build proxy-aware client"),
+            reqwest::Client::builder()
+                .timeout(request_timeout)
+                .no_proxy()
+                .build()
+                .expect("build direct client"),
+        );
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let url = format!("http://{addr}/{canary}");
+
+        for response_format in [ResponseBodyFormat::Json, ResponseBodyFormat::JsonEachRow] {
+            let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+            let error = execute_request(
+                &http,
+                request_timeout,
+                TestOutgoingHttpRequest {
+                    auth: &AuthSpec::default(),
+                    request_headers: &[],
+                    request_authenticators: &HashMap::new(),
+                    require_credential_safe_auth_transport: true,
+                    secret_provenance: SecretProvenance::Url,
+                    request_identity_http_authenticator: None,
+                    trace_context: None,
+                    table_headers: &[],
+                    table_name: "items",
+                    method: HttpMethod::GET,
+                    url: &url,
+                    query_pairs: &[],
+                    body: None,
+                    response_format,
+                    source_schema: "demo",
+                    rate_limit: &RateLimitSpec::default(),
+                    body_capture: HttpBodyCapture::default(),
+                    render_context,
+                    allow_404_empty: false,
+                },
+            )
+            .await
+            .expect_err("truncated response must fail after retries");
+
+            let DataFusionError::External(inner) = &error else {
+                panic!("expected provider error, got {error:?}");
+            };
+            let provider_error = inner
+                .downcast_ref::<ProviderQueryError>()
+                .expect("provider decode error");
+            let structured = provider_error.to_structured();
+            assert!(!error.to_string().contains(canary), "{error}");
+            assert!(!structured.detail().contains(canary));
+            assert!(
+                structured
+                    .metadata()
+                    .values()
+                    .all(|value| !value.contains(canary))
+            );
+        }
+
+        server.await.expect("truncated server task");
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        assert_eq!(spans.len(), 6);
+        let span_dump = format!("{spans:#?}");
+        assert!(!span_dump.contains(canary), "{span_dump}");
+        provider.shutdown().expect("shutdown provider");
+    }
+
     #[tokio::test]
     async fn request_identity_headers_are_injected() {
         let (base_url, task) = spawn_header_recorder(r#"{"ok":true}"#).await;
@@ -867,7 +996,7 @@ mod tests {
         .await
         .expect("identity-authenticated request should succeed");
 
-        assert!(response.is_some());
+        assert!(response.expect("decoded response").credential_tainted);
         let raw_request = task.await.expect("header recorder should finish");
         assert!(
             raw_request.contains("\r\nx-identity-token: identity-token\r\n"),
@@ -945,7 +1074,7 @@ mod tests {
         .await
         .expect("API-key request should succeed");
 
-        assert!(response.is_some());
+        assert!(response.expect("decoded response").credential_tainted);
         let raw_request = task.await.expect("header recorder should finish");
         assert!(
             raw_request.contains("\r\nx-api-key: runtime-secret\r\n"),

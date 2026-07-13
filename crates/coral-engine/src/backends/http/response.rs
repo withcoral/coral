@@ -39,7 +39,10 @@ pub(super) async fn decode_response_body(
                     table_name,
                     method_label,
                     logged_url,
-                    format!("source API response decoding failed: {error}"),
+                    format!(
+                        "source API response decoding failed: {}",
+                        error.without_url()
+                    ),
                     true,
                 )
             })?;
@@ -65,7 +68,10 @@ pub(super) async fn decode_response_body(
                     table_name,
                     method_label,
                     logged_url,
-                    format!("source API response decoding failed: {error}"),
+                    format!(
+                        "source API response decoding failed: {}",
+                        error.without_url()
+                    ),
                     true,
                 )
             })?;

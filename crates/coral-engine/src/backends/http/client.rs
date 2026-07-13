@@ -150,10 +150,19 @@ impl HttpSourceClientRuntime {
         } else {
             HttpClients::legacy(http)
         };
+        Self::test_with_http_clients(body_capture_max_bytes, http, None)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_with_http_clients(
+        body_capture_max_bytes: Option<usize>,
+        http: HttpClients,
+        request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
+    ) -> Self {
         Self {
             source_input_resolution_context: None,
             source_input_resolver: None,
-            request_identity_http_authenticator: None,
+            request_identity_http_authenticator,
             body_capture_max_bytes,
             trace_context: None,
             http,

@@ -4297,6 +4297,7 @@ mod tests {
         let mut idle = tokio::net::TcpStream::connect(("127.0.0.1", redirect_port))
             .await
             .expect("connect idle preconnection");
+        tokio::task::yield_now().await;
         let mut receive = Box::pin(receive_callback(&session));
         poll_fn(|cx| {
             assert!(receive.as_mut().poll(cx).is_pending());

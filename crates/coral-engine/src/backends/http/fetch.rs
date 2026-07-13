@@ -7,7 +7,9 @@ use serde_json::Value;
 
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::client::HttpSourceClient;
-use crate::backends::http::error::{pagination_error, provider_error};
+use crate::backends::http::error::{
+    REDACTED_CREDENTIAL_RESPONSE_DETAIL, pagination_error, provider_error,
+};
 use crate::backends::http::pagination::{
     PageAdvance, PageAdvanceContext, advance_pagination_state, apply_pagination_body_fields,
     apply_pagination_query_pairs, initial_page_state, pagination_state_values, resolve_page_size,
@@ -68,7 +70,7 @@ pub(super) async fn fetch_rows(
     let active_request = target.resolved_request();
 
     let mut state = initial_page_state(&pagination);
-    let mut next_link_depends_on_secret = false;
+    let mut provider_state_is_credential_tainted = false;
 
     let mut page_count = 0usize;
     let max_pages = pagination.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
@@ -109,7 +111,7 @@ pub(super) async fn fetch_rows(
             ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
         ) && let Some(next) = state.next_url.clone()
         {
-            (next, next_link_depends_on_secret)
+            (next, provider_state_is_credential_tainted)
         } else {
             let rendered_path = render_template_with_secret_provenance(
                 &active_request.path,
@@ -134,6 +136,7 @@ pub(super) async fn fetch_rows(
             let mut query_pairs =
                 build_query_pairs(active_request, &render_context, &client.secret_input_names)?;
             let redact_url = url_depends_on_secret
+                || provider_state_is_credential_tainted
                 || (client.require_credential_safe_auth_transport && query_pairs.depends_on_secret);
             apply_pagination_query_pairs(&mut query_pairs.value, &pagination, &state, page_size)
                 .map_err(|error| {
@@ -166,6 +169,7 @@ pub(super) async fn fetch_rows(
             })?;
             let contains_secret_value = client.require_credential_safe_auth_transport
                 && (url_depends_on_secret
+                    || provider_state_is_credential_tainted
                     || query_pairs.depends_on_secret
                     || body.depends_on_secret());
             (
@@ -216,6 +220,8 @@ pub(super) async fn fetch_rows(
         let Some(response) = request else {
             break;
         };
+        let credential_tainted_response =
+            client.require_credential_safe_auth_transport && response.credential_tainted;
         let payload = response.payload;
 
         if !target.response().ok_path.is_empty() {
@@ -223,7 +229,9 @@ pub(super) async fn fetch_rows(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if !ok {
-                let err = if target.response().error_path.is_empty() {
+                let err = if credential_tainted_response {
+                    REDACTED_CREDENTIAL_RESPONSE_DETAIL.to_string()
+                } else if target.response().error_path.is_empty() {
                     "unknown source API error".to_string()
                 } else {
                     get_path_value(&payload, &target.response().error_path)
@@ -277,7 +285,7 @@ pub(super) async fn fetch_rows(
             },
         )
         .map_err(|error| {
-            let error = if contains_secret_value {
+            let error = if credential_tainted_response {
                 redacted_pagination_error(&error)
             } else {
                 error
@@ -293,7 +301,15 @@ pub(super) async fn fetch_rows(
         if page_advance == PageAdvance::Stop {
             break;
         }
-        next_link_depends_on_secret = state.next_url.is_some() && contains_secret_value;
+        if matches!(
+            pagination.mode,
+            ValidatedPaginationMode::LinkHeader
+                | ValidatedPaginationMode::Auto
+                | ValidatedPaginationMode::CursorQuery
+                | ValidatedPaginationMode::CursorBody
+        ) {
+            provider_state_is_credential_tainted |= credential_tainted_response;
+        }
     }
 
     Ok(all_rows)
@@ -337,7 +353,7 @@ fn redacted_pagination_error(error: &DataFusionError) -> DataFusionError {
     ]
     .into_iter()
     .find_map(|(needle, category)| detail.contains(needle).then_some(category))
-    .unwrap_or("pagination failed for request with secret-derived URL");
+    .unwrap_or("pagination failed for credential-bearing request");
     DataFusionError::Execution(category.to_string())
 }
 
@@ -381,5 +397,362 @@ fn resolve_fetch_limits(
         effective_limit: effective_limit.map(|limit| limit.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use datafusion::error::{DataFusionError, Result};
+    use serde_json::{Value, json};
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::ProviderQueryError;
+    use crate::BoundRequestIdentityHttpAuthenticator;
+    use crate::backends::http::client::{HttpClients, HttpSourceClient, HttpSourceClientRuntime};
+    use crate::backends::http::target::HttpFetchTarget;
+    use crate::backends::http::test_support::parse_http_manifest;
+    use coral_spec::backends::http::HttpSourceManifest;
+
+    fn materialized_v4_manifest(
+        base_url: &Value,
+        request: &Value,
+        pagination: Option<Value>,
+    ) -> HttpSourceManifest {
+        let mut table = json!({
+            "name": "items",
+            "description": "items",
+            "request": request,
+            "response": { "rows_path": ["data"] },
+            "columns": [{ "name": "id", "type": "Utf8" }]
+        });
+        if let Some(pagination) = pagination {
+            let table = table.as_object_mut().expect("table object");
+            table.insert("pagination".to_string(), pagination);
+        }
+        let mut manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "secret_transport",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": base_url,
+            "inputs": { "SECRET": { "kind": "secret" } },
+            "tables": [table]
+        }));
+        manifest.common.dsl_version = 4;
+        manifest
+    }
+
+    fn credential_safe_clients(proxy: &MockServer) -> HttpClients {
+        let builder = || {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(1))
+                .redirect(reqwest::redirect::Policy::none())
+        };
+        HttpClients::credential_safe(
+            builder()
+                .proxy(reqwest::Proxy::all(proxy.uri()).expect("proxy URL"))
+                .build()
+                .expect("proxy client"),
+            builder().no_proxy().build().expect("direct client"),
+        )
+    }
+
+    async fn fetch_manifest(
+        manifest: &HttpSourceManifest,
+        secret: &str,
+        proxy: &MockServer,
+        authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
+    ) -> Result<Vec<Value>> {
+        let client = HttpSourceClient::from_manifest_with_source_input_resolver(
+            manifest,
+            &BTreeMap::from([("SECRET".to_string(), secret.to_string())]),
+            &BTreeMap::new(),
+            &HashMap::new(),
+            HttpSourceClientRuntime::test_with_http_clients(
+                None,
+                credential_safe_clients(proxy),
+                authenticator,
+            ),
+        )?;
+        let table = manifest.tables.first().expect("table");
+        client
+            .fetch(
+                &HttpFetchTarget::from_resolved_table_request(table, table.request.clone()),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+            )
+            .await
+    }
+
+    fn provider_query_error(error: &DataFusionError) -> &ProviderQueryError {
+        let DataFusionError::External(inner) = error else {
+            panic!("expected provider error, got {error:?}");
+        };
+        inner
+            .downcast_ref::<ProviderQueryError>()
+            .expect("provider query error")
+    }
+
+    fn assert_provider_non_egress(error: &DataFusionError, canary: &str) {
+        let provider = provider_query_error(error);
+        let structured = provider.to_structured();
+        assert!(!provider.to_string().contains(canary), "{provider}");
+        assert!(!structured.detail().contains(canary));
+        assert!(
+            structured
+                .metadata()
+                .values()
+                .all(|value| !value.contains(canary))
+        );
+    }
+
+    async fn assert_proxy_empty(proxy: &MockServer) {
+        assert!(
+            proxy
+                .received_requests()
+                .await
+                .expect("proxy requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_secret_surfaces_route_direct_while_public_one_of_uses_proxy() {
+        let target = MockServer::start().await;
+        let proxy = MockServer::start().await;
+        let ok = ResponseTemplate::new(200).set_body_json(json!({"data": [{"id": "ok"}]}));
+        Mock::given(method("GET"))
+            .respond_with(ok.clone())
+            .mount(&target)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ok.clone())
+            .mount(&target)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ok)
+            .mount(&proxy)
+            .await;
+
+        let cases = [
+            (
+                json!("{{input.SECRET}}"),
+                json!({"path": "/base"}),
+                target.uri(),
+            ),
+            (
+                json!(target.uri()),
+                json!({"path": "/{{input.SECRET}}"}),
+                "path-secret".to_string(),
+            ),
+            (
+                json!(target.uri()),
+                json!({"path": "/query", "query": [{"name": "token", "from": "input", "key": "SECRET"}]}),
+                "query-secret".to_string(),
+            ),
+            (
+                json!(target.uri()),
+                json!({"method": "POST", "path": "/body", "body": [{"path": ["token"], "from": "input", "key": "SECRET"}]}),
+                "body-secret".to_string(),
+            ),
+        ];
+        for (base_url, request, secret) in cases {
+            fetch_manifest(
+                &materialized_v4_manifest(&base_url, &request, None),
+                &secret,
+                &proxy,
+                None,
+            )
+            .await
+            .expect("selected secret request");
+        }
+
+        let public_first = materialized_v4_manifest(
+            &json!(target.uri()),
+            &json!({
+                "path": "/public",
+                "query": [{
+                    "name": "selection",
+                    "from": "one_of",
+                    "values": [
+                        {"from": "literal", "value": "public"},
+                        {"from": "input", "key": "SECRET"}
+                    ]
+                }]
+            }),
+            None,
+        );
+        fetch_manifest(&public_first, "unused-secret", &proxy, None)
+            .await
+            .expect("public winner");
+
+        let target_requests = target.received_requests().await.expect("target requests");
+        let proxy_requests = proxy.received_requests().await.expect("proxy requests");
+        assert_eq!((target_requests.len(), proxy_requests.len()), (4, 1));
+        let direct = target_requests
+            .iter()
+            .map(|request| format!("{} {}", request.url, String::from_utf8_lossy(&request.body)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            ["/base", "/path-secret", "query-secret", "body-secret"]
+                .iter()
+                .all(|expected| direct.contains(expected)),
+            "{direct}"
+        );
+        let proxied = proxy_requests.first().expect("proxy request");
+        let proxied = format!("{} {:?}", proxied.url, proxied.body);
+        assert!(
+            proxied.contains("selection=public") && !proxied.contains("unused-secret"),
+            "{proxied}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_cleartext_secret_fails_before_authenticator_or_network() {
+        let proxy = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let authenticator: BoundRequestIdentityHttpAuthenticator = Arc::new(move |_, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(Vec::new()) })
+        });
+        let manifest = materialized_v4_manifest(
+            &json!("http://192.0.2.1"),
+            &json!({"method": "POST", "path": "/items", "body": [{"path": ["token"], "from": "input", "key": "SECRET"}]}),
+            None,
+        );
+
+        let error = fetch_manifest(&manifest, "remote-secret", &proxy, Some(authenticator))
+            .await
+            .expect_err("remote cleartext must fail");
+
+        let public_error = error.to_string();
+        assert!(
+            public_error.contains("DSL v4 secret values require HTTPS or loopback HTTP")
+                && !public_error.contains("remote-secret"),
+            "{public_error}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_proxy_empty(&proxy).await;
+    }
+
+    #[tokio::test]
+    async fn link_and_auto_descendants_keep_secret_transport_and_redaction() {
+        for mode in ["link_header", "auto"] {
+            let target = MockServer::start().await;
+            let proxy = MockServer::start().await;
+            let canary = format!("{mode}-descendant-canary");
+            let first_page = if mode == "auto" {
+                json!({"ok": true, "data": [{"id": "first"}]})
+            } else {
+                json!({"data": [{"id": "first"}]})
+            };
+            Mock::given(method("POST"))
+                .and(path("/start"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("link", format!("</{canary}>; rel=\"next\""))
+                        .set_body_json(first_page),
+                )
+                .mount(&target)
+                .await;
+            let failure = if mode == "auto" {
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"ok": false, "error": canary, "data": []}))
+            } else {
+                ResponseTemplate::new(400).set_body_string(canary.clone())
+            };
+            Mock::given(method("POST"))
+                .and(path(format!("/{canary}")))
+                .respond_with(failure)
+                .mount(&target)
+                .await;
+            let mut manifest = materialized_v4_manifest(
+                &json!(target.uri()),
+                &json!({"method": "POST", "path": "/start", "body": [{"path": ["token"], "from": "input", "key": "SECRET"}]}),
+                Some(json!({"mode": mode})),
+            );
+            if mode == "auto" {
+                let response = &mut manifest.tables.first_mut().expect("table").response;
+                response.ok_path = vec!["ok".to_string()];
+                response.error_path = vec!["error".to_string()];
+            }
+
+            let error = fetch_manifest(&manifest, "first-page-secret", &proxy, None)
+                .await
+                .expect_err("page two should fail");
+
+            assert_provider_non_egress(&error, &canary);
+            let requests = target.received_requests().await.expect("target requests");
+            let [first, second] = requests.as_slice() else {
+                panic!("{mode}: {requests:?}");
+            };
+            assert!(
+                first
+                    .body
+                    .windows(17)
+                    .any(|bytes| bytes == b"first-page-secret")
+            );
+            assert!(second.body.is_empty(), "{mode}: {:?}", second.body);
+            assert_proxy_empty(&proxy).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn cursor_body_descendant_from_secret_request_stays_direct() {
+        let target = MockServer::start().await;
+        let proxy = MockServer::start().await;
+        let cursor = "provider-cursor-canary";
+        Mock::given(method("POST"))
+            .and(path("/items"))
+            .and(body_json(json!({"cursor": "first-page-secret"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"id": "first"}],
+                "meta": {"next_cursor": cursor}
+            })))
+            .mount(&target)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/items"))
+            .and(body_json(json!({"cursor": cursor})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+            .mount(&target)
+            .await;
+        let manifest = materialized_v4_manifest(
+            &json!(target.uri()),
+            &json!({
+                "method": "POST",
+                "path": "/items",
+                "body": [{"path": ["cursor"], "from": "input", "key": "SECRET"}]
+            }),
+            Some(json!({
+                "mode": "cursor_body",
+                "cursor_body_path": ["cursor"],
+                "response_cursor_path": ["meta", "next_cursor"]
+            })),
+        );
+
+        let rows = fetch_manifest(&manifest, "first-page-secret", &proxy, None)
+            .await
+            .expect("cursor request");
+
+        assert_eq!(rows, [json!({"id": "first"})]);
+        assert_eq!(
+            target
+                .received_requests()
+                .await
+                .expect("target requests")
+                .len(),
+            2
+        );
+        assert_proxy_empty(&proxy).await;
     }
 }

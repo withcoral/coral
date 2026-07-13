@@ -16,6 +16,9 @@ const FORBIDDEN: u16 = HttpStatus::FORBIDDEN.as_u16();
 const NOT_FOUND: u16 = HttpStatus::NOT_FOUND.as_u16();
 const TOO_MANY_REQUESTS: u16 = HttpStatus::TOO_MANY_REQUESTS.as_u16();
 
+pub(super) const REDACTED_CREDENTIAL_RESPONSE_DETAIL: &str =
+    "provider returned an error response for credential-bearing request";
+
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub(crate) struct CredentialTransportError(pub(crate) String);
