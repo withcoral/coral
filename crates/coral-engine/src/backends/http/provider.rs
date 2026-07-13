@@ -23,7 +23,10 @@ use crate::backends::shared::filter_expr::{
     extract_filter_values, extract_filter_values_checked,
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
-use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
+use crate::backends::shared::mapping::{
+    convert_items, expr_references_response_data, expr_reflects_filter_value,
+    filter_items_by_column_values,
+};
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -293,7 +296,7 @@ impl TableProvider for HttpSourceTableProvider {
         )
         .iter()
         .any(|pushdown| !matches!(pushdown, TableProviderFilterPushDown::Exact));
-        let local_filter_values =
+        let local_filter_values: HashMap<String, String> =
             match extract_exact_filter_values_checked(filters, self.table.filters()) {
                 FilterExtraction::Values(values) => values
                     .into_iter()
@@ -301,6 +304,46 @@ impl TableProvider for HttpSourceTableProvider {
                     .collect(),
                 FilterExtraction::Contradiction => HashMap::new(),
             };
+
+        // A routable filter the selected request does not consume can only be
+        // enforced locally through a column carrying response data. Columns
+        // backed only by query inputs, literals, or the filter being enforced
+        // are annotations, not backend evidence, so they can make every row
+        // appear to match and silently mislabel the result set. Filters no
+        // route ever consumes are deliberate client-side annotations and stay
+        // allowed; filters some route consumes have real request semantics, so
+        // failing to route there must error instead of echoing.
+        if !local_filter_values.is_empty() {
+            let mut routable_filters = self.backend.request_filter_names(&self.table.request);
+            for route in &self.table.requests {
+                routable_filters.extend(self.backend.request_filter_names(&route.request));
+                routable_filters.extend(route.when_filters.iter().cloned());
+            }
+            for filter_name in local_filter_values.keys() {
+                if !routable_filters.contains(filter_name) {
+                    continue;
+                }
+                let unenforceable_filter_column = self
+                    .table
+                    .columns()
+                    .iter()
+                    .find(|column| column.name == *filter_name)
+                    .is_some_and(|column| {
+                        let expr = column.resolved_expr();
+                        expr_reflects_filter_value(&expr, filter_name)
+                            || !expr_references_response_data(&expr)
+                    });
+                if unenforceable_filter_column {
+                    return Err(DataFusionError::External(Box::new(
+                        ProviderQueryError::UnenforceableFilter {
+                            schema: self.source_schema.clone(),
+                            table: self.table.name().to_string(),
+                            column: filter_name.clone(),
+                        },
+                    )));
+                }
+            }
+        }
         let target = self.target.with_resolved_request(active_request);
 
         http_json_exec(HttpJsonExecRequest {

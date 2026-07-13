@@ -720,6 +720,351 @@ async fn local_route_filter_can_use_request_filter_values_in_template_column() {
     assert_eq!(rows, vec![json!({ "name": "Grace" })]);
 }
 
+/// Asserts the structured `FILTER_NOT_APPLICABLE` contract that CLI/MCP
+/// clients and telemetry branch on, rather than the rendered prose alone.
+fn assert_filter_not_applicable(error: &CoreError, column: &str) {
+    let CoreError::QueryFailure(structured) = error else {
+        panic!("expected a structured query failure, got: {error:?}");
+    };
+    assert_eq!(structured.reason(), "FILTER_NOT_APPLICABLE");
+    assert_eq!(structured.status(), StatusCode::FailedPrecondition);
+    assert!(!structured.retryable());
+    assert_eq!(
+        structured.metadata().get("column").map(String::as_str),
+        Some(column)
+    );
+    let rendered = structured.to_string();
+    assert!(rendered.contains("cannot be applied"), "{rendered}");
+    assert!(
+        rendered.contains("not backed by response data"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("echoes the filter"), "{rendered}");
+    assert!(!rendered.contains("merely echoes"), "{rendered}");
+}
+
+#[tokio::test]
+async fn unconsumed_filter_backed_only_by_echo_column_fails_instead_of_mislabeling() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "title": "First" },
+                { "title": "Second" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_echo_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "issues",
+            "description": "Issues",
+            "filters": [
+                { "name": "owner" },
+                { "name": "repo" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/issues"
+            },
+            "requests": [{
+                "when_filters": ["owner", "repo"],
+                "method": "GET",
+                "path": "/api/repos/{{filter.owner}}/{{filter.repo}}/issues"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                {
+                    "name": "owner",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "owner" }
+                },
+                {
+                    "name": "repo",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "repo" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title, owner FROM http_echo_filter.issues WHERE owner = 'octocat'",
+    )
+    .await
+    .expect_err("filter the route does not consume and whose column merely echoes it must fail");
+
+    assert_filter_not_applicable(&error, "owner");
+}
+
+#[tokio::test]
+async fn unconsumed_filter_backed_by_filter_derived_expression_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "title": "First", "repo": "hello" },
+                { "title": "Second", "repo": "world" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_derived_echo_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "issues",
+            "description": "Issues",
+            "filters": [
+                { "name": "owner" },
+                { "name": "repo" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/issues"
+            },
+            "requests": [{
+                "when_filters": ["owner", "repo"],
+                "method": "GET",
+                "path": "/api/repos/{{filter.owner}}/{{filter.repo}}/issues"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                {
+                    "name": "owner",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": {
+                        "kind": "template",
+                        "template": "{{filter.owner}}",
+                        "values": {}
+                    }
+                },
+                {
+                    "name": "repo",
+                    "type": "Utf8",
+                    "expr": {
+                        "kind": "coalesce",
+                        "exprs": [
+                            { "kind": "from_filter", "key": "repo" },
+                            { "kind": "path", "path": ["repo"] }
+                        ]
+                    }
+                }
+            ]
+        }]
+    });
+
+    for (filter, query) in [
+        (
+            "owner",
+            "SELECT title FROM http_derived_echo_filter.issues WHERE owner = 'octocat'",
+        ),
+        (
+            "repo",
+            "SELECT title FROM http_derived_echo_filter.issues WHERE repo = 'hello'",
+        ),
+    ] {
+        let source = build_source(manifest.clone());
+        let error = CoralQuery::execute_sql(&[source], test_runtime(), query)
+            .await
+            .expect_err("filter whose column renders from the filter value must fail");
+        assert_filter_not_applicable(&error, filter);
+    }
+}
+
+#[tokio::test]
+async fn unconsumed_filter_backed_only_by_another_active_filter_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/octocat/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "name": "hello" },
+                { "name": "world" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_cross_filter_echo",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "repos",
+            "description": "Repos",
+            "filters": [
+                { "name": "owner" },
+                { "name": "repo" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/repos",
+                "query": [
+                    { "name": "repo", "from": "filter", "key": "repo" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["owner"],
+                "method": "GET",
+                "path": "/api/users/{{filter.owner}}/repos"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "owner",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "owner" }
+                },
+                {
+                    "name": "repo",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "owner" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT name FROM http_cross_filter_echo.repos \
+         WHERE owner = 'octocat' AND repo = 'octocat'",
+    )
+    .await
+    .expect_err("routable local filter backed only by another active filter must fail");
+
+    assert_filter_not_applicable(&error, "repo");
+}
+
+#[tokio::test]
+async fn unconsumed_filter_backed_by_column_echoing_a_consumed_filter_is_enforced_locally() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/octocat/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "name": "hello" },
+                { "name": "world" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_cross_filter_column",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "repos",
+            "description": "Repos",
+            "filters": [
+                { "name": "owner" },
+                { "name": "org" },
+                { "name": "full_name" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/repos"
+            },
+            "requests": [
+                {
+                    "when_filters": ["owner"],
+                    "method": "GET",
+                    "path": "/api/users/{{filter.owner}}/repos"
+                },
+                {
+                    "when_filters": ["org", "full_name"],
+                    "method": "GET",
+                    "path": "/api/orgs/{{filter.org}}/repos/{{filter.full_name}}"
+                }
+            ],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "owner",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "owner" }
+                },
+                {
+                    "name": "full_name",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": {
+                        "kind": "template",
+                        "template": "{{filter.owner}}/{{expr.name}}",
+                        "values": {
+                            "name": { "kind": "path", "path": ["name"] }
+                        }
+                    }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    // `full_name` is routable (the org route consumes it) but unconsumed
+    // here, while its column embeds `owner` — a filter the selected request
+    // DID consume. The response is already owner-scoped upstream, so the
+    // rendered value is truthful and local enforcement genuinely
+    // discriminates on row data; only echoes of the enforced filter itself
+    // are circular.
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT name FROM http_cross_filter_column.repos \
+             WHERE owner = 'octocat' AND full_name = 'octocat/hello'",
+        )
+        .await
+        .expect("column echoing a different, consumed filter must stay enforceable"),
+    );
+
+    assert_eq!(rows, vec![json!({ "name": "hello" })]);
+}
+
 #[tokio::test]
 async fn exact_local_from_filter_column_survives_residual_recheck() {
     let server = MockServer::start().await;

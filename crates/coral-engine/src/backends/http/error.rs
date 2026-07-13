@@ -28,6 +28,16 @@ pub(crate) enum ProviderQueryError {
         column: String,
     },
 
+    #[error(
+        "{schema}.{table} filter '{column}' cannot be applied: the selected request does not \
+         consume it and the '{column}' column is not backed by response data that can enforce it"
+    )]
+    UnenforceableFilter {
+        schema: String,
+        table: String,
+        column: String,
+    },
+
     #[error("{source_schema}.{table} API error: {detail}")]
     ApiRequest {
         source_schema: String,
@@ -117,24 +127,12 @@ impl ProviderQueryError {
                 schema,
                 table,
                 column,
-            } => {
-                let mut metadata = HashMap::new();
-                metadata.insert("schema".to_string(), schema.clone());
-                metadata.insert("table".to_string(), table.clone());
-                metadata.insert("column".to_string(), column.clone());
-                StructuredQueryError::new(
-                    "MISSING_REQUIRED_FILTER",
-                    format!("{schema}.{table} requires `WHERE {column} = <constant>`"),
-                    format!("{schema}.{table} requires a constant equality filter on {column}"),
-                    Some(format!(
-                        "Add a constant equality filter on `{column}` or inspect \
-                         `coral.columns` / `coral.tables` first."
-                    )),
-                    false,
-                    StatusCode::FailedPrecondition,
-                    metadata,
-                )
-            }
+            } => missing_required_filter_to_structured(schema, table, column),
+            Self::UnenforceableFilter {
+                schema,
+                table,
+                column,
+            } => unenforceable_filter_to_structured(schema, table, column),
             Self::ApiRequest {
                 source_schema,
                 table,
@@ -217,6 +215,57 @@ impl ProviderQueryError {
 // ---------------------------------------------------------------------------
 // HTTP status dispatch
 // ---------------------------------------------------------------------------
+
+fn filter_error_metadata(schema: &str, table: &str, column: &str) -> HashMap<String, String> {
+    let mut metadata = HashMap::new();
+    metadata.insert("schema".to_string(), schema.to_string());
+    metadata.insert("table".to_string(), table.to_string());
+    metadata.insert("column".to_string(), column.to_string());
+    metadata
+}
+
+fn missing_required_filter_to_structured(
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> StructuredQueryError {
+    StructuredQueryError::new(
+        "MISSING_REQUIRED_FILTER",
+        format!("{schema}.{table} requires `WHERE {column} = <constant>`"),
+        format!("{schema}.{table} requires a constant equality filter on {column}"),
+        Some(format!(
+            "Add a constant equality filter on `{column}` or inspect \
+             `coral.columns` / `coral.tables` first."
+        )),
+        false,
+        StatusCode::FailedPrecondition,
+        filter_error_metadata(schema, table, column),
+    )
+}
+
+fn unenforceable_filter_to_structured(
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> StructuredQueryError {
+    StructuredQueryError::new(
+        "FILTER_NOT_APPLICABLE",
+        format!("{schema}.{table} filter `{column}` cannot be applied to this query"),
+        format!(
+            "{schema}.{table}: the request selected for this query does not consume \
+             filter `{column}`, and the `{column}` column is not backed by response \
+             data that can prove which returned rows match that filter, so the \
+             predicate cannot be enforced"
+        ),
+        Some(format!(
+            "Add filters that select a request consuming `{column}` (inspect \
+             `coral.tables` guidance for {schema}.{table})."
+        )),
+        false,
+        StatusCode::FailedPrecondition,
+        filter_error_metadata(schema, table, column),
+    )
+}
 
 fn http_request_to_structured(
     source: &str,
@@ -562,6 +611,36 @@ mod tests {
         assert!(error.summary().contains("repo"));
         assert!(error.hint().is_some());
         assert_eq!(error.status(), StatusCode::FailedPrecondition);
+    }
+
+    #[test]
+    fn unenforceable_filter_sets_reason_status_and_metadata() {
+        let error = ProviderQueryError::UnenforceableFilter {
+            schema: "github".to_string(),
+            table: "issues".to_string(),
+            column: "owner".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "FILTER_NOT_APPLICABLE");
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
+        assert!(!error.retryable());
+        assert_eq!(error.metadata().get("schema").unwrap(), "github");
+        assert_eq!(error.metadata().get("table").unwrap(), "issues");
+        assert_eq!(error.metadata().get("column").unwrap(), "owner");
+        assert!(error.summary().contains("owner"));
+        assert!(error.detail().contains("does not consume"));
+        assert!(error.detail().contains("not backed by response data"));
+        assert!(!error.detail().contains("merely echoes"));
+        assert!(error.hint().is_some());
+
+        let rendered = ProviderQueryError::UnenforceableFilter {
+            schema: "github".to_string(),
+            table: "issues".to_string(),
+            column: "owner".to_string(),
+        }
+        .to_string();
+        assert!(rendered.contains("not backed by response data"));
+        assert!(!rendered.contains("echoes the filter"));
     }
 
     #[test]

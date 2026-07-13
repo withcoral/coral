@@ -236,6 +236,74 @@ fn eval_expr(
     }
 }
 
+/// Whether evaluating `expr` may fold the value of filter `filter` into the
+/// produced column value. Enforcing that filter locally through such a column
+/// is circular: the value reflects the filter rather than response data, so
+/// rows match (or miss) regardless of what the backend returned. References
+/// to *other* filters stay enforceable — a consumed filter is already applied
+/// upstream by the request, an unconsumed active one is enforced (or
+/// rejected) through its own column, and an inactive one renders the same
+/// null/default in both the comparison and the output rows. Keep the match
+/// exhaustive so every new `ExprSpec` variant decides this explicitly.
+pub(crate) fn expr_reflects_filter_value(expr: &ExprSpec, filter: &str) -> bool {
+    match expr {
+        ExprSpec::FromFilter { key } => key == filter,
+        ExprSpec::Coalesce { exprs } => exprs
+            .iter()
+            .any(|nested| expr_reflects_filter_value(nested, filter)),
+        ExprSpec::IfPresent { check: expr, .. }
+        | ExprSpec::FormatTimestamp { expr, .. }
+        | ExprSpec::Base64Decode { expr }
+        | ExprSpec::Replace { expr, .. } => expr_reflects_filter_value(expr, filter),
+        ExprSpec::Template { template, values } => {
+            template.tokens().any(|token| {
+                matches!(token.namespace(), TemplateNamespace::Filter) && token.key() == filter
+            }) || values
+                .values()
+                .any(|nested| expr_reflects_filter_value(nested, filter))
+        }
+        // ObjectFilterPath only uses the filter to select which object key to
+        // read; the value itself still comes from the response row.
+        ExprSpec::ObjectFilterPath { .. }
+        | ExprSpec::Path { .. }
+        | ExprSpec::FromArg { .. }
+        | ExprSpec::Literal { .. }
+        | ExprSpec::Null
+        | ExprSpec::JoinArray { .. }
+        | ExprSpec::JoinArrayPath { .. }
+        | ExprSpec::TagValue { .. }
+        | ExprSpec::JoinTagValues { .. }
+        | ExprSpec::FirstArrayItemPath { .. }
+        | ExprSpec::CurrentRow => false,
+    }
+}
+
+/// Whether evaluating `expr` can read data from the backend response row.
+/// Pure filter, arg, literal, and null expressions are annotations over query
+/// inputs, not evidence that a row returned by the backend matches a value.
+pub(crate) fn expr_references_response_data(expr: &ExprSpec) -> bool {
+    match expr {
+        ExprSpec::Path { .. }
+        | ExprSpec::JoinArray { .. }
+        | ExprSpec::JoinArrayPath { .. }
+        | ExprSpec::TagValue { .. }
+        | ExprSpec::JoinTagValues { .. }
+        | ExprSpec::FirstArrayItemPath { .. }
+        | ExprSpec::ObjectFilterPath { .. }
+        | ExprSpec::CurrentRow => true,
+        ExprSpec::Coalesce { exprs } => exprs.iter().any(expr_references_response_data),
+        ExprSpec::IfPresent { check, .. }
+        | ExprSpec::FormatTimestamp { expr: check, .. }
+        | ExprSpec::Base64Decode { expr: check }
+        | ExprSpec::Replace { expr: check, .. } => expr_references_response_data(check),
+        ExprSpec::Template { values, .. } => values.values().any(expr_references_response_data),
+        ExprSpec::FromFilter { .. }
+        | ExprSpec::FromArg { .. }
+        | ExprSpec::Literal { .. }
+        | ExprSpec::Null => false,
+    }
+}
+
 /// Evaluate a `FormatTimestamp` expression, returning epoch **microseconds** as
 /// a `Value::Number` suitable for an Arrow `TimestampMicrosecondArray`.
 fn eval_format_timestamp(
@@ -470,7 +538,8 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_items, eval_template, filter_items_by_column_values, parse_iso8601_micros,
+        convert_items, eval_template, expr_references_response_data, expr_reflects_filter_value,
+        filter_items_by_column_values, parse_iso8601_micros,
     };
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
@@ -600,6 +669,138 @@ mod tests {
             }),
             other => panic!("unsupported test expr: {other:?}"),
         }
+    }
+
+    #[test]
+    fn expr_reflects_filter_value_detects_expressions_derived_from_that_filter() {
+        let from_filter = ExprSpec::FromFilter {
+            key: "owner".into(),
+        };
+        let path = ExprSpec::Path {
+            path: vec!["owner".into()],
+        };
+
+        assert!(expr_reflects_filter_value(&from_filter, "owner"));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Coalesce {
+                exprs: vec![path.clone(), from_filter.clone()],
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Replace {
+                expr: Box::new(from_filter.clone()),
+                from: "-".into(),
+                to: "_".into(),
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::IfPresent {
+                check: Box::new(from_filter.clone()),
+                then_value: "yes".into(),
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{filter.owner}}").expect("template"),
+                values: HashMap::new(),
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{expr.owner}}").expect("template"),
+                values: HashMap::from([("owner".to_string(), from_filter.clone())]),
+            },
+            "owner",
+        ));
+
+        // References to a *different* filter do not make the column circular
+        // for the filter being enforced.
+        assert!(!expr_reflects_filter_value(&from_filter, "repo"));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Coalesce {
+                exprs: vec![path.clone(), from_filter.clone()],
+            },
+            "repo",
+        ));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{filter.owner}}/{{expr.name}}")
+                    .expect("template"),
+                values: HashMap::from([(
+                    "name".to_string(),
+                    ExprSpec::Path {
+                        path: vec!["name".into()],
+                    },
+                )]),
+            },
+            "full_name",
+        ));
+
+        assert!(!expr_reflects_filter_value(&path, "owner"));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Coalesce {
+                exprs: vec![
+                    path.clone(),
+                    ExprSpec::Literal {
+                        value: json!("unknown"),
+                    },
+                ],
+            },
+            "owner",
+        ));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{expr.owner}}:{{arg.suffix}}").expect("template"),
+                values: HashMap::from([("owner".to_string(), path)]),
+            },
+            "owner",
+        ));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::ObjectFilterPath {
+                path: vec!["metrics".into()],
+                filter_key: "metric".into(),
+                item_path: vec![],
+            },
+            "metric",
+        ));
+    }
+
+    #[test]
+    fn expr_references_response_data_distinguishes_row_values_from_annotations() {
+        let from_filter = ExprSpec::FromFilter {
+            key: "owner".into(),
+        };
+        let path = ExprSpec::Path {
+            path: vec!["name".into()],
+        };
+
+        assert!(!expr_references_response_data(&from_filter));
+        assert!(!expr_references_response_data(&ExprSpec::Literal {
+            value: json!("open"),
+        }));
+        assert!(!expr_references_response_data(&ExprSpec::Template {
+            template: ParsedTemplate::parse("{{filter.owner}}").expect("template"),
+            values: HashMap::new(),
+        }));
+        assert!(expr_references_response_data(&path));
+        assert!(expr_references_response_data(&ExprSpec::ObjectFilterPath {
+            path: vec!["metrics".into()],
+            filter_key: "metric".into(),
+            item_path: vec![],
+        }));
+        assert!(expr_references_response_data(&ExprSpec::Replace {
+            expr: Box::new(path.clone()),
+            from: "-".into(),
+            to: "_".into(),
+        }));
+        assert!(expr_references_response_data(&ExprSpec::Template {
+            template: ParsedTemplate::parse("{{filter.owner}}/{{expr.name}}").expect("template"),
+            values: HashMap::from([("name".to_string(), path)]),
+        }));
     }
 
     #[test]
