@@ -59,6 +59,7 @@ mod backends;
 mod composition;
 pub mod contracts;
 mod runtime;
+mod types;
 
 pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
@@ -68,11 +69,12 @@ pub use composition::{
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryMemoryConfig,
-    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
-    QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
+    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -154,13 +156,30 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         sql: &str,
     ) -> Result<QueryExecution, CoreError> {
+        Self::execute_sql_with_params(sources, runtime, sql, QueryParameters::new()).await
+    }
+
+    /// Executes one `SQL` statement with named query parameter values bound
+    /// into its `$name` placeholders.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// if a supplied parameter is not referenced by the statement, or if the
+    /// runtime cannot execute the statement.
+    pub async fn execute_sql_with_params(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<QueryExecution, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
 
         runtime::query::build_runtime(sources, runtime)
             .await?
-            .execute_sql(sql)
+            .execute_sql(sql, &params)
             .await
     }
 
@@ -178,13 +197,30 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         sql: &str,
     ) -> Result<QueryPlan, CoreError> {
+        Self::explain_sql_with_params(sources, runtime, sql, QueryParameters::new()).await
+    }
+
+    /// Explains one `SQL` statement with named query parameter values bound
+    /// into its `$name` placeholders before planning output is rendered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// if a supplied parameter is not referenced by the statement, or if the
+    /// query engine cannot explain the statement.
+    pub async fn explain_sql_with_params(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<QueryPlan, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
 
         runtime::query::build_runtime(sources, runtime)
             .await?
-            .explain_sql(sql)
+            .explain_sql(sql, &params)
             .await
     }
 
@@ -234,7 +270,10 @@ impl CoralQuery {
 
         let mut query_tests = Vec::with_capacity(test_queries.len());
         for sql in test_queries {
-            match query_runtime.execute_sql(sql).await {
+            match query_runtime
+                .execute_sql(sql, &QueryParameters::new())
+                .await
+            {
                 Ok(execution) => query_tests.push(QueryTestResult::success(
                     sql.clone(),
                     execution.row_count() as u64,

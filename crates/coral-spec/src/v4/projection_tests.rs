@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::json;
 
-use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;
 use super::*;
 use crate::{
@@ -37,9 +36,384 @@ surfaces:
         .filter(|projection| projection.visibility == ProjectionVisibility::Published)
         .map(|projection| projection.name.as_str())
         .collect::<Vec<_>>();
-    assert!(published.contains(&"issues"), "{published:?}");
+    assert!(published.contains(&"issue"), "{published:?}");
     assert!(published.contains(&"search_issues"), "{published:?}");
-    assert!(published.contains(&"get_issue"), "{published:?}");
+    assert!(published.contains(&"get_issues"), "{published:?}");
+}
+
+fn items_api_catalog(lookup_keys: Option<(bool, &[&str])>) -> ProjectionCatalog {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: items_api
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let spec = r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: list_items
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+        - {name: order_by, in: query, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}, state: {type: string}}}}}}}}
+  /projects/{project_id}/items:
+    get:
+      operationId: list_project_items
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+";
+    let mut ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
+    if let Some((enabled, exclude)) = lookup_keys {
+        for operation in &mut ir.operations {
+            for input in &mut operation.inputs {
+                input.exclude_from_lookup_keys =
+                    !enabled || exclude.iter().any(|excluded| *excluded == input.name);
+            }
+        }
+    }
+    generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog")
+}
+
+fn exposure(catalog: &ProjectionCatalog, operation_id: &str, input_name: &str) -> SqlInputExposure {
+    catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == operation_id)
+        .expect("projection")
+        .inputs
+        .iter()
+        .find(|input| input.name == input_name)
+        .expect("input")
+        .sql_exposure
+}
+
+#[test]
+fn lookup_key_exclusions_control_joinability_not_exposure() {
+    let filter_lookup_key = |catalog: &ProjectionCatalog, filter_name: &str| {
+        let list_items = catalog
+            .projections
+            .iter()
+            .find(|projection| projection.operation_id == "list_items")
+            .expect("projection");
+        projection_filter_specs(list_items)
+            .iter()
+            .find(|spec| spec.name == filter_name)
+            .expect("filter spec")
+            .lookup_key
+    };
+
+    let catalog = items_api_catalog(Some((true, &["order_by", "project_id"])));
+
+    // An excluded parameter keeps its exposure and pushdown; it only loses
+    // the dependent-join completeness flag.
+    assert_eq!(
+        exposure(&catalog, "list_items", "order_by"),
+        SqlInputExposure::Filter
+    );
+    assert!(!filter_lookup_key(&catalog, "order_by"));
+    assert_eq!(
+        exposure(&catalog, "list_items", "state"),
+        SqlInputExposure::Filter
+    );
+    assert!(filter_lookup_key(&catalog, "state"));
+
+    // Function arguments never carry the flag, excluded or not.
+    let project_items = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_project_items")
+        .expect("projection");
+    assert_eq!(
+        exposure(&catalog, "list_project_items", "project_id"),
+        SqlInputExposure::FunctionArg
+    );
+    assert!(project_items.inputs.iter().all(|input| !input.lookup_key));
+
+    // Disabling lookup keys withholds the flag surface-wide without touching
+    // exposure.
+    let catalog = items_api_catalog(Some((false, &[])));
+    assert_eq!(
+        exposure(&catalog, "list_items", "state"),
+        SqlInputExposure::Filter
+    );
+    assert!(!filter_lookup_key(&catalog, "state"));
+    assert!(!filter_lookup_key(&catalog, "order_by"));
+
+    // Generated metadata is present immediately after OpenAPI import, before
+    // app materialization writes the semantic IR artifact.
+    let catalog = items_api_catalog(None);
+    assert_eq!(
+        exposure(&catalog, "list_items", "state"),
+        SqlInputExposure::Filter
+    );
+    assert!(filter_lookup_key(&catalog, "state"));
+    assert!(!filter_lookup_key(&catalog, "order_by"));
+}
+
+#[test]
+fn top_level_scalar_rows_use_scalar_projection_types() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: scalar_rows
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /strings:
+    get:
+      operationId: list_strings
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: string}}}}}}
+  /integers:
+    get:
+      operationId: list_integers
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: integer}}}}}}
+  /numbers:
+    get:
+      operationId: list_numbers
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: number}}}}}}
+  /booleans:
+    get:
+      operationId: list_booleans
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: boolean}}}}}}
+  /timestamps:
+    get:
+      operationId: list_timestamps
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: string, format: date-time}}}}}}
+".as_bytes(),
+    )
+    .expect("import");
+
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let column_types = catalog
+        .projections
+        .iter()
+        .map(|projection| {
+            let [column] = projection.columns.as_slice() else {
+                panic!("expected one value column for {}", projection.operation_id);
+            };
+            assert_eq!(column.name, "value", "{}", projection.operation_id);
+            assert!(
+                column.source_path.is_empty(),
+                "{} should read the scalar row itself",
+                projection.operation_id
+            );
+            (projection.operation_id.as_str(), column.data_type)
+        })
+        .collect::<HashMap<_, _>>();
+
+    assert_eq!(
+        column_types,
+        HashMap::from([
+            ("list_booleans", ManifestDataType::Boolean),
+            ("list_integers", ManifestDataType::Int64),
+            ("list_numbers", ManifestDataType::Float64),
+            ("list_strings", ManifestDataType::Utf8),
+            ("list_timestamps", ManifestDataType::Timestamp),
+        ])
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps issue regression cases together."
+)]
+fn tagged_openapi_operations_use_grouped_operation_names() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /orgs/{org}/settings/billing/ai-credit-usage:
+    get:
+      tags: [billing]
+      operationId: billing/get-github-billing-ai-credit-usage-report-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Usage'}
+  /users/{username}/settings/billing/ai-credit-usage:
+    get:
+      tags: [billing]
+      operationId: billing/get-github-billing-ai-credit-usage-report-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Usage'}
+  /users/{username}/repos:
+    get:
+      tags: [repos]
+      operationId: repos/list-for-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Repository'}
+  /users/{username}/subscriptions:
+    get:
+      tags: [activity]
+      operationId: activity/list-repos-watched-by-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Repository'}
+  /orgs/{org}/projects/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-items-for-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+  /users/{username}/projects/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-items-for-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+  /orgs/{org}/projects/views/{view_id}/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-view-items-for-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+        - {name: view_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+  /users/{username}/projects/views/{view_id}/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-view-items-for-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+        - {name: view_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+components:
+  schemas:
+    Usage:
+      type: object
+      properties:
+        total: {type: integer}
+    Repository:
+      type: object
+      properties:
+        id: {type: integer}
+    ProjectV2ItemWithContent:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let names = catalog
+        .projections
+        .iter()
+        .map(|projection| projection.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected = [
+        "billing_get_github_billing_ai_credit_usage_report_org",
+        "billing_get_github_billing_ai_credit_usage_report_user",
+        "repos_list_for_user",
+        "activity_list_repos_watched_by_user",
+        "projects_list_items_for_org",
+        "projects_list_items_for_user",
+        "projects_list_view_items_for_org",
+        "projects_list_view_items_for_user",
+    ];
+    for name in expected {
+        assert!(names.contains(name), "missing {name}: {names:?}");
+    }
+    assert!(
+        names.iter().all(|name| !name.contains("__")),
+        "tag-grouped names should not need hash suffixes: {names:?}"
+    );
+    assert!(
+        catalog
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "PROJECTION_NAME_COLLISION_RESOLVED"),
+        "tag-grouped names should not need collision diagnostics: {:?}",
+        catalog.diagnostics
+    );
 }
 
 #[test]
@@ -71,11 +445,13 @@ surfaces:
         .find(|operation| operation.id == projection.operation_id)
         .expect("repo issues operation");
 
-    assert_eq!(projection.pagination.mode, PaginationMode::Page);
-    assert_eq!(projection.pagination.page_param.as_deref(), Some("page"));
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST execution");
+    };
+    assert_eq!(rest.pagination.mode, PaginationMode::Page);
+    assert_eq!(rest.pagination.page_param.as_deref(), Some("page"));
     assert_eq!(
-        projection
-            .pagination
+        rest.pagination
             .page_size
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
@@ -87,9 +463,9 @@ surfaces:
         .iter()
         .map(|input| (input.wire_name.as_str(), input.sql_exposure))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(exposures.get("owner"), Some(&SqlInputExposure::Filter));
-    assert_eq!(exposures.get("repo"), Some(&SqlInputExposure::Filter));
-    assert_eq!(exposures.get("state"), Some(&SqlInputExposure::Filter));
+    assert_eq!(exposures.get("owner"), Some(&SqlInputExposure::FunctionArg));
+    assert_eq!(exposures.get("repo"), Some(&SqlInputExposure::FunctionArg));
+    assert_eq!(exposures.get("state"), Some(&SqlInputExposure::FunctionArg));
     assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Internal));
     assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
 
@@ -97,8 +473,14 @@ surfaces:
         .into_iter()
         .map(|filter| filter.name)
         .collect::<BTreeSet<_>>();
+    assert!(filter_names.is_empty());
+
+    let arg_names = projection_arg_specs(projection)
+        .into_iter()
+        .map(|arg| arg.name)
+        .collect::<BTreeSet<_>>();
     assert_eq!(
-        filter_names,
+        arg_names,
         BTreeSet::from(["owner".to_string(), "repo".to_string(), "state".to_string()])
     );
 
@@ -106,8 +488,8 @@ surfaces:
         .into_iter()
         .map(|column| column.name)
         .collect::<BTreeSet<_>>();
-    assert!(column_names.contains("owner"));
-    assert!(column_names.contains("repo"));
+    assert!(!column_names.contains("owner"));
+    assert!(!column_names.contains("repo"));
     assert!(column_names.contains("state"));
     assert!(!column_names.contains("page"));
     assert!(!column_names.contains("per_page"));
@@ -119,39 +501,203 @@ surfaces:
         .map(|param| param.name.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(query_names, BTreeSet::from(["state"]));
+    assert!(matches!(
+        &request
+            .query
+            .iter()
+            .find(|param| param.name == "state")
+            .expect("state query")
+            .value,
+        crate::ValueSourceSpec::Arg { .. }
+    ));
+    assert!(
+        !projection.guide.contains("paginate"),
+        "projection guide should not describe pagination: {}",
+        projection.guide
+    );
+}
 
-    let mut stale_projection = projection.clone();
-    for input in &mut stale_projection.inputs {
-        if matches!(input.wire_name.as_str(), "page" | "per_page") {
-            input.sql_exposure = SqlInputExposure::Filter;
-        }
-    }
-    let stale_filter_names = projection_filter_specs(&stale_projection)
+#[test]
+fn projection_generation_keeps_link_header_page_inputs_internal() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: link_pages
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "items_list")
+        .expect("items projection");
+    let operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == projection.operation_id)
+        .expect("items operation");
+
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST execution");
+    };
+    assert_eq!(rest.pagination.mode, PaginationMode::LinkHeader);
+    assert_eq!(rest.pagination.page_param.as_deref(), Some("page"));
+    assert_eq!(
+        rest.pagination
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("per_page")
+    );
+    assert_eq!(projection.visibility, ProjectionVisibility::Published);
+
+    let exposures = projection
+        .inputs
+        .iter()
+        .map(|input| (input.wire_name.as_str(), input.sql_exposure))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Internal));
+    assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
+
+    let filter_names = projection_filter_specs(projection)
         .into_iter()
         .map(|filter| filter.name)
         .collect::<BTreeSet<_>>();
-    assert_eq!(stale_filter_names, filter_names);
+    assert!(filter_names.is_empty());
 
-    let stale_request =
-        request_spec_for_projection(&stale_projection, operation).expect("stale request");
-    let stale_query_names = stale_request
+    let request = request_spec_for_projection(projection, operation).expect("request");
+    assert!(request.query.is_empty());
+}
+
+#[test]
+fn projection_generation_keeps_opaque_link_header_page_tokens_public() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: link_page_tokens
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: string}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "items_list")
+        .expect("items projection");
+    let operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == projection.operation_id)
+        .expect("items operation");
+
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST execution");
+    };
+    assert_eq!(rest.pagination.mode, PaginationMode::LinkHeader);
+    assert_eq!(rest.pagination.page_param, None);
+    assert_eq!(
+        rest.pagination
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("per_page")
+    );
+    assert_eq!(projection.visibility, ProjectionVisibility::Published);
+
+    let exposures = projection
+        .inputs
+        .iter()
+        .map(|input| (input.wire_name.as_str(), input.sql_exposure))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Filter));
+    assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
+
+    let filter_names = projection_filter_specs(projection)
+        .into_iter()
+        .map(|filter| filter.name)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(filter_names, BTreeSet::from(["page".to_string()]));
+
+    let request = request_spec_for_projection(projection, operation).expect("request");
+    let query_names = request
         .query
         .iter()
         .map(|param| param.name.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(stale_query_names, query_names);
-
-    for input in &mut stale_projection.inputs {
-        if matches!(input.wire_name.as_str(), "page" | "per_page") {
-            input.sql_exposure = SqlInputExposure::FunctionArg;
-        }
-    }
-    let stale_arg_names = projection_arg_specs(&stale_projection)
-        .into_iter()
-        .map(|arg| arg.name)
-        .collect::<BTreeSet<_>>();
-    assert!(!stale_arg_names.contains("page"));
-    assert!(!stale_arg_names.contains("per_page"));
+    assert_eq!(query_names, BTreeSet::from(["page"]));
 }
 
 #[test]
@@ -309,27 +855,28 @@ components:
     )
     .expect("import");
     let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
-    let table_projection = catalog
+    let list_projection = catalog
         .projections
         .iter()
         .find(|projection| projection.operation_id == "list_items")
-        .expect("table projection");
-    let table_operation = ir
+        .expect("list projection");
+    let list_operation = ir
         .operations
         .iter()
-        .find(|operation| operation.id == table_projection.operation_id)
-        .expect("table operation");
-    let table_request =
-        request_spec_for_projection(table_projection, table_operation).expect("table request");
+        .find(|operation| operation.id == list_projection.operation_id)
+        .expect("list operation");
+    let list_request =
+        request_spec_for_projection(list_projection, list_operation).expect("list request");
     assert_eq!(
-        table_request.path.raw(),
-        "/tenants/{{filter.tenant|%7Cpublic%7D%7D}}/items"
+        list_request.path.raw(),
+        "/tenants/{{arg.tenant|%7Cpublic%7D%7D}}/items"
     );
-    let table_filter = projection_filter_specs(table_projection)
+    assert!(projection_filter_specs(list_projection).is_empty());
+    let list_arg = projection_arg_specs(list_projection)
         .into_iter()
-        .find(|filter| filter.name == "tenant")
-        .expect("tenant filter");
-    assert!(!table_filter.required);
+        .find(|arg| arg.name == "tenant")
+        .expect("tenant arg");
+    assert!(!list_arg.required);
 
     let search_projection = catalog
         .projections
@@ -367,7 +914,7 @@ components:
         .expect("namespace request");
     assert_eq!(
         namespace_request.path.raw(),
-        "/namespaces/{{filter.namespace|%252E}}/items"
+        "/namespaces/{{arg.namespace|%252E}}/items"
     );
 }
 
@@ -493,28 +1040,43 @@ components:
     let issues_list = names_by_operation
         .get("issues_list")
         .expect("issues_list projection");
-    assert_eq!(issues_list.0, "issues");
+    assert_eq!(issues_list.0, "issue");
     let org_issues = names_by_operation
         .get("issues_list_for_org")
         .expect("issues_list_for_org projection");
-    assert_eq!(org_issues.0, "orgs_issues");
+    assert_eq!(org_issues.0, "orgs_issue");
     let repo_issues = names_by_operation
         .get("issues_list_for_repo")
         .expect("issues_list_for_repo projection");
-    assert_eq!(repo_issues.0, "repos_issues");
+    assert_eq!(repo_issues.0, "repos_issue");
     let pulls = names_by_operation
         .get("pulls_list")
         .expect("pulls_list projection");
-    assert_eq!(pulls.0, "pull_requests");
-    assert!(matches!(pulls.1, ProjectionKind::Table));
+    assert_eq!(pulls.0, "pull_request");
+    assert!(matches!(
+        pulls.1,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
     let commits = names_by_operation
         .get("repos_list_commits")
         .expect("repos_list_commits projection");
-    assert_eq!(commits.0, "commits");
+    assert_eq!(commits.0, "commit");
     let pull_commits = names_by_operation
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
-    assert_eq!(pull_commits.0, "repos_pulls_commits");
+    assert_eq!(pull_commits.0, "repos_pulls_commit");
+    let pull_commits_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "pulls_list_commits")
+        .expect("pull commits projection");
+    let pull_number_arg = projection_arg_specs(pull_commits_projection)
+        .into_iter()
+        .find(|arg| arg.name == "pull_number")
+        .expect("pull_number arg");
+    assert_eq!(pull_number_arg.data_type, ManifestDataType::Int64);
 
     let catalog_collision_diagnostics = catalog
         .diagnostics
@@ -1019,13 +1581,4 @@ fn same_type_surface_namespaces_keep_colliding_projection_names() {
             .iter()
             .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
     );
-}
-
-#[test]
-fn projection_names_avoid_obvious_bad_singulars() {
-    assert_eq!(singularize("status"), "status");
-    assert_eq!(singularize("news"), "news");
-    assert_eq!(singularize("analytics"), "analytics");
-    assert_eq!(singularize("addresses"), "address");
-    assert_eq!(pluralize("box"), "boxes");
 }

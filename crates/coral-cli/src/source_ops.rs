@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
@@ -16,10 +16,11 @@ use coral_api::v1::{
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
     SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
-    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
+use coral_client::{AppClient, DecodedStatusError, decode_status_error};
 use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
@@ -70,22 +71,28 @@ impl TableDisplayLimit {
     pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
 }
 
-pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>, anyhow::Error> {
+pub(crate) async fn discover_sources(
+    app: &AppClient,
+    workspace: &Workspace,
+) -> Result<Vec<SourceInfo>, anyhow::Error> {
     Ok(app
         .source_client()
         .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
         }))
         .await?
         .into_inner()
         .sources)
 }
 
-pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {
+pub(crate) async fn list_sources(
+    app: &AppClient,
+    workspace: &Workspace,
+) -> Result<Vec<Source>, anyhow::Error> {
     Ok(app
         .source_client()
         .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
         }))
         .await?
         .into_inner()
@@ -94,6 +101,7 @@ pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow:
 
 pub(crate) async fn add_bundled_source(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -101,7 +109,7 @@ pub(crate) async fn add_bundled_source(
     let response = app
         .source_client()
         .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables,
             secrets,
@@ -115,6 +123,7 @@ pub(crate) async fn add_bundled_source(
 
 pub(crate) async fn import_source(
     app: &AppClient,
+    workspace: &Workspace,
     manifest_yaml: String,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -122,7 +131,7 @@ pub(crate) async fn import_source(
     let mut responses = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             manifest_yaml,
             variables,
             secrets,
@@ -175,16 +184,17 @@ impl CredentialPromptMode {
 
 pub(crate) async fn add_bundled_source_with_credentials(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     inputs: CollectedSourceInputs,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return add_bundled_source(app, name, inputs.variables, inputs.secrets).await;
+        return add_bundled_source(app, workspace, name, inputs.variables, inputs.secrets).await;
     }
     let response = app
         .source_client()
         .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables: inputs.variables,
             secrets: inputs.secrets,
@@ -196,16 +206,24 @@ pub(crate) async fn add_bundled_source_with_credentials(
 
 pub(crate) async fn import_source_with_credentials(
     app: &AppClient,
+    workspace: &Workspace,
     manifest_yaml: String,
     inputs: CollectedSourceInputs,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return import_source(app, manifest_yaml, inputs.variables, inputs.secrets).await;
+        return import_source(
+            app,
+            workspace,
+            manifest_yaml,
+            inputs.variables,
+            inputs.secrets,
+        )
+        .await;
     }
     let response = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             manifest_yaml,
             variables: inputs.variables,
             secrets: inputs.secrets,
@@ -280,6 +298,9 @@ enum CredentialStreamEvent {
         authorization_url: String,
         user_code: String,
     },
+    OAuthCallbackReceived {
+        input_key: String,
+    },
     OAuthCompleted,
 }
 
@@ -296,6 +317,11 @@ impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStrea
                 authorization_url: authorization.authorization_url,
                 user_code: authorization.user_code,
             },
+            create_bundled_source_with_o_auth_response::Event::OauthCallbackReceived(callback) => {
+                Self::OAuthCallbackReceived {
+                    input_key: callback.input_key,
+                }
+            }
             create_bundled_source_with_o_auth_response::Event::OauthCompleted(_) => {
                 Self::OAuthCompleted
             }
@@ -312,6 +338,11 @@ impl From<import_source_response::Event> for CredentialStreamEvent {
                     input_key: authorization.input_key,
                     authorization_url: authorization.authorization_url,
                     user_code: authorization.user_code,
+                }
+            }
+            import_source_response::Event::OauthCallbackReceived(callback) => {
+                Self::OAuthCallbackReceived {
+                    input_key: callback.input_key,
                 }
             }
             import_source_response::Event::OauthCompleted(_) => Self::OAuthCompleted,
@@ -347,12 +378,39 @@ fn handle_credential_stream_event(
             }
             None
         }
+        Some(CredentialStreamEvent::OAuthCallbackReceived { input_key }) => {
+            let label = oauth_labels
+                .get(&input_key)
+                .map_or(input_key.as_str(), String::as_str);
+            redirect_prompt.cancel_and_join();
+            redirect_prompt.callback_received_at = Some(Instant::now());
+            println!(
+                "{}",
+                style(format!(
+                    "Authorization received for {label}. Exchanging authorization code for token..."
+                ))
+                .dim()
+            );
+            None
+        }
         Some(CredentialStreamEvent::Source(source)) => {
             redirect_prompt.cancel_and_join();
             Some(source)
         }
         Some(CredentialStreamEvent::OAuthCompleted) => {
             redirect_prompt.cancel_and_join();
+            let elapsed = redirect_prompt
+                .callback_received_at
+                .take()
+                .map(|started| format!(" in {:.1}s", started.elapsed().as_secs_f64()))
+                .unwrap_or_default();
+            println!(
+                "{}",
+                style(format!(
+                    "OAuth token received{elapsed}. Installing source..."
+                ))
+                .dim()
+            );
             None
         }
         None => None,
@@ -361,19 +419,21 @@ fn handle_credential_stream_event(
 
 pub(crate) async fn validate_source(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
 ) -> Result<ValidateSourceResponse, anyhow::Error> {
-    Ok(validate_source_request(app, source_name_arg(Some(name))?).await?)
+    Ok(validate_source_request(app, workspace, source_name_arg(Some(name))?).await?)
 }
 
 async fn validate_source_request(
     app: &AppClient,
+    workspace: &Workspace,
     name: String,
 ) -> Result<ValidateSourceResponse, tonic::Status> {
     Ok(app
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name,
         }))
         .await?
@@ -503,13 +563,14 @@ fn canonicalize_manifest_descriptor(
 
 pub(crate) async fn print_source_info(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     verbose: bool,
 ) -> Result<(), anyhow::Error> {
     let response = app
         .source_client()
         .get_source_info(Request::new(GetSourceInfoRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: source_name_arg(Some(name))?,
         }))
         .await?
@@ -585,10 +646,14 @@ pub(crate) fn display_version(version: &str) -> String {
     }
 }
 
-pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
+pub(crate) async fn delete_source(
+    app: &AppClient,
+    workspace: &Workspace,
+    name: &str,
+) -> Result<(), anyhow::Error> {
     app.source_client()
         .delete_source(Request::new(DeleteSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: source_name_arg(Some(name))?,
         }))
         .await?;
@@ -783,10 +848,11 @@ pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
 
 pub(crate) async fn validate_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    let response = validate_source(app, source_name).await?;
+    let response = validate_source(app, workspace, source_name).await?;
     print_validation_pretty(&response, limit)?;
     match validation_follow_up(&response, ValidationSeverityMode::WarnOnly) {
         ValidationFollowUp::None => Ok(()),
@@ -800,10 +866,12 @@ pub(crate) async fn validate_and_print(
 
 pub(crate) async fn validate_and_warn(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    if let Err(err) = validate_and_print(app, source_name, limit).await {
+    println!("{}", style("Validating source...").dim());
+    if let Err(err) = validate_and_print(app, workspace, source_name, limit).await {
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
@@ -811,15 +879,16 @@ pub(crate) async fn validate_and_warn(
 
 pub(crate) async fn test_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
     severity_mode: ValidationSeverityMode,
 ) -> Result<(), crate::CliError> {
     let normalized = source_name_arg(Some(source_name))?;
-    let response = match validate_source_request(app, normalized.clone()).await {
+    let response = match validate_source_request(app, workspace, normalized.clone()).await {
         Ok(response) => response,
         Err(status) if is_source_missing_status(&status) => {
-            return source_test_not_found_error(app, &normalized, status).await;
+            return source_test_not_found_error(app, workspace, &normalized, status).await;
         }
         Err(status) => return Err(anyhow::Error::from(status).into()),
     };
@@ -837,11 +906,12 @@ pub(crate) async fn test_and_print(
 
 async fn source_test_not_found_error(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     original_status: tonic::Status,
 ) -> Result<(), crate::CliError> {
     // Discovery failure must not mask the original validation error.
-    let Ok(available) = discover_sources(app).await else {
+    let Ok(available) = discover_sources(app, workspace).await else {
         return Err(anyhow::Error::from(original_status).into());
     };
     if available
@@ -860,10 +930,11 @@ async fn source_test_not_found_error(
 
 pub(crate) async fn remove_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
 ) -> Result<(), crate::CliError> {
     let normalized = source_name_arg(Some(source_name))?;
-    match delete_source(app, &normalized).await {
+    match delete_source(app, workspace, &normalized).await {
         Ok(()) => {
             println!("Removed source {normalized}");
             Ok(())
@@ -1212,6 +1283,7 @@ fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
 struct OAuthRedirectPastePrompt {
     cancel: Option<Arc<AtomicBool>>,
     handle: Option<JoinHandle<()>>,
+    callback_received_at: Option<Instant>,
 }
 
 impl OAuthRedirectPastePrompt {
@@ -1219,6 +1291,7 @@ impl OAuthRedirectPastePrompt {
         Self {
             cancel: Some(cancel),
             handle: Some(handle),
+            callback_received_at: None,
         }
     }
 
@@ -1553,15 +1626,23 @@ fn prompt_oauth_credential_inputs(
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
     let mut values = Vec::new();
+    let mut prompted_client_id = None;
     if let Some(input_key) = oauth.client.id.input.as_deref()
-        && let Some(value) = prompt_oauth_client_id(input_key, oauth.client.id.default.as_deref())?
+        && let Some(value) = prompt_oauth_client_id(
+            input_key,
+            oauth.client.id.default.as_deref(),
+            oauth_client_id_allows_empty(oauth),
+        )?
     {
+        prompted_client_id = Some(value.clone());
         values.push(OAuthCredentialInput {
             key: input_key.to_string(),
             value,
         });
     }
-    if let Some(secret) = oauth.client.secret.as_ref() {
+    if oauth_client_secret_required_after_client_id_prompt(oauth, prompted_client_id.as_deref())
+        && let Some(secret) = oauth.client.secret.as_ref()
+    {
         let value = prompt_oauth_client_secret(&secret.input)?;
         values.push(OAuthCredentialInput {
             key: secret.input.clone(),
@@ -1571,12 +1652,35 @@ fn prompt_oauth_credential_inputs(
     Ok(values)
 }
 
+fn oauth_client_id_allows_empty(oauth: &ManifestOAuthCredentialSpec) -> bool {
+    oauth.client.dynamic_registration.is_some()
+}
+
+fn oauth_client_secret_required_after_client_id_prompt(
+    oauth: &ManifestOAuthCredentialSpec,
+    prompted_client_id: Option<&str>,
+) -> bool {
+    oauth.client.secret.is_some()
+        && (prompted_client_id.is_some_and(oauth_client_id_value_present)
+            || oauth
+                .client
+                .id
+                .default
+                .as_deref()
+                .is_some_and(oauth_client_id_value_present))
+}
+
+fn oauth_client_id_value_present(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
 fn prompt_oauth_client_id(
     input_key: &str,
     default: Option<&str>,
+    allow_dynamic_registration: bool,
 ) -> Result<Option<String>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    let prompt = if default.is_some_and(|value| !value.is_empty()) {
+    let prompt = if default.is_some_and(oauth_client_id_value_present) {
         format!("{input_key} [source default]")
     } else {
         input_key.to_string()
@@ -1585,10 +1689,23 @@ fn prompt_oauth_client_id(
         .with_prompt(prompt)
         .allow_empty(true)
         .interact_text()?;
+    resolve_oauth_client_id_prompt_value(input_key, &value, default, allow_dynamic_registration)
+}
+
+fn resolve_oauth_client_id_prompt_value(
+    input_key: &str,
+    value: &str,
+    default: Option<&str>,
+    allow_dynamic_registration: bool,
+) -> Result<Option<String>, anyhow::Error> {
+    let value = value.trim().to_string();
     if !value.is_empty() {
         return Ok(Some(value));
     }
-    if default.is_some_and(|value| !value.is_empty()) {
+    if default.is_some_and(oauth_client_id_value_present) {
+        return Ok(None);
+    }
+    if allow_dynamic_registration {
         return Ok(None);
     }
     Err(anyhow::anyhow!(
@@ -1663,7 +1780,11 @@ mod tests {
     use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
-        ManifestInputKind, ManifestInputSpec,
+        ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec,
+        ManifestOAuthClientSecretSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
+        ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationAuthMethod,
+        ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
+        ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1676,10 +1797,29 @@ mod tests {
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, render_redirect_prompt_key_echo, resolve_prompt_hint,
-        shell_quote_arg, source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
+        finalize_input_value, oauth_client_id_allows_empty,
+        oauth_client_secret_required_after_client_id_prompt, render_redirect_prompt_key_echo,
+        resolve_oauth_client_id_prompt_value, resolve_prompt_hint, shell_quote_arg,
+        source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
         validation_follow_up,
     };
+
+    fn test_oauth_spec(client: ManifestOAuthClientSpec) -> ManifestOAuthCredentialSpec {
+        ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Required,
+            },
+            resource: None,
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: Some("https://provider.example.com/oauth/authorize".to_string()),
+            device_authorization_url: None,
+            token_url: "https://provider.example.com/oauth/token".to_string(),
+            client,
+            scopes: None,
+        }
+    }
 
     #[test]
     fn collect_inputs_reads_variables_and_secrets_from_lookup() {
@@ -1833,6 +1973,136 @@ mod tests {
 
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&variable));
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&plain_secret));
+    }
+
+    #[test]
+    fn dynamic_registration_allows_empty_client_id_even_with_static_secret() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(oauth_client_id_allows_empty(&oauth));
+    }
+
+    #[test]
+    fn static_oauth_client_id_cannot_be_empty_without_dynamic_registration() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: None,
+            dynamic_registration: None,
+        });
+
+        assert!(!oauth_client_id_allows_empty(&oauth));
+    }
+
+    #[test]
+    fn dynamic_registration_fallback_skips_static_client_secret_prompt() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(!oauth_client_secret_required_after_client_id_prompt(
+            &oauth, None
+        ));
+    }
+
+    #[test]
+    fn dynamic_registration_treats_blank_client_id_prompt_as_absent() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value("OAUTH_CLIENT_ID", "   ", None, true)
+                .expect("dynamic registration should allow blank client id"),
+            None
+        );
+
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(!oauth_client_secret_required_after_client_id_prompt(
+            &oauth,
+            Some("   ")
+        ));
+    }
+
+    #[test]
+    fn client_id_prompt_value_is_trimmed_before_static_path() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value(
+                "OAUTH_CLIENT_ID",
+                "  static-client  ",
+                None,
+                true,
+            )
+            .expect("non-empty client id should be accepted"),
+            Some("static-client".to_string())
+        );
+    }
+
+    #[test]
+    fn static_client_path_requires_client_secret_prompt() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(oauth_client_secret_required_after_client_id_prompt(
+            &oauth,
+            Some("static-client")
+        ));
     }
 
     #[test]

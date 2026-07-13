@@ -7,9 +7,9 @@ use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputR
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
 };
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Expr;
@@ -49,7 +49,7 @@ pub(crate) struct RegisteredTable {
     pub(crate) columns: Vec<RegisteredColumn>,
     pub(crate) filters: Vec<RegisteredFilter>,
     pub(crate) required_filters: Vec<String>,
-    pub(crate) search_limits_json: Option<String>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,12 +57,11 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
-    pub(crate) kind: String,
+    pub(crate) kind: SourceTableFunctionKind,
     pub(crate) description: String,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
-    pub(crate) arg_names: Vec<String>,
-    pub(crate) search_limits_json: Option<String>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +76,7 @@ pub(crate) struct RegisteredFilter {
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTableFunctionArgument {
     pub(crate) name: String,
+    pub(crate) data_type: ManifestDataType,
     pub(crate) required: bool,
     pub(crate) values: Vec<String>,
 }
@@ -210,7 +210,7 @@ pub(crate) fn registered_filters_from_specs(filters: &[FilterSpec]) -> Vec<Regis
             name: filter.name.clone(),
             mode: filter.mode.as_str().to_string(),
             required: filter.required,
-            data_type: filter.data_type.clone(),
+            data_type: filter.data_type.as_manifest_str().to_string(),
             description: filter.description.clone(),
         })
         .collect()
@@ -228,7 +228,7 @@ pub(crate) fn registered_columns_from_specs(
                 .find(|filter| filter.name == column.name.as_str());
             RegisteredColumn {
                 name: column.name.clone(),
-                data_type: column.data_type.clone(),
+                data_type: column.data_type.as_manifest_str().to_string(),
                 nullable: column.nullable,
                 is_virtual: column.r#virtual,
                 is_required_filter: filter.is_some_and(|filter| filter.required),
@@ -323,7 +323,7 @@ pub(crate) fn build_registered_table(
         columns,
         filters: registered_filters_from_specs(&common.filters),
         required_filters,
-        search_limits_json: common.search_limits.as_ref().map(serialize_search_limits),
+        search_limits: common.search_limits.clone(),
     }
 }
 
@@ -337,6 +337,7 @@ pub(crate) fn build_registered_table_function(
         .iter()
         .map(|arg| RegisteredTableFunctionArgument {
             name: arg.name.clone(),
+            data_type: arg.data_type,
             required: arg.required,
             values: arg.values.clone(),
         })
@@ -355,36 +356,16 @@ pub(crate) fn build_registered_table_function(
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
         factory,
-        kind: function.kind.as_str().to_string(),
+        kind: function.kind,
         description: function.description.clone(),
         arguments,
         result_columns,
-        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
-        search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
+        search_limits: function.search_limits.clone(),
     }
 }
 
-fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
-    serde_json::to_string(limits).expect("search limits json")
-}
-
-pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {
-    match data_type {
-        ManifestDataType::Utf8 | ManifestDataType::Json => DataType::Utf8,
-        ManifestDataType::Int64 => DataType::Int64,
-        ManifestDataType::Boolean => DataType::Boolean,
-        ManifestDataType::Float64 => DataType::Float64,
-        ManifestDataType::Timestamp => {
-            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
-        }
-    }
-}
-
-pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> datafusion::error::Result<DataType> {
-    column
-        .manifest_data_type()
-        .map(manifest_data_type_to_arrow)
-        .map_err(|error| DataFusionError::Execution(error.to_string()))
+pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> DataType {
+    crate::types::arrow_column_type(column.data_type)
 }
 
 pub(crate) fn schema_from_columns(
@@ -402,7 +383,7 @@ pub(crate) fn schema_from_columns(
     for column in columns {
         fields.push(Field::new(
             &column.name,
-            arrow_type_for_column(column)?,
+            arrow_type_for_column(column),
             column.nullable,
         ));
     }

@@ -55,6 +55,18 @@ pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 /// responses larger than tonic's 4 MB default.
 pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
 
+/// Maximum gRPC message size for `SourceService` *responses*, in bytes.
+///
+/// Source validation returns source metadata plus all exposed tables. Generated
+/// DSL v4 sources from large `OpenAPI` documents can exceed tonic's 4 MB default.
+pub const SOURCE_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
+
+/// Maximum gRPC message size for `SearchService` *responses*, in bytes.
+///
+/// Universal Search returns bounded metadata hints, but it may include table,
+/// table-function, and column descriptions for many installed sources.
+pub const SEARCH_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `TraceService` *responses*, in bytes.
 ///
 /// Trace details can include large span attributes, which may exceed tonic's
@@ -76,25 +88,24 @@ pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
-/// gRPC metadata key carrying the originating episode id on Coral calls after
-/// `EpisodeService.OpenEpisode`. The single source of truth for the wire
-/// contract; consumed by both the server (`coral-app`) and clients
-/// (`coral-client`).
-pub const CORAL_EPISODE_ID_METADATA_KEY: &str = "coral-episode-id";
+/// gRPC metadata key carrying the originating task id on Coral calls after
+/// `TaskService.StartTask`. This is the shared wire-contract constant for
+/// clients and servers that opt into task attribution.
+pub const CORAL_TASK_ID_METADATA_KEY: &str = "coral-task-id";
 
-/// Maximum length of a `coral-episode-id` value, in bytes. Validated identically
-/// server- and client-side so the contract stays in one place.
-pub const CORAL_EPISODE_ID_MAX_LEN: usize = 128;
+/// Maximum length of a Coral task id, in bytes. Validated identically server-
+/// and client-side so the contract stays in one place.
+pub const CORAL_TASK_ID_MAX_LEN: usize = 128;
 
-/// Maximum length of an episode `intent`, in characters. Generous for a task
-/// description while bounding the per-record size of the episode log. Owned here
-/// (rather than in `coral-app`) so the `OpenEpisode` request contract — the
-/// exact bound generated clients can prevalidate against — lives in one place
-/// and a change is visible as a `coral-api` diff.
-pub const CORAL_EPISODE_INTENT_MAX_CHARS: usize = 4096;
+/// Maximum length of a task `intent`, in characters. Generous for a task
+/// description while bounding the per-record lifecycle log size.
+pub const CORAL_TASK_INTENT_MAX_CHARS: usize = 4096;
 
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
+
+/// Machine-readable reason for a configured workspace lookup miss.
+pub const CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND: &str = "WORKSPACE_NOT_FOUND";
 
 /// Reserved `ErrorInfo.metadata` key for a one-line error summary.
 pub const CORAL_ERROR_METADATA_SUMMARY: &str = "summary";

@@ -37,11 +37,8 @@ pub(crate) fn convert_items(
 
     for column in columns {
         let expr = column.resolved_expr();
-        let data_type = column
-            .manifest_data_type()
-            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
 
-        match data_type {
+        match column.data_type {
             ManifestDataType::Utf8 => {
                 let array: StringArray = items
                     .iter()

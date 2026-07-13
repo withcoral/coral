@@ -8,11 +8,13 @@ use std::time::Duration;
 use coral_spec::v4::{
     Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
     MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
-    V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
-    generate_projection_catalog, import_mcp_surface, import_openapi_surface,
-    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
-    validate_materialized_source, validate_openapi_base_url_template,
+    ProjectionCatalog, ProjectionPaginationInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr,
+    SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
+    apply_parameter_metadata_overrides, generate_projection_catalog, import_mcp_surface,
+    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
+    openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
+    sync_projection_pagination_inputs, validate_materialized_source,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -25,13 +27,17 @@ use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::state::AppStateLayout;
+use crate::state::{AppStateLayout, V4ProjectionCatalogFile, V4ProjectionCatalogOrigin};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 
 const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024 * 1024;
 const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
+pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
+pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
+pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
+pub(crate) const PARAMETER_METADATA_OVERRIDE_FILENAME: &str = "parameter_metadata.yaml";
 
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
@@ -151,9 +157,9 @@ pub(crate) fn load_v4_materialization(
     manifest: &V4SourceManifest,
 ) -> Result<V4MaterializedSource, AppError> {
     let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
-    let projections_path = layout.v4_projections_file(workspace_name, source_name);
+    let projections_file = layout.v4_projection_catalog_file(workspace_name, source_name);
     let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
-    if !fingerprint_path.exists() || !projections_path.exists() || !diagnostics_path.exists() {
+    if !fingerprint_path.exists() || !projections_file.path.exists() || !diagnostics_path.exists() {
         return Err(incompatible_materialization_error(
             source_name,
             "required artifact is missing",
@@ -169,9 +175,15 @@ pub(crate) fn load_v4_materialization(
         ));
     }
     let fingerprint_surfaces = validate_fingerprint_surfaces(source_name, manifest, &fingerprint)?;
-    let projections: ProjectionCatalog =
-        read_artifact_yaml(source_name, "projection catalog", &projections_path)?;
-    validate_projection_catalog_header(source_name, manifest, &projections)?;
+    let mut projections: ProjectionCatalog = match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            read_artifact_yaml(source_name, "projection catalog", &projections_file.path)?
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            read_projection_override_yaml(source_name, &projections_file.path)?
+        }
+    };
+    validate_projection_catalog_header(source_name, manifest, &projections, &projections_file)?;
     let diagnostics: Vec<Diagnostic> =
         read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
     let mut surfaces = Vec::new();
@@ -194,8 +206,15 @@ pub(crate) fn load_v4_materialization(
         require_file(source_name, &raw_source_document_path)?;
         require_file(source_name, &normalized_source_document_path)?;
         require_file(source_name, &semantic_ir_path)?;
-        let semantic_ir: SemanticIr =
+        let mut semantic_ir: SemanticIr =
             read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
+        apply_parameter_metadata_override_file(
+            layout,
+            workspace_name,
+            source_name,
+            &surface.id,
+            &mut semantic_ir,
+        )?;
         surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir,
@@ -204,6 +223,19 @@ pub(crate) fn load_v4_materialization(
             raw_source_document_path,
         });
     }
+    let projection_sync_mode = match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            ProjectionPaginationInputSyncMode::RecomputeRestInputExposure
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            ProjectionPaginationInputSyncMode::PreserveExistingExposure
+        }
+    };
+    sync_projection_pagination_inputs(
+        surfaces.iter().map(|surface| &surface.semantic_ir),
+        &mut projections,
+        projection_sync_mode,
+    );
     let materialized = V4MaterializedSource {
         fingerprint,
         surfaces,
@@ -319,26 +351,62 @@ fn validate_projection_catalog_header(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
     projections: &ProjectionCatalog,
+    projections_file: &V4ProjectionCatalogFile,
 ) -> Result<(), AppError> {
     if projections.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(incompatible_materialization_error(
+        return Err(projection_catalog_error(
             source_name,
+            projections_file,
             "projection catalog artifact schema version mismatch",
         ));
     }
     if projections.source_name != manifest.common.name {
-        return Err(incompatible_materialization_error(
+        return Err(projection_catalog_error(
             source_name,
+            projections_file,
             "projection catalog source name does not match installed manifest",
         ));
     }
-    if projections.generator_version != PROJECTION_GENERATOR_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "projection catalog generator version mismatch",
-        ));
+    match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            if projections.generator_version.as_deref() != Some(PROJECTION_GENERATOR_VERSION) {
+                return Err(projection_catalog_error(
+                    source_name,
+                    projections_file,
+                    "projection catalog generator version mismatch",
+                ));
+            }
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            if let Some(generator_version) = projections.generator_version.as_deref()
+                && generator_version != PROJECTION_GENERATOR_VERSION
+            {
+                return Err(projection_catalog_error(
+                    source_name,
+                    projections_file,
+                    format!(
+                        "projection override was copied from generator version '{generator_version}', but this Coral build expects '{PROJECTION_GENERATOR_VERSION}'; remove generator_version after reviewing the override or recreate it from the current generated catalog"
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+fn projection_catalog_error(
+    source_name: &SourceName,
+    projections_file: &V4ProjectionCatalogFile,
+    detail: impl AsRef<str>,
+) -> AppError {
+    match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            incompatible_materialization_error(source_name, detail)
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            invalid_projection_override_error(source_name, &projections_file.path, detail)
+        }
+    }
 }
 
 fn require_file(source_name: &SourceName, path: &Path) -> Result<(), AppError> {
@@ -367,6 +435,39 @@ fn read_raw_source_document_artifact(
             ),
         )
     })
+}
+
+fn apply_parameter_metadata_override_file(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    surface_id: &str,
+    semantic_ir: &mut SemanticIr,
+) -> Result<(), AppError> {
+    let path = layout.v4_parameter_metadata_override_file(workspace_name, source_name, surface_id);
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(&path).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to read DSL v4 parameter metadata override '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let overrides = parse_parameter_metadata_overrides_yaml(&raw).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to parse DSL v4 parameter metadata override '{}': {error}",
+            path.display()
+        ))
+    })?;
+    apply_parameter_metadata_overrides(semantic_ir, &overrides).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to apply DSL v4 parameter metadata override '{}': {error}",
+            path.display()
+        ))
+    })?;
+    Ok(())
 }
 
 fn validate_loaded_materialization(
@@ -583,19 +684,7 @@ fn write_materialization(
             }
         };
         let surface_dir = temp_dir.join("surfaces").join(&surface.id);
-        fs::ensure_private_dir(&surface_dir)?;
-        std::fs::write(
-            surface_dir.join("source-document.raw"),
-            &materialized_surface.raw_document,
-        )?;
-        std::fs::write(
-            surface_dir.join("source-document.yaml"),
-            &materialized_surface.normalized_document,
-        )?;
-        write_yaml(
-            &surface_dir.join("semantic-ir.yaml"),
-            &materialized_surface.semantic_ir,
-        )?;
+        write_surface_artifacts(&surface_dir, &materialized_surface)?;
         materialized_surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir: materialized_surface.semantic_ir.clone(),
@@ -650,9 +739,9 @@ fn write_materialization(
     };
     validate_materialized_source(manifest, &materialized)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    write_yaml(&temp_dir.join("fingerprint.yaml"), &fingerprint)?;
-    write_yaml(&temp_dir.join("projections.yaml"), &projections)?;
-    write_yaml(&temp_dir.join("diagnostics.yaml"), &diagnostics)?;
+    write_yaml(&temp_dir.join(FINGERPRINT_FILENAME), &fingerprint)?;
+    write_yaml(&temp_dir.join(PROJECTIONS_FILENAME), &projections)?;
+    write_yaml(&temp_dir.join(DIAGNOSTICS_FILENAME), &diagnostics)?;
     Ok(())
 }
 
@@ -661,6 +750,28 @@ struct MaterializedSurfaceBuild {
     normalized_document: Vec<u8>,
     observed_sha256: String,
     semantic_ir: SemanticIr,
+}
+
+/// Writes the per-surface materialized artifacts (source documents and
+/// semantic IR).
+fn write_surface_artifacts(
+    surface_dir: &Path,
+    materialized_surface: &MaterializedSurfaceBuild,
+) -> Result<(), AppError> {
+    fs::ensure_private_dir(surface_dir)?;
+    std::fs::write(
+        surface_dir.join("source-document.raw"),
+        &materialized_surface.raw_document,
+    )?;
+    std::fs::write(
+        surface_dir.join("source-document.yaml"),
+        &materialized_surface.normalized_document,
+    )?;
+    write_yaml(
+        &surface_dir.join("semantic-ir.yaml"),
+        &materialized_surface.semantic_ir,
+    )?;
+    Ok(())
 }
 
 fn materialize_surface(
@@ -1084,6 +1195,31 @@ fn read_artifact_yaml<T: serde::de::DeserializeOwned>(
     })
 }
 
+fn read_projection_override_yaml(
+    source_name: &SourceName,
+    path: &Path,
+) -> Result<ProjectionCatalog, AppError> {
+    read_yaml(path).map_err(|error| {
+        invalid_projection_override_error(
+            source_name,
+            path,
+            format!("failed to read projection override artifact: {error}"),
+        )
+    })
+}
+
+fn invalid_projection_override_error(
+    source_name: &SourceName,
+    path: &Path,
+    detail: impl AsRef<str>,
+) -> AppError {
+    AppError::InvalidV4ProjectionOverride {
+        source_name: source_name.to_string(),
+        override_path: path.display().to_string(),
+        detail: detail.as_ref().to_string(),
+    }
+}
+
 fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::ensure_private_dir(parent)?;
@@ -1128,6 +1264,10 @@ paths:
   /issues:
     get:
       operationId: issues/list
+      parameters:
+        - {name: order_by, in: query, schema: {type: string}}
+        - {name: q, in: query, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
       responses:
         '200':
           content:
@@ -1278,6 +1418,74 @@ surfaces:
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
     }
 
+    fn installed_projection_catalog_value(layout: &AppStateLayout) -> serde_yaml::Value {
+        let path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        serde_yaml::from_slice(&std::fs::read(path).expect("read generated projections"))
+            .expect("parse generated projections")
+    }
+
+    fn remove_generator_version(catalog: &mut serde_yaml::Value) {
+        let key = serde_yaml::Value::String("generator_version".to_string());
+        catalog
+            .as_mapping_mut()
+            .expect("projection catalog mapping")
+            .remove(&key);
+    }
+
+    fn set_generator_version(catalog: &mut serde_yaml::Value, generator_version: &str) {
+        let key = serde_yaml::Value::String("generator_version".to_string());
+        catalog
+            .as_mapping_mut()
+            .expect("projection catalog mapping")
+            .insert(
+                key,
+                serde_yaml::Value::String(generator_version.to_string()),
+            );
+    }
+
+    fn write_projection_override(layout: &AppStateLayout, catalog: &serde_yaml::Value) -> PathBuf {
+        let path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        std::fs::create_dir_all(path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(
+            &path,
+            serde_yaml::to_string(catalog).expect("encode projection override"),
+        )
+        .expect("write projection override");
+        path
+    }
+
+    #[test]
+    fn build_v4_materialization_persists_lookup_key_flags_in_semantic_ir() {
+        let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
+        let surface_dir = layout.v4_surface_dir(&workspace_name(), &source_name(), "rest");
+        assert!(
+            !surface_dir
+                .join(PARAMETER_METADATA_OVERRIDE_FILENAME)
+                .exists(),
+            "generated lookup key metadata should live in semantic-ir.yaml"
+        );
+
+        let semantic_ir: SemanticIr =
+            read_yaml(&surface_dir.join("semantic-ir.yaml")).expect("read semantic IR");
+        let operation = semantic_ir.operations.first().expect("operation");
+        let input_excluded = |name: &str| {
+            operation
+                .inputs
+                .iter()
+                .find(|input| input.name == name)
+                .expect("input")
+                .exclude_from_lookup_keys
+        };
+        assert!(input_excluded("order_by"));
+        assert!(input_excluded("q"));
+        assert!(!input_excluded("state"));
+    }
+
     #[tokio::test]
     async fn build_v4_materialization_tmp_materializes_mcp_surface() {
         let server = MockServer::start().await;
@@ -1336,7 +1544,7 @@ surfaces:
         );
 
         let projections: ProjectionCatalog =
-            read_yaml(&build.temp_dir.join("projections.yaml")).expect("read projections");
+            read_yaml(&build.temp_dir.join(PROJECTIONS_FILENAME)).expect("read projections");
         let projection = projections.projections.first().expect("projection");
         assert_eq!(projection.namespace, "mcp_materialization_test");
         let column_names = projection
@@ -1394,7 +1602,7 @@ surfaces:
         .expect("partial materialization should succeed");
 
         let fingerprint: Fingerprint =
-            read_yaml(&build.temp_dir.join("fingerprint.yaml")).expect("read fingerprint");
+            read_yaml(&build.temp_dir.join(FINGERPRINT_FILENAME)).expect("read fingerprint");
         let surface_ids = fingerprint
             .surfaces
             .iter()
@@ -1405,7 +1613,7 @@ surfaces:
         assert!(!build.temp_dir.join("surfaces").join("mcp").exists());
 
         let diagnostics: Vec<Diagnostic> =
-            read_yaml(&build.temp_dir.join("diagnostics.yaml")).expect("read diagnostics");
+            read_yaml(&build.temp_dir.join(DIAGNOSTICS_FILENAME)).expect("read diagnostics");
         assert!(
             diagnostics.iter().any(|diagnostic| {
                 diagnostic.code == "SURFACE_MATERIALIZATION_FAILED"
@@ -1508,6 +1716,150 @@ surfaces:
     }
 
     #[test]
+    fn load_v4_materialization_rejects_generated_projection_catalog_without_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projection_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog = installed_projection_catalog_value(&layout);
+        remove_generator_version(&mut catalog);
+        std::fs::write(
+            &projection_path,
+            serde_yaml::to_string(&catalog).expect("encode projections"),
+        )
+        .expect("write generated projections");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("generated projection catalog without generator version should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("projection catalog generator version mismatch"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_accepts_projection_override_without_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut catalog = installed_projection_catalog_value(&layout);
+        remove_generator_version(&mut catalog);
+        write_projection_override(&layout, &catalog);
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("projection override without generator version should load");
+
+        assert_eq!(materialized.projections.generator_version, None);
+    }
+
+    #[test]
+    fn load_v4_materialization_accepts_projection_override_with_current_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let catalog = installed_projection_catalog_value(&layout);
+        write_projection_override(&layout, &catalog);
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("projection override with current generator version should load");
+
+        assert_eq!(
+            materialized.projections.generator_version.as_deref(),
+            Some(PROJECTION_GENERATOR_VERSION)
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_stale_projection_override_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut catalog = installed_projection_catalog_value(&layout);
+        set_generator_version(&mut catalog, "derive-read-v0");
+        let override_path = write_projection_override(&layout, &catalog);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("stale projection override generator version should fail");
+        let message = error.to_string();
+
+        assert!(
+            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            message.contains(&override_path.display().to_string()),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("Edit or remove the override file"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("Re-add the source"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_corrupted_projection_override_with_override_guidance() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(&override_path, b": not yaml").expect("write corrupt projection override");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("corrupt projection override should fail");
+        let message = error.to_string();
+
+        assert!(
+            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            message.contains("failed to read projection override artifact"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("Edit or remove the override file"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("Re-add the source"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
     fn load_v4_materialization_rejects_corrupted_artifact_yaml_with_readd_guidance() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
@@ -1531,6 +1883,94 @@ surfaces:
             message.contains("Re-add the source"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn load_v4_materialization_applies_parameter_metadata_override_without_rewriting_artifact() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let override_path =
+            layout.v4_parameter_metadata_override_file(&workspace_name(), &source_name(), "rest");
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(
+            &override_path,
+            r"
+lookup_keys:
+  enabled: true
+  exclude: [state]
+operation_overrides:
+  issues/list:
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 1
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+",
+        )
+        .expect("write parameter metadata override");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("load materialization with override");
+        let operation = materialized
+            .surfaces
+            .first()
+            .expect("surface")
+            .semantic_ir
+            .operations
+            .first()
+            .expect("operation");
+        let coral_spec::v4::IrExecutionAttachment::Rest(rest) = &operation.execution else {
+            panic!("expected REST operation");
+        };
+        assert_eq!(rest.pagination.mode, coral_spec::PaginationMode::Page);
+        assert_eq!(rest.pagination.page_param.as_deref(), Some("page_number"));
+        let loaded_input_excluded = |name: &str| {
+            operation
+                .inputs
+                .iter()
+                .find(|input| input.name == name)
+                .expect("input")
+                .exclude_from_lookup_keys
+        };
+        assert!(!loaded_input_excluded("order_by"));
+        assert!(!loaded_input_excluded("q"));
+        assert!(loaded_input_excluded("state"));
+
+        let semantic_ir_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("semantic-ir.yaml");
+        let artifact_ir: SemanticIr =
+            read_yaml(&semantic_ir_path).expect("read persisted semantic IR");
+        let artifact_operation = artifact_ir.operations.first().expect("artifact operation");
+        let coral_spec::v4::IrExecutionAttachment::Rest(artifact_rest) =
+            &artifact_operation.execution
+        else {
+            panic!("expected REST operation");
+        };
+        assert_eq!(
+            artifact_rest.pagination.mode,
+            coral_spec::PaginationMode::None
+        );
+        let artifact_input_excluded = |name: &str| {
+            artifact_operation
+                .inputs
+                .iter()
+                .find(|input| input.name == name)
+                .expect("input")
+                .exclude_from_lookup_keys
+        };
+        assert!(artifact_input_excluded("order_by"));
+        assert!(artifact_input_excluded("q"));
+        assert!(!artifact_input_excluded("state"));
     }
 
     #[test]

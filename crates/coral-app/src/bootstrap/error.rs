@@ -3,12 +3,14 @@
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
     CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::credentials::CredentialsError;
+use crate::state::db::DbError;
 
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +18,12 @@ pub enum AppError {
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested workspace was not found in config.
+    #[error("workspace '{0}' not found")]
+    WorkspaceNotFound(String),
+    /// A requested workspace already exists in config.
+    #[error("workspace '{0}' already exists")]
+    WorkspaceAlreadyExists(String),
     /// Caller-supplied input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
@@ -30,6 +38,18 @@ pub enum AppError {
         /// Source name whose installed artifacts failed validation.
         source_name: String,
         /// Specific materialization mismatch or missing-artifact detail.
+        detail: String,
+    },
+    /// A user-maintained DSL v4 projection override is malformed or stale.
+    #[error(
+        "failed precondition: source '{source_name}' has invalid DSL v4 projection override '{override_path}': {detail}. Edit or remove the override file."
+    )]
+    InvalidV4ProjectionOverride {
+        /// Source name whose override failed validation.
+        source_name: String,
+        /// Projection override path that failed validation.
+        override_path: String,
+        /// Specific override mismatch or malformed-artifact detail.
         detail: String,
     },
     /// Provider-managed credential refresh failed during active source use.
@@ -65,9 +85,30 @@ pub enum AppError {
     /// Credential material access failed.
     #[error(transparent)]
     Credentials(#[from] CredentialsError),
+    /// Durable app-state database access failed.
+    #[error("database error: {0}")]
+    Database(String),
     /// The Coral config directory could not be discovered from defaults.
     #[error("failed to determine Coral config directory")]
     MissingConfigDir,
+}
+
+impl From<DbError> for AppError {
+    fn from(error: DbError) -> Self {
+        match error {
+            DbError::Config(detail) => {
+                Self::FailedPrecondition(format!("database configuration is invalid: {detail}"))
+            }
+            DbError::MissingDatabaseParent(path) => Self::FailedPrecondition(format!(
+                "database file parent directory is missing for {}",
+                path.display()
+            )),
+            DbError::Io(error) => Self::Io(error),
+            DbError::TomlDecode(error) => Self::TomlDecode(error),
+            DbError::Sqlx(error) => Self::Database(error.to_string()),
+            DbError::Migration(error) => Self::Database(error.to_string()),
+        }
+    }
 }
 
 /// Upper bound on the byte length of a `tonic::Status` message (detail).
@@ -107,16 +148,16 @@ fn truncate_status_detail(detail: String) -> String {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn app_status(error: AppError) -> Status {
-    if matches!(error, AppError::SourceNotFound(_)) {
-        // The `reason` alone discriminates `SOURCE_NOT_FOUND` from other
-        // `Code::NotFound` causes (e.g. `io::ErrorKind::NotFound` raised
-        // when a manifest file is missing). The qualified name already
-        // appears in the truncated status message; we deliberately do
-        // not duplicate it into structured metadata so unbounded
-        // identifiers cannot push the `grpc-status-details-bin` trailer
-        // past the h2 `MAX_HEADER_LIST_SIZE` budget.
+    let not_found_reason = match &error {
+        AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
+        _ => None,
+    };
+    if let Some(reason) = not_found_reason {
+        // The `reason` alone discriminates typed Coral misses from other
+        // `Code::NotFound` causes without echoing unbounded identifiers.
         let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
-            CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+            reason,
             CORAL_ERROR_DOMAIN,
             std::collections::HashMap::new(),
         ))];
@@ -194,10 +235,12 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
-        AppError::SourceNotFound(_) => Code::NotFound,
+        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::InvalidV4ProjectionOverride { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
@@ -213,7 +256,8 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Json(_)
         | AppError::Transport(_)
         | AppError::TaskJoin(_)
-        | AppError::Credentials(_) => Code::Internal,
+        | AppError::Credentials(_)
+        | AppError::Database(_) => Code::Internal,
     }
 }
 
@@ -255,6 +299,28 @@ mod tests {
         assert!(
             info.metadata.is_empty(),
             "SOURCE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+        );
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_workspace_not_found() {
+        let status = app_status(AppError::WorkspaceNotFound("work".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("workspace-not-found status must carry an ErrorInfo detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert!(
+            info.metadata.is_empty(),
+            "WORKSPACE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
             info.metadata
         );
     }

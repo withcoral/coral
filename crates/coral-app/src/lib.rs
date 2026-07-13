@@ -45,14 +45,15 @@
 pub mod bootstrap;
 mod catalog;
 mod credentials;
-mod episode;
 pub mod features;
 mod feedback;
 mod identity;
 mod query;
+mod search;
 mod sources;
 mod state;
 mod storage;
+mod task;
 pub mod telemetry;
 mod transport;
 mod workspaces;

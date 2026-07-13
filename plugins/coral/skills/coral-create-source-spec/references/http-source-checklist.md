@@ -32,10 +32,11 @@ Use:
 - When `from: one_of` models alternate stored credentials, mark each branch's secret input `required: false` so either credential can satisfy auth.
 - Use `type: source_config` when the user should provide a stored secret directly through an environment variable or prompt.
 - Use `type: oauth` when the provider should issue the source secret through OAuth device-code or authorization-code flow during `coral source add --interactive`.
-- OAuth methods require `flow.type: device_code` or `flow.type: authorization_code`. Authorization-code methods require an explicit `flow.pkce` of `required` or `disabled`; device-code methods require `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID, and omit redirect URI fields and client secrets.
+- OAuth methods require `flow.type: device_code` or `flow.type: authorization_code`. Authorization-code methods require an explicit `flow.pkce` of `required` or `disabled`; device-code methods require `endpoints.device_authorization_url`, `endpoints.token_url`, and either a public client ID or `client.dynamic_registration`, and omit redirect URI fields and static client secrets.
 - OAuth redirect URIs must use `http://127.0.0.1` or `http://localhost`. Use `redirect_uri_port_mode: random` with no port or port `0` when the provider accepts variable loopback ports. Use `fixed` with a non-zero port when the OAuth app must pre-register the exact URI. Authorization-code setup can still work when the browser cannot reach Coral's loopback listener directly, because the CLI lets users paste the final localhost redirect URL into the terminal.
 - For public clients, declare `client.id.default`, `client.id.input`, or both. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
-- OAuth endpoint URLs may use `{{input.KEY}}` only for declared `kind: variable` inputs. Use this for non-secret tenant, site, region, or domain URL components; never use secrets or runtime tokens in OAuth endpoint URLs.
+- For Dynamic Client Registration, Coral always registers a native client; source specs cannot configure a `web` Dynamic Client Registration application type. Set `request_refresh_token_grant: true` only when the provider supports registering clients for refresh-token grants.
+- OAuth URL fields may use `{{input.KEY}}` only for declared `kind: variable` inputs. Use this for non-secret tenant, site, region, or domain URL components in `endpoints.*`, `resource`, or `client.dynamic_registration.registration_url`; never use secrets or runtime tokens in OAuth URLs.
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
 - If the provider supports pasted tokens too, put the OAuth method first and add a `source_config` fallback.
 - For short-lived OAuth access tokens, document the scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire.
@@ -80,6 +81,7 @@ Additional hint guidance:
 - Use `functions` with `kind: search` for provider-native search endpoints that accept query text and return provider-ranked candidates.
 - Add `search_limits` to every `kind: search` function.
 - Keep search function arguments close to the provider API, and use `bind.arg` when the SQL argument name should differ from the request argument name.
+- Set a function arg `type` when the provider argument is not string-shaped; omitted arg types default to `Utf8`.
 - Search result columns should include stable identifiers and useful candidate metadata such as title, URL, score, rank, or timestamps when the provider returns them.
 - Do not model provider-native search as a table filter. Use `mode: contains` only for ordinary substring filters on normal list/detail tables. Provider-ranked retrieval belongs in a `kind: search` function.
 - If a search result is not a complete entity, make sure the returned identifier can be used with ordinary detail tables or required filters.

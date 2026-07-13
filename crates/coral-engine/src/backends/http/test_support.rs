@@ -2,9 +2,9 @@
 //!
 //! Actual `#[test]` cases live beside the module they exercise.
 
-use serde_json::json;
+use serde::Serialize;
+use serde_json::{Value, json};
 
-use crate::backends::http::target::HttpFetchTarget;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::{BodySpec, RequestSpec, ValueSourceSpec, parse_source_manifest_value};
 
@@ -39,10 +39,6 @@ pub(super) fn test_http_table_spec(
     .expect("table should exist")
 }
 
-pub(super) fn test_http_request_target(table: &HttpTableSpec) -> HttpFetchTarget {
-    HttpFetchTarget::from_resolved_table_request(table, table.request.clone())
-}
-
 fn request_json(request: &RequestSpec) -> serde_json::Value {
     let body = match &request.body {
         BodySpec::Json { fields } => fields
@@ -71,7 +67,7 @@ fn request_json(request: &RequestSpec) -> serde_json::Value {
     })
 }
 
-fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
+fn value_source_json(value: &ValueSourceSpec) -> Value {
     match value {
         ValueSourceSpec::Literal { value } => json!({
             "from": "literal",
@@ -81,21 +77,18 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
             "from": "one_of",
             "values": values.iter().map(value_source_json).collect::<Vec<_>>(),
         }),
-        ValueSourceSpec::Filter { key, default } => json!({
-            "from": "filter",
-            "key": key,
-            "default": default,
-        }),
-        ValueSourceSpec::FilterInt { key, default } => json!({
-            "from": "filter_int",
-            "key": key,
-            "default": default,
-        }),
-        ValueSourceSpec::FilterBool { key, default } => json!({
-            "from": "filter_bool",
-            "key": key,
-            "default": default,
-        }),
+        ValueSourceSpec::Filter { key, default } => {
+            key_default_json("filter", key, default.as_ref())
+        }
+        ValueSourceSpec::FilterInt { key, default } => {
+            key_default_json("filter_int", key, default.as_ref())
+        }
+        ValueSourceSpec::FilterBool { key, default } => {
+            key_default_json("filter_bool", key, default.as_ref())
+        }
+        ValueSourceSpec::FilterStringArray { key, default } => {
+            key_default_json("filter_string_array", key, default.as_ref())
+        }
         ValueSourceSpec::FilterSplit {
             key,
             separator,
@@ -116,21 +109,13 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
             "separator": separator,
             "part": part,
         }),
-        ValueSourceSpec::Arg { key, default } => json!({
-            "from": "arg",
-            "key": key,
-            "default": default,
-        }),
-        ValueSourceSpec::ArgInt { key, default } => json!({
-            "from": "arg_int",
-            "key": key,
-            "default": default,
-        }),
-        ValueSourceSpec::ArgBool { key, default } => json!({
-            "from": "arg_bool",
-            "key": key,
-            "default": default,
-        }),
+        ValueSourceSpec::Arg { key, default } => key_default_json("arg", key, default.as_ref()),
+        ValueSourceSpec::ArgInt { key, default } => {
+            key_default_json("arg_int", key, default.as_ref())
+        }
+        ValueSourceSpec::ArgBool { key, default } => {
+            key_default_json("arg_bool", key, default.as_ref())
+        }
         ValueSourceSpec::ArgSplit {
             key,
             separator,
@@ -172,4 +157,12 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
             "seconds": seconds,
         }),
     }
+}
+
+fn key_default_json<T: Serialize>(from: &str, key: &str, default: Option<&T>) -> Value {
+    json!({
+        "from": from,
+        "key": key,
+        "default": default,
+    })
 }

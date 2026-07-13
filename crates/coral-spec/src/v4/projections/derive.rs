@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
-    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrScalarType, IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
+    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput, IrType,
+    IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};
@@ -18,9 +18,12 @@ use super::model::{
     ProjectionVisibility, SqlInputExposure,
 };
 use super::names::{
-    is_search_operation, projection_guide, projection_name, resolve_projection_name_collisions,
+    is_search_operation, projection_guide, projection_name, projection_name_from_operation_naming,
+    resolve_projection_name_collisions,
 };
 use super::pagination::pagination_query_param_names;
+
+type TypeIndex<'a> = HashMap<&'a str, &'a IrType>;
 
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
@@ -38,8 +41,10 @@ pub fn generate_projection_catalog(
                     ir.surface_id, manifest.common.name
                 ))
             })?;
+        let type_by_id = type_index(ir);
         for operation in &ir.operations {
-            let projection = generate_projection(ir, namespace, operation, &mut diagnostics);
+            let projection =
+                generate_projection(ir, namespace, &type_by_id, operation, &mut diagnostics);
             projections.push(projection);
         }
         diagnostics.extend(ir.diagnostics.clone());
@@ -52,7 +57,7 @@ pub fn generate_projection_catalog(
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
-        generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+        generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
         projections,
         diagnostics,
     })
@@ -61,6 +66,7 @@ pub fn generate_projection_catalog(
 fn generate_projection(
     ir: &SemanticIr,
     namespace: &str,
+    type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Projection {
@@ -68,14 +74,14 @@ fn generate_projection(
     let rest = rest_execution(operation);
     let mut visibility = initial_projection_visibility(operation, rest);
     let mut projection_diagnostics = operation.diagnostics.clone();
-    let kind = projection_kind(operation, is_search);
+    let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
+    let pagination_query_params = pagination_query_param_names(&pagination);
+    let kind = projection_kind(operation, is_search, &pagination_query_params);
     let sql_exposure = if matches!(kind, ProjectionKind::Table) {
         SqlInputExposure::Filter
     } else {
         SqlInputExposure::FunctionArg
     };
-    let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
-    let pagination_query_params = pagination_query_param_names(&pagination);
     let mut used_input_names = HashSet::new();
     let use_sql_input_normalization = matches!(operation.execution, IrExecutionAttachment::Mcp(_));
     let inputs = operation
@@ -84,7 +90,7 @@ fn generate_projection(
         .map(|input| {
             let (exposure, pagination_owned_input) = match &operation.execution {
                 IrExecutionAttachment::Rest(_) => {
-                    projection_input_sql_exposure(input, sql_exposure, &pagination_query_params)
+                    rest_input_exposure(input, sql_exposure, &pagination_query_params)
                 }
                 IrExecutionAttachment::Mcp(mcp) if mcp_pagination_owns_input(mcp, input) => {
                     (SqlInputExposure::Internal, true)
@@ -113,15 +119,16 @@ fn generate_projection(
                 source_location: input.location,
                 wire_name: input.name.clone(),
                 required: projection_input_required(input),
-                data_type: manifest_type(input.data_type),
+                data_type: input.data_type.lower(),
                 default_value: input.default_value.clone(),
                 description: input.description.clone(),
+                lookup_key: rest_filter_is_lookup_key(rest, input, exposure),
             }
         })
         .collect::<Vec<_>>();
-    let columns = projection_columns(ir, operation);
+    let columns = projection_columns(type_by_id, operation);
     let name = generated_projection_name(operation, is_search);
-    let guide = projection_guide(&kind, &inputs, &pagination, is_search);
+    let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
         name,
         namespace: namespace.to_string(),
@@ -133,7 +140,6 @@ fn generate_projection(
         visibility,
         inputs,
         columns,
-        pagination,
         search_limits: is_search.then_some(SearchLimitsSpec {
             default_top_k: 30,
             max_top_k: 100,
@@ -175,14 +181,17 @@ fn initial_projection_visibility(
     }
 }
 
-fn projection_kind(operation: &IrOperation, is_search: bool) -> ProjectionKind {
+fn projection_kind(
+    operation: &IrOperation,
+    is_search: bool,
+    pagination_query_params: &HashSet<&str>,
+) -> ProjectionKind {
     let function_kind = match &operation.execution {
         IrExecutionAttachment::Rest(_) | IrExecutionAttachment::Mcp(_) if is_search => {
             Some(SourceTableFunctionKind::Search)
         }
         IrExecutionAttachment::Rest(_)
-            if operation.output.cardinality == OutputCardinality::Singleton
-                && operation.inputs.iter().any(|input| input.required) =>
+            if has_required_public_rest_input(operation, pagination_query_params) =>
         {
             Some(SourceTableFunctionKind::Table)
         }
@@ -195,6 +204,17 @@ fn projection_kind(operation: &IrOperation, is_search: bool) -> ProjectionKind {
     })
 }
 
+fn has_required_public_rest_input(
+    operation: &IrOperation,
+    pagination_query_params: &HashSet<&str>,
+) -> bool {
+    operation.inputs.iter().any(|input| {
+        input.required
+            && rest_input_exposure(input, SqlInputExposure::Filter, pagination_query_params).0
+                == SqlInputExposure::Filter
+    })
+}
+
 fn has_public_mcp_inputs(operation: &IrOperation, mcp: &crate::v4::McpExecutionAttachment) -> bool {
     operation
         .inputs
@@ -204,7 +224,8 @@ fn has_public_mcp_inputs(operation: &IrOperation, mcp: &crate::v4::McpExecutionA
 
 fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String {
     let name = match &operation.execution {
-        IrExecutionAttachment::Rest(_) => projection_name(operation, is_search),
+        IrExecutionAttachment::Rest(_) => projection_name_from_operation_naming(operation)
+            .unwrap_or_else(|| projection_name(operation, is_search)),
         IrExecutionAttachment::Mcp(_) => normalize_identifier(&operation.id, "projection"),
     };
     if name.is_empty() {
@@ -218,7 +239,7 @@ fn projection_input_required(input: &IrOperationInput) -> bool {
     input.required && (input.default_value.is_none() || input.location == IrInputLocation::ToolArg)
 }
 
-fn projection_input_sql_exposure(
+fn rest_input_exposure(
     input: &IrOperationInput,
     default_exposure: SqlInputExposure,
     pagination_query_params: &HashSet<&str>,
@@ -235,6 +256,18 @@ fn projection_input_sql_exposure(
         }
     };
     (exposure, pagination_owned_query_input)
+}
+
+/// A REST filter input is a lookup key (dependent joins may bind to it) when
+/// the surface metadata does not exclude it. Lookup key exclusion never
+/// changes SQL exposure: an excluded input stays a pushdown filter, it just
+/// cannot anchor a join.
+fn rest_filter_is_lookup_key(
+    rest: Option<&RestExecutionAttachment>,
+    input: &IrOperationInput,
+    exposure: SqlInputExposure,
+) -> bool {
+    rest.is_some() && exposure == SqlInputExposure::Filter && !input.exclude_from_lookup_keys
 }
 
 fn mcp_pagination_owns_input(
@@ -277,7 +310,14 @@ fn projection_input_name(
     name
 }
 
-fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
+fn type_index(ir: &SemanticIr) -> TypeIndex<'_> {
+    ir.types.iter().map(|ty| (ty.id.as_str(), ty)).collect()
+}
+
+fn projection_columns(
+    type_by_id: &TypeIndex<'_>,
+    operation: &IrOperation,
+) -> Vec<ProjectionColumn> {
     if matches!(&operation.execution, IrExecutionAttachment::Mcp(_)) {
         // MCP output schemas drive row cardinality and response extraction, but
         // SQL columns stay opaque until Coral has stable per-tool payload
@@ -299,11 +339,6 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
             },
         ];
     }
-    let type_by_id = ir
-        .types
-        .iter()
-        .map(|ty| (ty.id.as_str(), ty))
-        .collect::<HashMap<_, _>>();
     let Some(row_type) = type_by_id.get(operation.output.type_ref.as_str()) else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
@@ -316,7 +351,7 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
     let IrTypeShape::Object { fields } = &row_type.shape else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
-            data_type: ManifestDataType::Json,
+            data_type: projection_data_type(row_type),
             source_path: Vec::new(),
             nullable: true,
             description: row_type.description.clone(),
@@ -330,17 +365,9 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
             let suffix = stable_suffix(&field.name);
             name = format!("{name}__{suffix}");
         }
-        let data_type =
-            type_by_id
-                .get(field.type_ref.as_str())
-                .map_or(ManifestDataType::Json, |ty| match &ty.shape {
-                    IrTypeShape::Scalar(scalar) => manifest_type(*scalar),
-                    IrTypeShape::Enum { .. } => ManifestDataType::Utf8,
-                    IrTypeShape::Json
-                    | IrTypeShape::Object { .. }
-                    | IrTypeShape::List { .. }
-                    | IrTypeShape::Map { .. } => ManifestDataType::Json,
-                });
+        let data_type = type_by_id
+            .get(field.type_ref.as_str())
+            .map_or(ManifestDataType::Json, |ty| projection_data_type(ty));
         columns.push(ProjectionColumn {
             name,
             data_type,
@@ -351,13 +378,14 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
     }
     columns
 }
-fn manifest_type(scalar: IrScalarType) -> ManifestDataType {
-    match scalar {
-        IrScalarType::String | IrScalarType::Id => ManifestDataType::Utf8,
-        IrScalarType::Integer => ManifestDataType::Int64,
-        IrScalarType::Number => ManifestDataType::Float64,
-        IrScalarType::Boolean => ManifestDataType::Boolean,
-        IrScalarType::Timestamp => ManifestDataType::Timestamp,
-        IrScalarType::Json => ManifestDataType::Json,
+
+fn projection_data_type(ty: &IrType) -> ManifestDataType {
+    match &ty.shape {
+        IrTypeShape::Scalar(scalar) => scalar.lower(),
+        IrTypeShape::Enum { .. } => ManifestDataType::Utf8,
+        IrTypeShape::Json
+        | IrTypeShape::Object { .. }
+        | IrTypeShape::List { .. }
+        | IrTypeShape::Map { .. } => ManifestDataType::Json,
     }
 }

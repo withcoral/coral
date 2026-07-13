@@ -16,7 +16,6 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use url::Url;
 
-use crate::common::parse_manifest_data_type;
 use crate::inputs::{
     collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
 };
@@ -414,16 +413,18 @@ pub enum FilePartitionDataType {
 impl FilePartitionDataType {
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Utf8 => "Utf8",
-            Self::Int64 => "Int64",
-            Self::Boolean => "Boolean",
-            Self::Float64 => "Float64",
-            Self::Json => "Json",
-        }
+        ManifestDataType::from(self).as_manifest_str()
     }
+}
 
-    fn from_manifest(data_type: ManifestDataType) -> Result<Self> {
+/// Narrows a manifest scalar to the partition-legal subset.
+///
+/// Fails exactly when the scalar cannot be a file path partition value —
+/// today only `Timestamp`.
+impl TryFrom<ManifestDataType> for FilePartitionDataType {
+    type Error = ManifestError;
+
+    fn try_from(data_type: ManifestDataType) -> Result<Self> {
         match data_type {
             ManifestDataType::Utf8 => Ok(Self::Utf8),
             ManifestDataType::Int64 => Ok(Self::Int64),
@@ -437,14 +438,26 @@ impl FilePartitionDataType {
     }
 }
 
+/// Every partition type is a manifest scalar type.
+impl From<FilePartitionDataType> for ManifestDataType {
+    fn from(data_type: FilePartitionDataType) -> Self {
+        match data_type {
+            FilePartitionDataType::Utf8 => Self::Utf8,
+            FilePartitionDataType::Int64 => Self::Int64,
+            FilePartitionDataType::Boolean => Self::Boolean,
+            FilePartitionDataType::Float64 => Self::Float64,
+            FilePartitionDataType::Json => Self::Json,
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for FilePartitionDataType {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        let data_type = parse_manifest_data_type(&value).map_err(serde::de::Error::custom)?;
-        Self::from_manifest(data_type).map_err(serde::de::Error::custom)
+        let data_type = ManifestDataType::deserialize(deserializer)?;
+        Self::try_from(data_type).map_err(serde::de::Error::custom)
     }
 }
 
@@ -730,7 +743,7 @@ impl FileSourceManifest {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileFormat, FileSourceManifest};
+    use super::{FileFormat, FilePartitionDataType, FileSourceManifest};
     use crate::ManifestInputKind;
     use serde_json::json;
 
@@ -1319,5 +1332,34 @@ mod tests {
         .expect_err("non-csv option should fail");
 
         assert!(error.to_string().contains("only supported for format=csv"));
+    }
+
+    #[test]
+    fn partition_data_type_is_the_partition_legal_subset() {
+        use crate::ManifestDataType;
+
+        for data_type in ManifestDataType::ALL {
+            match FilePartitionDataType::try_from(data_type) {
+                Ok(partition_type) => assert_eq!(
+                    ManifestDataType::from(partition_type),
+                    data_type,
+                    "partition subset must round trip through the upcast"
+                ),
+                Err(error) => {
+                    assert_eq!(
+                        data_type,
+                        ManifestDataType::Timestamp,
+                        "Timestamp is the only partition-illegal scalar; if a new \
+                         variant is deliberately rejected, extend this assertion"
+                    );
+                    assert!(
+                        error.to_string().contains(
+                            "type=Timestamp is not supported for backend=file path partitions"
+                        ),
+                        "unexpected error: {error}"
+                    );
+                }
+            }
+        }
     }
 }

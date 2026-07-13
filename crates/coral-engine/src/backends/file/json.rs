@@ -134,7 +134,7 @@ impl JsonFileTableProvider {
         let metadata_columns = FileMetadataColumns::try_new(&table.source.metadata)?;
         let table_schema = metadata_columns.extend_table_schema_if_present(table_schema);
         let schema = Arc::clone(table_schema.table_schema());
-        let json_fields = Arc::new(json_field_names(table.columns())?);
+        let json_fields = Arc::new(json_field_names(table.columns()));
 
         Ok(Self {
             source_schema: source_schema.to_string(),
@@ -156,7 +156,7 @@ pub(super) fn requires_custom_provider(table: &FileTableSpec) -> Result<bool> {
     let metadata_columns = FileMetadataColumns::try_new(&table.source.metadata)?;
     Ok(!table.source.partitions.is_empty()
         || metadata_columns.has_row_columns()
-        || !json_field_names(table.columns())?.is_empty())
+        || !json_field_names(table.columns()).is_empty())
 }
 
 #[async_trait]
@@ -878,13 +878,10 @@ fn datafusion_error_to_arrow(error: DataFusionError) -> ArrowError {
     ArrowError::ExternalError(Box::new(error))
 }
 
-fn json_field_names(columns: &[ColumnSpec]) -> Result<HashSet<String>> {
+fn json_field_names(columns: &[ColumnSpec]) -> HashSet<String> {
     columns
         .iter()
-        .filter_map(|column| match column.manifest_data_type() {
-            Ok(ManifestDataType::Json) => Some(Ok(column.name.clone())),
-            Ok(_) => None,
-            Err(error) => Some(Err(DataFusionError::Execution(error.to_string()))),
-        })
+        .filter(|column| column.data_type == ManifestDataType::Json)
+        .map(|column| column.name.clone())
         .collect()
 }

@@ -17,28 +17,35 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use datafusion::common::config::ConfigOptions;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{DFSchema, DFSchemaRef, ScalarValue, TableReference};
+use datafusion::common::tree_node::Transformed;
+use datafusion::common::{DFSchema, DFSchemaRef, TableReference};
 use datafusion::datasource::provider_as_source;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::planner::{
     PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning,
 };
-use datafusion::logical_expr::sqlparser::ast::{
-    Expr as SqlExpr, FunctionArg, FunctionArgExpr, Ident, TableAlias, TableFactor,
-    TableFunctionArgs,
-};
+use datafusion::logical_expr::sqlparser::ast::TableFactor;
 use datafusion::logical_expr::{
     Expr, Extension, LogicalPlan, LogicalPlanBuilder, UserDefinedLogicalNodeCore,
 };
 use datafusion::optimizer::AnalyzerRule;
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{RegisteredTableFunction, SourceFunctionProviderFactory};
+use crate::backends::{
+    RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
+};
+use crate::runtime::scoped_table_functions::{
+    ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature, call_parts,
+    find_placeholder, lower_named_args_to_positional_exprs, original_relation, qualified_name,
+    reject_settings, reject_unsupported_modifiers,
+};
+use coral_spec::ManifestDataType;
+
+pub(crate) const SOURCE_FUNCTION_NODE_NAME: &str = "CoralSourceFunction";
 
 #[derive(Debug)]
 pub(crate) struct SourceFunctionRegistry {
-    functions: HashMap<FunctionLookupKey, SourceFunction>,
+    functions: HashMap<ScopedTableFunctionName, SourceFunction>,
     source_schemas: HashSet<String>,
 }
 
@@ -50,7 +57,7 @@ impl SourceFunctionRegistry {
         let mut functions_by_name = HashMap::new();
 
         for function in functions {
-            let lookup_key = FunctionLookupKey::from_manifest(function);
+            let lookup_key = ScopedTableFunctionName::from_manifest(function);
             source_schemas.insert(lookup_key.schema.clone());
             functions_by_name.insert(lookup_key, SourceFunction::from_registered(function));
         }
@@ -74,11 +81,11 @@ impl SourceFunctionRegistry {
         Ok(())
     }
 
-    fn find(&self, call: &SourceFunctionCall) -> Option<&SourceFunction> {
+    fn find(&self, call: &ScopedTableFunctionCall) -> Option<&SourceFunction> {
         self.functions.get(&call.lookup_key)
     }
 
-    fn owns_schema(&self, call: &SourceFunctionCall) -> bool {
+    fn owns_schema(&self, call: &ScopedTableFunctionCall) -> bool {
         self.source_schemas.contains(&call.lookup_key.schema)
     }
 
@@ -106,14 +113,14 @@ impl RelationPlanner for SourceFunctionRegistry {
         relation: TableFactor,
         context: &mut dyn RelationPlannerContext,
     ) -> Result<RelationPlanning> {
-        let Some(call) = SourceFunctionCall::parse(&relation, context) else {
+        let Some(call) = ScopedTableFunctionCall::parse(&relation, context) else {
             return Ok(original_relation(relation));
         };
 
         let Some(function) = self.find(&call) else {
             if self.owns_schema(&call) {
                 let hint = self.available_functions_hint(&call.lookup_key.schema);
-                return Err(call.unknown_function_error(&hint));
+                return Err(call.unknown_function_error("source table function", &hint));
             }
             return Ok(original_relation(relation));
         };
@@ -122,15 +129,15 @@ impl RelationPlanner for SourceFunctionRegistry {
         let (call_args, alias) = call_parts(relation);
         reject_settings(&call, &call_args)?;
 
-        let args = lower_named_args_to_positional_exprs(function, &call_args, context)?;
-        let node = SourceFunctionNode::new(function, args)?;
+        let lowered_args = lower_named_args_to_positional_exprs(function, &call_args, context)?;
+        let node = SourceFunctionNode::new(function, lowered_args)?;
 
         // Fully-literal calls validate eagerly so argument-value errors keep
         // surfacing at planning time, exactly as they did when binding ran
         // inside SQL planning. Binding is pure value capture (no I/O), so the
         // analyzer repeating it later is cheap.
         if !node.has_parameter_placeholders() {
-            node.factory.provider_for_args(&node.args)?;
+            node.factory.provider_for_args(&node.call_args)?;
         }
 
         let plan = LogicalPlan::Extension(Extension {
@@ -146,92 +153,65 @@ impl RelationPlanner for SourceFunctionRegistry {
 struct SourceFunction {
     display_name: String,
     table_reference: TableReference,
-    arg_names: Vec<String>,
-    known_args: HashSet<String>,
+    arguments: Vec<SourceFunctionArgument>,
     factory: Arc<dyn SourceFunctionProviderFactory>,
 }
 
 impl SourceFunction {
     fn from_registered(function: &RegisteredTableFunction) -> Self {
-        let arg_names = function.arg_names.clone();
+        let arguments = function
+            .arguments
+            .iter()
+            .map(SourceFunctionArgument::from_registered)
+            .collect::<Vec<_>>();
         Self {
             display_name: qualified_name(&function.schema_name, &function.function_name),
             table_reference: TableReference::partial(
                 function.schema_name.clone(),
                 function.function_name.clone(),
             ),
-            known_args: arg_names.iter().cloned().collect(),
-            arg_names,
+            arguments,
             factory: Arc::clone(&function.factory),
         }
     }
 
     fn contains(&self, name: &str) -> bool {
-        self.known_args.contains(name)
+        self.arguments.iter().any(|argument| argument.name == name)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct FunctionLookupKey {
-    schema: String,
-    function: String,
+pub(crate) struct SourceFunctionArgument {
+    pub(crate) name: String,
+    pub(crate) data_type: ManifestDataType,
 }
 
-impl FunctionLookupKey {
-    fn from_manifest(function: &RegisteredTableFunction) -> Self {
+impl SourceFunctionArgument {
+    fn from_registered(argument: &RegisteredTableFunctionArgument) -> Self {
         Self {
-            schema: function.schema_name.clone(),
-            function: function.function_name.clone(),
-        }
-    }
-
-    fn from_sql(schema: Ident, function: Ident, context: &dyn RelationPlannerContext) -> Self {
-        Self {
-            schema: context.normalize_ident(schema),
-            function: context.normalize_ident(function),
+            name: argument.name.clone(),
+            data_type: argument.data_type,
         }
     }
 }
 
-#[derive(Debug)]
-struct SourceFunctionCall {
-    lookup_key: FunctionLookupKey,
-    display_name: String,
-}
-
-impl SourceFunctionCall {
-    fn parse(relation: &TableFactor, context: &dyn RelationPlannerContext) -> Option<Self> {
-        let TableFactor::Table {
-            name,
-            args: Some(_),
-            ..
-        } = relation
-        else {
-            return None;
-        };
-
-        // Coral source functions are exactly `source.function(...)`. Longer
-        // names belong to DataFusion's normal relation/function planner.
-        let [schema, function] = name.0.as_slice() else {
-            return None;
-        };
-
-        let schema = schema.as_ident()?.clone();
-        let function = function.as_ident()?.clone();
-        let display_name = qualified_name(&schema.value, &function.value);
-        let lookup_key = FunctionLookupKey::from_sql(schema, function, context);
-
-        Some(Self {
-            lookup_key,
-            display_name,
-        })
+impl ScopedTableFunctionSignature for SourceFunction {
+    fn display_name(&self) -> &str {
+        &self.display_name
     }
 
-    fn unknown_function_error(&self, hint: &str) -> DataFusionError {
-        DataFusionError::Plan(format!(
-            "unknown source table function {}{}",
-            self.display_name, hint
-        ))
+    fn arg_count(&self) -> usize {
+        self.arguments.len()
+    }
+
+    fn arg_name(&self, index: usize) -> Option<&str> {
+        self.arguments
+            .get(index)
+            .map(|argument| argument.name.as_str())
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.contains(name)
     }
 }
 
@@ -251,14 +231,14 @@ pub(crate) struct SourceFunctionNode {
     /// Two-part `schema.function` reference, so result columns qualify the
     /// same way table columns do (`github.pulls.id`, `pulls.id`).
     table_reference: TableReference,
-    arg_names: Vec<String>,
-    args: Vec<Expr>,
+    declared_args: Vec<SourceFunctionArgument>,
+    call_args: Vec<Expr>,
     schema: DFSchemaRef,
     factory: Arc<dyn SourceFunctionProviderFactory>,
 }
 
 impl SourceFunctionNode {
-    fn new(function: &SourceFunction, args: Vec<Expr>) -> Result<Self> {
+    fn new(function: &SourceFunction, call_args: Vec<Expr>) -> Result<Self> {
         let schema = Arc::new(DFSchema::try_from_qualified_schema(
             function.table_reference.clone(),
             function.factory.schema().as_ref(),
@@ -266,24 +246,36 @@ impl SourceFunctionNode {
         Ok(Self {
             display_name: function.display_name.clone(),
             table_reference: function.table_reference.clone(),
-            arg_names: function.arg_names.clone(),
-            args,
+            declared_args: function.arguments.clone(),
+            call_args,
             schema,
             factory: Arc::clone(&function.factory),
         })
     }
 
     fn has_parameter_placeholders(&self) -> bool {
-        self.args.iter().any(|arg| find_placeholder(arg).is_some())
+        self.call_args
+            .iter()
+            .any(|arg| find_placeholder(arg).is_some())
+    }
+
+    pub(crate) fn table_reference(&self) -> &TableReference {
+        &self.table_reference
+    }
+
+    pub(crate) fn declared_args_with_call_exprs(
+        &self,
+    ) -> impl Iterator<Item = (&SourceFunctionArgument, &Expr)> {
+        self.declared_args.iter().zip(&self.call_args)
     }
 
     fn reject_unbound_parameters(&self) -> Result<()> {
-        for (name, arg) in self.arg_names.iter().zip(&self.args) {
-            if let Some(placeholder) = find_placeholder(arg) {
+        for (declared_arg, call_expr) in self.declared_args_with_call_exprs() {
+            if let Some(placeholder) = find_placeholder(call_expr) {
                 return Err(DataFusionError::Plan(format!(
-                    "{} argument '{name}' is bound to parameter {placeholder}, \
+                    "{} argument '{}' is bound to parameter {placeholder}, \
                      but no value was provided for it",
-                    self.display_name
+                    self.display_name, declared_arg.name
                 )));
             }
         }
@@ -292,7 +284,7 @@ impl SourceFunctionNode {
 
     fn to_provider_scan(&self) -> Result<LogicalPlan> {
         self.reject_unbound_parameters()?;
-        let provider = self.factory.provider_for_args(&self.args)?;
+        let provider = self.factory.provider_for_args(&self.call_args)?;
         LogicalPlanBuilder::scan(
             self.table_reference.clone(),
             provider_as_source(provider),
@@ -302,27 +294,15 @@ impl SourceFunctionNode {
     }
 }
 
-fn find_placeholder(expr: &Expr) -> Option<String> {
-    let mut found = None;
-    expr.apply(|expr| {
-        if let Expr::Placeholder(placeholder) = expr {
-            found = Some(placeholder.id.clone());
-            return Ok(TreeNodeRecursion::Stop);
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })
-    .expect("placeholder search never fails");
-    found
-}
-
-// Node identity is the function name plus its argument expressions; `schema`
-// participates so renamed manifests never compare equal. The remaining fields
-// are derived from the same registry entry as `display_name` (and `factory`
-// cannot implement `PartialEq`), so they are deliberately excluded.
+// Node identity is the function name plus its declared argument signature and
+// call expressions. `schema` participates so renamed manifests never compare
+// equal. The factory is derived from the same registry entry as `display_name`
+// and cannot implement `PartialEq`, so it is deliberately excluded.
 impl PartialEq for SourceFunctionNode {
     fn eq(&self, other: &Self) -> bool {
         self.display_name == other.display_name
-            && self.args == other.args
+            && self.call_args == other.call_args
+            && self.declared_args == other.declared_args
             && self.schema == other.schema
     }
 }
@@ -332,7 +312,8 @@ impl Eq for SourceFunctionNode {}
 impl Hash for SourceFunctionNode {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.display_name.hash(state);
-        self.args.hash(state);
+        self.call_args.hash(state);
+        self.declared_args.hash(state);
         self.schema.hash(state);
     }
 }
@@ -348,7 +329,7 @@ impl PartialOrd for SourceFunctionNode {
 
 impl UserDefinedLogicalNodeCore for SourceFunctionNode {
     fn name(&self) -> &'static str {
-        "CoralSourceFunction"
+        SOURCE_FUNCTION_NODE_NAME
     }
 
     fn inputs(&self) -> Vec<&LogicalPlan> {
@@ -360,7 +341,7 @@ impl UserDefinedLogicalNodeCore for SourceFunctionNode {
     }
 
     fn expressions(&self) -> Vec<Expr> {
-        self.args.clone()
+        self.call_args.clone()
     }
 
     fn fmt_for_explain(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -374,20 +355,20 @@ impl UserDefinedLogicalNodeCore for SourceFunctionNode {
                 self.display_name
             )));
         }
-        if exprs.len() != self.args.len() {
+        if exprs.len() != self.call_args.len() {
             return Err(DataFusionError::Plan(format!(
                 "source function {} expected {} argument expressions, got {}",
                 self.display_name,
-                self.args.len(),
+                self.call_args.len(),
                 exprs.len()
             )));
         }
         // Plan rewrites (parameter substitution in particular) alias rewritten
         // expressions to preserve their display names. Arguments are
-        // positional here, so the alias carries no meaning — strip it before
+        // positional here, so the alias carries no meaning -- strip it before
         // binding sees the value.
         Ok(Self {
-            args: exprs.into_iter().map(Expr::unalias).collect(),
+            call_args: exprs.into_iter().map(Expr::unalias).collect(),
             ..self.clone()
         })
     }
@@ -404,7 +385,7 @@ pub(crate) struct SourceFunctionAnalyzerRule;
 impl AnalyzerRule for SourceFunctionAnalyzerRule {
     fn analyze(&self, plan: LogicalPlan, _config: &ConfigOptions) -> Result<LogicalPlan> {
         // Subquery plans live inside expressions, not in the plan's child
-        // list — a plain transform_up would never see a source-function call
+        // list -- a plain transform_up would never see a source-function call
         // written inside EXISTS/IN/scalar subqueries.
         plan.transform_up_with_subqueries(|plan| {
             let LogicalPlan::Extension(extension) = &plan else {
@@ -420,169 +401,5 @@ impl AnalyzerRule for SourceFunctionAnalyzerRule {
 
     fn name(&self) -> &'static str {
         "coral_source_functions"
-    }
-}
-
-fn qualified_name(schema: &str, function: &str) -> String {
-    format!("{schema}.{function}")
-}
-
-fn original_relation(relation: TableFactor) -> RelationPlanning {
-    RelationPlanning::Original(Box::new(relation))
-}
-
-/// Takes ownership of a committed call's argument list and alias.
-///
-/// Shape-checking and destructuring are split on purpose:
-/// [`SourceFunctionCall::parse`] inspects the relation by reference because
-/// the not-our-function fallthroughs must hand the relation back to
-/// `DataFusion` untouched. Only once the call is committed may the relation
-/// be consumed, which is what makes the `unreachable!` here truly so.
-fn call_parts(relation: TableFactor) -> (TableFunctionArgs, Option<TableAlias>) {
-    let TableFactor::Table {
-        args: Some(args),
-        alias,
-        ..
-    } = relation
-    else {
-        unreachable!("SourceFunctionCall::parse only matches table function calls");
-    };
-    (args, alias)
-}
-
-/// Rejects table-factor modifiers the source-function planner does not
-/// support, so user-written SQL semantics are never silently dropped.
-///
-/// Destructures every field without `..` on purpose: a sqlparser upgrade that
-/// adds a new modifier must fail compilation here and force a decision,
-/// instead of executing while ignoring the modifier.
-fn reject_unsupported_modifiers(call: &SourceFunctionCall, relation: &TableFactor) -> Result<()> {
-    let TableFactor::Table {
-        name: _,
-        alias: _,
-        args: _,
-        with_hints,
-        version,
-        with_ordinality,
-        partitions,
-        json_path,
-        sample,
-        index_hints,
-    } = relation
-    else {
-        unreachable!("SourceFunctionCall::parse only matches table relations");
-    };
-
-    let unsupported_modifiers = [
-        (*with_ordinality, "WITH ORDINALITY"),
-        (sample.is_some(), "TABLESAMPLE"),
-        (!with_hints.is_empty(), "table hints"),
-        (!index_hints.is_empty(), "index hints"),
-        (version.is_some(), "time-travel syntax"),
-        (!partitions.is_empty(), "PARTITION selection"),
-        (json_path.is_some(), "JSON path access"),
-    ];
-    for (present, modifier) in unsupported_modifiers {
-        if present {
-            return Err(DataFusionError::Plan(format!(
-                "source table function {} does not support {modifier}",
-                call.display_name
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn reject_settings(call: &SourceFunctionCall, args: &TableFunctionArgs) -> Result<()> {
-    if args.settings.is_some() {
-        return Err(DataFusionError::Plan(format!(
-            "source table function {} does not support SETTINGS",
-            call.display_name
-        )));
-    }
-    Ok(())
-}
-
-/// Lowers named call arguments into positional logical expressions in manifest
-/// order. Missing optional args become NULL literals; the backend binder
-/// treats NULL as absent and performs required-argument validation after that
-/// interpretation.
-fn lower_named_args_to_positional_exprs(
-    function: &SourceFunction,
-    args: &TableFunctionArgs,
-    context: &mut dyn RelationPlannerContext,
-) -> Result<Vec<Expr>> {
-    let mut supplied = collect_named_args(function, args, context)?;
-
-    function
-        .arg_names
-        .iter()
-        .map(|name| match supplied.remove(name) {
-            Some(sql_expr) => context.sql_to_expr(sql_expr, &DFSchema::empty()),
-            None => Ok(Expr::Literal(ScalarValue::Null, None)),
-        })
-        .collect()
-}
-
-fn collect_named_args(
-    function: &SourceFunction,
-    args: &TableFunctionArgs,
-    context: &dyn RelationPlannerContext,
-) -> Result<HashMap<String, SqlExpr>> {
-    let mut supplied = HashMap::new();
-    let mut seen = HashSet::new();
-
-    for arg in &args.args {
-        let FunctionArg::Named { name, arg, .. } = arg else {
-            return Err(non_named_arg_error(function, arg));
-        };
-        insert_named_arg(function, &mut supplied, &mut seen, name, arg, context)?;
-    }
-
-    Ok(supplied)
-}
-
-fn insert_named_arg(
-    function: &SourceFunction,
-    supplied: &mut HashMap<String, SqlExpr>,
-    seen: &mut HashSet<String>,
-    name: &Ident,
-    arg: &FunctionArgExpr,
-    context: &dyn RelationPlannerContext,
-) -> Result<()> {
-    let lookup_name = context.normalize_ident(name.clone());
-    if !seen.insert(lookup_name.clone()) {
-        return Err(DataFusionError::Plan(format!(
-            "{} duplicate argument '{}'",
-            function.display_name, name.value
-        )));
-    }
-    if !function.contains(&lookup_name) {
-        return Err(DataFusionError::Plan(format!(
-            "{} unknown argument '{}'",
-            function.display_name, name.value
-        )));
-    }
-    let FunctionArgExpr::Expr(sql_expr) = arg else {
-        return Err(DataFusionError::Plan(format!(
-            "{} argument '{}' does not support wildcard values",
-            function.display_name, name.value
-        )));
-    };
-    supplied.insert(lookup_name, sql_expr.clone());
-    Ok(())
-}
-
-fn non_named_arg_error(function: &SourceFunction, arg: &FunctionArg) -> DataFusionError {
-    match arg {
-        FunctionArg::Unnamed(_) => DataFusionError::Plan(format!(
-            "{} requires named arguments",
-            function.display_name
-        )),
-        FunctionArg::ExprNamed { .. } => DataFusionError::Plan(format!(
-            "{} requires identifier argument names",
-            function.display_name
-        )),
-        FunctionArg::Named { .. } => unreachable!("named arguments are handled by the caller"),
     }
 }

@@ -18,7 +18,7 @@ pub(crate) struct Args {
     sources_dir: PathBuf,
 
     /// Path to the bundled source catalog page to regenerate.
-    #[arg(long, default_value = "docs/reference/bundled-sources.mdx")]
+    #[arg(long, default_value = "apps/docs/reference/bundled-sources.mdx")]
     index: PathBuf,
 
     /// Directory containing community source manifests to render into the
@@ -27,7 +27,7 @@ pub(crate) struct Args {
     community_sources_dir: PathBuf,
 
     /// Path to the community source catalog page to regenerate.
-    #[arg(long, default_value = "docs/reference/community-sources.mdx")]
+    #[arg(long, default_value = "apps/docs/reference/community-sources.mdx")]
     community_index: PathBuf,
 
     /// Skip rendering and checking the community source catalog.
@@ -35,7 +35,7 @@ pub(crate) struct Args {
     skip_community_sources: bool,
 
     /// Path to the Mintlify navigation file to update.
-    #[arg(long, default_value = "docs/docs.json")]
+    #[arg(long, default_value = "apps/docs/docs.json")]
     docs_json: PathBuf,
 
     /// Path to the source CHANGELOG.md to render into the docs.
@@ -43,7 +43,7 @@ pub(crate) struct Args {
     changelog_source: PathBuf,
 
     /// Path to the changelog page to regenerate.
-    #[arg(long, default_value = "docs/project/changelog.mdx")]
+    #[arg(long, default_value = "apps/docs/project/changelog.mdx")]
     changelog_out: PathBuf,
 
     /// Render everything in memory and diff against disk instead of writing.
@@ -192,14 +192,14 @@ tables:
     fn generate_docs_check_skips_community_catalog_when_requested() {
         let root = unique_temp_dir("generate-docs-skip-community");
         let source_dir = root.join("sources/core/minimal");
-        let docs_reference_dir = root.join("docs/reference");
-        let docs_project_dir = root.join("docs/project");
+        let docs_reference_dir = root.join("apps/docs/reference");
+        let docs_project_dir = root.join("apps/docs/project");
         fs::create_dir_all(&source_dir).expect("create source dir");
         fs::create_dir_all(&docs_reference_dir).expect("create reference docs dir");
         fs::create_dir_all(&docs_project_dir).expect("create project docs dir");
         fs::write(source_dir.join("manifest.yaml"), MINIMAL_MANIFEST).expect("write manifest");
 
-        let docs_json = root.join("docs/docs.json");
+        let docs_json = root.join("apps/docs/docs.json");
         let changelog_source = root.join("CHANGELOG.md");
         let community_index = docs_reference_dir.join("community-sources.mdx");
         fs::write(&docs_json, MINIMAL_DOCS_JSON).expect("write docs json");

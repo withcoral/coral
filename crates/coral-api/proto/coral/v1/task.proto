@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Task lifecycle for intent-bearing units of work.
+service TaskService {
+  // Starts one task.
+  rpc StartTask(StartTaskRequest) returns (StartTaskResponse);
+  // Ends one task.
+  rpc EndTask(EndTaskRequest) returns (EndTaskResponse);
+}
+
+// Starts a task.
+message StartTaskRequest {
+  // Workspace that scopes the task.
+  Workspace workspace = 1;
+  // Natural-language description of the work this task groups.
+  string intent = 2;
+}
+
+// Returns the started task.
+message StartTaskResponse {
+  // Started task resource.
+  Task task = 1;
+}
+
+// Ends a task.
+message EndTaskRequest {
+  // Workspace that scopes the task.
+  Workspace workspace = 1;
+  // Task id to end.
+  string task_id = 2;
+  // Final task status.
+  TaskStatus task_status = 3;
+}
+
+// Returns the task end event.
+message EndTaskResponse {
+  // Persisted task end event.
+  TaskEnd task_end = 1;
+}
+
+// An intent-bearing unit of work.
+message Task {
+  // Server-minted, opaque task id.
+  string task_id = 1;
+}
+
+// A task end event.
+message TaskEnd {
+  // Ended task id.
+  string task_id = 1;
+  // Final task status.
+  TaskStatus task_status = 2;
+}
+
+// Final task status.
+enum TaskStatus {
+  // Unspecified task status; rejected by EndTask.
+  TASK_STATUS_UNSPECIFIED = 0;
+  // Task succeeded.
+  TASK_STATUS_SUCCESS = 1;
+  // Task failed.
+  TASK_STATUS_FAILURE = 2;
+}

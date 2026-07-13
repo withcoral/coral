@@ -4,13 +4,17 @@ on:
   pull_request:
     paths:
       - ".github/workflows/chromatic.yml"
-      - "reef/**"
+      - "apps/reef/**"
   push:
     branches:
       - main
     paths:
       - ".github/workflows/chromatic.yml"
-      - "reef/**"
+      - "apps/reef/**"
+
+concurrency:
+  group: chromatic-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -22,7 +26,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     defaults:
       run:
-        working-directory: reef
+        working-directory: apps/reef
 
     steps:
       - name: Checkout code
@@ -35,21 +39,23 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: reef/.node-version
+          node-version-file: apps/reef/.node-version
           package-manager-cache: false
 
       - name: Setup Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: reef/.node-version
+          node-version-file: apps/reef/.node-version
           cache: npm
-          cache-dependency-path: reef/package-lock.json
+          cache-dependency-path: apps/reef/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run Chromatic
-        run: npm exec -- chromatic
-        env:
-          CHROMATIC_PROJECT_TOKEN: ${{ secrets.CHROMATIC_PROJECT_TOKEN }}
+        uses: chromaui/action@94713c544284a14195de3b50ef24301579f1877e # v18.0.1
+        with:
+          projectToken: ${{ secrets.CHROMATIC_PROJECT_TOKEN }}
+          workingDir: apps/reef
+          onlyChanged: true

@@ -53,7 +53,6 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
         mcp.tool.name = tool_name,
         otel.kind = "server",
         otel.name = "coral.mcp.call_tool",
-        episode.id = field::Empty,
         status = field::Empty,
     );
     apply_trace_parent(&span, trace_parent);
@@ -117,13 +116,17 @@ pub(crate) fn record_tonic_status(span: &tracing::Span, status: &tonic::Status) 
     }
 }
 
+pub(crate) fn record_sql_batch_partial_failure(span: &tracing::Span) {
+    record_error(
+        span,
+        "sql_batch_partial_failure",
+        "One or more SQL queries failed",
+    );
+}
+
 pub(crate) fn record_success(span: &tracing::Span) {
     span.record("status", "ok");
     span.set_status(OtelStatus::Ok);
-}
-
-pub(crate) fn record_episode_id(span: &tracing::Span, episode_id: &str) {
-    span.record("episode.id", episode_id);
 }
 
 fn record_error(span: &tracing::Span, error_type: &str, message: impl std::fmt::Display) {

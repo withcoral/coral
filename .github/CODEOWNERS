@@ -6,7 +6,6 @@
 /Makefile @withcoral/core-maintainers
 /rust-toolchain.toml @withcoral/core-maintainers
 /Cargo.toml @withcoral/core-maintainers
-/Cargo.lock @withcoral/core-maintainers
 
 # Project docs.
 /CONTRIBUTING.md @withcoral/core-maintainers
@@ -16,7 +15,7 @@
 AGENTS.md @withcoral/core-maintainers
 
 # User docs.
-/docs/ @withcoral/docs
+/apps/docs/ @withcoral/docs
 
 # Sources
 /sources/community/ @jsummerfield

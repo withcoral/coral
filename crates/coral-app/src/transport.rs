@@ -3,16 +3,17 @@
 use std::future::Future;
 
 use coral_api::{
-    CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, grpc_response_status_code,
+    CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
-        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
-        query_test_result,
+        QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
+        TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
+        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
     },
 };
+use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Service, http};
@@ -26,7 +27,6 @@ use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
-use crate::episode::EpisodeId;
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -167,24 +167,6 @@ fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
 fn annotate_request_context<B>(request: &mut http::Request<B>) {
     if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
         request.extensions_mut().insert(method);
-    }
-    if let Some(episode_id) = request
-        .headers()
-        .get(CORAL_EPISODE_ID_METADATA_KEY)
-        .and_then(episode_id_from_header_value)
-    {
-        request.extensions_mut().insert(episode_id);
-    }
-}
-
-fn episode_id_from_header_value(value: &http::HeaderValue) -> Option<EpisodeId> {
-    let value = value.to_str().ok()?;
-    match EpisodeId::parse(value) {
-        Ok(episode_id) => Some(episode_id),
-        Err(error) => {
-            tracing::debug!(%error, "ignoring malformed coral-episode-id metadata");
-            None
-        }
     }
 }
 
@@ -337,10 +319,12 @@ pub(crate) fn table_function_to_proto(
     workspace_name: &WorkspaceName,
     function: coral_engine::TableFunctionInfo,
 ) -> TableFunction {
+    let schema_name = function.schema_name;
+    let function_name = function.function_name;
     TableFunction {
         workspace: Some(workspace_to_proto(workspace_name)),
-        schema_name: function.schema_name,
-        name: function.function_name,
+        schema_name,
+        name: function_name,
         description: function.description,
         arguments: function
             .arguments
@@ -361,6 +345,26 @@ pub(crate) fn table_function_to_proto(
                 description: column.description,
             })
             .collect(),
+        kind: table_function_kind_to_proto(function.kind) as i32,
+        search_limits: function.search_limits.as_ref().map(search_limits_to_proto),
+    }
+}
+
+fn table_function_kind_to_proto(kind: SourceTableFunctionKind) -> TableFunctionKind {
+    match kind {
+        SourceTableFunctionKind::Table => TableFunctionKind::Table,
+        SourceTableFunctionKind::Search => TableFunctionKind::Search,
+    }
+}
+
+fn search_limits_to_proto(limits: &SearchLimitsSpec) -> SearchLimits {
+    SearchLimits {
+        default_top_k: u32::try_from(limits.default_top_k)
+            .expect("validated search limits default_top_k fits u32"),
+        max_top_k: u32::try_from(limits.max_top_k)
+            .expect("validated search limits max_top_k fits u32"),
+        max_calls_per_query: u32::try_from(limits.max_calls_per_query)
+            .expect("validated search limits max_calls_per_query fits u32"),
     }
 }
 
@@ -481,23 +485,24 @@ mod tests {
     )]
 
     use coral_api::{
-        CORAL_EPISODE_ID_METADATA_KEY, grpc_response_status_code,
+        grpc_response_status_code,
         v1::{QueryTestFailure, Workspace, query_test_result},
     };
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, annotate_request_context, grpc_method, query_status,
-        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
-        workspace_name_from_proto, workspace_to_proto,
+        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
+        query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
+        table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
-    use crate::episode::EpisodeId;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
-        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
+        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
+        TableInfo,
     };
+    use coral_spec::SourceTableFunctionKind;
 
     #[test]
     fn query_status_maps_app_errors() {
@@ -579,47 +584,6 @@ mod tests {
     }
 
     #[test]
-    fn annotate_request_context_extracts_valid_episode_id() {
-        let mut request = tonic::codegen::http::Request::builder()
-            .uri("/coral.v1.QueryService/ExecuteSql")
-            .header(CORAL_EPISODE_ID_METADATA_KEY, "ep_123")
-            .body(())
-            .expect("request");
-
-        annotate_request_context(&mut request);
-
-        let episode_id = request
-            .extensions()
-            .get::<EpisodeId>()
-            .expect("episode id extension");
-        assert_eq!(episode_id.as_str(), "ep_123");
-    }
-
-    #[test]
-    fn annotate_request_context_ignores_absent_and_malformed_episode_id() {
-        let mut absent = tonic::codegen::http::Request::builder()
-            .uri("/coral.v1.QueryService/ExecuteSql")
-            .body(())
-            .expect("request");
-        annotate_request_context(&mut absent);
-        assert!(
-            absent.extensions().get::<EpisodeId>().is_none(),
-            "a missing coral-episode-id yields no attribution"
-        );
-
-        let mut malformed = tonic::codegen::http::Request::builder()
-            .uri("/coral.v1.QueryService/ExecuteSql")
-            .header(CORAL_EPISODE_ID_METADATA_KEY, "has space")
-            .body(())
-            .expect("request");
-        annotate_request_context(&mut malformed);
-        assert!(
-            malformed.extensions().get::<EpisodeId>().is_none(),
-            "a malformed id is ignored, not surfaced"
-        );
-    }
-
-    #[test]
     fn table_to_proto_preserves_table_metadata() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
@@ -685,6 +649,35 @@ mod tests {
         assert_eq!(proto.description, "User records");
         assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.required_filters, vec!["org_id"]);
+    }
+
+    #[test]
+    fn table_function_to_proto_preserves_argument_metadata() {
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let function = TableFunctionInfo {
+            schema_name: "demo".to_string(),
+            function_name: "search".to_string(),
+            description: "Search demo records".to_string(),
+            arguments: vec![coral_engine::TableFunctionArgumentInfo {
+                name: "payload".to_string(),
+                required: true,
+                values: Vec::new(),
+            }],
+            result_columns: Vec::new(),
+            kind: SourceTableFunctionKind::Search,
+            search_limits: None,
+        };
+
+        let proto = table_function_to_proto(&workspace_name, function);
+
+        assert_eq!(proto.workspace, Some(workspace_to_proto(&workspace_name)));
+        assert_eq!(proto.schema_name, "demo");
+        assert_eq!(proto.name, "search");
+        assert_eq!(proto.description, "Search demo records");
+        assert_eq!(proto.arguments.len(), 1);
+        assert_eq!(proto.arguments[0].name, "payload");
+        assert!(proto.arguments[0].required);
+        assert!(proto.arguments[0].values.is_empty());
     }
 
     #[test]

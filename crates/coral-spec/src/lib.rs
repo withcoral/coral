@@ -84,6 +84,7 @@ mod loader;
 mod parser;
 mod schema;
 mod template;
+mod udf;
 pub mod v4;
 mod validate;
 
@@ -108,6 +109,7 @@ pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
+    ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthDynamicClientRegistrationSpec,
     ManifestOAuthEndpointUrls, ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
     ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
@@ -117,6 +119,10 @@ pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
+pub use udf::{
+    FunctionCoralSqlImplementationSpec, FunctionImplementationSpec, FunctionSpec,
+    parse_function_sql,
+};
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
     validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,

@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
-    RequestAuthenticator, RequestAuthenticatorError, StatusCode,
+    CoralQuery, CoreError, EngineExtensions, QueryParameterValue, QueryParameters,
+    QueryRuntimeConfig, QueryRuntimeContext, RequestAuthenticator, RequestAuthenticatorError,
+    StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -1180,6 +1181,42 @@ async fn source_scoped_table_function_builds_http_search_request() {
 }
 
 #[tokio::test]
+async fn execution_provenance_records_source_scoped_table_functions() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let sql = "SELECT title, score \
+               FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')";
+    let execution = CoralQuery::execute_sql(&[source], test_runtime(), sql)
+        .await
+        .expect("query should succeed");
+
+    let provenance = execution.provenance();
+    assert_eq!(provenance.sql(), sql);
+    assert_eq!(provenance.sources(), ["search".to_string()]);
+    assert!(provenance.tables().is_empty());
+    assert_eq!(provenance.table_functions().len(), 1);
+    let function = &provenance.table_functions()[0];
+    assert_eq!(function.source_name(), "search");
+    assert_eq!(function.schema_name(), "search");
+    assert_eq!(function.function_name(), "search_issues");
+    assert_eq!(provenance.row_count(), 1);
+}
+
+#[tokio::test]
 async fn validate_source_accepts_function_only_http_source_and_runs_queries() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -2160,6 +2197,48 @@ async fn pagination_offset_mode() {
 }
 
 #[tokio::test]
+async fn pagination_cursor_query_uses_response_header() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param_is_missing("cursor"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("X-Next-Cursor", "cursor-2")
+                .set_body_json(json!({ "data": &rows[..2] })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("cursor", "cursor-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_cursor_header", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "cursor_query",
+        "cursor_param": "cursor",
+        "response_cursor_header": "X-Next-Cursor"
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_cursor_header.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
 async fn pagination_link_header() {
     let server = MockServer::start().await;
     let rows = users_rows();
@@ -2168,7 +2247,7 @@ async fn pagination_link_header() {
         .and(query_param_is_missing("page"))
         .respond_with(
             ResponseTemplate::new(200)
-                .append_header("Link", "</api/users?page=2>; rel=\"next\"")
+                .append_header("Link", "<?page=2>; rel=\"next\"")
                 .set_body_json(json!({ "data": &rows[..2] })),
         )
         .mount(&server)
@@ -2191,6 +2270,47 @@ async fn pagination_link_header() {
             &[source],
             test_runtime(),
             "SELECT id, name, email FROM http_link.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
+async fn pagination_next_url_header() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("X-Next-Page-Url", "?page=2")
+                .set_body_json(json!({ "data": &rows[..2] })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_next_url", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header",
+        "next_url_header": "X-Next-Page-Url"
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_next_url.users ORDER BY id",
         )
         .await
         .expect("query should succeed"),
@@ -3120,4 +3240,302 @@ async fn legacy_json_body_array_form_still_works() {
     );
 
     assert_eq!(rows, users_rows());
+}
+
+fn string_param(name: &str, value: &str) -> (String, QueryParameterValue) {
+    (name.to_string(), QueryParameterValue::string(value))
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_binds_query_parameters() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("param_search", &server.uri()));
+    let params = QueryParameters::from([
+        string_param("q", "flaky cleanup repo:withcoral/coral"),
+        string_param("mode", "hybrid"),
+    ]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[source],
+            test_runtime(),
+            "SELECT title, score FROM param_search.search_issues(q => $q, mode => $mode)",
+            params,
+        )
+        .await
+        .expect("parameterized source function call should bind and execute"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn explain_sql_binds_query_parameters() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "explain_param_search",
+        &server.uri(),
+    ));
+    let params = QueryParameters::from([
+        string_param("q", "flaky cleanup repo:withcoral/coral"),
+        string_param("mode", "hybrid"),
+    ]);
+
+    let plan = CoralQuery::explain_sql_with_params(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM explain_param_search.search_issues(q => $q, mode => $mode)",
+        params,
+    )
+    .await
+    .expect("parameterized source function call should explain after binding");
+
+    assert!(
+        plan.unoptimized_logical_plan()
+            .contains("explain_param_search.search_issues"),
+        "unexpected unoptimized plan: {}",
+        plan.unoptimized_logical_plan()
+    );
+    assert!(
+        plan.physical_plan().contains("Exec"),
+        "unexpected physical plan: {}",
+        plan.physical_plan()
+    );
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_rejects_unbound_parameter() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("unbound_search", &server.uri()));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM unbound_search.search_issues(q => $q)",
+    )
+    .await
+    .expect_err("an unbound parameter in a source function call should fail");
+
+    assert!(
+        error.to_string().contains(
+            "unbound_search.search_issues argument 'q' is bound to parameter $q, \
+             but no value was provided for it"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn query_parameters_reject_unbound_sql_placeholder() {
+    let error = CoralQuery::execute_sql_with_params(
+        &[],
+        test_runtime(),
+        "SELECT $author AS author",
+        QueryParameters::new(),
+    )
+    .await
+    .expect_err("an ordinary unbound SQL placeholder should fail before physical planning");
+
+    assert!(
+        error
+            .to_string()
+            .contains("SQL parameter $author has no value"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn query_parameters_reject_unknown_names() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("strict_params", &server.uri()));
+    let params = QueryParameters::from([string_param("typo", "hybrid")]);
+
+    let error = CoralQuery::execute_sql_with_params(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM strict_params.search_issues(q => $q)",
+        params,
+    )
+    .await
+    .expect_err("parameters the statement never references should fail");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown query parameter(s): typo"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        message.contains("the statement references: $q"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn null_query_parameter_is_treated_as_omitted_optional_argument() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param_is_missing("search_type"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("null_param_search", &server.uri()));
+    let params = QueryParameters::from([
+        string_param("q", "flaky cleanup repo:withcoral/coral"),
+        ("mode".to_string(), QueryParameterValue::null_string()),
+    ]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[source],
+            test_runtime(),
+            "SELECT title, score FROM null_param_search.search_issues(q => $q, mode => $mode)",
+            params,
+        )
+        .await
+        .expect("null parameter for an optional argument should be omitted"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn null_query_parameter_for_required_argument_fails() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest("null_required", &server.uri()));
+    let params = QueryParameters::from([("q".to_string(), QueryParameterValue::null_string())]);
+
+    let error = CoralQuery::execute_sql_with_params(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM null_required.search_issues(q => $q)",
+        params,
+    )
+    .await
+    .expect_err("null parameter for a required argument should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("null_required.search_issues missing required argument(s): q"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn query_parameters_bind_typed_scalar_values() {
+    let params = QueryParameters::from([
+        ("count".to_string(), QueryParameterValue::integer(7)),
+        ("score".to_string(), QueryParameterValue::float(9.5)),
+        ("enabled".to_string(), QueryParameterValue::boolean(true)),
+    ]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[],
+            test_runtime(),
+            "SELECT $count AS count, $score AS score, $enabled AS enabled \
+             WHERE $count = 7 AND $score > 9.0 AND $enabled",
+            params,
+        )
+        .await
+        .expect("integer, float, and boolean parameters should bind"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "count": 7,
+            "score": 9.5,
+            "enabled": true
+        })]
+    );
+}
+
+#[tokio::test]
+async fn query_parameters_bind_typed_null_values() {
+    let params = QueryParameters::from([("value".to_string(), QueryParameterValue::null_string())]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[],
+            test_runtime(),
+            "SELECT $value IS NULL AS is_null",
+            params,
+        )
+        .await
+        .expect("typed null parameters should bind"),
+    );
+
+    assert_eq!(rows, vec![json!({ "is_null": true })]);
+}
+
+#[tokio::test]
+async fn query_parameters_bind_in_where_clauses() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "cleanup"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [
+                { "title": "Flaky workspace cleanup", "score": 9.5 },
+                { "title": "Unrelated issue", "score": 1.0 }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("where_params", &server.uri()));
+    let params = QueryParameters::from([
+        string_param("q", "cleanup"),
+        string_param("title", "Flaky workspace cleanup"),
+    ]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM where_params.search_issues(q => $q) WHERE title = $title",
+            params,
+        )
+        .await
+        .expect("parameters should bind in both call arguments and WHERE clauses"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Flaky workspace cleanup" })]);
 }

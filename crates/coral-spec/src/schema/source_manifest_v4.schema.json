@@ -48,8 +48,8 @@
               "pattern": "^[a-z][a-z0-9_]*$"
             },
             "namespace_suffix": {
-              "type": "string",
               "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+              "type": "string",
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]*$"
             },
@@ -127,8 +127,8 @@
               "pattern": "^[a-z][a-z0-9_]*$"
             },
             "namespace_suffix": {
-              "type": "string",
               "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+              "type": "string",
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]*$"
             },
@@ -206,7 +206,22 @@
                 "null"
               ]
             },
-            "credential": true,
+            "credential": {
+              "type": "object",
+              "properties": {
+                "methods": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/V4CredentialMethodSchema"
+                  },
+                  "minItems": 1
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "methods"
+              ]
+            },
             "kind": {
               "type": "string",
               "const": "secret"
@@ -216,6 +231,588 @@
           "required": [
             "kind"
           ]
+        }
+      ]
+    },
+    "V4CredentialMethodSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "source_config"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "oauth": {
+              "$ref": "#/$defs/V4OAuthCredentialMethodSchema"
+            },
+            "type": {
+              "type": "string",
+              "const": "oauth"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "oauth"
+          ]
+        }
+      ]
+    },
+    "V4OAuthCredentialMethodSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthCredentialMethodSchema"
+        },
+        {
+          "$ref": "#/$defs/V4DeviceCodeOAuthCredentialMethodSchema"
+        }
+      ]
+    },
+    "V4AuthorizationCodeOAuthCredentialMethodSchema": {
+      "type": "object",
+      "properties": {
+        "flow": {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthFlowSchema"
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "redirect_uri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "redirect_uri_port_mode": {
+          "description": "Supported loopback redirect URI port binding modes.",
+          "oneOf": [
+            {
+              "description": "Bind the exact port authored in `redirect_uri`.",
+              "type": "string",
+              "const": "fixed"
+            },
+            {
+              "description": "Bind a random free port and use it in OAuth authorization and token exchange.",
+              "type": "string",
+              "const": "random"
+            }
+          ]
+        },
+        "endpoints": {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthEndpointsSchema"
+        },
+        "client": {
+          "$ref": "#/$defs/V4OAuthClientSchema"
+        },
+        "scopes": {
+          "description": "OAuth scope parameter configuration.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "description": "The `scope` parameter value definition.",
+              "$ref": "#/$defs/ManifestOAuthScopeSpec"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "flow",
+        "redirect_uri",
+        "endpoints",
+        "client"
+      ]
+    },
+    "V4AuthorizationCodeOAuthFlowSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/V4AuthorizationCodeOAuthFlowTypeSchema"
+        },
+        "pkce": {
+          "$ref": "#/$defs/ManifestOAuthPkceMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "pkce"
+      ]
+    },
+    "V4AuthorizationCodeOAuthFlowTypeSchema": {
+      "type": "string",
+      "enum": [
+        "authorization_code"
+      ]
+    },
+    "ManifestOAuthPkceMode": {
+      "description": "Supported PKCE modes for OAuth credential retrieval.",
+      "oneOf": [
+        {
+          "description": "Require a generated code verifier and S256 challenge.",
+          "type": "string",
+          "const": "required"
+        },
+        {
+          "description": "Do not include PKCE parameters.",
+          "type": "string",
+          "const": "disabled"
+        }
+      ]
+    },
+    "V4AuthorizationCodeOAuthEndpointsSchema": {
+      "type": "object",
+      "properties": {
+        "authorization_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "authorization_url",
+        "token_url"
+      ]
+    },
+    "V4OAuthClientSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthPublicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthConfidentialClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthDynamicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthPublicDynamicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthConfidentialDynamicClientSchema"
+        }
+      ]
+    },
+    "V4OAuthPublicClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "V4OAuthClientIdSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthClientIdDefaultAndInputSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthClientIdDefaultSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthClientIdInputSchema"
+        }
+      ]
+    },
+    "V4OAuthClientIdDefaultAndInputSchema": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "default",
+        "input"
+      ]
+    },
+    "V4OAuthClientIdDefaultSchema": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "default"
+      ]
+    },
+    "V4OAuthClientIdInputSchema": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input"
+      ]
+    },
+    "V4OAuthConfidentialClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdWithInputSchema"
+        },
+        "secret": {
+          "$ref": "#/$defs/ManifestOAuthClientSecretSpec"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "secret"
+      ]
+    },
+    "V4OAuthClientIdWithInputSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthClientIdDefaultAndInputSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthClientIdInputSchema"
+        }
+      ]
+    },
+    "ManifestOAuthClientSecretSpec": {
+      "description": "OAuth client secret retrieval configuration.",
+      "type": "object",
+      "properties": {
+        "input": {
+          "description": "Credential-retrieval input key for the client secret.",
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "description": "How Coral sends the client secret to the token endpoint.",
+          "$ref": "#/$defs/ManifestOAuthClientSecretTransport"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "transport"
+      ]
+    },
+    "ManifestOAuthClientSecretTransport": {
+      "description": "Supported confidential-client secret transport modes.",
+      "oneOf": [
+        {
+          "description": "Send `Authorization: Basic base64(client_id:client_secret)`.",
+          "type": "string",
+          "const": "basic_auth"
+        },
+        {
+          "description": "Send `client_secret` in the token request body.",
+          "type": "string",
+          "const": "request_body"
+        }
+      ]
+    },
+    "V4OAuthDynamicClientSchema": {
+      "type": "object",
+      "properties": {
+        "dynamic_registration": {
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationSpec"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dynamic_registration"
+      ]
+    },
+    "ManifestOAuthDynamicClientRegistrationSpec": {
+      "description": "OAuth 2.0 Dynamic Client Registration configuration.",
+      "type": "object",
+      "properties": {
+        "registration_url": {
+          "description": "OAuth client registration endpoint URL template.",
+          "type": "string",
+          "minLength": 1
+        },
+        "client_name": {
+          "description": "Optional client display name sent during registration.",
+          "type": "string",
+          "minLength": 1
+        },
+        "token_endpoint_auth_method": {
+          "description": "Requested token endpoint authentication method.",
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationAuthMethod",
+          "default": "none"
+        },
+        "request_refresh_token_grant": {
+          "description": "Whether Coral requests the `refresh_token` grant type during registration.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "registration_url"
+      ]
+    },
+    "ManifestOAuthDynamicClientRegistrationAuthMethod": {
+      "description": "Supported DCR token endpoint authentication method requests.",
+      "oneOf": [
+        {
+          "description": "Public client; no client authentication at the token endpoint.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Confidential client using HTTP Basic authentication at the token endpoint.",
+          "type": "string",
+          "const": "client_secret_basic"
+        },
+        {
+          "description": "Confidential client sending the client secret in the token request body.",
+          "type": "string",
+          "const": "client_secret_post"
+        }
+      ]
+    },
+    "V4OAuthPublicDynamicClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdSchema"
+        },
+        "dynamic_registration": {
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationSpec"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "dynamic_registration"
+      ]
+    },
+    "V4OAuthConfidentialDynamicClientSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/V4OAuthClientIdWithInputSchema"
+        },
+        "secret": {
+          "$ref": "#/$defs/ManifestOAuthClientSecretSpec"
+        },
+        "dynamic_registration": {
+          "$ref": "#/$defs/ManifestOAuthDynamicClientRegistrationSpec"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "secret",
+        "dynamic_registration"
+      ]
+    },
+    "ManifestOAuthScopeSpec": {
+      "description": "OAuth scope parameter values and delimiter.",
+      "type": "object",
+      "properties": {
+        "delimiter": {
+          "description": "Delimiter used to join scope values.",
+          "$ref": "#/$defs/ManifestOAuthScopeDelimiter"
+        },
+        "values": {
+          "description": "Authored scope values.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "delimiter",
+        "values"
+      ]
+    },
+    "ManifestOAuthScopeDelimiter": {
+      "description": "Supported OAuth scope delimiters.",
+      "oneOf": [
+        {
+          "description": "Join scope values with a single space.",
+          "type": "string",
+          "const": "space"
+        },
+        {
+          "description": "Join scope values with a comma.",
+          "type": "string",
+          "const": "comma"
+        }
+      ]
+    },
+    "V4DeviceCodeOAuthCredentialMethodSchema": {
+      "type": "object",
+      "properties": {
+        "flow": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthFlowSchema"
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoints": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthEndpointsSchema"
+        },
+        "client": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthClientSchema"
+        },
+        "scopes": {
+          "description": "OAuth scope parameter configuration.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "description": "The `scope` parameter value definition.",
+              "$ref": "#/$defs/ManifestOAuthScopeSpec"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "flow",
+        "endpoints",
+        "client"
+      ]
+    },
+    "V4DeviceCodeOAuthFlowSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/V4DeviceCodeOAuthFlowTypeSchema"
+        },
+        "pkce": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/V4OAuthDisabledPkceModeSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "V4DeviceCodeOAuthFlowTypeSchema": {
+      "type": "string",
+      "enum": [
+        "device_code"
+      ]
+    },
+    "V4OAuthDisabledPkceModeSchema": {
+      "type": "string",
+      "enum": [
+        "disabled"
+      ]
+    },
+    "V4DeviceCodeOAuthEndpointsSchema": {
+      "type": "object",
+      "properties": {
+        "token_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "device_authorization_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "token_url",
+        "device_authorization_url"
+      ]
+    },
+    "V4DeviceCodeOAuthClientSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OAuthPublicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthDynamicClientSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OAuthPublicDynamicClientSchema"
         }
       ]
     },
@@ -404,6 +1001,32 @@
             "from": {
               "type": "string",
               "const": "filter_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_string_array"
             }
           },
           "required": [
@@ -759,6 +1382,32 @@
             "from": {
               "type": "string",
               "const": "filter_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_string_array"
             }
           },
           "required": [

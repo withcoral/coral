@@ -6,11 +6,27 @@ use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strateg
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
+use crate::sources::materialization::{
+    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PARAMETER_METADATA_OVERRIDE_FILENAME,
+    PROJECTIONS_FILENAME,
+};
 use crate::storage::fs::ensure_dir;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceName, WorkspacePaths};
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V4ProjectionCatalogOrigin {
+    Materialized,
+    Override,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V4ProjectionCatalogFile {
+    pub(crate) path: PathBuf,
+    pub(crate) origin: V4ProjectionCatalogOrigin,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppStateLayout {
@@ -58,6 +74,10 @@ impl AppStateLayout {
         &self.config_dir
     }
 
+    pub(crate) fn database_file(&self) -> PathBuf {
+        self.config_dir.join("coral.db")
+    }
+
     pub(crate) fn state_lock(&self) -> &Path {
         &self.state_lock
     }
@@ -86,13 +106,12 @@ impl AppStateLayout {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
-    /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
-    /// episode store appends `OpenEpisode` records here; indexing and retrieval
-    /// land in a later PR.
-    pub(crate) fn episodes_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
-        self.workspace_dir(workspace_name)
-            .join("episodes")
-            .join("episodes.jsonl")
+    pub(crate) fn search_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name).join("search")
+    }
+
+    pub(crate) fn search_sqlite_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.search_dir(workspace_name).join("search.sqlite3")
     }
 
     pub(crate) fn source_dir(
@@ -143,6 +162,15 @@ impl AppStateLayout {
             .join("v4")
     }
 
+    pub(crate) fn v4_override_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.source_dir(workspace_name, source_name)
+            .join("overrides")
+    }
+
     pub(crate) fn v4_materialized_tmp_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -160,16 +188,30 @@ impl AppStateLayout {
         source_name: &SourceName,
     ) -> PathBuf {
         self.v4_materialized_dir(workspace_name, source_name)
-            .join("fingerprint.yaml")
+            .join(FINGERPRINT_FILENAME)
     }
 
-    pub(crate) fn v4_projections_file(
+    pub(crate) fn v4_projection_catalog_file(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-    ) -> PathBuf {
-        self.v4_materialized_dir(workspace_name, source_name)
-            .join("projections.yaml")
+    ) -> V4ProjectionCatalogFile {
+        let override_file = self
+            .v4_override_dir(workspace_name, source_name)
+            .join(PROJECTIONS_FILENAME);
+        if override_file.exists() {
+            V4ProjectionCatalogFile {
+                path: override_file,
+                origin: V4ProjectionCatalogOrigin::Override,
+            }
+        } else {
+            V4ProjectionCatalogFile {
+                path: self
+                    .v4_materialized_dir(workspace_name, source_name)
+                    .join(PROJECTIONS_FILENAME),
+                origin: V4ProjectionCatalogOrigin::Materialized,
+            }
+        }
     }
 
     pub(crate) fn v4_diagnostics_file(
@@ -178,7 +220,19 @@ impl AppStateLayout {
         source_name: &SourceName,
     ) -> PathBuf {
         self.v4_materialized_dir(workspace_name, source_name)
-            .join("diagnostics.yaml")
+            .join(DIAGNOSTICS_FILENAME)
+    }
+
+    pub(crate) fn v4_parameter_metadata_override_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> PathBuf {
+        self.v4_override_dir(workspace_name, source_name)
+            .join("surfaces")
+            .join(surface_id)
+            .join(PARAMETER_METADATA_OVERRIDE_FILENAME)
     }
 
     pub(crate) fn v4_surface_dir(
@@ -193,10 +247,19 @@ impl AppStateLayout {
     }
 }
 
+impl WorkspacePaths for AppStateLayout {
+    fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        AppStateLayout::workspace_dir(self, workspace_name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::AppStateLayout;
     use crate::sources::SourceName;
+    use crate::sources::materialization::PROJECTIONS_FILENAME;
     use crate::workspaces::WorkspaceName;
     use tempfile::tempdir;
 
@@ -209,6 +272,7 @@ mod tests {
         let source_name = SourceName::parse("github").expect("source");
 
         assert_eq!(layout.config_file(), config_dir.join("config.toml"));
+        assert_eq!(layout.database_file(), config_dir.join("coral.db"));
         assert_eq!(
             layout.manifest_file(&workspace_name, &source_name),
             config_dir
@@ -236,16 +300,53 @@ mod tests {
                 .join("reports.jsonl")
         );
         assert_eq!(
-            layout.episodes_file(&workspace_name),
+            layout.search_sqlite_file(&workspace_name),
             config_dir
                 .join("workspaces")
                 .join("default")
-                .join("episodes")
-                .join("episodes.jsonl")
+                .join("search")
+                .join("search.sqlite3")
         );
         assert_eq!(
             layout.local_trace_store_dir(),
             config_dir.join("telemetry").join("traces")
+        );
+    }
+
+    #[test]
+    fn v4_projection_catalog_file_returns_override_if_present() {
+        let temp = tempdir().expect("tempdir");
+        let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+
+        let generated = layout.v4_projection_catalog_file(&workspace_name, &source_name);
+        assert_eq!(
+            generated.path,
+            config_dir.join("workspaces/default/sources/github/materialized/v4/projections.yaml")
+        );
+        assert_eq!(
+            generated.origin,
+            super::V4ProjectionCatalogOrigin::Materialized
+        );
+
+        let override_dir = config_dir.join("workspaces/default/sources/github/overrides");
+        fs::create_dir_all(&override_dir).expect("override dir");
+        let override_file = override_dir.join(PROJECTIONS_FILENAME);
+        fs::write(&override_file, "{}").expect("write to override file");
+
+        let overridden = layout.v4_projection_catalog_file(&workspace_name, &source_name);
+        assert_eq!(overridden.path, override_file);
+        assert_eq!(
+            overridden.origin,
+            super::V4ProjectionCatalogOrigin::Override
+        );
+        assert_eq!(
+            layout.v4_parameter_metadata_override_file(&workspace_name, &source_name, "rest"),
+            config_dir
+                .join("workspaces/default/sources/github/overrides/surfaces/rest")
+                .join("parameter_metadata.yaml")
         );
     }
 }

@@ -345,6 +345,8 @@ mod tests {
             description: String::new(),
             arguments: vec![],
             result_columns: vec![],
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
         }
     }
 

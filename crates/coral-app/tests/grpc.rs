@@ -13,7 +13,11 @@ mod harness;
 mod oauth_refresh_tests;
 #[path = "grpc/resilience_tests.rs"]
 mod resilience_tests;
+#[path = "grpc/search_tests.rs"]
+mod search_tests;
 #[path = "grpc/server_lifecycle_tests.rs"]
 mod server_lifecycle_tests;
 #[path = "grpc/source_lifecycle_tests.rs"]
 mod source_lifecycle_tests;
+#[path = "grpc/workspace_lifecycle_tests.rs"]
+mod workspace_lifecycle_tests;

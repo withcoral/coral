@@ -16,8 +16,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::resolve_auth_headers;
-use crate::backends::http::error::{pagination_error, provider_error};
-use crate::backends::http::pagination::extract_next_link_url;
+use crate::backends::http::error::provider_error;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
@@ -40,7 +39,6 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) table_headers: &'a [HeaderSpec],
     pub(super) table_name: &'a str,
     pub(super) method: HttpMethod,
-    pub(super) base_url: &'a str,
     pub(super) url: &'a str,
     pub(super) query_pairs: &'a [(String, String)],
     pub(super) body: Option<&'a RequestBody>,
@@ -50,7 +48,12 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) body_capture: HttpBodyCapture,
     pub(super) render_context: RenderContext<'a>,
     pub(super) allow_404_empty: bool,
-    pub(super) link_header_require_results: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct DecodedHttpResponse {
+    pub(super) payload: Value,
+    pub(super) headers: HeaderMap,
 }
 
 #[expect(
@@ -61,9 +64,9 @@ pub(super) async fn execute_request(
     http: &reqwest::Client,
     request_timeout: Duration,
     request: OutgoingHttpRequest<'_>,
-) -> Result<Option<(Value, Option<String>)>> {
+) -> Result<Option<DecodedHttpResponse>> {
     enum ResponseOutcome {
-        Done(Result<Option<(Value, Option<String>)>>),
+        Done(Result<Option<DecodedHttpResponse>>),
         Retry(Duration),
     }
 
@@ -75,7 +78,6 @@ pub(super) async fn execute_request(
         table_headers,
         table_name,
         method,
-        base_url,
         url,
         query_pairs,
         body,
@@ -85,7 +87,6 @@ pub(super) async fn execute_request(
         body_capture,
         render_context,
         allow_404_empty,
-        link_header_require_results,
     } = request;
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
@@ -300,22 +301,7 @@ pub(super) async fn execute_request(
                 ))));
             }
 
-            let next_url =
-                extract_next_link_url(response.headers(), base_url, link_header_require_results)
-                    .map_err(|error| {
-                        record_http_processing_error(&request_span, "PAGINATION", &error);
-                        pagination_error(
-                            source_schema,
-                            table_name,
-                            Some(method_label),
-                            Some(&logged_url),
-                            &error,
-                        )
-                    });
-            let next_url = match next_url {
-                Ok(next_url) => next_url,
-                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
-            };
+            let response_headers = response.headers().clone();
 
             match decode_response_body(
                 response,
@@ -333,7 +319,10 @@ pub(super) async fn execute_request(
             .instrument(request_span.clone())
             .await
             {
-                Ok(payload) => ResponseOutcome::Done(Ok(Some((payload, next_url)))),
+                Ok(payload) => ResponseOutcome::Done(Ok(Some(DecodedHttpResponse {
+                    payload,
+                    headers: response_headers,
+                }))),
                 Err(mut error) => {
                     // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
                     // idempotent GET requests may be retried or surfaced as retryable.
@@ -502,7 +491,6 @@ mod tests {
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,
-                base_url: &base_url,
                 url: &url,
                 query_pairs: &query_pairs,
                 body: None,
@@ -512,7 +500,6 @@ mod tests {
                 body_capture: HttpBodyCapture::default(),
                 render_context,
                 allow_404_empty: false,
-                link_header_require_results: false,
             },
         )
         .await

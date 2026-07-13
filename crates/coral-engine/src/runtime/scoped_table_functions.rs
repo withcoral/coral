@@ -1,0 +1,291 @@
+//! Shared parsing and argument lowering for Coral scoped table functions.
+
+use std::collections::{HashMap, HashSet};
+
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::{DFSchema, ScalarValue};
+use datafusion::error::{DataFusionError, Result};
+use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::planner::{RelationPlannerContext, RelationPlanning};
+use datafusion::logical_expr::sqlparser::ast::{
+    Expr as SqlExpr, FunctionArg, FunctionArgExpr, Ident, TableAlias, TableFactor,
+    TableFunctionArgs,
+};
+
+use crate::backends::RegisteredTableFunction;
+
+pub(crate) trait ScopedTableFunctionSignature {
+    fn display_name(&self) -> &str;
+    fn arg_count(&self) -> usize;
+    fn arg_name(&self, index: usize) -> Option<&str>;
+    fn contains(&self, name: &str) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ScopedTableFunctionName {
+    pub(crate) schema: String,
+    pub(crate) function: String,
+}
+
+impl ScopedTableFunctionName {
+    pub(crate) fn from_manifest(function: &RegisteredTableFunction) -> Self {
+        Self {
+            schema: function.schema_name.clone(),
+            function: function.function_name.clone(),
+        }
+    }
+
+    fn from_sql(schema: Ident, function: Ident, context: &dyn RelationPlannerContext) -> Self {
+        Self {
+            schema: context.normalize_ident(schema),
+            function: context.normalize_ident(function),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ScopedTableFunctionCall {
+    pub(crate) lookup_key: ScopedTableFunctionName,
+    pub(crate) display_name: String,
+}
+
+impl ScopedTableFunctionCall {
+    pub(crate) fn parse(
+        relation: &TableFactor,
+        context: &dyn RelationPlannerContext,
+    ) -> Option<Self> {
+        let TableFactor::Table {
+            name,
+            args: Some(_),
+            ..
+        } = relation
+        else {
+            return None;
+        };
+
+        // Coral function surfaces are exactly `schema.function(...)`. Longer
+        // names belong to DataFusion's normal relation/function planner.
+        let [schema, function] = name.0.as_slice() else {
+            return None;
+        };
+
+        let schema = schema.as_ident()?.clone();
+        let function = function.as_ident()?.clone();
+        let display_name = qualified_name(&schema.value, &function.value);
+        let lookup_key = ScopedTableFunctionName::from_sql(schema, function, context);
+
+        Some(Self {
+            lookup_key,
+            display_name,
+        })
+    }
+
+    pub(crate) fn unknown_function_error(&self, kind: &str, hint: &str) -> DataFusionError {
+        DataFusionError::Plan(format!("unknown {kind} {}{}", self.display_name, hint))
+    }
+}
+
+pub(crate) fn find_placeholder(expr: &Expr) -> Option<String> {
+    let mut found = None;
+    expr.apply(|expr| {
+        if let Expr::Placeholder(placeholder) = expr {
+            found = Some(placeholder.id.clone());
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("placeholder search never fails");
+    found
+}
+
+pub(crate) fn qualified_name(schema: &str, function: &str) -> String {
+    format!("{schema}.{function}")
+}
+
+pub(crate) fn original_relation(relation: TableFactor) -> RelationPlanning {
+    RelationPlanning::Original(Box::new(relation))
+}
+
+/// Takes ownership of a committed call's argument list and alias.
+///
+/// Shape-checking and destructuring are split on purpose:
+/// [`ScopedTableFunctionCall::parse`] inspects the relation by reference because
+/// the not-our-function fallthroughs must hand the relation back to
+/// `DataFusion` untouched. Only once the call is committed may the relation
+/// be consumed, which is what makes the `unreachable!` here truly so.
+pub(crate) fn call_parts(relation: TableFactor) -> (TableFunctionArgs, Option<TableAlias>) {
+    let TableFactor::Table {
+        args: Some(args),
+        alias,
+        ..
+    } = relation
+    else {
+        unreachable!("ScopedTableFunctionCall::parse only matches table function calls");
+    };
+    (args, alias)
+}
+
+/// Rejects table-factor modifiers Coral table-function planners do not support,
+/// so user-written SQL semantics are never silently dropped.
+///
+/// Destructures every field without `..` on purpose: a sqlparser upgrade that
+/// adds a new modifier must fail compilation here and force a decision, instead
+/// of executing while ignoring the modifier.
+pub(crate) fn reject_unsupported_modifiers(
+    call: &ScopedTableFunctionCall,
+    relation: &TableFactor,
+) -> Result<()> {
+    let TableFactor::Table {
+        name: _,
+        alias: _,
+        args: _,
+        with_hints,
+        version,
+        with_ordinality,
+        partitions,
+        json_path,
+        sample,
+        index_hints,
+    } = relation
+    else {
+        unreachable!("ScopedTableFunctionCall::parse only matches table relations");
+    };
+
+    let unsupported_modifiers = [
+        (*with_ordinality, "WITH ORDINALITY"),
+        (sample.is_some(), "TABLESAMPLE"),
+        (!with_hints.is_empty(), "table hints"),
+        (!index_hints.is_empty(), "index hints"),
+        (version.is_some(), "time-travel syntax"),
+        (!partitions.is_empty(), "PARTITION selection"),
+        (json_path.is_some(), "JSON path access"),
+    ];
+    for (present, modifier) in unsupported_modifiers {
+        if present {
+            return Err(DataFusionError::Plan(format!(
+                "table function {} does not support {modifier}",
+                call.display_name
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn reject_settings(
+    call: &ScopedTableFunctionCall,
+    args: &TableFunctionArgs,
+) -> Result<()> {
+    if args.settings.is_some() {
+        return Err(DataFusionError::Plan(format!(
+            "table function {} does not support SETTINGS",
+            call.display_name
+        )));
+    }
+    Ok(())
+}
+
+/// Lowers named call arguments into positional logical expressions in declared
+/// order. Missing optional args become NULL literals; each function binder
+/// interprets NULL according to its own argument rules.
+pub(crate) fn lower_named_args_to_positional_exprs(
+    function: &dyn ScopedTableFunctionSignature,
+    args: &TableFunctionArgs,
+    context: &mut dyn RelationPlannerContext,
+) -> Result<Vec<Expr>> {
+    let mut supplied = collect_named_args(function, args, context)?;
+
+    (0..function.arg_count())
+        .map(|index| lower_positional_arg(function, index, &mut supplied, context))
+        .collect()
+}
+
+fn lower_positional_arg(
+    function: &dyn ScopedTableFunctionSignature,
+    index: usize,
+    supplied: &mut HashMap<String, SqlExpr>,
+    context: &mut dyn RelationPlannerContext,
+) -> Result<Expr> {
+    let name = declared_arg_name(function, index)?;
+    match supplied.remove(name) {
+        Some(sql_expr) => context.sql_to_expr(sql_expr, &DFSchema::empty()),
+        None => Ok(Expr::Literal(ScalarValue::Null, None)),
+    }
+}
+
+fn declared_arg_name(function: &dyn ScopedTableFunctionSignature, index: usize) -> Result<&str> {
+    function.arg_name(index).ok_or_else(|| {
+        DataFusionError::Internal(format!(
+            "{} argument index {index} missing from signature",
+            function.display_name()
+        ))
+    })
+}
+
+fn collect_named_args(
+    function: &dyn ScopedTableFunctionSignature,
+    args: &TableFunctionArgs,
+    context: &dyn RelationPlannerContext,
+) -> Result<HashMap<String, SqlExpr>> {
+    let mut supplied = HashMap::new();
+    let mut seen = HashSet::new();
+
+    for arg in &args.args {
+        let FunctionArg::Named { name, arg, .. } = arg else {
+            return Err(non_named_arg_error(function, arg));
+        };
+        insert_named_arg(function, &mut supplied, &mut seen, name, arg, context)?;
+    }
+
+    Ok(supplied)
+}
+
+fn insert_named_arg(
+    function: &dyn ScopedTableFunctionSignature,
+    supplied: &mut HashMap<String, SqlExpr>,
+    seen: &mut HashSet<String>,
+    name: &Ident,
+    arg: &FunctionArgExpr,
+    context: &dyn RelationPlannerContext,
+) -> Result<()> {
+    let lookup_name = context.normalize_ident(name.clone());
+    if !seen.insert(lookup_name.clone()) {
+        return Err(DataFusionError::Plan(format!(
+            "{} duplicate argument '{}'",
+            function.display_name(),
+            name.value
+        )));
+    }
+    if !function.contains(&lookup_name) {
+        return Err(DataFusionError::Plan(format!(
+            "{} unknown argument '{}'",
+            function.display_name(),
+            name.value
+        )));
+    }
+    let FunctionArgExpr::Expr(sql_expr) = arg else {
+        return Err(DataFusionError::Plan(format!(
+            "{} argument '{}' does not support wildcard values",
+            function.display_name(),
+            name.value
+        )));
+    };
+    supplied.insert(lookup_name, sql_expr.clone());
+    Ok(())
+}
+
+fn non_named_arg_error(
+    function: &dyn ScopedTableFunctionSignature,
+    arg: &FunctionArg,
+) -> DataFusionError {
+    match arg {
+        FunctionArg::Unnamed(_) => DataFusionError::Plan(format!(
+            "{} requires named arguments",
+            function.display_name()
+        )),
+        FunctionArg::ExprNamed { .. } => DataFusionError::Plan(format!(
+            "{} requires identifier argument names",
+            function.display_name()
+        )),
+        FunctionArg::Named { .. } => unreachable!("named arguments are handled by the caller"),
+    }
+}

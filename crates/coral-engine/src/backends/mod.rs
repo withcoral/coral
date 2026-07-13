@@ -81,10 +81,10 @@ mod composite;
 pub(crate) use common::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredInput, RegisteredSource,
-    RegisteredTable, RegisteredTableFunction, SourceFunctionProviderFactory,
-    build_registered_inputs, build_registered_table, build_registered_table_function,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns, validate_lookup_key_filter_backend_support,
+    RegisteredTable, RegisteredTableFunction, RegisteredTableFunctionArgument,
+    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
+    build_registered_table_function, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names, schema_from_columns, validate_lookup_key_filter_backend_support,
 };
 
 pub(crate) mod file;

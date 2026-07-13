@@ -38,6 +38,7 @@ impl McpImporter<'_> {
                 .unwrap_or_default(),
             deprecated: false,
             read_only: tool.read_only_hint.unwrap_or(false),
+            naming: None,
             inputs,
             output,
             entity: Some(IrEntityCandidate {

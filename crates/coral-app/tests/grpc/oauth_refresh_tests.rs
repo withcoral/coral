@@ -12,7 +12,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, SourceSecret, SourceVariable, import_source_response,
+    ExecuteSqlRequest, ImportSourceRequest, SearchRequest, SourceSecret, SourceVariable,
+    catalog_item, import_source_response, search_result,
 };
 use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
 use serde_json::json;
@@ -166,6 +167,57 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
     assert!(
         fixture.token_forms().is_empty(),
         "passive catalog discovery should not call the token endpoint"
+    );
+    let material = fs::read_to_string(secret_path).expect("read material");
+    assert!(material.contains("API_TOKEN=expired-token"), "{material}");
+}
+
+#[tokio::test]
+async fn search_catalog_does_not_refresh_expired_oauth_access_token() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    seed_expired_api_token_material(
+        &secret_path,
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "messages".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert!(response.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::CatalogMetadata(metadata))
+            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
+                matches!(item, catalog_item::Item::Table(table) if table.name == "messages")
+            })
+    )));
+    assert!(
+        fixture.token_forms().is_empty(),
+        "catalog search should not call the token endpoint"
     );
     let material = fs::read_to_string(secret_path).expect("read material");
     assert!(material.contains("API_TOKEN=expired-token"), "{material}");
