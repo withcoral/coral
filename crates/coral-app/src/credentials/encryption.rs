@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use base64::Engine as _;
@@ -18,7 +18,6 @@ use tracing::warn;
 use zeroize::{Zeroize as _, Zeroizing};
 
 use super::CredentialsError;
-use crate::bootstrap;
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::fs as storage_fs;
@@ -56,6 +55,34 @@ impl Drop for CredentialEncryptionKey {
 }
 
 impl CredentialEncryptionKey {
+    pub(crate) fn from_encoded_material(raw: &str) -> Result<Self, CredentialsError> {
+        let trimmed = raw.trim();
+        let Some(encoded) = trimmed.strip_prefix(&format!("{KEY_FILE_VERSION}:")) else {
+            return Err(CredentialsError::Crypto(
+                "unsupported credential encryption key version".to_string(),
+            ));
+        };
+        let decoded = Zeroizing::new(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|error| {
+                    CredentialsError::Crypto(format!("invalid encryption key: {error}"))
+                })?,
+        );
+        if decoded.len() != KEY_LEN {
+            return Err(CredentialsError::Crypto(format!(
+                "credential encryption key has invalid length {}",
+                decoded.len()
+            )));
+        }
+        let mut bytes = [0_u8; KEY_LEN];
+        bytes.copy_from_slice(decoded.as_slice());
+        Ok(Self {
+            key_id: key_id_for_bytes(&bytes),
+            bytes,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn from_static_bytes_for_test(bytes: [u8; KEY_LEN]) -> Self {
         Self {
@@ -75,43 +102,34 @@ pub(crate) trait CredentialKeyProvider: Send + Sync {
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError>;
 }
 
-/// Local credential encryption key provider.
-/// Shared-Postgres deployments MUST provision the same KEK on every server via
-/// `[credentials].encryption_key_env`; the local file key is single-config-dir only.
+/// Resolves an explicitly supplied key or falls back to a key file scoped to
+/// this app-state config directory. Callers own config and environment resolution.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFileCredentialKeyProvider {
     path: PathBuf,
-    config_file: PathBuf,
+    provided_key: Option<CredentialEncryptionKey>,
 }
 
 impl LocalFileCredentialKeyProvider {
-    pub(crate) fn new(layout: &AppStateLayout) -> Self {
+    pub(crate) fn new(
+        layout: &AppStateLayout,
+        provided_key: Option<CredentialEncryptionKey>,
+    ) -> Self {
         Self {
             path: layout.credential_encryption_key_file(),
-            config_file: layout.config_file().to_path_buf(),
+            provided_key,
         }
     }
 
-    fn load_configured_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
-        let Some(env_name) = configured_key_env(&self.config_file)? else {
-            return Ok(None);
-        };
-        let raw = bootstrap::env_var(&env_name)
-            .map_err(|error| {
-                CredentialsError::Crypto(format!(
-                    "credential encryption key environment variable `{env_name}` is invalid: {error}"
-                ))
-            })?
-            .ok_or_else(|| {
-                CredentialsError::Crypto(format!(
-                    "credential encryption key environment variable `{env_name}` is not set"
-                ))
-            })?;
-        decode_key_material(&raw).map(Some).map_err(|error| {
-            CredentialsError::Crypto(format!(
-                "invalid credential encryption key from environment variable `{env_name}`: {error}"
-            ))
-        })
+    fn load_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(raw) => {
+                let raw = Zeroizing::new(raw);
+                CredentialEncryptionKey::from_encoded_material(raw.as_str()).map(Some)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -124,48 +142,48 @@ impl LocalFileCredentialKeyProvider {
         let lock_path = self.path.with_extension("key.lock");
         let _process_guard = FileLock::exclusive(&lock_path)?;
 
-        match std::fs::read_to_string(&self.path) {
-            Ok(raw) => decode_key_material(&raw),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let bytes = random_array::<KEY_LEN>()?;
-                let encoded = format!(
-                    "{KEY_FILE_VERSION}:{}\n",
-                    base64::engine::general_purpose::STANDARD.encode(bytes)
-                );
-                storage_fs::write_atomic(&self.path, encoded.as_bytes())?;
-                warn!(
-                    path = %self.path.display(),
-                    "created local credential encryption key; shared-Postgres deployments must provision the same KEK on every server"
-                );
-                Ok(CredentialEncryptionKey {
-                    key_id: key_id_for_bytes(&bytes),
-                    bytes,
-                })
-            }
-            Err(error) => Err(error.into()),
+        if let Some(key) = self.load_key()? {
+            return Ok(key);
         }
+
+        let bytes = Zeroizing::new(random_array::<KEY_LEN>()?);
+        let mut encoded = Zeroizing::new(format!("{KEY_FILE_VERSION}:"));
+        base64::engine::general_purpose::STANDARD.encode_string(bytes.as_slice(), &mut encoded);
+        encoded.push('\n');
+        storage_fs::write_atomic(&self.path, encoded.as_bytes())?;
+        warn!(
+            path = %self.path.display(),
+            "created local credential encryption key"
+        );
+        Ok(CredentialEncryptionKey {
+            key_id: key_id_for_bytes(&bytes),
+            bytes: *bytes,
+        })
     }
 }
 
 impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
     fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if let Some(key) = self.load_configured_key()? {
-            return Ok(key);
+        if let Some(key) = &self.provided_key {
+            return Ok(key.clone());
         }
         self.load_or_create_key()
     }
 
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        let key = self
-            .load_configured_key()?
-            .map_or_else(|| self.load_or_create_key(), Ok)?;
-        if key.key_id == key_id {
-            Ok(key)
-        } else {
-            Err(CredentialsError::Crypto(format!(
-                "credential encryption key '{key_id}' is unavailable"
-            )))
+        if let Some(key) = &self.provided_key
+            && key.key_id == key_id
+        {
+            return Ok(key.clone());
         }
+        if let Some(key) = self.load_key()?
+            && key.key_id == key_id
+        {
+            return Ok(key);
+        }
+        Err(CredentialsError::Crypto(format!(
+            "credential encryption key '{key_id}' is unavailable"
+        )))
     }
 }
 
@@ -180,8 +198,14 @@ pub(crate) struct EncryptedCredentialDocument {
     pub(crate) aad_version: i64,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PlaintextCredentialDocument {
+#[derive(serde::Serialize)]
+struct PlaintextCredentialDocument<'a> {
+    version: u32,
+    values: &'a BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct DecryptedCredentialDocument {
     version: u32,
     values: BTreeMap<String, String>,
 }
@@ -199,7 +223,7 @@ pub(crate) fn encrypt_credential_values(
 
     let plaintext = PlaintextCredentialDocument {
         version: CREDENTIAL_DOCUMENT_VERSION,
-        values: values.clone(),
+        values,
     };
     let mut document_bytes = Zeroizing::new(
         serde_json::to_vec(&plaintext)
@@ -239,7 +263,7 @@ pub(crate) fn decrypt_credential_values(
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
     let plaintext =
         decrypt_credential_document_bytes(workspace_name, source_name, document, key_provider)?;
-    let decoded: PlaintextCredentialDocument = serde_json::from_slice(&plaintext)
+    let decoded: DecryptedCredentialDocument = serde_json::from_slice(&plaintext)
         .map_err(|error| CredentialsError::Parse(error.to_string()))?;
     if decoded.version != CREDENTIAL_DOCUMENT_VERSION {
         return Err(CredentialsError::Parse(format!(
@@ -488,51 +512,64 @@ fn random_array<const N: usize>() -> Result<[u8; N], CredentialsError> {
     Ok(bytes)
 }
 
-fn configured_key_env(config_file: &Path) -> Result<Option<String>, CredentialsError> {
-    if !config_file.exists() {
-        return Ok(None);
-    }
-    let raw = std::fs::read_to_string(config_file)?;
-    let config: toml::Value =
-        toml::from_str(&raw).map_err(|error| CredentialsError::Parse(error.to_string()))?;
-    let Some(value) = config
-        .get("credentials")
-        .and_then(|credentials| credentials.get("encryption_key_env"))
-    else {
-        return Ok(None);
-    };
-    value
-        .as_str()
-        .map(|env| Some(env.to_string()))
-        .ok_or_else(|| {
-            CredentialsError::Parse("[credentials].encryption_key_env must be a string".to_string())
-        })
-}
-
-fn decode_key_material(raw: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-    let trimmed = raw.trim();
-    let Some(encoded) = trimmed.strip_prefix(&format!("{KEY_FILE_VERSION}:")) else {
-        return Err(CredentialsError::Crypto(
-            "unsupported credential encryption key version".to_string(),
-        ));
-    };
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|error| CredentialsError::Crypto(format!("invalid encryption key: {error}")))?;
-    let bytes: [u8; KEY_LEN] = decoded.try_into().map_err(|decoded: Vec<u8>| {
-        CredentialsError::Crypto(format!(
-            "credential encryption key has invalid length {}",
-            decoded.len()
-        ))
-    })?;
-    Ok(CredentialEncryptionKey {
-        key_id: key_id_for_bytes(&bytes),
-        bytes,
-    })
-}
-
 fn key_id_for_bytes(bytes: &[u8; KEY_LEN]) -> String {
     let digest = Sha256::digest(bytes);
     let hex = format!("{digest:x}");
     format!("local-file-{}", hex.get(..16).unwrap_or(hex.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine as _;
+    use tempfile::tempdir;
+
+    use super::{
+        CredentialEncryptionKey, CredentialKeyProvider, KEY_FILE_VERSION, KEY_LEN,
+        LocalFileCredentialKeyProvider,
+    };
+    use crate::state::AppStateLayout;
+
+    #[test]
+    fn provided_key_does_not_create_a_local_key_file() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let encoded = format!(
+            "{KEY_FILE_VERSION}:{}",
+            base64::engine::general_purpose::STANDARD.encode([7_u8; KEY_LEN])
+        );
+        let key = CredentialEncryptionKey::from_encoded_material(&encoded).expect("encoded key");
+        let provider = LocalFileCredentialKeyProvider::new(&layout, Some(key));
+
+        let first = provider.active_key().expect("provided key");
+        let second = provider.key(first.key_id()).expect("provided key by id");
+
+        assert_eq!(first, second);
+        assert!(!layout.credential_encryption_key_file().exists());
+    }
+
+    #[test]
+    fn missing_key_lookup_does_not_create_a_local_key_file() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let provider = LocalFileCredentialKeyProvider::new(&layout, None);
+
+        let error = provider.key("missing-key").expect_err("missing key");
+
+        assert!(error.to_string().contains("is unavailable"));
+        assert!(!layout.credential_encryption_key_file().exists());
+    }
+
+    #[test]
+    fn provided_key_keeps_existing_file_key_available_for_rewrap() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let file_key = LocalFileCredentialKeyProvider::new(&layout, None)
+            .active_key()
+            .expect("file key");
+        let provided_key = CredentialEncryptionKey::from_static_bytes_for_test([9_u8; KEY_LEN]);
+        let provider = LocalFileCredentialKeyProvider::new(&layout, Some(provided_key.clone()));
+
+        assert_eq!(provider.active_key().expect("provided key"), provided_key);
+        assert_eq!(provider.key(file_key.key_id()).expect("file key"), file_key);
+    }
 }
