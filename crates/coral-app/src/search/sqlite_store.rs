@@ -159,17 +159,20 @@ impl SqliteSearchStore {
 
     pub(crate) fn clear_source_all(
         &self,
-        source_name: &str,
+        owner_source_name: &str,
     ) -> Result<(CatalogClearResult, ObservedValuesClearResult), SqliteSearchError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let catalog = clear_catalog_source_documents_in_transaction(
             &transaction,
             &self.workspace_name,
-            source_name,
+            owner_source_name,
         )?;
-        let observed =
-            clear_observed_source_in_transaction(&transaction, &self.workspace_name, source_name)?;
+        let observed = clear_observed_source_in_transaction(
+            &transaction,
+            &self.workspace_name,
+            owner_source_name,
+        )?;
         transaction.commit()?;
         Ok((catalog, observed))
     }
@@ -1159,7 +1162,7 @@ mod tests {
             .expect("seed catalog document");
         connection
             .execute(
-                "INSERT INTO observed_values (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0)",
+                "INSERT INTO observed_values (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', 'github', 'github_v4_mcp', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0)",
                 [],
             )
             .expect("seed observed value");
@@ -1184,7 +1187,7 @@ mod tests {
             .expect("catalog count");
         let observed_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND source_name = 'github'",
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND owner_source_name = 'github' AND source_name = 'github_v4_mcp'",
                 [],
                 |row| row.get(0),
             )

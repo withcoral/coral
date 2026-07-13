@@ -161,12 +161,12 @@ impl SearchManager {
         request: &ClearSearchDataRequest,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
         if request.scope == SearchDataScope::All
-            && let SearchClearTarget::Source(source_name) = &request.target
+            && let SearchClearTarget::Source(owner_source_name) = &request.target
         {
-            return self.clear_source_all(&request.workspace_name, source_name);
+            return self.clear_source_all(&request.workspace_name, owner_source_name);
         }
         let provider_outcomes = match request.scope {
-            SearchDataScope::Observed => {
+            SearchDataScope::ObservedValues => {
                 vec![self.observed.clear_data(SearchProviderClearRequest {
                     workspace_name: &request.workspace_name,
                     scope: request.scope,
@@ -216,12 +216,12 @@ impl SearchManager {
     fn clear_source_all(
         &self,
         workspace_name: &WorkspaceName,
-        source_name: &str,
+        owner_source_name: &str,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
             .map_err(|error| search_clear_sqlite_app_error(&error))?;
         let (catalog, observed) = store
-            .clear_source_all(source_name)
+            .clear_source_all(owner_source_name)
             .map_err(|error| search_clear_sqlite_app_error(&error))?;
         let compaction = store.compact_after_clear();
         Ok(ClearSearchDataResponse {

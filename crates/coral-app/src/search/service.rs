@@ -349,7 +349,7 @@ fn proto_data_scope(value: i32) -> Result<ProtoSearchDataScope, Status> {
 
 fn data_scope_from_proto(scope: ProtoSearchDataScope) -> Result<SearchDataScope, Status> {
     match scope {
-        ProtoSearchDataScope::Observed => Ok(SearchDataScope::Observed),
+        ProtoSearchDataScope::ObservedValues => Ok(SearchDataScope::ObservedValues),
         ProtoSearchDataScope::All => Ok(SearchDataScope::All),
         ProtoSearchDataScope::Unspecified => Err(app_status(AppError::InvalidInput(
             "search data scope is required".to_string(),

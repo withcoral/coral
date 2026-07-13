@@ -80,7 +80,7 @@ pub(crate) enum SearchIndexProvider {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SearchDataScope {
-    Observed,
+    ObservedValues,
     All,
 }
 
