@@ -13,6 +13,7 @@ mod browser;
 #[cfg(feature = "embedded-ui")]
 mod embedded_ui;
 pub mod env;
+mod identity_spec_ops;
 mod onboard;
 mod query_error;
 mod source_ops;
@@ -77,6 +78,8 @@ enum Command {
     Search(SearchArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage installed identity specifications
+    IdentitySpec(identity_spec_ops::IdentitySpecArgs),
     /// Manage workspaces
     Workspace(WorkspaceArgs),
     /// Interactive wizard to set up Coral and explore use cases
@@ -423,6 +426,7 @@ impl Command {
             Command::Sql(_)
             | Command::Search(_)
             | Command::Source(_)
+            | Command::IdentitySpec(_)
             | Command::Workspace(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
@@ -442,6 +446,7 @@ impl Command {
             Command::Sql(_)
                 | Command::Search(_)
                 | Command::Source(_)
+                | Command::IdentitySpec(_)
                 | Command::Onboard
                 | Command::McpStdio(_)
         )
@@ -505,6 +510,9 @@ pub async fn run_from_env() -> Result<(), CliError> {
         command,
     } = Cli::parse();
     let feature_overrides = feature_overrides.into_overrides();
+    if let Command::IdentitySpec(args) = &command {
+        args.validate_explicit_workspace(workspace_selection.workspace.as_deref())?;
+    }
     let ctx = coral_app::RunContext {
         trace_parent: env::trace_parent(),
     };
@@ -622,6 +630,7 @@ async fn run_no_runtime_command(
         Command::Sql(_)
         | Command::Search(_)
         | Command::Source(_)
+        | Command::IdentitySpec(_)
         | Command::Workspace(_)
         | Command::Onboard
         | Command::McpStdio(_) => {
@@ -661,6 +670,7 @@ async fn run_app_command(
         }
         Command::Search(args) => run_search(&app, workspace, args).await?,
         Command::Source(args) => run_source(&app, workspace, args).await?,
+        Command::IdentitySpec(args) => identity_spec_ops::run(&app, workspace, args).await?,
         Command::Workspace(args) => run_workspace(&app, args).await?,
         Command::Onboard => {
             onboard::run(&app, workspace).await?;
@@ -1173,6 +1183,8 @@ mod tests {
         let search =
             Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
         let source = Cli::try_parse_from(["coral", "source", "list"]).expect("source parses");
+        let identity_spec = Cli::try_parse_from(["coral", "identity-spec", "list"])
+            .expect("identity-spec list parses");
         let onboard = Cli::try_parse_from(["coral", "onboard"]).expect("onboard parses");
         let workspace =
             Cli::try_parse_from(["coral", "workspace", "list"]).expect("workspace parses");
@@ -1181,6 +1193,7 @@ mod tests {
         assert!(sql.command.uses_selected_workspace());
         assert!(search.command.uses_selected_workspace());
         assert!(source.command.uses_selected_workspace());
+        assert!(identity_spec.command.uses_selected_workspace());
         assert!(onboard.command.uses_selected_workspace());
         assert!(mcp.command.uses_selected_workspace());
         assert!(!workspace.command.uses_selected_workspace());
