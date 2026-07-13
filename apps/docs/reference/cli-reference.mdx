@@ -131,19 +131,19 @@ Clear deletes local search data, so Coral requires both `--yes` and an explicit
 
 ```shellscript
 coral search-index clear --scope all --workspace work --yes
-coral search-index clear --scope observed --workspace work --yes
-coral search-index clear --scope observed --source github --workspace work --yes
+coral search-index clear --scope observed-values --workspace work --yes
+coral search-index clear --scope observed-values --source github --workspace work --yes
 coral search-index clear --scope all --source github --workspace work --yes
 ```
 
 #### Options
 
-| Option                    | Type   | Default  | Description                                    |
-| ------------------------- | ------ | -------- | ---------------------------------------------- |
-| `--scope`                 | enum   | required | Search data scope to clear: `all` or `observed` |
+| Option                    | Type   | Default  | Description                                               |
+| ------------------------- | ------ | -------- | --------------------------------------------------------- |
+| `--scope`                 | enum   | required | Search data scope to clear: `all` or `observed-values`    |
 | `--source`                | string | unset    | Clear the selected local search-data scope for one source |
-| global `--workspace NAME` | string | required | Workspace whose search data will be cleared    |
-| `--yes`                   | flag   | required | Confirm destructive search-data deletion       |
+| global `--workspace NAME` | string | required | Workspace whose search data will be cleared               |
+| `--yes`                   | flag   | required | Confirm destructive search-data deletion                  |
 
 ## `coral source`
 

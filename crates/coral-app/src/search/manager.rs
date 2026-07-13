@@ -112,7 +112,7 @@ impl SearchManager {
             return self.clear_source_all(&request.workspace_name, source_name);
         }
         let provider_outcomes = match request.scope {
-            SearchDataScope::Observed => {
+            SearchDataScope::ObservedValues => {
                 vec![self.observed.clear_data(SearchProviderClearRequest {
                     workspace_name: &request.workspace_name,
                     scope: request.scope,

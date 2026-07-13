@@ -172,10 +172,11 @@ impl ObservedValuesProvider {
     ) -> Result<SearchProviderClearOutcome, crate::search::result::SearchManagerError> {
         if !matches!(
             request.scope,
-            SearchDataScope::Observed | SearchDataScope::All
+            SearchDataScope::ObservedValues | SearchDataScope::All
         ) {
             return Err(AppError::InvalidInput(
-                "observed-value search provider supports observed or all clear scope".to_string(),
+                "observed-value search provider supports observed-values or all clear scope"
+                    .to_string(),
             )
             .into());
         }

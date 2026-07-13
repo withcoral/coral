@@ -215,7 +215,7 @@ struct SearchClearArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum SearchClearScope {
-    Observed,
+    ObservedValues,
     All,
 }
 
@@ -1080,14 +1080,14 @@ fn search_rebuild_provider_to_proto(provider: SearchRebuildProvider) -> SearchIn
 
 fn search_clear_scope_to_proto(scope: SearchClearScope) -> SearchDataScope {
     match scope {
-        SearchClearScope::Observed => SearchDataScope::Observed,
+        SearchClearScope::ObservedValues => SearchDataScope::ObservedValues,
         SearchClearScope::All => SearchDataScope::All,
     }
 }
 
 fn search_clear_scope_label(scope: SearchClearScope) -> &'static str {
     match scope {
-        SearchClearScope::Observed => "observed",
+        SearchClearScope::ObservedValues => "observed-values",
         SearchClearScope::All => "all",
     }
 }
@@ -1511,9 +1511,32 @@ mod tests {
     }
 
     #[test]
+    fn observed_values_clear_scope_matches_rebuild_provider_name() {
+        let cli = Cli::try_parse_from([
+            "coral",
+            "search-index",
+            "clear",
+            "--scope",
+            "observed-values",
+            "--workspace",
+            "work",
+            "--yes",
+        ])
+        .expect("observed-values clear scope should parse");
+
+        let super::Command::SearchIndex(search_index) = cli.command else {
+            panic!("expected search-index command");
+        };
+        let super::SearchIndexCommand::Clear(args) = search_index.command else {
+            panic!("expected search-index clear command");
+        };
+        assert_eq!(args.scope, super::SearchClearScope::ObservedValues);
+    }
+
+    #[test]
     fn source_scoped_search_index_clear_requires_workspace_confirmation() {
         let args = super::SearchClearArgs {
-            scope: super::SearchClearScope::Observed,
+            scope: super::SearchClearScope::ObservedValues,
             source: Some("github".to_string()),
             explicit_workspace: false,
             yes: true,
