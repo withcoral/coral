@@ -5,14 +5,109 @@ projections:
   - name: items
     kind:
       type: table
-    description: Compatibility fixture
-    guide: ""
+    description: Items owned by an account
+    guide: Filter by owner for an exact lookup
     surface_id: rest
     operation_id: list_items
     visibility: published
-    inputs: []
-    columns: []
+    inputs:
+      - name: owner
+        sql_exposure: filter
+        source_location: path
+        wire_name: owner
+        required: true
+        data_type: Utf8
+        default_value: null
+        description: Account owner
+        lookup_key: true
+      - name: cursor
+        sql_exposure: internal
+        source_location: query
+        wire_name: cursor
+        required: false
+        data_type: Utf8
+        default_value: null
+        description: Pagination cursor
+        lookup_key: false
+    columns:
+      - name: id
+        data_type: Utf8
+        source_path:
+          - id
+        nullable: false
+        description: Stable item identifier
+      - name: state
+        data_type: Utf8
+        source_path:
+          - state
+        nullable: true
+        description: Current state
     search_limits: null
     detail_hints: []
+    diagnostics:
+      - code: V3_PROJECTION_NOTE
+        severity: info
+        message: Projection retained for schema-v3 compatibility
+        surface_id: rest
+        operation_id: list_items
+        projection_name: items
+  - name: search_items
+    namespace: compatibility_fixture_mcp
+    kind:
+      type: table_function
+      value:
+        function_kind: search
+    description: Search items through MCP
+    guide: Use a selective query and follow the detail hint
+    surface_id: mcp
+    operation_id: search_items
+    visibility: hidden
+    inputs:
+      - name: query
+        sql_exposure: function_arg
+        source_location: tool_arg
+        wire_name: query
+        required: true
+        data_type: Utf8
+        default_value: null
+        description: Search expression
+        lookup_key: false
+      - name: limit
+        sql_exposure: internal
+        source_location: tool_arg
+        wire_name: limit
+        required: false
+        data_type: Int64
+        default_value: "20"
+        description: Maximum result count
+        lookup_key: false
+    columns:
+      - name: id
+        data_type: Utf8
+        source_path:
+          - id
+        nullable: false
+        description: MCP item identifier
+      - name: score
+        data_type: Float64
+        source_path:
+          - score
+        nullable: true
+        description: Search relevance score
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 10
+    detail_hints:
+      - table: items
+        search_result_column: id
+        detail_filter: id
+        purpose: Fetch the complete item after search
     diagnostics: []
-diagnostics: []
+diagnostics:
+  - code: V3_CATALOG_NOTE
+    severity: warning
+    message: Fixture-level projection catalog diagnostic
+    surface_id: null
+    operation_id: null
+    projection_name: null

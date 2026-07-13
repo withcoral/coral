@@ -3,6 +3,160 @@ source_name: compatibility_fixture
 surface_id: rest
 surface_type: open_api
 importer_version: openapi-v4
-operations: []
-types: []
-diagnostics: []
+operations:
+  - id: list_items
+    method_name: listItems
+    description: List items owned by an account
+    deprecated: false
+    read_only: true
+    naming:
+      group: items
+      operation: list
+    inputs:
+      - name: owner
+        location: path
+        required: true
+        data_type: string
+        default_value: null
+        description: Account owner
+        exclude_from_lookup_keys: false
+      - name: cursor
+        location: query
+        required: false
+        data_type: string
+        default_value: null
+        description: Pagination cursor
+        exclude_from_lookup_keys: true
+    output:
+      cardinality: wrapped_list
+      type_ref: Item
+      row_path:
+        - data
+        - items
+    entity:
+      name: item
+      type_ref: Item
+      identity_fields:
+        - id
+    execution:
+      type: rest
+      value:
+        method: get
+        path_template: /owners/{owner}/items
+        parameters:
+          - input_name: owner
+            location: path
+            wire_name: owner
+            required: true
+            data_type: string
+          - input_name: cursor
+            location: query
+            wire_name: cursor
+            required: false
+            data_type: string
+        request_body:
+          required: false
+          media_type: application/json
+          type_ref: ItemQuery
+        response:
+          status_code: 200
+          media_type: application/json
+          response:
+            format: json
+            rows_path:
+              - data
+              - items
+            ok_path:
+              - ok
+            error_path:
+              - error
+            allow_404_empty: true
+            row_strategy: direct
+        pagination:
+          mode: cursor_query
+          page_size:
+            default: 25
+            max: 100
+            query_param: per_page
+            body_path: []
+          cursor_param: cursor
+          cursor_body_path: []
+          response_cursor_path:
+            - page_info
+            - next_cursor
+          response_cursor_header: null
+          page_param: null
+          page_start: 0
+          page_step: 1
+          offset_param: null
+          offset_start: 0
+          offset_step: null
+          link_header_require_results: false
+          next_url_header: null
+          max_pages: 10
+    diagnostics:
+      - code: V3_OPERATION_NOTE
+        severity: info
+        message: Imported from the schema-v3 compatibility fixture
+        surface_id: rest
+        operation_id: list_items
+        projection_name: null
+types:
+  - id: Item
+    shape:
+      type: object
+      value:
+        fields:
+          - name: id
+            type_ref: ItemId
+            required: true
+            nullable: false
+            description: Stable item identifier
+          - name: state
+            type_ref: ItemState
+            required: false
+            nullable: true
+            description: Current state
+    nullable: false
+    description: Item returned by the service
+  - id: ItemId
+    shape:
+      type: scalar
+      value: id
+    nullable: false
+    description: Item identifier
+  - id: ItemList
+    shape:
+      type: list
+      value:
+        item_type_ref: Item
+    nullable: false
+    description: List of items
+  - id: ItemMap
+    shape:
+      type: map
+      value:
+        value_type_ref: Item
+    nullable: false
+    description: Items keyed by identifier
+  - id: ItemState
+    shape:
+      type: enum
+      value:
+        values:
+          - open
+          - closed
+    nullable: true
+    description: Item lifecycle state
+  - id: ItemQuery
+    shape:
+      type: json
+    nullable: true
+    description: Optional request payload
+diagnostics:
+  - code: V3_IR_NOTE
+    severity: warning
+    message: Fixture-level semantic IR diagnostic
+    surface_id: rest
+    operation_id: null
+    projection_name: null

@@ -562,35 +562,183 @@ impl From<ProjectionKindDto> for ProjectionKind {
 #[cfg(test)]
 mod tests {
     use super::{ProjectionCatalogDto, SemanticIrDto};
-    use crate::v4::{ProjectionCatalog, SemanticIr};
+    use crate::v4::{
+        HttpMethod, IrExecutionAttachment, IrInputLocation, IrScalarType, IrTypeShape,
+        OutputCardinality, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SemanticIr,
+        SqlInputExposure,
+    };
+    use crate::{ManifestDataType, PaginationMode, SourceTableFunctionKind};
+
+    fn decode_semantic_ir(raw: &str) -> SemanticIr {
+        let dto: SemanticIrDto =
+            serde_yaml::from_str(raw).expect("decode schema-v3 semantic IR fixture");
+        SemanticIr::try_from(dto).expect("migrate schema-v3 semantic IR")
+    }
+
+    fn decode_projections() -> ProjectionCatalog {
+        let dto: ProjectionCatalogDto =
+            serde_yaml::from_str(include_str!("fixtures/v3/projections.yaml"))
+                .expect("decode schema-v3 projection fixture");
+        ProjectionCatalog::try_from(dto).expect("migrate schema-v3 projections")
+    }
 
     #[test]
-    fn schema_v3_semantic_ir_fixture_migrates() {
-        let file: SemanticIrDto =
-            serde_yaml::from_str(include_str!("fixtures/v3/semantic-ir.yaml"))
-                .expect("decode schema-v3 semantic IR fixture");
-        let runtime = SemanticIr::try_from(file).expect("migrate schema-v3 semantic IR");
+    fn schema_v3_rest_semantic_ir_fixture_migrates_nested_models() {
+        let runtime = decode_semantic_ir(include_str!("fixtures/v3/semantic-ir.yaml"));
 
         assert_eq!(runtime.source_name, "compatibility_fixture");
         assert_eq!(runtime.surface_id, "rest");
+        assert_eq!(runtime.operations.len(), 1);
+        assert_eq!(runtime.types.len(), 6);
+        assert_eq!(runtime.diagnostics.len(), 1);
+
+        let operation = runtime.operations.first().expect("REST operation");
+        assert_eq!(operation.id, "list_items");
+        assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+        assert_eq!(operation.output.row_path, ["data", "items"]);
+        assert_eq!(operation.inputs.len(), 2);
+        let owner = operation.inputs.first().expect("owner input");
+        let cursor = operation.inputs.get(1).expect("cursor input");
+        assert_eq!(owner.location, IrInputLocation::Path);
+        assert!(cursor.exclude_from_lookup_keys);
+        assert_eq!(
+            operation.entity.as_ref().expect("entity").identity_fields,
+            ["id"]
+        );
+
+        let IrExecutionAttachment::Rest(execution) = &operation.execution else {
+            panic!("expected REST execution attachment");
+        };
+        assert_eq!(execution.method, HttpMethod::Get);
+        assert_eq!(execution.parameters.len(), 2);
+        assert_eq!(
+            execution
+                .request_body
+                .as_ref()
+                .expect("request body")
+                .type_ref,
+            "ItemQuery"
+        );
+        assert!(execution.response.response.allow_404_empty);
+        assert_eq!(execution.pagination.mode, PaginationMode::CursorQuery);
+        assert_eq!(execution.pagination.cursor_param.as_deref(), Some("cursor"));
+        assert_eq!(execution.pagination.max_pages, Some(10));
+
+        let shapes = runtime
+            .types
+            .iter()
+            .map(|ir_type| (&ir_type.id, &ir_type.shape))
+            .collect::<Vec<_>>();
+        assert!(shapes.iter().any(|(id, shape)| {
+            id.as_str() == "Item"
+                && matches!(shape, IrTypeShape::Object { fields } if fields.len() == 2)
+        }));
+        assert!(shapes.iter().any(|(id, shape)| {
+            id.as_str() == "ItemId" && matches!(shape, IrTypeShape::Scalar(IrScalarType::Id))
+        }));
+        assert!(shapes.iter().any(|(id, shape)| {
+            id.as_str() == "ItemList"
+                && matches!(shape, IrTypeShape::List { item_type_ref } if item_type_ref == "Item")
+        }));
+        assert!(shapes.iter().any(|(id, shape)| {
+            id.as_str() == "ItemMap"
+                && matches!(shape, IrTypeShape::Map { value_type_ref } if value_type_ref == "Item")
+        }));
+        assert!(shapes.iter().any(|(id, shape)| {
+            id.as_str() == "ItemState"
+                && matches!(shape, IrTypeShape::Enum { values } if values == &["open", "closed"])
+        }));
+        assert!(shapes
+            .iter()
+            .any(|(id, shape)| id.as_str() == "ItemQuery" && matches!(shape, IrTypeShape::Json)));
+    }
+
+    #[test]
+    fn schema_v3_mcp_semantic_ir_fixture_migrates_pagination() {
+        let runtime = decode_semantic_ir(include_str!("fixtures/v3/mcp-semantic-ir.yaml"));
+        let operation = runtime.operations.first().expect("MCP operation");
+
+        assert_eq!(runtime.surface_id, "mcp");
+        assert_eq!(operation.output.cardinality, OutputCardinality::List);
+        let query = operation.inputs.first().expect("query input");
+        let limit = operation.inputs.get(1).expect("limit input");
+        assert_eq!(query.location, IrInputLocation::ToolArg);
+        assert_eq!(limit.default_value.as_deref(), Some("20"));
+
+        let IrExecutionAttachment::Mcp(execution) = &operation.execution else {
+            panic!("expected MCP execution attachment");
+        };
+        assert_eq!(execution.tool_name, "search_items");
+        let cursor = execution.pagination.as_ref().expect("cursor pagination");
+        assert_eq!(cursor.cursor_arg, "cursor");
+        assert_eq!(cursor.response_cursor_path, ["next_cursor"]);
+        assert_eq!(cursor.max_pages, Some(5));
+        let offset = execution
+            .offset_pagination
+            .as_ref()
+            .expect("offset pagination");
+        assert_eq!(offset.limit_arg, "limit");
+        assert_eq!(offset.default_limit, 20);
+        assert_eq!(offset.max_limit, 100);
+        assert_eq!(offset.offset_arg, "offset");
+        assert_eq!(offset.max_pages, Some(8));
     }
 
     #[test]
     fn schema_v3_projection_fixture_migrates_legacy_defaults() {
-        let file: ProjectionCatalogDto =
-            serde_yaml::from_str(include_str!("fixtures/v3/projections.yaml"))
-                .expect("decode schema-v3 projection fixture");
-        let runtime = ProjectionCatalog::try_from(file).expect("migrate schema-v3 projections");
+        let runtime = decode_projections();
 
         assert_eq!(runtime.source_name, "compatibility_fixture");
-        assert_eq!(runtime.projections.len(), 1);
-        assert_eq!(
-            runtime
-                .projections
-                .first()
-                .expect("fixture projection")
-                .namespace,
-            ""
-        );
+        assert_eq!(runtime.projections.len(), 2);
+        assert_eq!(runtime.diagnostics.len(), 1);
+
+        let table = runtime.projections.first().expect("table projection");
+        assert_eq!(table.namespace, "");
+        assert!(matches!(table.kind, ProjectionKind::Table));
+        assert_eq!(table.visibility, ProjectionVisibility::Published);
+        assert_eq!(table.inputs.len(), 2);
+        let owner = table.inputs.first().expect("owner filter");
+        let cursor = table.inputs.get(1).expect("cursor input");
+        assert_eq!(owner.sql_exposure, SqlInputExposure::Filter);
+        assert!(owner.lookup_key);
+        assert_eq!(cursor.sql_exposure, SqlInputExposure::Internal);
+        assert_eq!(table.columns.len(), 2);
+        let id = table.columns.first().expect("id column");
+        assert_eq!(id.data_type, ManifestDataType::Utf8);
+        assert!(!id.nullable);
+        assert_eq!(table.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn schema_v3_projection_fixture_migrates_function_metadata() {
+        let runtime = decode_projections();
+        let function = runtime
+            .projections
+            .get(1)
+            .expect("table-function projection");
+
+        assert_eq!(function.namespace, "compatibility_fixture_mcp");
+        assert!(matches!(
+            function.kind,
+            ProjectionKind::TableFunction {
+                function_kind: SourceTableFunctionKind::Search
+            }
+        ));
+        assert_eq!(function.visibility, ProjectionVisibility::Hidden);
+        let query = function.inputs.first().expect("query argument");
+        let limit = function.inputs.get(1).expect("limit input");
+        assert_eq!(query.sql_exposure, SqlInputExposure::FunctionArg);
+        assert_eq!(limit.data_type, ManifestDataType::Int64);
+        assert_eq!(limit.default_value.as_deref(), Some("20"));
+        let score = function.columns.get(1).expect("score column");
+        assert_eq!(score.data_type, ManifestDataType::Float64);
+        let limits = function.search_limits.as_ref().expect("search limits");
+        assert_eq!(limits.default_top_k, 20);
+        assert_eq!(limits.max_top_k, 100);
+        assert_eq!(limits.max_calls_per_query, 10);
+        let hint = function.detail_hints.first().expect("detail hint");
+        assert_eq!(hint.table, "items");
+        assert_eq!(hint.search_result_column, "id");
+        assert_eq!(hint.detail_filter, "id");
     }
 }
