@@ -31,7 +31,7 @@ are not the target path for this source.
 Use Coral's interactive OAuth flow to connect Microsoft Graph:
 
 ```bash
-coral source add --interactive --file sources/core-v4/microsoft_graph_v4/manifest.yaml
+coral source add --interactive --file sources/v4/microsoft_graph/manifest.yaml
 ```
 
 During setup:

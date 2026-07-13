@@ -440,7 +440,7 @@ mod tests {
     fn generated_schema_accepts_core_v4_fixture_and_parser_agrees() {
         let raw = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../sources/core-v4/github_v4/manifest.yaml"),
+                .join("../../sources/v4/github/manifest.yaml"),
         )
         .expect("core v4 fixture");
         let validator = validator();

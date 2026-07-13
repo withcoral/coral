@@ -90,10 +90,11 @@
   When docs are warranted, choose the best existing location first and make the
   amount of space match the feature's user-facing weight and visibility.
 - Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
-  specs under `sources/core-v4/**` with distinct manifest names such as
-  `<name>_v4`. Do not bundle `sources/core-v4` into the binary; install preview
-  v4 sources with `coral source add --file`. Do not replace or migrate an
-  existing v3 source merely because a preview v4 spec exists.
+  specs under `sources/v4/[provider]/manifest.yaml` with distinct manifest names
+  (defined in the manifest's `name` field) such as `<name>_v4`. Do not bundle
+  `sources/v4` into the binary; install preview v4 sources with
+  `coral source add --file`. Do not replace or migrate an existing v3 source
+  merely because a preview v4 spec exists.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.
