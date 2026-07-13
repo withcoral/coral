@@ -132,7 +132,7 @@ impl IdentityManager {
             )
             .await?;
 
-        material.discard_spec_derived_refresh_context();
+        material.retain_identity_refresh_binding();
         let (safe_metadata, values) = oauth_identity_values(material);
         let document_owner = owner.clone();
         let document_name = name.clone();

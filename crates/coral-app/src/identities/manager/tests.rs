@@ -168,16 +168,18 @@ async fn sqlite_oauth_creation_core_contract() {
             .iter()
             .any(|(key, value)| key.ends_with(".refresh_token") && value == "refresh-token")
     );
-    assert!(!material.keys().any(|key| {
-        key.ends_with(".client_id")
-            || key.ends_with(".client_secret")
-            || key.ends_with(".token_url")
-    }));
-    assert!(
+    let bound = |suffix| {
         material
-            .values()
-            .all(|value| value != "spec-client-id" && !value.contains(&provider.uri()))
-    );
+            .iter()
+            .find_map(|(key, value)| key.ends_with(suffix).then_some(value.as_str()))
+    };
+    let token_url = format!("{}/token", provider.uri());
+    assert_eq!(bound(".client_id"), Some("spec-client-id"));
+    assert_eq!(bound(".token_url"), Some(token_url.as_str()));
+    assert_eq!(bound(".dynamic_client_registration"), Some("false"));
+    assert_eq!(bound(".identity_refresh_binding_version"), Some("1"));
+    assert_eq!(bound(".identity_refresh_binding_auth_mode"), Some("none"));
+    assert!(material.keys().all(|key| !key.ends_with(".client_secret")));
     let prepared = manager
         .prepare_bearer_for_use(&owner, &identity_name)
         .await

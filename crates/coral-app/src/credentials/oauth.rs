@@ -173,25 +173,34 @@ pub(crate) struct OAuthCredentialMaterial {
 }
 
 impl OAuthCredentialMaterial {
-    pub(crate) fn discard_spec_derived_refresh_context(&mut self) {
+    pub(crate) fn retain_identity_refresh_binding(&mut self) {
         let prefix = oauth_metadata_prefix(&self.input_key);
         let dynamic_client_registration = OAuthMetadataKey::DynamicClientRegistration
             .get(&prefix, &self.internal_metadata)
             == Some("true");
+        let auth_mode = OAuthMetadataKey::ClientSecretTransport
+            .get(&prefix, &self.internal_metadata)
+            .unwrap_or(IDENTITY_REFRESH_BINDING_AUTH_NONE)
+            .to_string();
 
-        for key in [OAuthMetadataKey::TokenUrl, OAuthMetadataKey::Resource] {
-            key.remove(&prefix, &mut self.internal_metadata);
-        }
         if !dynamic_client_registration {
-            for key in [
-                OAuthMetadataKey::ClientId,
-                OAuthMetadataKey::ClientSecretTransport,
-                OAuthMetadataKey::ClientSecret,
-                OAuthMetadataKey::DynamicClientRegistration,
-            ] {
-                key.remove(&prefix, &mut self.internal_metadata);
-            }
+            OAuthMetadataKey::ClientSecret.remove(&prefix, &mut self.internal_metadata);
+            OAuthMetadataKey::DynamicClientRegistration.insert(
+                &prefix,
+                &mut self.internal_metadata,
+                "false",
+            );
         }
+        OAuthMetadataKey::IdentityRefreshBindingVersion.insert(
+            &prefix,
+            &mut self.internal_metadata,
+            IDENTITY_REFRESH_BINDING_VERSION,
+        );
+        OAuthMetadataKey::IdentityRefreshBindingAuthMode.insert(
+            &prefix,
+            &mut self.internal_metadata,
+            auth_mode,
+        );
     }
 }
 
@@ -281,6 +290,12 @@ struct OAuthRefreshClientFallback {
     id: Option<String>,
     secret: Option<String>,
     secret_transport: Option<ManifestOAuthClientSecretTransport>,
+}
+
+struct IdentityOAuthRefreshBinding {
+    token_url: ValidatedOAuthEndpoint,
+    resource: Option<String>,
+    dynamic_client_registration: bool,
 }
 
 struct OAuthAuthorizationRequest {
@@ -382,6 +397,8 @@ fn oauth_url_has_userinfo(value: &str) -> bool {
 }
 
 const OAUTH_METADATA_METHOD_VALUE: &str = "oauth";
+const IDENTITY_REFRESH_BINDING_VERSION: &str = "1";
+const IDENTITY_REFRESH_BINDING_AUTH_NONE: &str = "none";
 
 #[derive(Clone, Copy)]
 enum OAuthMetadataKey {
@@ -396,6 +413,8 @@ enum OAuthMetadataKey {
     ClientSecretTransport,
     ClientSecret,
     DynamicClientRegistration,
+    IdentityRefreshBindingVersion,
+    IdentityRefreshBindingAuthMode,
 }
 
 impl OAuthMetadataKey {
@@ -412,6 +431,8 @@ impl OAuthMetadataKey {
             Self::ClientSecretTransport => "client_secret_transport",
             Self::ClientSecret => "client_secret",
             Self::DynamicClientRegistration => "dynamic_client_registration",
+            Self::IdentityRefreshBindingVersion => "identity_refresh_binding_version",
+            Self::IdentityRefreshBindingAuthMode => "identity_refresh_binding_auth_mode",
         }
     }
 
@@ -2116,8 +2137,11 @@ fn oauth_refresh_config(
             request.error_subject, request.reconnect_hint
         )));
     };
-    let dynamic_client_registration =
-        OAuthMetadataKey::DynamicClientRegistration.get(metadata_prefix, material) == Some("true");
+    let identity_binding = oauth_identity_refresh_binding(request, material)?;
+    let dynamic_client_registration = identity_binding.as_ref().map_or(
+        OAuthMetadataKey::DynamicClientRegistration.get(metadata_prefix, material) == Some("true"),
+        |binding| binding.dynamic_client_registration,
+    );
     let use_stored_client = matches!(request.context, OAuthRefreshRequestContext::Source)
         || dynamic_client_registration;
     let stored_client_value = |key: OAuthMetadataKey| {
@@ -2164,8 +2188,13 @@ fn oauth_refresh_config(
             request.error_subject, request.reconnect_hint
         )));
     }
-    let token_url = oauth_refresh_token_url(request, material)?;
-    let resource = oauth_refresh_resource(request, material)?;
+    let (token_url, resource) = match identity_binding {
+        Some(binding) => (binding.token_url, binding.resource),
+        None => (
+            oauth_refresh_token_url(request, material)?,
+            oauth_refresh_resource(request, material)?,
+        ),
+    };
     Ok(Some(OAuthRefreshConfig {
         token_url,
         client_id,
@@ -2174,6 +2203,124 @@ fn oauth_refresh_config(
         refresh_token,
         resource,
     }))
+}
+
+fn oauth_identity_refresh_binding(
+    request: &RefreshOAuthCredentialRequest<'_>,
+    material: &BTreeMap<String, String>,
+) -> Result<Option<IdentityOAuthRefreshBinding>, AppError> {
+    use {ManifestOAuthClientSecretTransport as Transport, OAuthMetadataKey as Key};
+
+    let OAuthRefreshRequestContext::Identity {
+        source_variables,
+        client_credential_inputs,
+    } = &request.context
+    else {
+        return Ok(None);
+    };
+    let metadata_prefix = request.metadata_prefix.as_str();
+    let fail = |field| identity_refresh_binding_error(request, field);
+
+    if Key::IdentityRefreshBindingVersion.get(metadata_prefix, material)
+        != Some(IDENTITY_REFRESH_BINDING_VERSION)
+    {
+        return Err(fail("context"));
+    }
+    let bound_transport = match Key::IdentityRefreshBindingAuthMode.get(metadata_prefix, material) {
+        Some(IDENTITY_REFRESH_BINDING_AUTH_NONE) => None,
+        Some(value) => {
+            Some(Transport::from_label(value).ok_or_else(|| fail("client authentication mode"))?)
+        }
+        None => return Err(fail("client authentication mode")),
+    };
+    let current_token_url = request
+        .oauth
+        .token_url(source_variables)
+        .map_err(|_error| fail("token endpoint"))?;
+    let current_token_url =
+        ValidatedOAuthEndpoint::untrusted(&current_token_url, "resolved token URL")
+            .map_err(|_error| fail("token endpoint"))?;
+    let stored_token_url = Key::TokenUrl
+        .get(metadata_prefix, material)
+        .and_then(trimmed_non_empty)
+        .ok_or_else(|| fail("token endpoint"))?;
+    let stored_token_url = ValidatedOAuthEndpoint::untrusted(stored_token_url, "stored token URL")
+        .map_err(|_error| fail("token endpoint"))?;
+    if stored_token_url.as_str() != current_token_url.as_str() {
+        return Err(fail("token endpoint"));
+    }
+    let current_resource = request
+        .oauth
+        .resource(source_variables)
+        .map_err(|_error| fail("resource"))?;
+    let stored_resource = Key::Resource
+        .get(metadata_prefix, material)
+        .map(str::to_string);
+    if stored_resource != current_resource {
+        return Err(fail("resource"));
+    }
+    let stored_is_dcr = match Key::DynamicClientRegistration.get(metadata_prefix, material) {
+        Some("true") => true,
+        Some("false") => false,
+        _ => return Err(fail("client provenance")),
+    };
+    let current_client_id = maybe_resolve_client_id(request.oauth, client_credential_inputs);
+    let current_is_dcr = if current_client_id.is_some() {
+        false
+    } else if request.oauth.client.dynamic_registration.is_some() {
+        true
+    } else {
+        return Err(fail("client provenance"));
+    };
+    if stored_is_dcr != current_is_dcr {
+        return Err(fail("client provenance"));
+    }
+    let stored_client_id = Key::ClientId
+        .get(metadata_prefix, material)
+        .and_then(trimmed_non_empty)
+        .ok_or_else(|| fail("client ID"))?;
+    let stored_client_secret = Key::ClientSecret
+        .get(metadata_prefix, material)
+        .and_then(trimmed_non_empty);
+    let stored_transport = Key::ClientSecretTransport
+        .get(metadata_prefix, material)
+        .and_then(trimmed_non_empty)
+        .map(|value| Transport::from_label(value).ok_or_else(|| fail("client secret transport")))
+        .transpose()?;
+    if stored_is_dcr {
+        if stored_transport != bound_transport
+            || stored_client_secret.is_some() != bound_transport.is_some()
+        {
+            return Err(fail("registered client authentication"));
+        }
+    } else {
+        if stored_client_secret.is_some() {
+            return Err(fail("static client secret"));
+        }
+        let current_secret = request.oauth.client.secret.as_ref();
+        let current_transport = current_secret.map(|secret| secret.transport);
+        if current_client_id.as_deref() != Some(stored_client_id) {
+            return Err(fail("client ID"));
+        }
+        if stored_transport != current_transport || bound_transport != current_transport {
+            return Err(fail("client secret transport"));
+        }
+    }
+    Ok(Some(IdentityOAuthRefreshBinding {
+        token_url: current_token_url,
+        resource: current_resource,
+        dynamic_client_registration: stored_is_dcr,
+    }))
+}
+
+fn identity_refresh_binding_error(
+    request: &RefreshOAuthCredentialRequest<'_>,
+    field: &str,
+) -> AppError {
+    AppError::FailedPrecondition(format!(
+        "OAuth access token for {} expired and cannot be refreshed because its authorization-time OAuth {field} binding is missing or no longer matches the current identity spec; {}",
+        request.error_subject, request.reconnect_hint
+    ))
 }
 
 fn oauth_refresh_client_fallback(
@@ -2482,30 +2629,94 @@ mod tests {
         (prefix, material)
     }
 
+    fn bound_identity_refresh_material(
+        token_url: &str,
+        resource: Option<&str>,
+        client_id: &str,
+        client_secret: Option<&str>,
+        client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
+        dynamic_client_registration: bool,
+    ) -> (String, BTreeMap<String, String>) {
+        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
+        let binding_auth_mode =
+            client_secret_transport.map_or("none", ManifestOAuthClientSecretTransport::label);
+        material.extend(
+            [
+                ("token_url", Some(token_url)),
+                ("resource", resource),
+                ("client_id", Some(client_id)),
+                ("client_secret", client_secret),
+                (
+                    "client_secret_transport",
+                    client_secret_transport.map(ManifestOAuthClientSecretTransport::label),
+                ),
+                (
+                    "dynamic_client_registration",
+                    Some(if dynamic_client_registration {
+                        "true"
+                    } else {
+                        "false"
+                    }),
+                ),
+                ("identity_refresh_binding_version", Some("1")),
+                (
+                    "identity_refresh_binding_auth_mode",
+                    Some(binding_auth_mode),
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(suffix, value)| {
+                value.map(|value| (format!("{prefix}{suffix}"), value.to_string()))
+            }),
+        );
+        (prefix, material)
+    }
+
+    fn prepare_identity_refresh(
+        oauth: &ManifestOAuthCredentialSpec,
+        source_variables: &BTreeMap<String, String>,
+        credential_inputs: Vec<(String, String)>,
+        material: &BTreeMap<String, String>,
+    ) -> Result<Option<super::PreparedOAuthRefresh>, crate::bootstrap::AppError> {
+        OAuthCredentialService::prepare_refresh(
+            RefreshOAuthCredentialRequest::for_identity(
+                "github",
+                "ACCESS_TOKEN",
+                oauth,
+                source_variables,
+                credential_inputs,
+            )?,
+            material,
+        )
+    }
+
     #[test]
-    fn identity_context_pruning_respects_spec_ownership() {
+    fn identity_refresh_binding_retains_origin_without_static_secret() {
         use OAuthMetadataKey as Key;
         let key = |kind| metadata_key("ACCESS_TOKEN", kind);
         let dcr = key(Key::DynamicClientRegistration);
-        let retained = [
+        let metadata = [
             Key::Method,
             Key::AccessTokenExpiresAt,
             Key::RefreshToken,
             Key::TokenType,
-        ];
-        let spec_owned = [
             Key::TokenUrl,
             Key::Resource,
             Key::ClientId,
             Key::ClientSecretTransport,
             Key::ClientSecret,
         ];
-        let internal_metadata = retained
+        let mut internal_metadata: BTreeMap<_, _> = metadata
             .into_iter()
-            .chain(spec_owned)
             .map(|kind| (key(kind), kind.suffix().to_string()))
             .chain([(dcr.clone(), "true".to_string())])
             .collect();
+        internal_metadata.insert(
+            key(Key::ClientSecretTransport),
+            ManifestOAuthClientSecretTransport::BasicAuth
+                .label()
+                .to_string(),
+        );
         let mut material = super::OAuthCredentialMaterial {
             input_key: "ACCESS_TOKEN".to_string(),
             access_token: "access-token".to_string(),
@@ -2513,19 +2724,27 @@ mod tests {
             safe_metadata: BTreeMap::new(),
         };
         let mut static_material = material.clone();
-        static_material
-            .internal_metadata
-            .insert(dcr.clone(), "false".into());
+        static_material.internal_metadata.remove(&dcr);
         let mut expected_dcr = material.internal_metadata.clone();
-        for kind in [Key::TokenUrl, Key::Resource] {
-            expected_dcr.remove(&key(kind));
-        }
-        let expected_static: BTreeMap<_, _> = retained
-            .into_iter()
-            .map(|kind| (key(kind), kind.suffix().to_string()))
-            .collect();
-        material.discard_spec_derived_refresh_context();
-        static_material.discard_spec_derived_refresh_context();
+        expected_dcr.insert(key(Key::IdentityRefreshBindingVersion), "1".to_string());
+        expected_dcr.insert(
+            key(Key::IdentityRefreshBindingAuthMode),
+            ManifestOAuthClientSecretTransport::BasicAuth
+                .label()
+                .to_string(),
+        );
+        let mut expected_static = static_material.internal_metadata.clone();
+        expected_static.remove(&key(Key::ClientSecret));
+        expected_static.insert(dcr, "false".to_string());
+        expected_static.insert(key(Key::IdentityRefreshBindingVersion), "1".to_string());
+        expected_static.insert(
+            key(Key::IdentityRefreshBindingAuthMode),
+            ManifestOAuthClientSecretTransport::BasicAuth
+                .label()
+                .to_string(),
+        );
+        material.retain_identity_refresh_binding();
+        static_material.retain_identity_refresh_binding();
         assert_eq!(material.internal_metadata, expected_dcr);
         assert_eq!(static_material.internal_metadata, expected_static);
     }
@@ -3150,28 +3369,27 @@ mod tests {
     }
 
     #[test]
-    fn identity_refresh_preparation_is_pure_and_resolves_current_static_context() {
+    fn identity_refresh_preparation_accepts_matching_static_binding() {
         let mut oauth = oauth_spec(
             "{{input.OAUTH_TOKEN_URL}}",
             53682,
             ManifestOAuthPkceMode::Disabled,
             confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
         );
+        oauth.authorization_url = Some("{{input.UNUSED_AUTHORIZATION_URL}}".to_string());
         oauth.resource = Some("https://{{input.MCP_HOST}}/mcp".to_string());
         let source_variables = BTreeMap::from([
             ("OAUTH_TOKEN_URL".into(), "http://127.0.0.1:9/token".into()),
             ("MCP_HOST".into(), "mcp.example.com".into()),
         ]);
-        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
-        for (key, value) in [
-            ("client_id", "stale-client"),
-            ("client_secret", "stale-secret"),
-            ("client_secret_transport", "stale-transport-canary"),
-            ("token_url", "http://127.0.0.1:8/stale"),
-            ("resource", "https://stale.example/resource"),
-        ] {
-            material.insert(format!("{prefix}{key}"), value.to_string());
-        }
+        let (_prefix, material) = bound_identity_refresh_material(
+            "http://127.0.0.1:9/token",
+            Some("https://mcp.example.com/mcp"),
+            "current-client",
+            None,
+            Some(ManifestOAuthClientSecretTransport::BasicAuth),
+            false,
+        );
         let original = material.clone();
         let request = RefreshOAuthCredentialRequest::for_identity(
             "github",
@@ -3206,53 +3424,209 @@ mod tests {
     }
 
     #[test]
-    fn identity_refresh_preparation_keeps_registered_client_context_authoritative() {
-        let oauth = oauth_spec(
+    fn identity_refresh_binding_rejects_missing_or_drifted_static_context() {
+        use OAuthMetadataKey as Key;
+        let mut oauth = oauth_spec(
             "{{input.OAUTH_TOKEN_URL}}",
             53682,
             ManifestOAuthPkceMode::Disabled,
-            confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
+            confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
         );
-        let source_variables = BTreeMap::from([(
-            "OAUTH_TOKEN_URL".to_string(),
-            "http://127.0.0.1:9/token".to_string(),
-        )]);
-        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
-        for (key, value) in [
-            ("client_id", "registered-client"),
-            ("client_secret", "registered-secret"),
-            ("client_secret_transport", "basic_auth"),
-            ("dynamic_client_registration", "true"),
-            ("token_url", "http://127.0.0.1:8/stale"),
-            ("resource", "https://stale.example/resource"),
+        oauth.resource = Some("https://{{input.MCP_HOST}}/mcp".to_string());
+        let source_variables = BTreeMap::from([
+            ("OAUTH_TOKEN_URL".into(), "http://127.0.0.1:9/token".into()),
+            ("MCP_HOST".into(), "mcp.example.com".into()),
+        ]);
+        for (key, replacement) in [
+            (Key::IdentityRefreshBindingVersion, None),
+            (Key::IdentityRefreshBindingVersion, Some(" 1 ")),
+            (Key::IdentityRefreshBindingAuthMode, None),
+            (Key::IdentityRefreshBindingAuthMode, Some("auth-canary")),
+            (Key::TokenUrl, None),
+            (Key::TokenUrl, Some("https://drift-endpoint.example/token")),
+            (Key::Resource, None),
+            (Key::Resource, Some("https://drift-resource.example/mcp")),
+            (Key::ClientId, None),
+            (Key::ClientId, Some("drift-client-canary")),
+            (Key::ClientSecret, Some("static-secret-canary")),
+            (Key::ClientSecretTransport, None),
+            (Key::ClientSecretTransport, Some("request_body")),
+            (Key::ClientSecretTransport, Some("transport-canary")),
+            (Key::DynamicClientRegistration, None),
+            (Key::DynamicClientRegistration, Some("dynamic-canary")),
+            (Key::DynamicClientRegistration, Some("true")),
         ] {
-            material.insert(format!("{prefix}{key}"), value.to_string());
+            let label = key.suffix();
+            let (prefix, mut material) = bound_identity_refresh_material(
+                "http://127.0.0.1:9/token",
+                Some("https://mcp.example.com/mcp"),
+                "current-client",
+                None,
+                Some(ManifestOAuthClientSecretTransport::BasicAuth),
+                false,
+            );
+            match replacement {
+                Some(value) => key.insert(&prefix, &mut material, value),
+                None => key.remove(&prefix, &mut material),
+            }
+            let original = material.clone();
+            let error = prepare_identity_refresh(
+                &oauth,
+                &source_variables,
+                vec![
+                    ("OAUTH_CLIENT_ID".into(), "current-client".into()),
+                    ("OAUTH_CLIENT_SECRET".into(), "current-secret".into()),
+                ],
+                &material,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{label} must require reconnect"));
+            let detail = error.to_string();
+            assert!(matches!(
+                error,
+                crate::bootstrap::AppError::FailedPrecondition(_)
+            ));
+            assert!(detail.contains("identity 'github'"), "{label}: {detail}");
+            assert!(
+                detail.contains("reconnect the identity"),
+                "{label}: {detail}"
+            );
+            assert_redacted(
+                &detail,
+                &["drift-endpoint", "drift-resource", "drift-client", "canary"],
+            );
+            assert_eq!(material, original, "{label} mutated material");
         }
-        let request = RefreshOAuthCredentialRequest::for_identity(
-            "github",
-            "ACCESS_TOKEN",
-            &oauth,
-            &source_variables,
-            vec![
-                ("OAUTH_CLIENT_ID".into(), "static-client".into()),
-                ("OAUTH_CLIENT_SECRET".into(), "static-secret".into()),
-            ],
-        )
-        .expect("identity refresh request");
+    }
 
-        let prepared = OAuthCredentialService::prepare_refresh(request, &material)
-            .expect("prepare identity refresh")
-            .expect("expired material needs refresh");
-        let refresh = &prepared.refresh;
+    #[test]
+    fn identity_refresh_dcr_client_auth_matrix() {
+        let secret = Some("registered-secret");
+        let basic = Some(ManifestOAuthClientSecretTransport::BasicAuth);
+        for (
+            client_id_present,
+            client_secret,
+            client_secret_transport,
+            stored_dynamic,
+            current_client_id,
+            succeeds,
+        ) in [
+            (true, None, None, true, None, true),
+            (true, secret, basic, true, None, true),
+            (false, None, None, true, None, false),
+            (true, secret, None, true, None, false),
+            (true, None, basic, true, None, false),
+            (true, None, None, true, Some("static-client"), false),
+            (true, None, None, false, None, false),
+        ] {
+            let mut oauth = dynamic_registration_oauth_spec(
+                53682,
+                "http://127.0.0.1:9/token",
+                "https://provider.example/register",
+            );
+            if client_secret.is_some() || client_secret_transport.is_some() {
+                oauth
+                    .client
+                    .dynamic_registration
+                    .as_mut()
+                    .expect("DCR config")
+                    .token_endpoint_auth_method =
+                    ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic;
+            }
+            let (prefix, mut material) = bound_identity_refresh_material(
+                "http://127.0.0.1:9/token",
+                Some("https://mcp.example.com/mcp"),
+                "registered-client",
+                client_secret,
+                client_secret_transport,
+                stored_dynamic,
+            );
+            if !client_id_present {
+                OAuthMetadataKey::ClientId.remove(&prefix, &mut material);
+            }
+            let original = material.clone();
+            let credential_inputs = current_client_id
+                .map(|client_id| vec![("OAUTH_CLIENT_ID".to_string(), client_id.to_string())])
+                .unwrap_or_default();
+            let result = prepare_identity_refresh(
+                &oauth,
+                &EMPTY_SOURCE_INPUTS,
+                credential_inputs,
+                &material,
+            );
+            if succeeds {
+                let prepared = result
+                    .unwrap_or_else(|error| panic!("DCR binding failed: {error}"))
+                    .expect("expired material needs refresh");
+                assert_eq!(prepared.refresh.client_id, "registered-client");
+                assert_eq!(prepared.refresh.client_secret.as_deref(), client_secret);
+                assert_eq!(
+                    prepared.refresh.client_secret_transport,
+                    client_secret_transport
+                );
+            } else {
+                let error = result
+                    .err()
+                    .expect("incomplete DCR binding must require reconnect");
+                let detail = error.to_string();
+                assert!(matches!(
+                    error,
+                    crate::bootstrap::AppError::FailedPrecondition(_)
+                ));
+                assert!(detail.contains("reconnect the identity"), "{detail}");
+                assert_redacted(&detail, &["registered-secret", "registered-client"]);
+                assert_eq!(material, original, "DCR preparation mutated material");
+            }
+        }
+    }
 
-        assert_eq!(refresh.client_id, "registered-client");
-        assert_eq!(refresh.client_secret.as_deref(), Some("registered-secret"));
+    #[test]
+    fn identity_refresh_hostile_rendered_token_url_fails_before_request() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("network sentinel");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking sentinel");
+        let address = listener.local_addr().expect("sentinel address");
+        let hostile_token_url =
+            format!("http://alice-canary:hunter-canary@{address}/token?secret=query-canary");
+        let oauth = dynamic_registration_oauth_spec(
+            53682,
+            "{{input.OAUTH_TOKEN_URL}}",
+            "https://provider.example/register",
+        );
+        let source_variables = BTreeMap::from([("OAUTH_TOKEN_URL".to_string(), hostile_token_url)]);
+        let (_prefix, material) = bound_identity_refresh_material(
+            &format!("http://{address}/token"),
+            Some("https://mcp.example.com/mcp"),
+            "registered-client",
+            None,
+            None,
+            true,
+        );
+        let original = material.clone();
+        let error = prepare_identity_refresh(&oauth, &source_variables, Vec::new(), &material)
+            .err()
+            .expect("hostile token URL must fail before request");
+        let detail = error.to_string();
         assert!(matches!(
-            refresh.client_secret_transport,
-            Some(ManifestOAuthClientSecretTransport::BasicAuth)
+            error,
+            crate::bootstrap::AppError::FailedPrecondition(_)
         ));
-        assert_eq!(refresh.token_url.as_str(), "http://127.0.0.1:9/token");
-        assert_eq!(refresh.resource, None);
+        assert!(detail.contains("reconnect the identity"), "{detail}");
+        assert_redacted(
+            &detail,
+            &[
+                "alice-canary",
+                "hunter-canary",
+                "query-canary",
+                &address.to_string(),
+            ],
+        );
+        assert_eq!(material, original);
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
     }
 
     #[test]
@@ -3285,7 +3659,7 @@ mod tests {
         .expect("identity refresh request");
         let detail = OAuthCredentialService::prepare_refresh(request, &material)
             .err()
-            .expect("invalid stored transport must fail before claim")
+            .expect("legacy material must fail before claim")
             .to_string();
         assert!(detail.contains("identity 'github'"), "{detail}");
         assert!(detail.contains("reconnect the identity"), "{detail}");
@@ -3308,11 +3682,19 @@ mod tests {
                 dynamic_registration: None,
             },
         );
-        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
+        let (prefix, mut material) = bound_identity_refresh_material(
+            &fixture.token_url,
+            None,
+            "default-client",
+            None,
+            None,
+            false,
+        );
         material.extend([
             (format!("{prefix}token_type"), "Bearer".to_string()),
             (format!("{prefix}scope"), "repo read:org".to_string()),
         ]);
+        let original_material = material.clone();
         let request = RefreshOAuthCredentialRequest::for_identity(
             "github",
             "ACCESS_TOKEN",
@@ -3335,6 +3717,11 @@ mod tests {
 
         assert_eq!(captured.form["grant_type"], "refresh_token");
         assert_eq!(material["ACCESS_TOKEN"], "refreshed-token");
+        assert!(original_material.iter().all(|(key, value)| {
+            key == "ACCESS_TOKEN"
+                || key.ends_with(".access_token_expires_at")
+                || material.get(key) == Some(value)
+        }));
         assert_eq!(
             material[&format!("{prefix}refresh_token")],
             "stored-refresh-token"

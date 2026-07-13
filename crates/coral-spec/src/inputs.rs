@@ -143,12 +143,17 @@ impl ManifestOAuthCredentialSpec {
                 render_oauth_endpoint_url("device authorization", template, source_inputs)
             })
             .transpose()?;
-        let token_url = render_oauth_endpoint_url("token", &self.token_url, source_inputs)?;
+        let token_url = self.token_url(source_inputs)?;
         Ok(ManifestOAuthEndpointUrls {
             authorization_url,
             device_authorization_url,
             token_url,
         })
+    }
+
+    /// Render only the provider token endpoint URL with resolved source variables.
+    pub fn token_url(&self, source_inputs: &BTreeMap<String, String>) -> Result<String> {
+        render_oauth_endpoint_url("token", &self.token_url, source_inputs)
     }
 
     /// Render the optional OAuth resource indicator with resolved source variables.
