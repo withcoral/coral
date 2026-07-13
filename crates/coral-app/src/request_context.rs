@@ -1,8 +1,5 @@
 //! Request-scoped app context selected at the transport boundary.
 
-use tonic::{Request, Status};
-
-use crate::bootstrap::{AppError, app_status};
 use crate::identity::UserPrincipal;
 
 /// Request-scoped data that domain services may need after authentication.
@@ -20,29 +17,11 @@ impl RequestContext {
         Self { principal }
     }
 
-    // Installed server-wide by the immediate P1a child and consumed at service
-    // boundaries by P1b.
     #[cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "installed server-wide by P1a and consumed at service boundaries by P1b"
-        )
-    )]
-    pub(crate) fn from_request<T>(request: &Request<T>) -> Result<Self, Status> {
-        request.extensions().get::<Self>().cloned().ok_or_else(|| {
-            app_status(AppError::Unauthenticated(
-                "missing request principal".to_string(),
-            ))
-        })
-    }
-
-    // Consumed by the QueryContext introduced in the immediate P1b child.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by the QueryContext introduced in the P1b child"
+            reason = "request principals stay encapsulated for downstream authorization and attribution"
         )
     )]
     pub(crate) fn principal(&self) -> &UserPrincipal {
@@ -60,13 +39,5 @@ mod tests {
         let context = RequestContext::new(principal.clone());
 
         assert_eq!(context.principal(), &principal);
-    }
-
-    #[test]
-    fn rejects_requests_without_a_principal() {
-        let status = RequestContext::from_request(&Request::new(()))
-            .expect_err("missing context should fail closed");
-
-        assert_eq!(status.code(), tonic::Code::Unauthenticated);
     }
 }

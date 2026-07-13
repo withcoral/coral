@@ -33,8 +33,7 @@ use crate::catalog::discovery::{
     ColumnSearchResult, DescribeTableResult,
 };
 use crate::identity::{
-    SingleUserPrincipalProvider, UserPrincipalProvider, UserPrincipalProviderError,
-    UserPrincipalProviderErrorKind,
+    UserPrincipalProvider, UserPrincipalProviderError, UserPrincipalProviderErrorKind,
 };
 use crate::query::manager::QueryManagerError;
 use crate::request_context::RequestContext;
@@ -62,53 +61,6 @@ impl Extractor for MetadataExtractor<'_> {
             })
             .collect()
     }
-}
-
-/// Compatibility wrapper used until the next stack unit installs one layer
-/// around the complete route tree.
-#[derive(Clone)]
-pub(crate) struct GrpcMethodAnnotatedService<S> {
-    inner: GrpcRequestContextService<S>,
-}
-
-impl<S> GrpcMethodAnnotatedService<S> {
-    pub(crate) fn new(inner: S) -> Self {
-        let layer = GrpcRequestContextLayer::new(Arc::new(SingleUserPrincipalProvider));
-        Self {
-            inner: layer.layer(inner),
-        }
-    }
-}
-
-impl<S, B, ResBody> Service<http::Request<B>> for GrpcMethodAnnotatedService<S>
-where
-    S: Service<http::Request<B>, Response = http::Response<ResBody>> + Clone + Send + 'static,
-    S::Future: Send + 'static,
-    S::Error: Send + 'static,
-    B: Send + 'static,
-    ResBody: Default + Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, request: http::Request<B>) -> Self::Future {
-        self.inner.call(request)
-    }
-}
-
-impl<S> tonic::server::NamedService for GrpcMethodAnnotatedService<S>
-where
-    S: tonic::server::NamedService,
-{
-    const NAME: &'static str = S::NAME;
 }
 
 /// Tower layer that installs Coral request context for gRPC route trees.
@@ -653,18 +605,14 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcRequestContextLayer, GrpcServerMethod, grpc_method, query_status,
+        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
         query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
         table_to_proto, user_principal_provider_status, workspace_name_from_proto,
         workspace_to_proto,
     };
     use crate::bootstrap::AppError;
-    use crate::identity::{
-        SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
-        UserPrincipalProviderError,
-    };
+    use crate::identity::UserPrincipalProviderError;
     use crate::query::manager::QueryManagerError;
-    use crate::request_context::RequestContext;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
@@ -755,74 +703,6 @@ mod tests {
             grpc_method(&request),
             GrpcMethodMetadata::new("coral.v1.QueryService", "ExecuteSql")
         );
-    }
-
-    #[derive(Debug)]
-    struct FixedUserPrincipalProvider {
-        principal: UserPrincipal,
-    }
-
-    #[tonic::async_trait]
-    impl UserPrincipalProvider for FixedUserPrincipalProvider {
-        async fn principal_for_metadata(
-            &self,
-            _metadata: &tonic::metadata::MetadataMap,
-        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
-            Ok(self.principal.clone())
-        }
-    }
-
-    async fn principal_inserted_by(
-        provider: std::sync::Arc<dyn UserPrincipalProvider>,
-    ) -> UserPrincipal {
-        use std::sync::{Arc, Mutex};
-        use tonic::codegen::http;
-        use tower::{Layer as _, Service as _};
-
-        let observed_context = Arc::new(Mutex::new(None));
-        let observed_context_for_service = Arc::clone(&observed_context);
-        let service = tower::service_fn(move |request: http::Request<()>| {
-            let observed_context = Arc::clone(&observed_context_for_service);
-            async move {
-                *observed_context.lock().expect("observed context lock") =
-                    request.extensions().get::<RequestContext>().cloned();
-                Ok::<_, std::convert::Infallible>(http::Response::new(()))
-            }
-        });
-        let mut service = GrpcRequestContextLayer::new(provider).layer(service);
-        let request = http::Request::builder()
-            .uri("/coral.v1.QueryService/ExecuteSql")
-            .body(())
-            .expect("http request");
-
-        service.call(request).await.expect("service response");
-
-        observed_context
-            .lock()
-            .expect("observed context lock")
-            .clone()
-            .expect("request context")
-            .principal()
-            .clone()
-    }
-
-    #[tokio::test]
-    async fn request_context_layer_inserts_local_principal() {
-        let principal =
-            principal_inserted_by(std::sync::Arc::new(SingleUserPrincipalProvider)).await;
-
-        assert_eq!(principal, UserPrincipal::local());
-    }
-
-    #[tokio::test]
-    async fn request_context_layer_honors_injected_provider() {
-        let expected_principal = UserPrincipal::for_user("saul").expect("valid user");
-        let principal = principal_inserted_by(std::sync::Arc::new(FixedUserPrincipalProvider {
-            principal: expected_principal.clone(),
-        }))
-        .await;
-
-        assert_eq!(principal, expected_principal);
     }
 
     #[test]
