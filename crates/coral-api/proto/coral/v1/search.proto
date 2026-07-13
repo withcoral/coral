@@ -95,7 +95,7 @@ enum SearchDataScope {
   // Unknown data scope.
   SEARCH_DATA_SCOPE_UNSPECIFIED = 0;
   // Observed-value search data.
-  SEARCH_DATA_SCOPE_OBSERVED = 1;
+  SEARCH_DATA_SCOPE_OBSERVED_VALUES = 1;
   // All local search data for the target.
   SEARCH_DATA_SCOPE_ALL = 2;
 }

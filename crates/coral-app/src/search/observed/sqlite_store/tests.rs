@@ -249,6 +249,56 @@ fn immediate_transaction_is_locked(connection: &mut rusqlite::Connection) -> boo
 }
 
 #[test]
+fn clear_source_removes_every_component_schema_owned_by_that_source() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let jobs = multi_schema_clear_jobs();
+    seed_projected_and_pending_jobs(&layout, &workspace, &store, &jobs);
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    for table_name in [
+        "observed_values",
+        "observed_values_fts",
+        "observed_queue_jobs",
+    ] {
+        assert_owner_component_schema_count(&connection, table_name, &workspace, "github_v4", 2);
+    }
+    assert_projected_owner_names(
+        &connection,
+        &workspace,
+        &["github_v4", "github_v4", "jira_v4"],
+    );
+    drop(connection);
+
+    let result = store
+        .clear_source_and_advance_epoch(&workspace, "github_v4")
+        .expect("clear github owner");
+
+    assert_eq!(result.values, 2);
+    assert_eq!(result.fts_rows, 2);
+    assert_eq!(result.queue_jobs, 2);
+    let connection = backing.connect_for_test().expect("reconnect");
+    assert_projected_owner_names(&connection, &workspace, &["jira_v4"]);
+    assert_eq!(
+        store
+            .capture_epoch(&workspace, "github_v4")
+            .expect("github epoch after clear")
+            .source_generation,
+        1
+    );
+    assert_eq!(
+        store
+            .capture_epoch(&workspace, "jira_v4")
+            .expect("jira epoch after clear")
+            .source_generation,
+        0
+    );
+}
+
+#[test]
 fn capture_epochs_for_sources_reads_all_sources_with_one_store_open() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1646,9 +1696,25 @@ fn test_job_for_owner(
     surface_name: &str,
     display_value: &str,
 ) -> ObservedValuesQueueJob {
+    test_job_with_identity(
+        owner_source_name,
+        owner_source_name,
+        source_scope_id,
+        surface_name,
+        display_value,
+    )
+}
+
+fn test_job_with_identity(
+    owner_source_name: &str,
+    source_name: &str,
+    source_scope_id: &str,
+    surface_name: &str,
+    display_value: &str,
+) -> ObservedValuesQueueJob {
     ObservedValuesQueueJob {
         owner_source_name: owner_source_name.to_string(),
-        source_name: owner_source_name.to_string(),
+        source_name: source_name.to_string(),
         source_scope_id: source_scope_id.to_string(),
         surface_kind: ObservedValuesSurfaceKind::Table,
         surface_name: surface_name.to_string(),
@@ -1665,6 +1731,111 @@ fn test_job_with_owner(owner_source_name: &str) -> ObservedValuesQueueJob {
         surface_name: "issues".to_string(),
         payload_json: payload_json("Shared value"),
     }
+}
+
+fn enqueue_test_jobs(
+    store: &SqliteObservedValuesStore,
+    workspace: &WorkspaceName,
+    jobs: &[ObservedValuesQueueJob],
+) {
+    for job in jobs {
+        let generation = store
+            .capture_epoch(workspace, &job.owner_source_name)
+            .expect("generation");
+        assert!(matches!(
+            store
+                .enqueue_if_current(workspace, job, generation)
+                .expect("enqueue observation"),
+            ObservedValuesEnqueueResult::Enqueued { .. }
+        ));
+    }
+}
+
+fn multi_schema_clear_jobs() -> [ObservedValuesQueueJob; 3] {
+    [
+        test_job_with_identity(
+            "github_v4",
+            "github_v4_rest",
+            "rest-scope",
+            "issues",
+            "REST payment issue",
+        ),
+        test_job_with_identity(
+            "github_v4",
+            "github_v4_mcp",
+            "mcp-scope",
+            "pulls",
+            "MCP payment issue",
+        ),
+        test_job_with_identity(
+            "jira_v4",
+            "jira_v4_mcp",
+            "jira-scope",
+            "issues",
+            "Jira payment issue",
+        ),
+    ]
+}
+
+fn seed_projected_and_pending_jobs(
+    layout: &AppStateLayout,
+    workspace: &WorkspaceName,
+    store: &SqliteObservedValuesStore,
+    jobs: &[ObservedValuesQueueJob; 3],
+) {
+    enqueue_test_jobs(store, workspace, &jobs[..2]);
+    store
+        .drain_queue(workspace, drain_budget())
+        .expect("project github observations");
+    enqueue_test_jobs(store, workspace, &jobs[2..]);
+    store
+        .drain_queue(workspace, drain_budget())
+        .expect("project jira observation");
+
+    enqueue_test_jobs(store, workspace, &jobs[..2]);
+    // Unit tests lower the queue cap to two, so seed the other owner directly.
+    insert_queue_job_for_test(layout, workspace, store, &jobs[2]);
+}
+
+fn insert_queue_job_for_test(
+    layout: &AppStateLayout,
+    workspace: &WorkspaceName,
+    store: &SqliteObservedValuesStore,
+    job: &ObservedValuesQueueJob,
+) {
+    let generation = store
+        .capture_epoch(workspace, &job.owner_source_name)
+        .expect("generation");
+    let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    connection
+        .execute(
+            "
+            INSERT INTO observed_queue_jobs (
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                workspace_generation,
+                source_generation,
+                payload_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ",
+            params![
+                workspace.as_str(),
+                &job.owner_source_name,
+                &job.source_name,
+                &job.source_scope_id,
+                job.surface_kind.as_str(),
+                &job.surface_name,
+                generation.workspace_generation,
+                generation.source_generation,
+                &job.payload_json,
+            ],
+        )
+        .expect("seed pending queue job");
 }
 
 fn bulk_test_job(
@@ -1856,6 +2027,47 @@ fn projected_owner_names(
         .expect("query owner rows");
     rows.collect::<Result<Vec<_>, _>>()
         .expect("collect owner rows")
+}
+
+fn assert_projected_owner_names(
+    connection: &rusqlite::Connection,
+    workspace: &WorkspaceName,
+    expected: &[&str],
+) {
+    for table_name in [
+        "observed_values",
+        "observed_values_fts",
+        "observed_queue_jobs",
+    ] {
+        assert_eq!(
+            projected_owner_names(connection, table_name, workspace),
+            expected,
+            "unexpected owners in {table_name}"
+        );
+    }
+}
+
+fn assert_owner_component_schema_count(
+    connection: &rusqlite::Connection,
+    table_name: &str,
+    workspace: &WorkspaceName,
+    owner_source_name: &str,
+    expected: i64,
+) {
+    let sql = format!(
+        "SELECT COUNT(DISTINCT source_name) FROM {table_name} WHERE workspace = ?1 AND owner_source_name = ?2"
+    );
+    let component_schema_count: i64 = connection
+        .query_row(
+            &sql,
+            params![workspace.as_str(), owner_source_name],
+            |row| row.get(0),
+        )
+        .expect("component schema count");
+    assert_eq!(
+        component_schema_count, expected,
+        "unexpected component schema count in {table_name}"
+    );
 }
 
 fn advance_source_epoch_for_test(
