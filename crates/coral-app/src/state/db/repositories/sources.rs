@@ -179,6 +179,17 @@ where
             .to_owned();
         self.session.fetch_all(statement).await
     }
+
+    async fn source_created_at(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<i64>, DbError> {
+        Ok(self
+            .source_row(workspace_name, source_name)
+            .await?
+            .map(|row| row.created_at_unix_nanos))
+    }
 }
 
 impl SourcesRepo<'_, CoralTx<'_>> {
@@ -192,9 +203,10 @@ impl SourcesRepo<'_, CoralTx<'_>> {
             .source_created_at(workspace_name, &source.name)
             .await?
             .unwrap_or(now_unix_nanos);
-        self.delete_source_rows(workspace_name, &source.name)
+        self.delete_source_catalog(workspace_name, &source.name)
             .await?;
-        self.insert_source(
+        insert_source(
+            self.session,
             workspace_name,
             source,
             created_at_unix_nanos,
@@ -211,54 +223,9 @@ impl SourcesRepo<'_, CoralTx<'_>> {
         source_name: &SourceName,
     ) -> Result<Option<InstalledSource>, DbError> {
         let removed = self.get_source(workspace_name, source_name).await?;
-        self.delete_source_rows(workspace_name, source_name).await?;
+        self.delete_source_catalog(workspace_name, source_name)
+            .await?;
         Ok(removed)
-    }
-
-    async fn source_created_at(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Option<i64>, DbError> {
-        Ok(self
-            .source_row(workspace_name, source_name)
-            .await?
-            .map(|row| row.created_at_unix_nanos))
-    }
-
-    async fn insert_source(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source: &InstalledSource,
-        created_at_unix_nanos: i64,
-        updated_at_unix_nanos: i64,
-    ) -> Result<(), DbError> {
-        let statement = Query::insert()
-            .into_table(Sources::Table)
-            .columns([
-                Sources::WorkspaceId,
-                Sources::Name,
-                Sources::Version,
-                Sources::OriginKind,
-                Sources::CredentialStorage,
-                Sources::CreatedAtUnixNanos,
-                Sources::UpdatedAtUnixNanos,
-            ])
-            .values_panic([
-                Expr::val(workspace_name.as_str().to_string()),
-                Expr::val(source.name.as_str().to_string()),
-                Expr::val(source.version.clone()),
-                Expr::val(source.origin.as_config_value()),
-                Expr::val(
-                    source
-                        .credential_storage
-                        .map(CredentialStorageKind::as_config_value),
-                ),
-                Expr::val(created_at_unix_nanos),
-                Expr::val(updated_at_unix_nanos),
-            ])
-            .to_owned();
-        self.session.execute(statement).await
     }
 
     async fn insert_source_variables(
@@ -267,22 +234,7 @@ impl SourcesRepo<'_, CoralTx<'_>> {
         source: &InstalledSource,
     ) -> Result<(), DbError> {
         for (key, value) in &source.variables {
-            let statement = Query::insert()
-                .into_table(SourceVariables::Table)
-                .columns([
-                    SourceVariables::WorkspaceId,
-                    SourceVariables::SourceName,
-                    SourceVariables::Key,
-                    SourceVariables::Value,
-                ])
-                .values_panic([
-                    Expr::val(workspace_name.as_str().to_string()),
-                    Expr::val(source.name.as_str().to_string()),
-                    Expr::val(key.clone()),
-                    Expr::val(value.clone()),
-                ])
-                .to_owned();
-            self.session.execute(statement).await?;
+            insert_source_variable(self.session, workspace_name, &source.name, key, value).await?;
         }
         Ok(())
     }
@@ -293,50 +245,159 @@ impl SourcesRepo<'_, CoralTx<'_>> {
         source: &InstalledSource,
     ) -> Result<(), DbError> {
         for key in &source.secrets {
-            let statement = Query::insert()
-                .into_table(SourceSecretKeys::Table)
-                .columns([
-                    SourceSecretKeys::WorkspaceId,
-                    SourceSecretKeys::SourceName,
-                    SourceSecretKeys::Key,
-                ])
-                .values_panic([
-                    Expr::val(workspace_name.as_str().to_string()),
-                    Expr::val(source.name.as_str().to_string()),
-                    Expr::val(key.clone()),
-                ])
-                .to_owned();
-            self.session.execute(statement).await?;
+            insert_source_secret_key(self.session, workspace_name, &source.name, key).await?;
         }
         Ok(())
     }
 
-    async fn delete_source_rows(
+    async fn delete_source_catalog(
         &mut self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<(), DbError> {
-        let secret_keys = Query::delete()
-            .from_table(SourceSecretKeys::Table)
-            .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name.as_str()))
-            .to_owned();
-        self.session.execute(secret_keys).await?;
-
-        let variables = Query::delete()
-            .from_table(SourceVariables::Table)
-            .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(SourceVariables::SourceName).eq(source_name.as_str()))
-            .to_owned();
-        self.session.execute(variables).await?;
-
-        let source = Query::delete()
-            .from_table(Sources::Table)
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
-            .to_owned();
-        self.session.execute(source).await
+        delete_source_secret_keys(self.session, workspace_name, source_name).await?;
+        delete_source_variables(self.session, workspace_name, source_name).await?;
+        delete_source(self.session, workspace_name, source_name).await
     }
+}
+
+async fn insert_source<S>(
+    session: &mut S,
+    workspace_name: &WorkspaceName,
+    source: &InstalledSource,
+    created_at_unix_nanos: i64,
+    updated_at_unix_nanos: i64,
+) -> Result<(), DbError>
+where
+    S: DbSession,
+{
+    let statement = Query::insert()
+        .into_table(Sources::Table)
+        .columns([
+            Sources::WorkspaceId,
+            Sources::Name,
+            Sources::Version,
+            Sources::OriginKind,
+            Sources::CredentialStorage,
+            Sources::CreatedAtUnixNanos,
+            Sources::UpdatedAtUnixNanos,
+        ])
+        .values_panic([
+            Expr::val(workspace_name.as_str().to_string()),
+            Expr::val(source.name.as_str().to_string()),
+            Expr::val(source.version.clone()),
+            Expr::val(source.origin.as_config_value()),
+            Expr::val(
+                source
+                    .credential_storage
+                    .map(CredentialStorageKind::as_config_value),
+            ),
+            Expr::val(created_at_unix_nanos),
+            Expr::val(updated_at_unix_nanos),
+        ])
+        .to_owned();
+    session.execute(statement).await
+}
+
+async fn insert_source_variable<S>(
+    session: &mut S,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    key: &str,
+    value: &str,
+) -> Result<(), DbError>
+where
+    S: DbSession,
+{
+    let statement = Query::insert()
+        .into_table(SourceVariables::Table)
+        .columns([
+            SourceVariables::WorkspaceId,
+            SourceVariables::SourceName,
+            SourceVariables::Key,
+            SourceVariables::Value,
+        ])
+        .values_panic([
+            Expr::val(workspace_name.as_str().to_string()),
+            Expr::val(source_name.as_str().to_string()),
+            Expr::val(key.to_string()),
+            Expr::val(value.to_string()),
+        ])
+        .to_owned();
+    session.execute(statement).await
+}
+
+async fn insert_source_secret_key<S>(
+    session: &mut S,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    key: &str,
+) -> Result<(), DbError>
+where
+    S: DbSession,
+{
+    let statement = Query::insert()
+        .into_table(SourceSecretKeys::Table)
+        .columns([
+            SourceSecretKeys::WorkspaceId,
+            SourceSecretKeys::SourceName,
+            SourceSecretKeys::Key,
+        ])
+        .values_panic([
+            Expr::val(workspace_name.as_str().to_string()),
+            Expr::val(source_name.as_str().to_string()),
+            Expr::val(key.to_string()),
+        ])
+        .to_owned();
+    session.execute(statement).await
+}
+
+async fn delete_source_secret_keys<S>(
+    session: &mut S,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+) -> Result<(), DbError>
+where
+    S: DbSession,
+{
+    let statement = Query::delete()
+        .from_table(SourceSecretKeys::Table)
+        .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_name.as_str()))
+        .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name.as_str()))
+        .to_owned();
+    session.execute(statement).await
+}
+
+async fn delete_source_variables<S>(
+    session: &mut S,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+) -> Result<(), DbError>
+where
+    S: DbSession,
+{
+    let statement = Query::delete()
+        .from_table(SourceVariables::Table)
+        .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_name.as_str()))
+        .and_where(Expr::col(SourceVariables::SourceName).eq(source_name.as_str()))
+        .to_owned();
+    session.execute(statement).await
+}
+
+async fn delete_source<S>(
+    session: &mut S,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+) -> Result<(), DbError>
+where
+    S: DbSession,
+{
+    let statement = Query::delete()
+        .from_table(Sources::Table)
+        .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+        .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
+        .to_owned();
+    session.execute(statement).await
 }
 
 fn parse_source_name(name: &str) -> Result<SourceName, DbError> {
