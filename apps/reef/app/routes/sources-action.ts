@@ -41,6 +41,11 @@ export type SourcesActionData =
       name: string
       status: 'error'
     }
+  | {
+      intent: SourceActionIntent
+      name: string
+      status: 'success'
+    }
   | undefined
 
 interface SourcesActionArgs {
@@ -52,12 +57,24 @@ export async function action({
   params,
   request,
 }: SourcesActionArgs): Promise<SourcesActionData | Response> {
+  const workspace = workspaceFromParams(params)
+  const result = await runSourcesAction(request, workspace)
+  return result.status === 'success'
+    ? redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+    : result
+}
+
+type SourceActionResult = Exclude<SourcesActionData, undefined>
+
+export async function runSourcesAction(
+  request: Request,
+  workspace: Workspace,
+): Promise<SourceActionResult> {
   const formData = await request.formData()
   const intent = formValue(formData, '_intent')
   const name = formValue(formData, 'name')
   if (!name) return actionError('install', '', 'Missing source name')
 
-  const workspace = workspaceFromParams(params)
   const sourceClient = sourceClientForRequest(request)
   try {
     if (intent === 'install') {
@@ -76,7 +93,7 @@ export async function action({
         name,
         installBindingsFromForm(info, formData),
       )
-      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+      return actionSuccess('install', name)
     }
     if (intent === 'edit') {
       const source = await getInstalledSource(sourceClient, workspace, name)
@@ -90,11 +107,11 @@ export async function action({
         name,
         editBindingsFromForm(source, info, formData),
       )
-      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+      return actionSuccess('edit', name)
     }
     if (intent === 'delete') {
       await sourceClient.deleteSource(create(DeleteSourceRequestSchema, { name, workspace }))
-      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+      return actionSuccess('delete', name)
     }
     return actionError('install', name, 'Unknown source action')
   } catch (error) {
@@ -147,6 +164,14 @@ async function createBundledSource(
   return response.source
 }
 
-function actionError(intent: SourceActionIntent, name: string, message: string): SourcesActionData {
+function actionError(
+  intent: SourceActionIntent,
+  name: string,
+  message: string,
+): SourceActionResult {
   return { intent, message, name, status: 'error' }
+}
+
+function actionSuccess(intent: SourceActionIntent, name: string): SourceActionResult {
+  return { intent, name, status: 'success' }
 }
