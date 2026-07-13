@@ -9,6 +9,7 @@ pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v4";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v1";
 pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v8";
 
+mod artifact_model;
 mod artifacts;
 mod diagnostics;
 mod ir;
@@ -29,6 +30,7 @@ mod projection_tests;
 #[cfg(test)]
 mod test_support;
 
+pub use artifact_model::{ArtifactMigrationError, ProjectionCatalogFile, SemanticIrFile};
 pub use artifacts::{
     Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
     validate_materialized_source,

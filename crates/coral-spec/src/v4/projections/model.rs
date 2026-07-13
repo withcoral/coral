@@ -4,20 +4,18 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
 use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProjectionCatalog {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator_version: Option<String>,
     pub projections: Vec<Projection>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Projection {
     pub name: String,
-    #[serde(default)]
     pub namespace: String,
     pub kind: ProjectionKind,
     pub description: String,
@@ -32,8 +30,7 @@ pub struct Projection {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+#[derive(Debug, Clone)]
 pub enum ProjectionKind {
     Table,
     TableFunction {
@@ -48,7 +45,7 @@ pub enum ProjectionVisibility {
     Hidden,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProjectionInput {
     pub name: String,
     pub sql_exposure: SqlInputExposure,
@@ -61,7 +58,6 @@ pub struct ProjectionInput {
     /// Whether this filter input is a complete exact lookup: the API returns
     /// every row matching an equality value, so dependent joins may bind to
     /// it. Meaningless (and false) for non-filter exposures.
-    #[serde(default)]
     pub lookup_key: bool,
 }
 
@@ -73,7 +69,7 @@ pub enum SqlInputExposure {
     Internal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProjectionColumn {
     pub name: String,
     pub data_type: ManifestDataType,
@@ -87,6 +83,7 @@ mod tests {
     use super::{
         Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
     };
+    use crate::v4::artifact_model::ProjectionCatalogFile;
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
     use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
@@ -120,7 +117,8 @@ mod tests {
             diagnostics: Vec::new(),
         };
 
-        let yaml = serde_yaml::to_string(&catalog).expect("serialize projection catalog");
+        let yaml = serde_yaml::to_string(&ProjectionCatalogFile::from(&catalog))
+            .expect("serialize projection catalog");
         assert!(
             !yaml.contains('!'),
             "projection catalog should not use YAML local tags: {yaml}"
@@ -138,8 +136,9 @@ mod tests {
             "projection catalog should not serialize pagination: {yaml}"
         );
 
-        serde_yaml::from_str::<ProjectionCatalog>(&yaml)
-            .expect("projection catalog should round-trip");
+        let file: ProjectionCatalogFile =
+            serde_yaml::from_str(&yaml).expect("projection catalog file should round-trip");
+        ProjectionCatalog::try_from(file).expect("projection catalog should migrate");
     }
 
     #[test]
@@ -169,8 +168,9 @@ diagnostics: []
 "
         );
 
-        let catalog: ProjectionCatalog =
+        let file: ProjectionCatalogFile =
             serde_yaml::from_str(&raw).expect("legacy projection catalog should deserialize");
+        let catalog = ProjectionCatalog::try_from(file).expect("legacy catalog should migrate");
         assert_eq!(
             catalog.projections.first().expect("projection").namespace,
             ""
@@ -188,8 +188,9 @@ diagnostics: []
 "
         );
 
-        let catalog: ProjectionCatalog =
+        let file: ProjectionCatalogFile =
             serde_yaml::from_str(&raw).expect("projection override catalog should deserialize");
+        let catalog = ProjectionCatalog::try_from(file).expect("override catalog should migrate");
 
         assert_eq!(catalog.generator_version, None);
     }

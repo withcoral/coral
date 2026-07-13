@@ -1,0 +1,8 @@
+artifact_schema_version: 3
+source_name: compatibility_fixture
+surface_id: rest
+surface_type: open_api
+importer_version: openapi-v4
+operations: []
+types: []
+diagnostics: []

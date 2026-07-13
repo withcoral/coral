@@ -17,7 +17,7 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::query::input_resolver::{
@@ -26,7 +26,8 @@ use crate::query::input_resolver::{
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
+    clear_source_load_failure, incompatible_materialization_error, load_v4_materialization,
+    report_source_load_failure,
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
@@ -310,7 +311,7 @@ impl QueryManager {
         self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources_from_config(workspace_name, &config)?;
+        let sources = self.load_query_sources_from_config(workspace_name, &config);
         Ok((sources, config))
     }
 
@@ -324,7 +325,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Result<Vec<LoadedQuerySource>, AppError> {
+    ) -> Vec<LoadedQuerySource> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = tracing::field::Empty,
@@ -335,25 +336,22 @@ impl QueryManager {
         let mut loaded_sources = Vec::new();
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
-                Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
-                Err(
-                    error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }
-                    | AppError::InvalidV4ProjectionOverride { .. }),
-                ) => {
-                    return Err(error);
+                Ok((loaded_source, _version)) => {
+                    clear_source_load_failure(workspace_name, &source.name);
+                    loaded_sources.push(loaded_source);
                 }
                 Err(error) => {
-                    tracing::warn!(
-                        source = %source.name,
-                        detail = %error,
-                        "skipping source during query-source load"
+                    report_source_load_failure(
+                        workspace_name,
+                        &source.name,
+                        "SOURCE_LOAD_FAILED",
+                        &error.to_string(),
                     );
                 }
             }
         }
         span.record("source.count", loaded_sources.len());
-        Ok(loaded_sources)
+        loaded_sources
     }
 
     fn load_query_source(
@@ -372,7 +370,8 @@ impl QueryManager {
                 v4,
             )?;
             Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
+                runtime_components_for_v4_source(workspace_name, &source.name, v4, &materialized)
+                    .map_err(|error| {
                     incompatible_materialization_error(
                         &source.name,
                         format!("failed to assemble runtime package: {error}"),
@@ -1328,7 +1327,7 @@ pagination:
     }
 
     #[tokio::test]
-    async fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+    async fn load_query_sources_skips_missing_v4_materialization() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
@@ -1367,23 +1366,17 @@ surfaces:
             )
             .expect("persist source");
 
-        let error = fixture
+        let (sources, _) = fixture
             .manager
             .load_query_sources(&workspace_name)
             .await
-            .expect_err("missing materialization should fail closed");
+            .expect("missing materialization should be isolated");
 
-        assert!(
-            matches!(
-                error,
-                AppError::MissingOrIncompatibleV4Materialization { .. }
-            ),
-            "unexpected error: {error:#}"
-        );
+        assert!(sources.is_empty());
     }
 
     #[tokio::test]
-    async fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
+    async fn load_query_sources_skips_unavailable_keychain_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1425,24 +1418,12 @@ surfaces:
             layout,
             Vec::new(),
         );
-        let error = manager
+        let (sources, _) = manager
             .load_query_sources(&workspace_name)
             .await
-            .expect_err("unavailable keychain should fail closed");
+            .expect("unavailable keychain source should be isolated");
 
-        assert!(
-            matches!(
-                error,
-                AppError::Credentials(CredentialsError::Unavailable(_))
-            ),
-            "unexpected error: {error:#}"
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("configured for keychain storage"),
-            "keychain-routed query failure should name the routed backend: {error}"
-        );
+        assert!(sources.is_empty());
     }
 
     #[derive(Debug)]

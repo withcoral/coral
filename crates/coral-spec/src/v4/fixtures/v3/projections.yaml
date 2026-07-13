@@ -1,0 +1,18 @@
+artifact_schema_version: 3
+source_name: compatibility_fixture
+generator_version: derive-read-v8
+projections:
+  - name: items
+    kind:
+      type: table
+    description: Compatibility fixture
+    guide: ""
+    surface_id: rest
+    operation_id: list_items
+    visibility: published
+    inputs: []
+    columns: []
+    search_limits: null
+    detail_hints: []
+    diagnostics: []
+diagnostics: []

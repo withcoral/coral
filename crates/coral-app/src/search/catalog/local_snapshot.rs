@@ -19,7 +19,8 @@ use coral_spec::{
 use crate::bootstrap::AppError;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
+    clear_source_load_failure, incompatible_materialization_error, load_v4_materialization,
+    report_source_load_failure,
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
@@ -53,29 +54,39 @@ impl CatalogSnapshotLoader {
     ) -> Result<CatalogInfo, AppError> {
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        self.load_catalog_from_config(workspace_name, &config)
+        Ok(self.load_catalog_from_config(workspace_name, &config))
     }
 
     fn load_catalog_from_config(
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Result<CatalogInfo, AppError> {
+    ) -> CatalogInfo {
         let mut catalog = CatalogInfo {
             tables: Vec::new(),
             table_functions: Vec::new(),
         };
 
         for source in config.workspace_sources(workspace_name) {
-            let source_catalog = self.load_source_catalog(workspace_name, &source)?;
-            catalog.tables.extend(source_catalog.tables);
-            catalog
-                .table_functions
-                .extend(source_catalog.table_functions);
+            match self.load_source_catalog(workspace_name, &source) {
+                Ok(source_catalog) => {
+                    clear_source_load_failure(workspace_name, &source.name);
+                    catalog.tables.extend(source_catalog.tables);
+                    catalog
+                        .table_functions
+                        .extend(source_catalog.table_functions);
+                }
+                Err(error) => report_source_load_failure(
+                    workspace_name,
+                    &source.name,
+                    "SOURCE_LOAD_FAILED",
+                    &error.to_string(),
+                ),
+            }
         }
 
         sort_catalog(&mut catalog);
-        Ok(catalog)
+        catalog
     }
 
     fn load_source_catalog(
@@ -102,12 +113,13 @@ impl CatalogSnapshotLoader {
                 &installed.manifest_yaml,
                 v4,
             )?;
-            runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                incompatible_materialization_error(
-                    &source.name,
-                    format!("failed to assemble runtime package: {error}"),
-                )
-            })
+            runtime_components_for_v4_source(workspace_name, &source.name, v4, &materialized)
+                .map_err(|error| {
+                    incompatible_materialization_error(
+                        &source.name,
+                        format!("failed to assemble runtime package: {error}"),
+                    )
+                })
         } else {
             Ok(runtime_components_from_manifest(&source_spec))
         }

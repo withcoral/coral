@@ -5,7 +5,7 @@ use crate::v4::ir::mcp::McpExecutionAttachment;
 use crate::v4::ir::rest::RestExecutionAttachment;
 use crate::v4::manifest::SurfaceType;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SemanticIr {
     pub artifact_schema_version: u32,
     pub source_name: String,
@@ -17,14 +17,13 @@ pub struct SemanticIr {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IrOperation {
     pub id: String,
     pub method_name: String,
     pub description: String,
     pub deprecated: bool,
     pub read_only: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub naming: Option<IrOperationNaming>,
     pub inputs: Vec<IrOperationInput>,
     pub output: IrOperationOutput,
@@ -33,15 +32,13 @@ pub struct IrOperation {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IrOperationNaming {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IrOperationInput {
     pub name: String,
     pub location: IrInputLocation,
@@ -49,18 +46,17 @@ pub struct IrOperationInput {
     pub data_type: IrScalarType,
     pub default_value: Option<String>,
     pub description: String,
-    #[serde(default)]
     pub exclude_from_lookup_keys: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IrOperationOutput {
     pub cardinality: OutputCardinality,
     pub type_ref: String,
     pub row_path: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IrEntityCandidate {
     pub name: String,
     pub type_ref: String,
@@ -77,7 +73,7 @@ pub enum OutputCardinality {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IrType {
     pub id: String,
     pub shape: IrTypeShape,
@@ -85,8 +81,7 @@ pub struct IrType {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+#[derive(Debug, Clone)]
 pub enum IrTypeShape {
     Scalar(IrScalarType),
     Object { fields: Vec<IrField> },
@@ -96,7 +91,7 @@ pub enum IrTypeShape {
     Json,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct IrField {
     pub name: String,
     pub type_ref: String,
@@ -160,8 +155,7 @@ pub enum HttpMethod {
     Trace,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+#[derive(Debug, Clone)]
 pub enum IrExecutionAttachment {
     Rest(Box<RestExecutionAttachment>),
     Mcp(McpExecutionAttachment),
@@ -175,6 +169,7 @@ mod tests {
         SemanticIr,
     };
     use crate::PaginationSpec;
+    use crate::v4::artifact_model::{IrOperationInputFile, SemanticIrFile};
     use crate::v4::diagnostics::Diagnostic;
     use crate::v4::ir::mcp::McpExecutionAttachment;
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
@@ -242,7 +237,8 @@ mod tests {
             )],
         };
 
-        let yaml = serde_yaml::to_string(&ir).expect("serialize semantic IR");
+        let yaml =
+            serde_yaml::to_string(&SemanticIrFile::from(&ir)).expect("serialize semantic IR");
         assert!(
             !yaml.contains('!'),
             "semantic IR should not use YAML local tags: {yaml}"
@@ -251,7 +247,9 @@ mod tests {
         assert!(yaml.contains("type: object"), "missing object tag: {yaml}");
         assert!(yaml.contains("type: scalar"), "missing scalar tag: {yaml}");
 
-        serde_yaml::from_str::<SemanticIr>(&yaml).expect("semantic IR should round-trip");
+        let file: SemanticIrFile =
+            serde_yaml::from_str(&yaml).expect("semantic IR file should round-trip");
+        SemanticIr::try_from(file).expect("semantic IR should migrate");
     }
 
     #[test]
@@ -300,7 +298,8 @@ mod tests {
             diagnostics: Vec::new(),
         };
 
-        let yaml = serde_yaml::to_string(&ir).expect("serialize MCP semantic IR");
+        let yaml =
+            serde_yaml::to_string(&SemanticIrFile::from(&ir)).expect("serialize MCP semantic IR");
         assert!(
             yaml.contains(&format!(
                 "artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}"
@@ -320,7 +319,9 @@ mod tests {
             "missing tool arg input: {yaml}"
         );
 
-        serde_yaml::from_str::<SemanticIr>(&yaml).expect("MCP semantic IR should round-trip");
+        let file: SemanticIrFile =
+            serde_yaml::from_str(&yaml).expect("MCP semantic IR file should round-trip");
+        SemanticIr::try_from(file).expect("MCP semantic IR should migrate");
     }
 
     #[test]
@@ -343,7 +344,7 @@ diagnostics: []
 "#
         );
 
-        let error = serde_yaml::from_str::<SemanticIr>(&legacy_yaml)
+        let error = serde_yaml::from_str::<SemanticIrFile>(&legacy_yaml)
             .expect_err("semantic IR should reject legacy local tags");
         assert!(
             error.to_string().contains("shape") || error.to_string().contains("type"),
@@ -363,7 +364,8 @@ diagnostics: []
             exclude_from_lookup_keys: false,
         };
 
-        let yaml = serde_yaml::to_string(&input).expect("serialize input");
+        let yaml =
+            serde_yaml::to_string(&IrOperationInputFile::from(&input)).expect("serialize input");
         assert!(
             yaml.contains("location: path"),
             "unexpected serialized input: {yaml}"
@@ -373,7 +375,7 @@ diagnostics: []
             "Rust type names must not leak into artifacts: {yaml}"
         );
 
-        let decoded: IrOperationInput = serde_yaml::from_str(&yaml).expect("deserialize input");
+        let decoded: IrOperationInputFile = serde_yaml::from_str(&yaml).expect("deserialize input");
         assert_eq!(decoded.location, IrInputLocation::Path);
     }
 }

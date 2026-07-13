@@ -69,9 +69,12 @@
   manifests, materialized fingerprints, semantic IR, or projection catalogs.
 - For DSL v4 materialization, the user owns when a source is generated or
   regenerated. Coral materializes at source add, queries only from the
-  installed materialized package, never silently refreshes descriptors or
-  projections, and should fail loudly on missing or incompatible artifacts with
-  guidance to re-add the source.
+  installed materialized package, and never silently refreshes descriptors,
+  projections, or persisted artifacts. Treat fingerprints and producer
+  versions as advisory provenance, preserve schema-v3 IR and projection YAML
+  through explicit file-to-runtime migrations, and load every compatible
+  surface. An unusable surface must not disable compatible sibling surfaces;
+  an unusable source must not disable other installed sources.
 - Keep cross-crate W3C trace-context propagation helpers in
   `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
   or `coral-mcp` depend on each other just to share telemetry carrier logic.

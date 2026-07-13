@@ -12,15 +12,16 @@ use crate::v4::{
 };
 use crate::{ManifestError, Result};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct V4MaterializedSource {
-    pub fingerprint: Fingerprint,
+    /// Optional provenance metadata. Runtime loading must not depend on it.
+    pub fingerprint: Option<Fingerprint>,
     pub surfaces: Vec<MaterializedSurface>,
     pub projections: ProjectionCatalog,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct MaterializedSurface {
     pub surface_id: String,
     pub semantic_ir: SemanticIr,
@@ -53,19 +54,22 @@ pub fn validate_materialized_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
 ) -> Result<()> {
-    if materialized.fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
+    let fingerprint = materialized.fingerprint.as_ref().ok_or_else(|| {
+        ManifestError::validation("new DSL v4 materialization is missing its fingerprint")
+    })?;
+    if fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
         return Err(ManifestError::validation(
             "DSL v4 materialized artifact schema version mismatch",
         ));
     }
-    if materialized.fingerprint.source_name != manifest.common.name {
+    if fingerprint.source_name != manifest.common.name {
         return Err(ManifestError::validation(format!(
             "DSL v4 materialized source identity mismatch for '{}'",
             manifest.common.name
         )));
     }
-    if materialized.fingerprint.importer_version != SURFACE_IMPORTER_VERSION
-        || materialized.fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
+    if fingerprint.importer_version != SURFACE_IMPORTER_VERSION
+        || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
         return Err(ManifestError::validation(
             "DSL v4 materialized importer or generator version mismatch",
@@ -92,7 +96,7 @@ pub fn validate_materialized_source(
         }
     }
     let mut fingerprint_surface_ids = BTreeSet::new();
-    for fingerprint_surface in &materialized.fingerprint.surfaces {
+    for fingerprint_surface in &fingerprint.surfaces {
         if !fingerprint_surface_ids.insert(fingerprint_surface.surface_id.as_str()) {
             return Err(ManifestError::validation(format!(
                 "DSL v4 fingerprint surface '{}' is repeated",
@@ -167,7 +171,7 @@ surfaces:
 
     fn materialized_source() -> V4MaterializedSource {
         V4MaterializedSource {
-            fingerprint: Fingerprint {
+            fingerprint: Some(Fingerprint {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "demo".to_string(),
                 manifest_sha256: "manifest-sha".to_string(),
@@ -177,7 +181,7 @@ surfaces:
                 ],
                 importer_version: SURFACE_IMPORTER_VERSION.to_string(),
                 projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
-            },
+            }),
             surfaces: vec![
                 materialized_surface("rest", SurfaceType::OpenApi),
                 materialized_surface("mcp", SurfaceType::Mcp),
@@ -240,6 +244,8 @@ surfaces:
         let mut materialized = materialized_source();
         materialized
             .fingerprint
+            .as_mut()
+            .expect("fingerprint")
             .surfaces
             .retain(|surface| surface.surface_id != "mcp");
 

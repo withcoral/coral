@@ -6,7 +6,6 @@ use tempfile::tempdir;
 use super::{
     CatalogSnapshotLoader, catalog_info_from_components, runtime_components_from_manifest,
 };
-use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -192,7 +191,7 @@ tables:
 }
 
 #[test]
-fn loader_fails_when_installed_manifest_cannot_be_read() {
+fn loader_skips_installed_source_whose_manifest_cannot_be_read() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let config_store = ConfigStore::new(layout.clone());
@@ -216,18 +215,16 @@ fn loader_fails_when_installed_manifest_cannot_be_read() {
         )
         .expect("upsert source");
 
-    let error = CatalogSnapshotLoader::new(config_store, layout)
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
         .load_catalog(&workspace_name)
-        .expect_err("missing installed manifest should fail catalog load");
+        .expect("missing installed manifest should be isolated");
 
-    assert!(
-        matches!(error, AppError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::NotFound),
-        "unexpected error: {error}"
-    );
+    assert!(catalog.tables.is_empty());
+    assert!(catalog.table_functions.is_empty());
 }
 
 #[test]
-fn loader_fails_when_v4_source_missing_materialization() {
+fn loader_keeps_healthy_source_when_v4_source_is_missing_materialization() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let config_store = ConfigStore::new(layout.clone());
@@ -275,16 +272,13 @@ surfaces:
 ",
     );
 
-    let error = CatalogSnapshotLoader::new(config_store, layout)
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
         .load_catalog(&workspace_name)
-        .expect_err("missing v4 materialization should fail catalog load");
+        .expect("missing v4 materialization should be isolated");
 
-    match error {
-        AppError::MissingOrIncompatibleV4Materialization { source_name, .. } => {
-            assert_eq!(source_name, stale_v4_source.as_str());
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    assert!(catalog.tables.iter().any(|table| {
+        table.schema_name == healthy_source.as_str() && table.table_name == "messages"
+    }));
 }
 
 fn install_imported_source(

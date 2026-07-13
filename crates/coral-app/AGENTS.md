@@ -54,10 +54,13 @@ root.
   IR, projections, and package fingerprints belong in materialized artifacts
   or runtime package assembly, not in persisted `manifest.yaml`.
 - Treat DSL v4 materialization as a user-chosen lifecycle event: generate at
-  source add, never re-fetch descriptors or recompute projections implicitly
-  during query/list/validate, and fail with re-add guidance when artifacts are
-  missing or incompatible. RDBMS migration machinery must preserve that
-  explicit lifecycle instead of silently refreshing artifacts.
+  source add and never re-fetch descriptors, recompute projections, or rewrite
+  artifacts implicitly during query/list/validate. Fingerprints and producer
+  versions are diagnostics rather than runtime gates. Load persisted IR and
+  projections through explicit compatibility mappings, degrade per surface,
+  and isolate source-local failures while preserving that explicit lifecycle.
+  RDBMS migration machinery must not turn load-time compatibility into silent
+  regeneration.
 - User-facing runtime feature semantics belong in `coral_app::features`; raw
   config-file persistence, locking, and TOML extraction stay in `state/`.
 - Bundled installs persist source identity plus configured variables and
