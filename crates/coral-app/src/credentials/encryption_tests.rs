@@ -309,7 +309,7 @@ fn local_file_key_provider_creates_and_reuses_private_key_file() {
     let temp = tempdir().expect("temp dir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
     layout.ensure().expect("ensure layout");
-    let provider = LocalFileCredentialKeyProvider::new(&layout);
+    let provider = local_file_key_provider(&layout);
 
     let first = provider.active_key().expect("first key");
     let second = provider.active_key().expect("second key");
@@ -326,7 +326,7 @@ fn local_file_key_provider_serializes_concurrent_first_use_creation() {
     let temp = tempdir().expect("temp dir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
     layout.ensure().expect("ensure layout");
-    let provider = LocalFileCredentialKeyProvider::new(&layout);
+    let provider = local_file_key_provider(&layout);
     let thread_count = 32;
     let barrier = Arc::new(Barrier::new(thread_count));
 
@@ -357,7 +357,7 @@ fn local_file_key_provider_serializes_concurrent_first_use_creation() {
         "all concurrent first-use callers should observe the single persisted key"
     );
     assert_eq!(
-        LocalFileCredentialKeyProvider::new(&layout)
+        local_file_key_provider(&layout)
             .active_key()
             .expect("persisted key")
             .key_id(),
@@ -392,6 +392,10 @@ fn assert_open_failed(error: &CredentialsError) {
         error.to_string().contains("open failed"),
         "unexpected error: {error}"
     );
+}
+
+fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileCredentialKeyProvider {
+    LocalFileCredentialKeyProvider::new(layout, None)
 }
 
 fn current_dek_aad_for_test(key_id: &str) -> Vec<u8> {
