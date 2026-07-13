@@ -1,7 +1,8 @@
 import { style } from '@vanilla-extract/css'
+import { recipe } from '@vanilla-extract/recipes'
 
 import { breakpoints } from '@/styles/theme.css'
-import { theme, zIndex } from '@/wax/theme/theme.css'
+import { animation, theme, zIndex } from '@/wax/theme/theme.css'
 
 const MAIN_CONTENT_PADDING = 12
 const SIDEBAR_COLLAPSED_WIDTH = 34
@@ -36,26 +37,39 @@ export const header = style({
   paddingBlockStart: '10px',
 })
 
-export const brandRow = style({
+export const workspaceSelectorRow = style({
   alignItems: 'center',
   display: 'flex',
   gap: '4px',
   minWidth: 0,
 })
 
-export const brandMark = style({
+export const workspaceSelector = style({
   alignItems: 'center',
+  background: 'transparent',
+  border: 'none',
   borderRadius: '8px',
-  backgroundColor: theme.surface.main,
   color: theme.content.primary,
   display: 'flex',
-  flexShrink: 0,
-  height: '32px',
-  justifyContent: 'center',
-  width: '32px',
+  flex: '1 1 auto',
+  gap: '8px',
+  minHeight: '32px',
+  minWidth: 0,
+  overflow: 'hidden',
+  paddingInline: '8px',
+  transition: animation.colorTransition,
+  selectors: {
+    '&[data-popup-open], &:hover': {
+      backgroundColor: theme.surface.onMainContent,
+    },
+    '&:focus-visible': {
+      outline: `1px solid ${theme.button.primary.focus}`,
+      outlineOffset: '2px',
+    },
+  },
 })
 
-export const brandLabel = style({
+export const workspaceSelectorLabel = style({
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       display: 'none',
@@ -66,6 +80,30 @@ export const brandLabel = style({
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+})
+
+export const workspaceSelectorChevron = style({
+  display: 'flex',
+  flexShrink: 0,
+  marginInlineStart: 'auto',
+})
+
+export const workspaceSelectorMark = recipe({
+  base: {
+    alignItems: 'center',
+    borderRadius: '8px',
+    display: 'flex',
+    flexShrink: 0,
+    height: '20px',
+    justifyContent: 'center',
+    transition: animation.colorTransition,
+    width: '20px',
+  },
+  variants: {
+    color: {
+      ...theme.avatarFallback,
+    },
+  },
 })
 
 export const toggleButton = style({

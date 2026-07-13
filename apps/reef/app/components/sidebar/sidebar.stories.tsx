@@ -54,11 +54,13 @@ type Story = StoryObj<typeof meta>
 export const Default: Story = {
   args: {
     initialIsMinimized: false,
+    workspaces: [{ name: 'default' }, { name: 'analytics' }],
   },
 }
 
 export const Minimized: Story = {
   args: {
     initialIsMinimized: true,
+    workspaces: [{ name: 'default' }, { name: 'analytics' }],
   },
 }

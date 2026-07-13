@@ -7,27 +7,41 @@ import { Sidebar } from './sidebar'
 import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
 import { routePath, routePattern } from '@/routing/routemap'
 
-async function renderSidebar(initialIsMinimized: boolean, initialEntry = routePath('home')) {
+const WORKSPACES = [{ name: 'default' }, { name: 'analytics' }]
+
+async function renderSidebar(
+  initialIsMinimized: boolean,
+  initialEntry = routePath('home'),
+  workspaces: Array<{ name: string }> = [],
+) {
   const router = createMemoryRouter(
     [
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} />,
-        path: '/workspaces/:workspaceId/sources/:sourceName?',
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        path: routePattern('workspaceSource'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        path: routePattern('workspaceSources'),
+      },
+      {
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
         path: routePattern('workspaceSchemaTable'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
         path: routePattern('workspaceSchema'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} />,
-        path: '/workspaces/:workspaceId/traces/:traceId?',
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        path: routePattern('workspaceTrace'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        path: routePattern('workspaceTraces'),
+      },
+      {
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
         path: '*',
       },
     ],
@@ -100,7 +114,7 @@ describe('Sidebar', () => {
   })
 
   it('keeps source navigation in the active workspace', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/sources/github')
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources/github', WORKSPACES)
 
     await expect
       .element(screen.getByRole('link', { name: 'Sources' }))
@@ -108,7 +122,7 @@ describe('Sidebar', () => {
   })
 
   it('keeps trace navigation in the active workspace', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/traces/trace-1')
+    const screen = await renderSidebar(false, '/workspaces/analytics/traces/trace-1', WORKSPACES)
 
     await expect
       .element(screen.getByRole('link', { name: 'Traces' }))
@@ -123,10 +137,90 @@ describe('Sidebar', () => {
         tableName: 'issues',
         workspaceId: 'analytics',
       }),
+      WORKSPACES,
     )
 
     await expect
       .element(screen.getByRole('link', { name: 'Schema' }))
       .toHaveAttribute('href', routePath('workspaceSchema', { workspaceId: 'analytics' }))
+  })
+
+  it('shows the active workspace and lists every local workspace', async () => {
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+
+    await expect.element(screen.getByText('analytics', { exact: true })).toBeVisible()
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    const defaultWorkspace = screen.getByRole('menuitemradio', { name: 'default' })
+    const activeWorkspace = screen.getByRole('menuitemradio', { name: 'analytics' })
+
+    await expect.element(defaultWorkspace).toBeVisible()
+    await expect.element(defaultWorkspace).toHaveAttribute('aria-checked', 'false')
+    await expect.element(activeWorkspace).toBeVisible()
+    await expect.element(activeWorkspace).toHaveAttribute('aria-checked', 'true')
+    expect(defaultWorkspace.element().querySelector('svg')).toBeNull()
+    expect(activeWorkspace.element().querySelector('svg')).not.toBeNull()
+  })
+
+  it.each([
+    [
+      routePath('workspaceSources', { workspaceId: 'analytics' }),
+      routePath('workspaceSources', { workspaceId: 'default' }),
+    ],
+    [
+      routePath('workspaceSource', { sourceName: 'github', workspaceId: 'analytics' }),
+      routePath('workspaceSources', { workspaceId: 'default' }),
+    ],
+    [
+      routePath('workspaceSchema', { workspaceId: 'analytics' }),
+      routePath('workspaceSchema', { workspaceId: 'default' }),
+    ],
+    [
+      routePath('workspaceSchemaTable', {
+        schemaName: 'github',
+        tableName: 'issues',
+        workspaceId: 'analytics',
+      }),
+      routePath('workspaceSchema', { workspaceId: 'default' }),
+    ],
+    [
+      routePath('workspaceTrace', { traceId: 'trace-1', workspaceId: 'analytics' }),
+      routePath('workspaceTraces', { workspaceId: 'default' }),
+    ],
+  ])('switches workspaces within the current section from %s', async (currentPath, targetPath) => {
+    const screen = await renderSidebar(false, currentPath, WORKSPACES)
+
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    await expect
+      .element(screen.getByRole('menuitemradio', { name: 'default' }))
+      .toHaveAttribute('href', targetPath)
+  })
+
+  it('falls back to the first workspace outside a canonical workspace route', async () => {
+    const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
+
+    await expect.element(screen.getByText('default', { exact: true })).toBeVisible()
+    await expect
+      .element(screen.getByRole('link', { name: 'Sources' }))
+      .toHaveAttribute('href', '/workspaces/default/sources')
+    await expect
+      .element(screen.getByRole('link', { name: 'Schema' }))
+      .toHaveAttribute('href', routePath('workspaceSchema', { workspaceId: 'default' }))
+  })
+
+  it('falls back to Coral and an empty menu when no workspace exists', async () => {
+    const screen = await renderSidebar(false)
+
+    await expect.element(screen.getByText('Coral', { exact: true })).toBeVisible()
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    await expect.element(screen.getByRole('menuitem', { name: 'No workspaces' })).toBeVisible()
+  })
+
+  it('keeps collapsed navigation labels available through tooltips', async () => {
+    const screen = await renderSidebar(true, '/workspaces/analytics/sources', WORKSPACES)
+
+    await screen.getByRole('link', { name: 'Sources' }).hover()
+    await expect
+      .poll(() => document.querySelector('[data-base-ui-portal]')?.textContent)
+      .toContain('Sources')
   })
 })
