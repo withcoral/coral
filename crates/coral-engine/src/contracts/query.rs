@@ -529,6 +529,8 @@ pub struct QueryRuntimeConfig {
     pub memory: QueryMemoryConfig,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
+    /// Validated UDFs available in this runtime build.
+    pub udfs: Vec<super::UdfRuntimeDefinition>,
 }
 
 impl QueryRuntimeConfig {
@@ -540,7 +542,15 @@ impl QueryRuntimeConfig {
             extensions,
             memory: QueryMemoryConfig::default(),
             dependent_join: DependentJoinConfig::default(),
+            udfs: Vec::new(),
         }
+    }
+
+    /// Attaches validated UDFs to this runtime config.
+    #[must_use]
+    pub fn with_udfs(mut self, udfs: Vec<super::UdfRuntimeDefinition>) -> Self {
+        self.udfs = udfs;
+        self
     }
 }
 

@@ -1,6 +1,5 @@
 //! UDF SQL signature inference and runtime argument binding helpers.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
@@ -16,10 +15,6 @@ use crate::{
     UdfRuntimeImplementation, UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
 };
 
-#[expect(
-    dead_code,
-    reason = "UDF table-function execution consumes registered UDF SQL in the next stack branch."
-)]
 pub(crate) fn udf_sql(udf: &UdfRuntimeDefinition) -> &str {
     let UdfRuntimeImplementation::CoralSql { query } = &udf.implementation;
     query
@@ -84,13 +79,6 @@ pub(crate) fn udf_query_parameters(
     UdfArgumentBinding::new(udf, arguments).into_query_params()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "UDF table-function execution consumes literal call binding in the next stack branch."
-    )
-)]
 pub(crate) fn udf_argument_values(
     udf: &UdfRuntimeDefinition,
     args: &[Expr],
@@ -170,10 +158,6 @@ fn unalias(mut expr: &Expr) -> &Expr {
     expr
 }
 
-#[expect(
-    dead_code,
-    reason = "UDF table-function execution consumes bound parameter values in the next stack branch."
-)]
 pub(crate) fn udf_param_values(params: &QueryParameters) -> Vec<(String, ScalarValue)> {
     params
         .iter()
@@ -181,10 +165,6 @@ pub(crate) fn udf_param_values(params: &QueryParameters) -> Vec<(String, ScalarV
         .collect()
 }
 
-#[expect(
-    dead_code,
-    reason = "UDF table-function execution consumes result schemas in the next stack branch."
-)]
 pub(crate) fn udf_arrow_schema(udf: &UdfRuntimeDefinition) -> DataFusionResult<Arc<Schema>> {
     if udf.result_columns.is_empty() {
         return Err(DataFusionError::Plan(format!(
@@ -216,7 +196,6 @@ impl<'a> UdfArgumentBinding<'a> {
     }
 
     fn into_query_params(self) -> DataFusionResult<QueryParameters> {
-        self.reject_duplicate_argument_definitions()?;
         self.reject_unknown_arguments()?;
 
         let mut params = self.arguments.clone();
@@ -224,19 +203,6 @@ impl<'a> UdfArgumentBinding<'a> {
             self.bind_argument(argument, &mut params)?;
         }
         Ok(params)
-    }
-
-    fn reject_duplicate_argument_definitions(&self) -> DataFusionResult<()> {
-        let mut seen = BTreeSet::new();
-        for argument in &self.udf.arguments {
-            if !seen.insert(argument.name.as_str()) {
-                return Err(DataFusionError::Plan(format!(
-                    "udf '{}' argument '{}' is declared more than once",
-                    self.udf.name, argument.name
-                )));
-            }
-        }
-        Ok(())
     }
 
     fn reject_unknown_arguments(&self) -> DataFusionResult<()> {
