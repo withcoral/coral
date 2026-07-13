@@ -4,7 +4,13 @@ import React, { ComponentProps, ElementType } from 'react'
 import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
 
 import { button, disabledClass } from './button.css'
-import { Icon, IconImplementation, LonelyIconImplementation } from './icon'
+import {
+  Icon,
+  IconImplementation,
+  LonelyIconImplementation,
+  SpinningButtonIcon,
+  SpinningIconImplementation,
+} from './icon'
 import { Text, TextImplementation } from './text'
 
 export type ButtonProps<T extends ElementType = 'button'> = ButtonBaseProps &
@@ -58,14 +64,21 @@ export function Container<T extends ElementType = 'button'>(
       const childElement = child as React.ReactElement<Record<string, unknown>>
 
       switch (child.type) {
-        case Icon: {
+        case Icon:
+        case SpinningButtonIcon: {
           const iconProps = childElement.props as unknown as ComponentProps<typeof Icon>
+          const IconComponent =
+            child.type === SpinningButtonIcon ? SpinningIconImplementation : IconImplementation
+          const LonelyIconComponent =
+            child.type === SpinningButtonIcon
+              ? SpinningIconImplementation
+              : LonelyIconImplementation
 
           if (index === 0 && childrenArray.length === 1) {
             isSymbolOnly = true
 
             return [
-              <LonelyIconImplementation
+              <LonelyIconComponent
                 key={childElement.key}
                 name={iconProps.name}
                 size={size}
@@ -81,7 +94,7 @@ export function Container<T extends ElementType = 'button'>(
           }
 
           return [
-            <IconImplementation
+            <IconComponent
               key={childElement.key}
               name={iconProps.name}
               size={size}

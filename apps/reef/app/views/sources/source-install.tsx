@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import { Form } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
-import { Icon as ButtonIcon } from '@/wax/components/button/icon'
+import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
@@ -161,7 +161,7 @@ function SourceInstallDialogContent({
           type="submit"
           variant="primary"
         >
-          {submitting ? <ButtonIcon name="Loader" /> : null}
+          {submitting ? <SpinningButtonIcon name="Loader" /> : null}
           <ButtonText>{submitting ? 'Adding…' : 'Add source'}</ButtonText>
         </ButtonContainer>
       </Dialog.Actions>

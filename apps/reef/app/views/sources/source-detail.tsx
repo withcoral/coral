@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Form, useActionData, useNavigate, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
-import { Icon as ButtonIcon } from '@/wax/components/button/icon'
+import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
@@ -253,7 +253,7 @@ function SourceDetailDialogContent({
           </ButtonContainer>
           {editable && hasChanges ? (
             <ButtonContainer variant="primary" size="32" type="submit" disabled={saving}>
-              {saving ? <ButtonIcon name="Loader" /> : null}
+              {saving ? <SpinningButtonIcon name="Loader" /> : null}
               <ButtonText>{saving ? 'Saving…' : 'Save changes'}</ButtonText>
             </ButtonContainer>
           ) : (
@@ -315,7 +315,7 @@ function RemoveConfirmation({
           <ButtonText>Cancel</ButtonText>
         </ButtonContainer>
         <ButtonContainer variant="destructive" size="32" type="submit" disabled={deleting}>
-          {deleting ? <ButtonIcon name="Loader" /> : null}
+          {deleting ? <SpinningButtonIcon name="Loader" /> : null}
           <ButtonText>{deleting ? 'Removing…' : 'Remove'}</ButtonText>
         </ButtonContainer>
       </Dialog.Actions>

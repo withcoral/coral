@@ -21,10 +21,18 @@ pulldown-cmark = { version = "0.13", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+thiserror.workspace = true
+url.workspace = true
+urlencoding.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
+
+jsonschema.workspace = true
+reqwest.workspace = true
 
 coral-spec.workspace = true
 
 [dev-dependencies]
+assert_cmd.workspace = true
 insta = "1"
+tempfile.workspace = true
