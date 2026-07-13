@@ -3,6 +3,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use arrow::datatypes::{Field, FieldRef};
+use coral_spec::ManifestDataType;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{ScalarValue, TableReference};
 use datafusion::dataframe::DataFrame;
@@ -52,6 +54,12 @@ pub(crate) struct QueryRuntimeAdapter {
     failures: Vec<SourceRegistrationFailure>,
     schema_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+}
+
+pub(crate) struct InferredSqlSignature {
+    pub(crate) parameter_fields: HashMap<String, Option<FieldRef>>,
+    pub(crate) declared_parameter_types: HashMap<String, ManifestDataType>,
+    pub(crate) planned_schema: Arc<arrow::datatypes::Schema>,
 }
 
 struct FallbackRuntime {
@@ -415,6 +423,44 @@ impl QueryRuntimeAdapter {
         }
     }
 
+    pub(crate) async fn infer_sql_signature(
+        &self,
+        sql: &str,
+    ) -> Result<InferredSqlSignature, CoreError> {
+        let plan_error = |err| {
+            datafusion_to_core_with_sql_and_table_functions(
+                &err,
+                &self.tables,
+                &self.table_functions,
+                Some(sql),
+            )
+        };
+        let df = self
+            .ctx
+            .sql_with_options(sql, read_only_sql_options())
+            .await
+            .map_err(plan_error)?;
+        let mut parameter_fields = df
+            .logical_plan()
+            .get_parameter_fields()
+            .map_err(plan_error)?;
+        infer_cast_parameter_fields(df.logical_plan(), &mut parameter_fields)
+            .map_err(plan_error)?;
+        let mut declared_parameter_types = HashMap::new();
+        infer_source_function_parameter_fields(
+            df.logical_plan(),
+            &mut parameter_fields,
+            &mut declared_parameter_types,
+        )
+        .map_err(plan_error)?;
+
+        Ok(InferredSqlSignature {
+            parameter_fields,
+            declared_parameter_types,
+            planned_schema: Arc::new(df.logical_plan().schema().as_arrow().clone()),
+        })
+    }
+
     async fn execute_sql_once(
         &self,
         ctx: &SessionContext,
@@ -631,6 +677,113 @@ impl QueryRuntimeAdapter {
                 Some(sql),
             )
         })
+    }
+}
+
+fn infer_cast_parameter_fields(
+    plan: &LogicalPlan,
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+) -> Result<(), DataFusionError> {
+    plan.apply_with_subqueries(|node| {
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                let (cast_expr, data_type) = match expr {
+                    Expr::Cast(cast) => (cast.expr.as_ref(), cast.data_type.clone()),
+                    Expr::TryCast(cast) => (cast.expr.as_ref(), cast.data_type.clone()),
+                    _ => return Ok(TreeNodeRecursion::Continue),
+                };
+                let Expr::Placeholder(placeholder) = cast_expr else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                set_parameter_field(
+                    parameter_fields,
+                    &placeholder.id,
+                    Arc::new(Field::new("", data_type, true)),
+                )?;
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })
+    })?;
+    Ok(())
+}
+
+fn infer_source_function_parameter_fields(
+    plan: &LogicalPlan,
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+    declared_parameter_types: &mut HashMap<String, ManifestDataType>,
+) -> Result<(), DataFusionError> {
+    plan.apply_with_subqueries(|node| {
+        let LogicalPlan::Extension(extension) = node else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let Some(function) = extension.node.as_any().downcast_ref::<SourceFunctionNode>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        for (argument, expr) in function.declared_args_with_call_exprs() {
+            let Expr::Placeholder(placeholder) = expr else {
+                continue;
+            };
+            set_parameter_field(
+                parameter_fields,
+                &placeholder.id,
+                Arc::new(Field::new(
+                    "",
+                    crate::types::arrow_parameter_type(argument.data_type),
+                    true,
+                )),
+            )?;
+            set_declared_parameter_type(
+                declared_parameter_types,
+                &placeholder.id,
+                argument.data_type,
+            )?;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(())
+}
+
+fn set_declared_parameter_type(
+    declared_parameter_types: &mut HashMap<String, ManifestDataType>,
+    parameter: &str,
+    data_type: ManifestDataType,
+) -> Result<(), DataFusionError> {
+    match declared_parameter_types.get(parameter) {
+        Some(existing) if *existing != data_type => Err(DataFusionError::Plan(format!(
+            "conflicting types for parameter {parameter}: {} and {}; use explicit casts so every use has one type",
+            existing.as_manifest_str(),
+            data_type.as_manifest_str()
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            declared_parameter_types.insert(parameter.to_string(), data_type);
+            Ok(())
+        }
+    }
+}
+
+fn set_parameter_field(
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+    parameter: &str,
+    field: FieldRef,
+) -> Result<(), DataFusionError> {
+    match parameter_fields.get(parameter) {
+        Some(Some(existing))
+            if existing.data_type() != field.data_type()
+                && !(crate::types::is_string_family(existing.data_type())
+                    && crate::types::is_string_family(field.data_type())) =>
+        {
+            Err(DataFusionError::Plan(format!(
+                "conflicting types for parameter {parameter}: {} and {}; use explicit casts so every use has one type",
+                existing.data_type(),
+                field.data_type()
+            )))
+        }
+        Some(Some(_)) => Ok(()),
+        _ => {
+            parameter_fields.insert(parameter.to_string(), Some(field));
+            Ok(())
+        }
     }
 }
 

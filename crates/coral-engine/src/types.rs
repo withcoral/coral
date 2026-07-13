@@ -5,13 +5,12 @@
 //! policies, so that when more than one lowering exists (column schemas
 //! want real Arrow types; string-shaped parameter binding wants plain
 //! strings) the policies sit adjacent and reviewable. It holds column-schema
-//! lowering, SQL parameter binding lowering, Arrow-to-manifest inference, and
-//! type-claim compatibility. Value-level `ManifestDataType` switches still live
-//! with their backends (`convert_items` in `backends/shared/mapping.rs` builds
-//! Arrow arrays per variant, and `coerce_filter_value` / `coerce_call_arg_value`
-//! in the MCP backend coerce JSON values). All of those matches are
-//! wildcard-free, so adding a `ManifestDataType` variant breaks each of them
-//! loudly.
+//! lowering, SQL parameter binding lowering, and Arrow-to-manifest inference.
+//! Value-level `ManifestDataType` switches still live with their backends
+//! (`convert_items` in `backends/shared/mapping.rs` builds Arrow arrays per
+//! variant, and `coerce_filter_value` / `coerce_call_arg_value` in the MCP
+//! backend coerce JSON values). All of those matches are wildcard-free, so
+//! adding a `ManifestDataType` variant breaks each of them loudly.
 
 use coral_spec::ManifestDataType;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
@@ -51,13 +50,6 @@ pub(crate) fn arrow_parameter_type(data_type: ManifestDataType) -> DataType {
 
 /// Resolves a DataFusion/Arrow inferred parameter type into Coral manifest
 /// spelling when the type can be expressed in function metadata.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Used by the function signature inference PR stacked on this one"
-    )
-)]
 pub(crate) fn manifest_data_type_for_arrow(data_type: &DataType) -> Option<ManifestDataType> {
     match data_type {
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Some(ManifestDataType::Utf8),
@@ -67,22 +59,6 @@ pub(crate) fn manifest_data_type_for_arrow(data_type: &DataType) -> Option<Manif
         DataType::Timestamp(_, _) => Some(ManifestDataType::Timestamp),
         _ => None,
     }
-}
-
-/// Whether a declared manifest type is compatible with one Arrow-inferred
-/// claim for the same SQL placeholder.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Used by the function signature inference PR stacked on this one"
-    )
-)]
-pub(crate) fn manifest_claim_accepts_arrow(declared: ManifestDataType, arrow: &DataType) -> bool {
-    let declared_arrow = arrow_parameter_type(declared);
-    declared_arrow == *arrow
-        || (is_string_family(&declared_arrow) && is_string_family(arrow))
-        || (declared == ManifestDataType::Timestamp && matches!(arrow, DataType::Timestamp(_, _)))
 }
 
 /// Whether an Arrow type is one of the string representations
@@ -118,22 +94,6 @@ mod tests {
             | ManifestDataType::Float64
             | ManifestDataType::Boolean
             | ManifestDataType::Timestamp => {}
-        }
-    }
-
-    #[test]
-    fn every_variant_accepts_its_own_lowerings() {
-        for data_type in ALL {
-            assert_all_manifest_data_types_covered(data_type);
-
-            assert!(
-                manifest_claim_accepts_arrow(data_type, &arrow_parameter_type(data_type)),
-                "{data_type} should accept its parameter lowering"
-            );
-            assert!(
-                manifest_claim_accepts_arrow(data_type, &arrow_column_type(data_type)),
-                "{data_type} should accept its column lowering"
-            );
         }
     }
 

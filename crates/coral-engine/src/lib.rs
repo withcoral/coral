@@ -75,6 +75,8 @@ pub use contracts::{
     QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
     RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
     TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    UdfRuntimeArgument, UdfRuntimeImplementation, UdfRuntimeResultColumn, UdfRuntimeSignature,
+    UdfRuntimeSqlDefinition,
 };
 
 /// High-level query operations for the local query engine.
@@ -181,6 +183,28 @@ impl CoralQuery {
             .await?
             .execute_sql(sql, &params)
             .await
+    }
+
+    /// Infers the typed signature for one UDF by planning its SQL against selected sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if source compilation fails, if the UDF SQL cannot
+    /// plan against the selected sources, or if any SQL parameter has no
+    /// inferred type.
+    pub async fn infer_udf_signature(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        udf: UdfRuntimeSqlDefinition,
+    ) -> Result<UdfRuntimeSignature, CoreError> {
+        if udf.sql().trim().is_empty() {
+            return Err(CoreError::InvalidInput(format!(
+                "udf '{}' SQL body cannot be empty",
+                udf.name
+            )));
+        }
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        runtime::udfs::infer_udf_signature(&query_runtime, &udf).await
     }
 
     /// Explains one `SQL` statement with logical and physical plan renderings.
