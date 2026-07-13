@@ -14,7 +14,7 @@ use coral_spec::backends::mcp::McpSourceManifest;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
 
-use super::ColumnInfo;
+use super::{ColumnInfo, StatisticsProfile};
 use crate::EngineExtensions;
 
 /// One managed source selected into the current query runtime.
@@ -509,6 +509,8 @@ pub struct QueryRuntimeConfig {
     pub memory: QueryMemoryConfig,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
+    /// Column statistics to project through the runtime catalog.
+    pub statistics: StatisticsProfile,
 }
 
 impl QueryRuntimeConfig {
@@ -520,7 +522,15 @@ impl QueryRuntimeConfig {
             extensions,
             memory: QueryMemoryConfig::default(),
             dependent_join: DependentJoinConfig::default(),
+            statistics: StatisticsProfile::empty(),
         }
+    }
+
+    /// Replaces the runtime statistics profile.
+    #[must_use]
+    pub fn with_statistics(mut self, statistics: StatisticsProfile) -> Self {
+        self.statistics = statistics;
+        self
     }
 }
 

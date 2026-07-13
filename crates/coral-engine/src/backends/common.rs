@@ -106,6 +106,7 @@ pub(crate) struct RegisteredInput {
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
+    pub(crate) source_version: String,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) table_functions: Vec<RegisteredTableFunction>,
     pub(crate) inputs: Vec<RegisteredInput>,

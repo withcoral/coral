@@ -5,6 +5,7 @@ use super::partitions::{
 };
 use super::provider::FileTableProvider;
 use crate::backends::compile_source_manifest;
+use crate::contracts::StatisticsProfile;
 use crate::runtime::catalog;
 use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
 use crate::{QueryRuntimeContext, QuerySource};
@@ -275,8 +276,12 @@ async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
 
     let active_sources = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
         .expect("file source should register");
-    catalog::register(&ctx, &active_sources.active_sources)
-        .expect("metadata tables should register");
+    catalog::register(
+        &ctx,
+        &active_sources.active_sources,
+        &StatisticsProfile::empty(),
+    )
+    .expect("metadata tables should register");
 
     let batches = ctx
         .sql(

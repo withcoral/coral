@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use coral_spec::{ManifestInputKind, SearchLimitsSpec};
-use datafusion::arrow::array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
+use datafusion::arrow::array::{
+    ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result};
@@ -12,9 +14,12 @@ use datafusion::prelude::SessionContext;
 use serde::Serialize;
 
 use crate::backends::common::{
-    RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
+    RegisteredColumn, RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
 };
-use crate::backends::{RegisteredSource, RegisteredTableFunction};
+use crate::backends::{RegisteredSource, RegisteredTable, RegisteredTableFunction};
+use crate::contracts::{
+    ColumnStatistics, StatisticsProfile, TableSchemaSignature, TableStatistics,
+};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
@@ -30,9 +35,13 @@ pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 ///
 /// Returns a `DataFusionError` if the catalog is missing or the metadata
 /// tables cannot be materialized.
-pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]) -> Result<()> {
+pub(crate) fn register(
+    ctx: &SessionContext,
+    active_sources: &[RegisteredSource],
+    statistics: &StatisticsProfile,
+) -> Result<()> {
     let tables_table = build_tables_table(active_sources)?;
-    let columns_table = build_columns_table(active_sources)?;
+    let columns_table = build_columns_table(active_sources, statistics)?;
     let filters_table = build_filters_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
     let table_functions_table = build_table_functions_table(active_sources)?;
@@ -818,10 +827,26 @@ struct CatalogColumn {
     filter_mode: Option<String>,
     description: String,
     ordinal_position: usize,
+    null_fraction: Option<f64>,
+    approx_distinct_count: Option<i64>,
+    stats_sample_count: Option<i64>,
+    stats_observed_at: Option<String>,
+    stats_precision: Option<&'static str>,
 }
 
-fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
-    let schema = Arc::new(Schema::new(vec![
+fn build_columns_table(
+    active_sources: &[RegisteredSource],
+    statistics: &StatisticsProfile,
+) -> Result<MemTable> {
+    let schema = columns_schema();
+    let rows = columns_rows(active_sources, statistics);
+    let batch = columns_batch(schema.clone(), &rows)?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
+}
+
+fn columns_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
         Field::new("ordinal_position", DataType::Int32, false),
@@ -832,17 +857,25 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         Field::new("is_required_filter", DataType::Boolean, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("filter_mode", DataType::Utf8, true),
-    ]));
-
-    let rows = catalog_column_rows(active_sources);
-    let batch = catalog_columns_batch(schema.clone(), &rows)?;
-
-    MemTable::try_new(schema, vec![vec![batch]])
+        Field::new("null_fraction", DataType::Float64, true),
+        Field::new("approx_distinct_count", DataType::Int64, true),
+        Field::new("stats_sample_count", DataType::Int64, true),
+        Field::new("stats_observed_at", DataType::Utf8, true),
+        Field::new("stats_precision", DataType::Utf8, true),
+    ]))
 }
 
-fn catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn> {
+fn columns_rows(
+    active_sources: &[RegisteredSource],
+    statistics: &StatisticsProfile,
+) -> Vec<CatalogColumn> {
     let mut rows = system_catalog_column_rows();
-    rows.extend(source_catalog_column_rows(active_sources));
+    for source in active_sources {
+        for table in &source.tables {
+            rows.extend(columns_for_table(source, table, statistics));
+        }
+    }
+
     rows.sort_by(|left, right| {
         (&left.schema_name, &left.table_name, left.ordinal_position).cmp(&(
             &right.schema_name,
@@ -872,38 +905,96 @@ fn system_catalog_column_rows() -> Vec<CatalogColumn> {
                     filter_mode: None,
                     description: column.description.to_string(),
                     ordinal_position: position,
+                    null_fraction: None,
+                    approx_distinct_count: None,
+                    stats_sample_count: None,
+                    stats_observed_at: None,
+                    stats_precision: None,
                 })
         })
         .collect()
 }
 
-fn source_catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn> {
-    active_sources
+fn columns_for_table(
+    source: &RegisteredSource,
+    table: &RegisteredTable,
+    statistics: &StatisticsProfile,
+) -> Vec<CatalogColumn> {
+    let table_statistics = matching_table_statistics(source, table, statistics);
+    table
+        .columns
         .iter()
-        .flat_map(|source| {
-            source.tables.iter().flat_map(move |table| {
-                table
-                    .columns
-                    .iter()
-                    .enumerate()
-                    .map(move |(position, column)| CatalogColumn {
-                        schema_name: source.schema_name.clone(),
-                        table_name: table.table_name.clone(),
-                        column_name: column.name.clone(),
-                        data_type: column.data_type.clone(),
-                        is_nullable: column.nullable,
-                        is_virtual: column.is_virtual,
-                        is_required_filter: column.is_required_filter,
-                        filter_mode: column.filter_mode.clone(),
-                        description: column.description.clone(),
-                        ordinal_position: position,
-                    })
-            })
+        .enumerate()
+        .map(|(position, column)| {
+            let column_statistics =
+                table_statistics.and_then(|stats| stats.columns.get(&column.name));
+            catalog_column(source, table, position, column, column_statistics)
         })
         .collect()
 }
 
-fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<RecordBatch> {
+fn matching_table_statistics<'a>(
+    source: &RegisteredSource,
+    table: &RegisteredTable,
+    statistics: &'a StatisticsProfile,
+) -> Option<&'a TableStatistics> {
+    statistics
+        .sources
+        .get(&source.schema_name)
+        .filter(|source_stats| {
+            source_version_matches(
+                &source.source_version,
+                source_stats.source_version.as_deref(),
+            )
+        })
+        .and_then(|source_stats| source_stats.tables.get(&table.table_name))
+        .filter(|table_stats| {
+            source_version_matches(
+                &source.source_version,
+                table_stats.source_version.as_deref(),
+            )
+        })
+        .filter(|table_stats| table_stats.schema_signature == table_schema_signature(table))
+}
+
+fn source_version_matches(
+    active_source_version: &str,
+    statistics_source_version: Option<&str>,
+) -> bool {
+    match statistics_source_version {
+        Some(statistics_source_version) => statistics_source_version == active_source_version,
+        None => true,
+    }
+}
+
+fn catalog_column(
+    source: &RegisteredSource,
+    table: &RegisteredTable,
+    position: usize,
+    column: &RegisteredColumn,
+    column_statistics: Option<&ColumnStatistics>,
+) -> CatalogColumn {
+    CatalogColumn {
+        schema_name: source.schema_name.clone(),
+        table_name: table.table_name.clone(),
+        column_name: column.name.clone(),
+        data_type: column.data_type.clone(),
+        is_nullable: column.nullable,
+        is_virtual: column.is_virtual,
+        is_required_filter: column.is_required_filter,
+        filter_mode: column.filter_mode.clone(),
+        description: column.description.clone(),
+        ordinal_position: position,
+        null_fraction: column_statistics.and_then(ColumnStatistics::null_fraction),
+        approx_distinct_count: column_statistics
+            .and_then(ColumnStatistics::approx_distinct_count_i64),
+        stats_sample_count: column_statistics.and_then(ColumnStatistics::sample_count_i64),
+        stats_observed_at: column_statistics.and_then(|stats| stats.observed_at.clone()),
+        stats_precision: column_statistics.and_then(ColumnStatistics::precision_for_catalog),
+    }
+}
+
+fn columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         schema,
         vec![
@@ -953,24 +1044,354 @@ fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<
                     .collect::<StringArray>(),
             ),
             utf8_column(rows.iter().map(|row| row.filter_mode.as_deref())),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.null_fraction)
+                    .collect::<Float64Array>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.approx_distinct_count)
+                    .collect::<Int64Array>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.stats_sample_count)
+                    .collect::<Int64Array>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.stats_observed_at.as_deref())
+                    .collect::<StringArray>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.stats_precision)
+                    .collect::<StringArray>(),
+            ),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))
 }
 
+pub(crate) fn table_schema_signature(table: &RegisteredTable) -> TableSchemaSignature {
+    TableSchemaSignature {
+        columns: table.columns.iter().map(column_schema_signature).collect(),
+        required_filters: table.required_filters.clone(),
+    }
+}
+
+fn column_schema_signature(column: &RegisteredColumn) -> crate::contracts::ColumnSchemaSignature {
+    crate::contracts::ColumnSchemaSignature {
+        name: column.name.clone(),
+        data_type: column.data_type.clone(),
+        nullable: column.nullable,
+        is_virtual: column.is_virtual,
+        is_required_filter: column.is_required_filter,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use crate::backends::common::test_support::StubSourceFunctionFactory;
-    use crate::backends::{RegisteredSource, RegisteredTableFunction};
 
-    use super::collect_table_functions;
+    use datafusion::arrow::array::{Array, Float64Array, Int64Array, StringArray};
+    use datafusion::datasource::TableProvider;
+
+    use super::{build_columns_table, collect_table_functions, table_schema_signature};
+    use crate::backends::common::RegisteredColumn;
+    use crate::backends::{RegisteredSource, RegisteredTable, RegisteredTableFunction};
+    use crate::contracts::{
+        ColumnStatistics, SourceStatistics, StatisticPrecision, StatisticValue, StatisticsProfile,
+        TableStatistics,
+    };
+
+    fn source() -> RegisteredSource {
+        RegisteredSource {
+            schema_name: "local".to_string(),
+            source_version: "0.2.0".to_string(),
+            tables: vec![RegisteredTable {
+                table_name: "events".to_string(),
+                description: "Events".to_string(),
+                guide: String::new(),
+                required_filters: Vec::new(),
+                columns: vec![
+                    RegisteredColumn {
+                        name: "id".to_string(),
+                        data_type: "Int64".to_string(),
+                        nullable: false,
+                        is_virtual: false,
+                        is_required_filter: false,
+                        filter_mode: None,
+                        description: String::new(),
+                    },
+                    RegisteredColumn {
+                        name: "category".to_string(),
+                        data_type: "Utf8".to_string(),
+                        nullable: true,
+                        is_virtual: false,
+                        is_required_filter: false,
+                        filter_mode: None,
+                        description: String::new(),
+                    },
+                ],
+                filters: Vec::new(),
+                search_limits: None,
+            }],
+            table_functions: Vec::new(),
+            inputs: Vec::new(),
+        }
+    }
+
+    fn profile_for(source: &RegisteredSource) -> StatisticsProfile {
+        let table = source.tables.first().expect("source has one table");
+        let mut columns = BTreeMap::new();
+        columns.insert(
+            "category".to_string(),
+            ColumnStatistics {
+                column_name: "category".to_string(),
+                sample_count: 5,
+                null_count: Some(StatisticValue {
+                    value: 2,
+                    precision: StatisticPrecision::ObservedSample,
+                }),
+                approx_distinct_count: Some(StatisticValue {
+                    value: 3,
+                    precision: StatisticPrecision::ObservedSample,
+                }),
+                observed_at: Some("2026-05-06T00:00:00Z".to_string()),
+            },
+        );
+
+        let mut tables = BTreeMap::new();
+        tables.insert(
+            table.table_name.clone(),
+            TableStatistics {
+                schema_name: source.schema_name.clone(),
+                table_name: table.table_name.clone(),
+                source_version: Some(source.source_version.clone()),
+                schema_signature: table_schema_signature(table),
+                columns,
+            },
+        );
+
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            source.schema_name.clone(),
+            SourceStatistics {
+                schema_name: source.schema_name.clone(),
+                source_version: Some(source.source_version.clone()),
+                tables,
+            },
+        );
+
+        StatisticsProfile {
+            version: 1,
+            sources,
+        }
+    }
+
+    #[test]
+    fn columns_table_appends_nullable_statistics_fields() {
+        let source = source();
+        let table = build_columns_table(std::slice::from_ref(&source), &StatisticsProfile::empty())
+            .expect("columns table should build");
+        let schema = table.schema();
+        let names = schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names.get(..10).expect("base column fields"),
+            &[
+                "schema_name",
+                "table_name",
+                "ordinal_position",
+                "column_name",
+                "data_type",
+                "is_nullable",
+                "is_virtual",
+                "is_required_filter",
+                "description",
+                "filter_mode",
+            ]
+        );
+        assert_eq!(
+            names.get(10..).expect("statistics column fields"),
+            &[
+                "null_fraction",
+                "approx_distinct_count",
+                "stats_sample_count",
+                "stats_observed_at",
+                "stats_precision",
+            ]
+        );
+        assert!(
+            schema
+                .field_with_name("null_fraction")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            schema
+                .field_with_name("approx_distinct_count")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            schema
+                .field_with_name("stats_sample_count")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            schema
+                .field_with_name("stats_observed_at")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            schema
+                .field_with_name("stats_precision")
+                .unwrap()
+                .is_nullable()
+        );
+    }
+
+    #[test]
+    fn empty_profile_projects_null_statistics() {
+        let source = source();
+        let table = build_columns_table(std::slice::from_ref(&source), &StatisticsProfile::empty())
+            .expect("columns table should build");
+        let batch = first_batch(&table);
+
+        for index in [10, 11, 12, 13, 14] {
+            let column = batch.column(index);
+            assert_eq!(column.null_count(), batch.num_rows());
+        }
+    }
+
+    #[test]
+    fn matching_profile_projects_statistics() {
+        let source = source();
+        let profile = profile_for(&source);
+        let table = build_columns_table(std::slice::from_ref(&source), &profile)
+            .expect("columns table should build");
+        let batch = first_batch(&table);
+
+        let null_fraction = batch
+            .column(10)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        let distinct = batch
+            .column(11)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let sample = batch
+            .column(12)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let id_row = catalog_row_index(&batch, "local", "events", "id");
+        let category_row = catalog_row_index(&batch, "local", "events", "category");
+
+        assert!(null_fraction.is_null(id_row));
+        assert!((null_fraction.value(category_row) - 0.4).abs() < f64::EPSILON);
+        assert_eq!(distinct.value(category_row), 3);
+        assert_eq!(sample.value(category_row), 5);
+    }
+
+    #[test]
+    fn mismatched_schema_signature_projects_null_statistics() {
+        let source = source();
+        let mut profile = profile_for(&source);
+        let source_stats = profile.sources.get_mut("local").unwrap();
+        let table_stats = source_stats.tables.get_mut("events").unwrap();
+        table_stats
+            .schema_signature
+            .required_filters
+            .push("status".to_string());
+
+        let table = build_columns_table(std::slice::from_ref(&source), &profile)
+            .expect("columns table should build");
+        let batch = first_batch(&table);
+
+        for index in [10, 11, 12, 13, 14] {
+            let column = batch.column(index);
+            assert_eq!(column.null_count(), batch.num_rows());
+        }
+    }
+
+    #[test]
+    fn mismatched_source_version_projects_null_statistics() {
+        let source = source();
+        let mut profile = profile_for(&source);
+        let source_stats = profile.sources.get_mut("local").unwrap();
+        source_stats.source_version = Some("0.1.0".to_string());
+        let table_stats = source_stats.tables.get_mut("events").unwrap();
+        table_stats.source_version = Some("0.1.0".to_string());
+
+        let table = build_columns_table(std::slice::from_ref(&source), &profile)
+            .expect("columns table should build");
+        let batch = first_batch(&table);
+
+        for index in [10, 11, 12, 13, 14] {
+            let column = batch.column(index);
+            assert_eq!(column.null_count(), batch.num_rows());
+        }
+    }
+
+    fn first_batch(
+        table: &datafusion::datasource::MemTable,
+    ) -> datafusion::arrow::array::RecordBatch {
+        let partition = table.batches.first().expect("one partition");
+        let batches = futures::executor::block_on(partition.read());
+        batches.first().expect("one batch").clone()
+    }
+
+    fn catalog_row_index(
+        batch: &datafusion::arrow::array::RecordBatch,
+        schema_name: &str,
+        table_name: &str,
+        column_name: &str,
+    ) -> usize {
+        let schemas = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("schema_name column");
+        let tables = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("table_name column");
+        let columns = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("column_name column");
+
+        (0..batch.num_rows())
+            .find(|row| {
+                schemas.value(*row) == schema_name
+                    && tables.value(*row) == table_name
+                    && columns.value(*row) == column_name
+            })
+            .expect("catalog row should exist")
+    }
 
     #[test]
     fn collect_table_functions_preserves_registered_function_schema() {
         let functions = collect_table_functions(&[RegisteredSource {
             schema_name: "source_schema".to_string(),
+            source_version: "0.2.0".to_string(),
             tables: Vec::new(),
             table_functions: vec![RegisteredTableFunction {
                 schema_name: "function_schema".to_string(),

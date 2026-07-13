@@ -151,6 +151,7 @@ impl CompiledBackendSource for FileCompiledSource {
                 tables,
                 source: RegisteredSource {
                     schema_name,
+                    source_version: self.manifest.common.version.clone(),
                     tables: table_infos,
                     table_functions: vec![],
                     inputs,

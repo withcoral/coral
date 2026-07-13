@@ -16,15 +16,18 @@ use crate::backends::{
 
 struct CompositeCompiledSource {
     source_name: String,
+    source_version: String,
     components: Vec<Box<dyn CompiledBackendSource>>,
 }
 
 pub(crate) fn compile_source(
     source_name: String,
+    source_version: String,
     components: Vec<Box<dyn CompiledBackendSource>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(CompositeCompiledSource {
         source_name,
+        source_version,
         components,
     })
 }
@@ -57,9 +60,12 @@ impl CompiledBackendSource for CompositeCompiledSource {
             let registration = component.register(ctx, registration_context).await?;
             for schema in registration.schemas {
                 let schema_name = schema.source.schema_name.clone();
-                let target = schemas
-                    .entry(schema_name.clone())
-                    .or_insert_with(|| CompositeSchemaRegistration::new(schema_name.clone()));
+                let target = schemas.entry(schema_name.clone()).or_insert_with(|| {
+                    CompositeSchemaRegistration::new(
+                        schema_name.clone(),
+                        self.source_version.clone(),
+                    )
+                });
                 for (name, table) in schema.tables {
                     if target.tables.insert(name.clone(), table).is_some() {
                         return Err(DataFusionError::Execution(format!(
@@ -98,6 +104,7 @@ impl CompiledBackendSource for CompositeCompiledSource {
 
 struct CompositeSchemaRegistration {
     schema_name: String,
+    source_version: String,
     tables: HashMap<String, Arc<dyn TableProvider>>,
     function_keys: BTreeSet<String>,
     registered_tables: Vec<RegisteredTable>,
@@ -107,9 +114,10 @@ struct CompositeSchemaRegistration {
 }
 
 impl CompositeSchemaRegistration {
-    fn new(schema_name: String) -> Self {
+    fn new(schema_name: String, source_version: String) -> Self {
         Self {
             schema_name,
+            source_version,
             tables: HashMap::new(),
             function_keys: BTreeSet::new(),
             registered_tables: Vec::new(),
@@ -124,6 +132,7 @@ impl CompositeSchemaRegistration {
             tables: self.tables,
             source: RegisteredSource {
                 schema_name: self.schema_name,
+                source_version: self.source_version,
                 tables: self.registered_tables,
                 table_functions: self.registered_functions,
                 inputs: self.inputs,
