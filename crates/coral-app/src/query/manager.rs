@@ -701,6 +701,7 @@ fn query_error_message(error: &QueryManagerError) -> String {
 
 fn app_error_type(error: &AppError) -> &'static str {
     match error {
+        AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",

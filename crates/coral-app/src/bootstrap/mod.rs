@@ -15,7 +15,7 @@ use crate::workspaces::WorkspaceName;
 
 #[cfg(test)]
 pub(crate) use error::MAX_STATUS_DETAIL_BYTES;
-pub(crate) use error::{app_status, core_status};
+pub(crate) use error::{app_status, core_status, status_with_bounded_detail};
 
 pub use error::AppError;
 pub use server::{RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider};
