@@ -2090,6 +2090,11 @@ pub(crate) fn material_key_belongs_to_input(key: &str, input_key: &str) -> bool 
     key.starts_with(&oauth_metadata_prefix(input_key))
 }
 
+#[cfg(test)]
+pub(crate) fn refresh_token_material_key(input_key: &str) -> String {
+    OAuthMetadataKey::RefreshToken.key(&oauth_metadata_prefix(input_key))
+}
+
 fn oauth_metadata_prefix(input_key: &str) -> String {
     format!(
         "{OAUTH_INTERNAL_KEY_PREFIX}{}.",

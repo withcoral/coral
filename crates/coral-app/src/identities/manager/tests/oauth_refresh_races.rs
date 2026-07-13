@@ -1,3 +1,5 @@
+use super::super::OAUTH_ACCESS_TOKEN_KEY;
+use super::super::oauth_create::prepare_oauth_document;
 use super::*;
 
 const REFRESH_RACE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -18,6 +20,7 @@ async fn sqlite_oauth_refresh_race_contract() {
 
 pub(crate) async fn assert_oauth_refresh_race_contract(db: &Arc<CoralDb>) {
     Box::pin(assert_same_identity_converges(db)).await;
+    Box::pin(assert_identity_keys_are_isolated(db)).await;
     Box::pin(assert_replacement_wins(db, ReplacementKind::FixedToken)).await;
     Box::pin(assert_replacement_wins(db, ReplacementKind::OAuth)).await;
     Box::pin(assert_delete_recreate_aba_wins(db)).await;
@@ -90,6 +93,214 @@ async fn assert_same_identity_converges(db: &Arc<CoralDb>) {
         before_document.document_version + 1
     );
     assert_eq!(refresh_request_count(&fixture.provider).await, 1);
+}
+
+#[derive(Clone)]
+struct RefreshIdentityKey {
+    owner: IdentityOwner,
+    name: IdentityName,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IsolationAxis {
+    Owner,
+    Name,
+}
+
+async fn assert_identity_keys_are_isolated(db: &Arc<CoralDb>) {
+    for axis in [IsolationAxis::Owner, IsolationAxis::Name] {
+        Box::pin(assert_identity_key_component_isolated(db, axis)).await;
+    }
+}
+
+#[expect(clippy::used_underscore_binding, reason = "opaque revision contract")]
+async fn assert_identity_key_component_isolated(db: &Arc<CoralDb>, axis: IsolationAxis) {
+    let fixture = create_refresh_manager_fixture(db, false).await;
+    let first_key = RefreshIdentityKey {
+        owner: fixture.owner.clone(),
+        name: fixture.name.clone(),
+    };
+    let second_key = create_isolated_refresh_identity(db, &fixture, axis).await;
+    assert_isolation_axis(&first_key, &second_key, axis);
+    let finalize_reached = Arc::new(tokio::sync::Barrier::new(2));
+    let finalize_resume = Arc::new(tokio::sync::Barrier::new(2));
+    let first_manager = refresh_manager(db, &fixture.keys)
+        .with_before_refresh_finalize_gate(finalize_reached.clone(), finalize_resume.clone());
+    let second_manager = refresh_manager(db, &fixture.keys);
+    let first_request_key = first_key.clone();
+    let second_request_key = second_key.clone();
+    let observed_first_key = first_key.clone();
+    let observed_second_key = second_key.clone();
+
+    let (first, second, first_claimed, second_claimed, count_while_first_blocked) =
+        tokio::time::timeout(REFRESH_RACE_TIMEOUT, async {
+            let first = tokio::spawn(async move {
+                first_manager
+                    .get_for_use(&first_request_key.owner, first_request_key.name.as_str())
+                    .await
+            });
+            finalize_reached.wait().await;
+            let second = second_manager
+                .get_for_use(&second_request_key.owner, second_request_key.name.as_str())
+                .await;
+            let first_claimed =
+                load_use_snapshot(db, &observed_first_key.owner, &observed_first_key.name)
+                    .await
+                    .oauth_refresh_claim
+                    .is_some();
+            let second_claimed =
+                load_use_snapshot(db, &observed_second_key.owner, &observed_second_key.name)
+                    .await
+                    .oauth_refresh_claim
+                    .is_some();
+            let count = refresh_request_count(&fixture.provider).await;
+            finalize_resume.wait().await;
+            let first = first.await.expect("isolated first refresh task");
+            (first, second, first_claimed, second_claimed, count)
+        })
+        .await
+        .expect("identity-key component isolation race must not deadlock");
+    assert!(first_claimed, "blocked key must retain its exact claim");
+    assert!(
+        !second_claimed,
+        "independent key must finalize and clear its claim"
+    );
+    assert_eq!(count_while_first_blocked, 2);
+    let first = first.expect("first key refresh succeeds");
+    let second = second.expect("second key refresh succeeds while first is blocked");
+    assert_oauth_token(&first, "refreshed-token");
+    assert_oauth_token(&second, "isolated-refreshed-token");
+    assert!(
+        first.revision()._snapshot
+            == load_use_snapshot(db, &first_key.owner, &first_key.name).await
+    );
+    assert!(
+        second.revision()._snapshot
+            == load_use_snapshot(db, &second_key.owner, &second_key.name).await
+    );
+    assert_durable_refresh_token(db, &fixture, &first_key, "rotated-refresh-token").await;
+    assert_durable_refresh_token(db, &fixture, &second_key, "isolated-rotated-refresh-token").await;
+    let refresh_bodies = refresh_request_bodies(&fixture.provider).await;
+    for token in ["refresh-token", "isolated-refresh-token"] {
+        assert!(
+            refresh_bodies
+                .iter()
+                .any(|body| body.contains(&format!("refresh_token={token}")))
+        );
+    }
+    assert_eq!(refresh_request_count(&fixture.provider).await, 2);
+}
+
+fn assert_isolation_axis(
+    first: &RefreshIdentityKey,
+    second: &RefreshIdentityKey,
+    axis: IsolationAxis,
+) {
+    match axis {
+        IsolationAxis::Owner => {
+            assert_ne!(first.owner, second.owner);
+            assert_eq!(first.name, second.name);
+        }
+        IsolationAxis::Name => {
+            assert_eq!(first.owner, second.owner);
+            assert_ne!(first.name, second.name);
+        }
+    }
+}
+
+async fn create_isolated_refresh_identity(
+    db: &Arc<CoralDb>,
+    fixture: &RefreshManagerFixture,
+    axis: IsolationAxis,
+) -> RefreshIdentityKey {
+    let spec_name = fixture_spec_name(db, fixture).await;
+    let (principal, name) = match axis {
+        IsolationAxis::Owner => (
+            UserPrincipal::for_user(&format!(
+                "refresh-isolated-{}",
+                uuid::Uuid::new_v4().simple()
+            ))
+            .unwrap(),
+            fixture.name.clone(),
+        ),
+        IsolationAxis::Name => (
+            fixture_principal(fixture),
+            IdentityName::parse(&format!(
+                "refresh-isolated-{}",
+                uuid::Uuid::new_v4().simple()
+            ))
+            .unwrap(),
+        ),
+    };
+    let key = RefreshIdentityKey {
+        owner: IdentityOwner::for_user(principal.clone()),
+        name,
+    };
+    fixture
+        .manager
+        .create_or_replace_user_oauth(
+            &principal,
+            key.name.as_str(),
+            &spec_name,
+            IdentityOAuthCommitPhase::default(),
+            |_event| async { Ok(()) },
+        )
+        .await
+        .expect("create identity with one isolated key component");
+    let (Some(record), Some(document)) = load_pair(db, &key.owner, key.name.as_str()).await else {
+        panic!("isolated identity pair");
+    };
+    let mut material = decrypt_material(&record, &document, fixture.keys.as_ref());
+    material.insert(
+        OAUTH_ACCESS_TOKEN_KEY.to_string(),
+        "isolated-access-token".to_string(),
+    );
+    let refresh_token_key =
+        crate::credentials::oauth::refresh_token_material_key(OAUTH_ACCESS_TOKEN_KEY);
+    *material
+        .get_mut(&refresh_token_key)
+        .expect("OAuth refresh token") = "isolated-refresh-token".to_string();
+    let write = prepare_oauth_document(
+        &key.owner,
+        &key.name,
+        &record.spec_reference,
+        &material,
+        fixture.keys.as_ref(),
+    )
+    .expect("prepare isolated OAuth material");
+    let mut tx = db.begin_serializable().await.unwrap();
+    tx.identity_documents()
+        .upsert(&key.owner, &key.name, &write, now_unix_nanos_i64().unwrap())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    key
+}
+
+async fn assert_durable_refresh_token(
+    db: &Arc<CoralDb>,
+    fixture: &RefreshManagerFixture,
+    key: &RefreshIdentityKey,
+    expected: &str,
+) {
+    let (Some(record), Some(document)) = load_pair(db, &key.owner, key.name.as_str()).await else {
+        panic!("durable isolated identity pair");
+    };
+    let material = decrypt_material(&record, &document, fixture.keys.as_ref());
+    let expected_key =
+        crate::credentials::oauth::refresh_token_material_key(OAUTH_ACCESS_TOKEN_KEY);
+    let refresh_token_keys = material
+        .keys()
+        .filter(|material_key| material_key.ends_with(".refresh_token"))
+        .collect::<Vec<_>>();
+    assert_eq!(refresh_token_keys, vec![&expected_key]);
+    assert_eq!(
+        material
+            .get(&expected_key)
+            .expect("durable refresh token")
+            .as_str(),
+        expected
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
