@@ -182,9 +182,8 @@ async fn build_registered_runtime(
     );
     if !source_functions.is_empty() {
         source_functions
-            .install_relation_planner(&ctx)
+            .install(&ctx)
             .map_err(|err| datafusion_to_core(&err, &tables))?;
-        SourceFunctionRegistry::install_analyzer(&ctx);
     }
     for failure in &registration.failures {
         tracing::warn!(
@@ -860,7 +859,7 @@ fn is_parameterized_source_function_call(plan: &LogicalPlan) -> bool {
     extension.node.name() == SOURCE_FUNCTION_NODE_NAME
 }
 
-fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
+pub(crate) fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
     match value {
         QueryParameterValue::String(value) => ScalarValue::Utf8(value.clone()),
         QueryParameterValue::Integer(value) => ScalarValue::Int64(*value),

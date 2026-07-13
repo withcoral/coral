@@ -29,6 +29,23 @@ impl UdfRuntimeSqlDefinition {
     }
 }
 
+/// One validated UDF made available to the query runtime.
+#[derive(Debug, Clone)]
+pub struct UdfRuntimeDefinition {
+    /// Stable UDF id within one workspace.
+    pub name: String,
+    /// User-facing UDF description.
+    pub description: String,
+    /// Typed arguments accepted by the UDF.
+    pub arguments: Vec<UdfRuntimeArgument>,
+    /// Executable UDF implementation.
+    pub implementation: UdfRuntimeImplementation,
+    /// Public surfaces requested by the UDF.
+    pub publish: UdfRuntimePublish,
+    /// Columns inferred by planning the UDF SQL body.
+    pub result_columns: Vec<UdfRuntimeResultColumn>,
+}
+
 /// One typed UDF argument.
 #[derive(Debug, Clone)]
 pub struct UdfRuntimeArgument {
@@ -58,4 +75,22 @@ pub enum UdfRuntimeImplementation {
         /// SQL query executed by Coral after typed argument binding.
         query: String,
     },
+}
+
+/// Public surfaces requested by one UDF.
+#[derive(Debug, Clone)]
+pub struct UdfRuntimePublish {
+    /// Canonical public SQL table-function wrapper.
+    pub table_function: UdfRuntimeTableFunctionPublish,
+}
+
+/// Canonical SQL table-function surface for one UDF.
+#[derive(Debug, Clone)]
+pub struct UdfRuntimeTableFunctionPublish {
+    /// SQL schema.
+    pub schema: String,
+    /// SQL function name.
+    pub name: String,
+    /// Optional publish-target-specific description.
+    pub description: String,
 }

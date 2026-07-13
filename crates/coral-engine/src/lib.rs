@@ -75,8 +75,9 @@ pub use contracts::{
     QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
     RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
     TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
-    UdfRuntimeArgument, UdfRuntimeImplementation, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition,
+    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
+    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeTableFunctionPublish,
 };
 
 /// High-level query operations for the local query engine.

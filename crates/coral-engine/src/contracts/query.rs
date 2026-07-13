@@ -401,6 +401,12 @@ impl QueryParameters {
         self.values.insert(name.into(), value)
     }
 
+    /// Returns one parameter value by name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&QueryParameterValue> {
+        self.values.get(name)
+    }
+
     /// Iterates over parameter names and values in deterministic order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &QueryParameterValue)> {
         self.values.iter()
