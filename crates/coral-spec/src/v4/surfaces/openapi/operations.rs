@@ -345,21 +345,25 @@ fn detect_cursor_query_pagination(
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
-    let cursor_input = find_optional_query_input(
+    let cursor_input = find_optional_string_query_input(
         inputs,
         &[
-            "after",
-            "continuationtoken",
             "cursor",
+            "continuationtoken",
+            "iterator",
             "marker",
-            "nextcursor",
-            "nextpage",
-            "nextpagetoken",
-            "nexttoken",
-            "page",
             "paginationtoken",
             "pagetoken",
+            "startcursor",
             "startingafter",
+            "nextcursor",
+            "nextpagetoken",
+            "nexttoken",
+            "nextpage",
+            "next",
+            "after",
+            "before",
+            "page",
         ],
     )?;
     if name_token(&cursor_input.name) == "page" && cursor_input.data_type != IrScalarType::String {
@@ -382,8 +386,11 @@ fn detect_cursor_query_pagination(
 }
 
 fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
-    let offset_input = find_query_input(inputs, &["offset"])?;
-    let page_size_input = find_query_input(inputs, &["limit"])?;
+    let offset_input = find_query_input(
+        inputs,
+        &["offset", "offsetindex", "pageoffset", "skip", "startindex"],
+    )?;
+    let page_size_input = detect_page_size_input(inputs)?;
     Some(PaginationSpec {
         mode: PaginationMode::Offset,
         page_size: Some(page_size_spec(page_size_input)),
@@ -408,21 +415,34 @@ fn detect_page_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec>
 }
 
 fn detect_page_size(inputs: &[IrOperationInput]) -> Option<PageSizeSpec> {
+    detect_page_size_input(inputs).map(page_size_spec)
+}
+
+fn detect_page_size_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
     find_query_input(
         inputs,
         &[
+            "amount",
+            "count",
+            "itemsperpage",
             "limit",
             "maxresults",
+            "pagelimit",
             "pagesize",
             "perpage",
             "resultsperpage",
+            "size",
+            "take",
+            "top",
         ],
     )
-    .map(page_size_spec)
 }
 
 fn find_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_query_input(inputs, &["page", "pagenumber", "pagenum"])
+    find_query_input(
+        inputs,
+        &["currentpage", "page", "pageindex", "pagenumber", "pagenum"],
+    )
 }
 
 fn find_numeric_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
@@ -444,11 +464,18 @@ fn find_query_input<'a>(
         .find(|input| candidate_tokens.contains(&name_token(&input.name).as_str()))
 }
 
-fn find_optional_query_input<'a>(
+fn find_optional_string_query_input<'a>(
     inputs: &'a [IrOperationInput],
     candidate_tokens: &[&str],
 ) -> Option<&'a IrOperationInput> {
-    find_query_input(inputs, candidate_tokens).filter(|input| !input.required)
+    candidate_tokens.iter().find_map(|candidate| {
+        inputs.iter().find(|input| {
+            input.location == IrInputLocation::Query
+                && !input.required
+                && input.data_type == IrScalarType::String
+                && name_token(&input.name) == *candidate
+        })
+    })
 }
 
 fn response_header<'a>(
@@ -535,7 +562,12 @@ fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
 
 fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
     const RESPONSE_CURSOR_TOKENS: &[&str] = &[
+        "after",
+        "continuationtoken",
+        "cursor",
         "endcursor",
+        "iterator",
+        "next",
         "nextcursor",
         "nextmarker",
         "nextpage",

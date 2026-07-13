@@ -917,6 +917,10 @@ paths:
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps common pagination aliases together."
+)]
 fn importer_infers_common_query_pagination_modes() {
     let manifest = parse_source_manifest_yaml(
         r"
@@ -970,6 +974,54 @@ paths:
                   type: object
                   properties:
                     id: {type: string}
+  /skip-take:
+    get:
+      operationId: skip-take/list
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 5}}
+        - {name: take, in: query, schema: {type: integer, default: 50}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /odata:
+    get:
+      operationId: odata/list
+      parameters:
+        - {name: $skip, in: query, schema: {type: integer, default: 10}}
+        - {name: $top, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /current-page:
+    get:
+      operationId: current-page/list
+      parameters:
+        - {name: current_page, in: query, schema: {type: integer, default: 2}}
+        - {name: items_per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /page-index:
+    get:
+      operationId: page-index/list
+      parameters:
+        - {name: pageIndex, in: query, schema: {type: integer, default: 3}}
+        - {name: size, in: query, schema: {type: integer, default: 40}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /dotted-offset:
+    get:
+      operationId: dotted-offset/list
+      parameters:
+        - {name: page.offset, in: query, schema: {type: integer, default: 15}}
+        - {name: page.limit, in: query, schema: {type: integer, default: 60}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /offset-count:
+    get:
+      operationId: offset-count/list
+      parameters:
+        - {name: offsetIndex, in: query, schema: {type: integer, default: 20}}
+        - {name: count, in: query, schema: {type: integer, default: 70}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
 "
         .as_bytes(),
     )
@@ -998,6 +1050,43 @@ paths:
     assert_eq!(page_size.default, 50);
     assert_eq!(page_size.max, 100);
     assert_eq!(page_size.query_param.as_deref(), Some("limit"));
+
+    for (operation_id, offset_param, size_param, start) in [
+        ("skip_take_list", "skip", "take", 5),
+        ("odata_list", "$skip", "$top", 10),
+        ("dotted_offset_list", "page.offset", "page.limit", 15),
+        ("offset_count_list", "offsetIndex", "count", 20),
+    ] {
+        let pagination =
+            &rest_execution(operations.get(operation_id).expect("pagination operation")).pagination;
+        assert_eq!(pagination.mode, PaginationMode::Offset);
+        assert_eq!(pagination.offset_param.as_deref(), Some(offset_param));
+        assert_eq!(pagination.offset_start, start);
+        assert_eq!(
+            pagination
+                .page_size
+                .as_ref()
+                .and_then(|page_size| page_size.query_param.as_deref()),
+            Some(size_param)
+        );
+    }
+    for (operation_id, page_param, size_param, start) in [
+        ("current_page_list", "current_page", "items_per_page", 2),
+        ("page_index_list", "pageIndex", "size", 3),
+    ] {
+        let pagination =
+            &rest_execution(operations.get(operation_id).expect("pagination operation")).pagination;
+        assert_eq!(pagination.mode, PaginationMode::Page);
+        assert_eq!(pagination.page_param.as_deref(), Some(page_param));
+        assert_eq!(pagination.page_start, start);
+        assert_eq!(
+            pagination
+                .page_size
+                .as_ref()
+                .and_then(|page_size| page_size.query_param.as_deref()),
+            Some(size_param)
+        );
+    }
 }
 
 #[test]
@@ -1091,6 +1180,59 @@ paths:
                   type: object
                   properties:
                     id: {type: string}
+  /iterator:
+    get:
+      operationId: iterator/list
+      parameters:
+        - {name: after, in: query, schema: {type: string, format: date-time}}
+        - {name: iterator, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 20}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: array, items: {type: object}}
+                  paging:
+                    type: object
+                    properties:
+                      iterator: {type: string}
+  /start-cursor:
+    get:
+      operationId: start-cursor/list
+      parameters:
+        - {name: start_cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: {type: array, items: {type: object}}
+                  continuationToken: {type: string}
+  /nested-next:
+    get:
+      operationId: nested-next/list
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: {type: array, items: {type: object}}
+                  meta:
+                    type: object
+                    properties:
+                      cursor:
+                        type: object
+                        properties:
+                          next: {type: string}
   /singleton:
     get:
       operationId: singleton/get
@@ -1232,6 +1374,26 @@ paths:
             .and_then(|page_size| page_size.query_param.as_deref()),
         Some("max_results")
     );
+
+    for (operation_id, cursor_param, response_path) in [
+        ("iterator_list", "iterator", &["paging", "iterator"][..]),
+        (
+            "start_cursor_list",
+            "start_cursor",
+            &["continuationToken"][..],
+        ),
+        (
+            "nested_next_list",
+            "cursor",
+            &["meta", "cursor", "next"][..],
+        ),
+    ] {
+        let pagination =
+            &rest_execution(operations.get(operation_id).expect("pagination operation")).pagination;
+        assert_eq!(pagination.mode, PaginationMode::CursorQuery);
+        assert_eq!(pagination.cursor_param.as_deref(), Some(cursor_param));
+        assert_eq!(pagination.response_cursor_path, response_path);
+    }
 
     let link = &rest_execution(operations.get("link_list").expect("link")).pagination;
     assert_eq!(link.mode, PaginationMode::LinkHeader);
