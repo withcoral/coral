@@ -1,11 +1,9 @@
-import classNames from 'classnames'
-import { Suspense, use } from 'react'
 import { useOutletContext, useParams, useRouteError } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
 import type { ColumnDef, SchemaResponse, TableDef } from '@/lib/schema-explorer'
-import { Icon } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
+import { Table } from '@/wax/components/table'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
@@ -68,15 +66,6 @@ function TableDetailLayout({ children }: { children: React.ReactNode }) {
   )
 }
 
-function ColumnsPending() {
-  return (
-    <div className={styles.loadingState}>
-      <Icon color="secondary" name="Loader" size="18" />
-      <Typography.BodySmall variant="tertiary">Loading columns</Typography.BodySmall>
-    </div>
-  )
-}
-
 // Route ErrorBoundary for /schema/:schemaName/:tableName — replaces only the
 // detail panel (the tree stays mounted in the parent layout). Re-exported by
 // the route module.
@@ -90,63 +79,56 @@ export function SchemaTableError() {
   )
 }
 
-// Deferred columns stream in under Suspense; `use()` propagates a rejection to
-// the route ErrorBoundary above.
-export function SchemaTableView({ columns }: { columns: Promise<ColumnDef[]> }) {
+export function SchemaTableView({ columns }: { columns: ColumnDef[] }) {
   return (
     <TableDetailLayout>
-      <Suspense fallback={<ColumnsPending />}>
-        <ResolvedColumns columns={columns} />
-      </Suspense>
-    </TableDetailLayout>
-  )
-}
-
-function ResolvedColumns({ columns: columnsPromise }: { columns: Promise<ColumnDef[]> }) {
-  const columns = use(columnsPromise)
-  if (columns.length === 0) {
-    return (
-      <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
-        No columns reported for this table.
-      </Typography.BodySmall>
-    )
-  }
-
-  return (
-    <table className={styles.dataGrid}>
-      <thead className={styles.dataGridHead}>
-        <tr>
-          <th className={styles.dataGridHeadCell}>name</th>
-          <th className={styles.dataGridHeadCell}>type</th>
-          <th className={styles.dataGridHeadCell}>nullable</th>
-          <th className={styles.dataGridHeadCell}>description</th>
-        </tr>
-      </thead>
-      <tbody>
-        {columns.map((column) => (
-          <tr
-            className={classNames(styles.dataGridRow, { [styles.virtualRow]: column.virtual })}
-            key={column.name}
-          >
-            <td className={styles.dataGridCellMono}>
-              {column.name}
-              {column.filterable ? (
-                <Tooltip
-                  content="Required filter: queries for this table must include a filter on this field."
-                  side="top"
+      {columns.length === 0 ? (
+        <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
+          No columns reported for this table.
+        </Typography.BodySmall>
+      ) : (
+        <Table.Wrapper style="compact">
+          <Table.Root>
+            <Table.Head>
+              <Table.Row>
+                <Table.HeaderCell>name</Table.HeaderCell>
+                <Table.HeaderCell>type</Table.HeaderCell>
+                <Table.HeaderCell>nullable</Table.HeaderCell>
+                <Table.HeaderCell>description</Table.HeaderCell>
+              </Table.Row>
+            </Table.Head>
+            <Table.Body>
+              {columns.map((column) => (
+                <Table.Row
+                  className={column.virtual ? styles.virtualRow : undefined}
+                  key={column.name}
                 >
-                  <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
-                    *
-                  </span>
-                </Tooltip>
-              ) : null}
-            </td>
-            <td className={styles.dataGridCellMono}>{column.type}</td>
-            <td className={styles.dataGridCellMono}>{column.nullable ? 'yes' : 'no'}</td>
-            <td className={styles.dataGridCellText}>{column.description ?? '-'}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+                  <Table.Cell mono>
+                    {column.name}
+                    {column.filterable ? (
+                      <Tooltip
+                        content="Required filter: queries for this table must include a filter on this field."
+                        side="top"
+                      >
+                        <span
+                          aria-label="Required filter"
+                          className={styles.requiredStar}
+                          tabIndex={0}
+                        >
+                          *
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                  </Table.Cell>
+                  <Table.Cell mono>{column.type}</Table.Cell>
+                  <Table.Cell mono>{column.nullable ? 'yes' : 'no'}</Table.Cell>
+                  <Table.Cell>{column.description ?? '-'}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Root>
+        </Table.Wrapper>
+      )}
+    </TableDetailLayout>
   )
 }

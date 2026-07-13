@@ -1,6 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-import { pulse } from '@/wax/animations/pulse.css'
 import { breakpoints } from '@/styles/theme.css'
 import { theme } from '@/wax/theme/theme.css'
 
@@ -158,59 +157,6 @@ export const section = style({
   minWidth: 0,
 })
 
-// Compact data-grid for the columns list: dense monospace rows, zebra shading,
-// a single header rule (no per-row borders), sticky header.
-export const dataGrid = style({
-  borderCollapse: 'collapse',
-  tableLayout: 'auto',
-  width: '100%',
-})
-
-export const dataGridHead = style({
-  backgroundColor: theme.surface.card,
-  position: 'sticky',
-  top: 0,
-  zIndex: 1,
-})
-
-export const dataGridHeadCell = style({
-  ...theme.typography.bodySmall,
-  borderBlockEnd: `1px solid ${theme.stroke.primary}`,
-  color: theme.content.tertiary,
-  paddingBlock: 6,
-  paddingInline: 10,
-  textAlign: 'left',
-  whiteSpace: 'nowrap',
-})
-
-export const dataGridRow = style({
-  selectors: {
-    '&:nth-child(even)': { backgroundColor: theme.surface.onMainContentSubtle },
-    '&:hover': { backgroundColor: theme.surface.onMainContent },
-  },
-})
-
-const dataGridCell = {
-  color: theme.content.secondary,
-  maxWidth: 340,
-  overflow: 'hidden',
-  paddingBlock: 3,
-  paddingInline: 10,
-  textOverflow: 'ellipsis',
-  verticalAlign: 'top',
-  whiteSpace: 'nowrap',
-} as const
-
-export const dataGridCellMono = style({
-  ...dataGridCell,
-  ...theme.typography.codeInline,
-})
-
-export const dataGridCellText = style({
-  ...dataGridCell,
-  ...theme.typography.bodySmall,
-})
-
 export const virtualRow = style({
   fontStyle: 'italic',
 })
@@ -222,14 +168,6 @@ export const requiredStar = style({
   font: 'inherit',
   marginInlineStart: 4,
   outlineOffset: 2,
-})
-
-export const loadingState = style({
-  ...pulse,
-  alignItems: 'center',
-  display: 'flex',
-  gap: 8,
-  minHeight: 44,
 })
 
 export const emptyInline = style({

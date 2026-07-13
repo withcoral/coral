@@ -4,14 +4,16 @@ import { SchemaTableError, SchemaTableView } from '@/views/schema-explorer/schem
 
 import type { Route } from './+types/schema-table'
 
-// Columns are deferred (the promise is returned un-awaited) so nested
-// table-to-table navigation keeps the layout and shows a local pending state
-// instead of blocking on the global progress bar. The abort signal matters
-// here: large tables fan out concurrent paginated ListColumns calls, so
-// switching tables quickly would otherwise pile up orphaned requests.
-export function loader({ params, request }: Route.LoaderArgs) {
+// Columns are this panel's critical data: await them so the global navigation
+// progress bar is the pending UI (deferring them doesn't work here — table
+// switches re-suspend an already-revealed Suspense boundary inside the router
+// transition, so React keeps the old columns instead of showing a fallback).
+// The abort signal matters: large tables fan out concurrent paginated
+// ListColumns calls, so switching tables quickly would otherwise pile up
+// orphaned requests.
+export async function loader({ params, request }: Route.LoaderArgs) {
   return {
-    columns: fetchTableColumnsFromCoral(
+    columns: await fetchTableColumnsFromCoral(
       catalogClientForRequest(request),
       params.schemaName,
       params.tableName,
