@@ -22,8 +22,8 @@ const trace: TraceSummaryData = {
 
 function renderList() {
   return renderToString(
-    <MemoryRouter initialEntries={['/traces']}>
-      <TraceList referenceTimeMs={1_700_000_030_000} traces={[trace]} />
+    <MemoryRouter initialEntries={['/workspaces/analytics/traces']}>
+      <TraceList referenceTimeMs={1_700_000_030_000} traces={[trace]} workspaceId="analytics" />
     </MemoryRouter>,
   )
 }

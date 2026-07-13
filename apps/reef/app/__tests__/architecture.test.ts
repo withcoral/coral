@@ -342,22 +342,23 @@ describe('Architectural Tests', () => {
       )
       expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
       expect(routeConfig).toContain("index('routes/index.tsx')")
-      expect(routeConfig).toContain("route('sources', 'routes/sources.tsx', [")
+      expect(routeConfig).toContain(
+        "route(routePattern('workspaceSources'), 'routes/sources.tsx', [",
+      )
       expect(routeConfig).toContain("route(':sourceName', 'routes/source-detail.tsx')")
       // Schema is a layout with nested table-detail routes.
-      expect(routeConfig).toContain("route('schema', 'routes/schema.tsx', [")
+      expect(routeConfig).toContain("route(routePattern('workspaceSchema'), 'routes/schema.tsx', [")
       expect(routeConfig).toContain("index('routes/schema-empty.tsx')")
       expect(routeConfig).toContain("route(':schemaName/:tableName', 'routes/schema-table.tsx')")
-      expect(routeConfig).toContain("route('traces', 'routes/traces.tsx', [")
+      expect(routeConfig).toContain("route(routePattern('workspaceTraces'), 'routes/traces.tsx', [")
       expect(routeConfig).toContain("route(':traceId', 'routes/trace-detail.tsx')")
       // Settings is gated to the desktop build, but the route entry is still present.
-      expect(routeConfig).toContain("route('settings', 'routes/settings.tsx')")
+      expect(routeConfig).toContain("route(routePattern('settings'), 'routes/settings.tsx')")
 
       // Structural check: the OAuth streaming resource route stays outside the
-      // app shell, while rendered app pages are nested inside it and settings
-      // keeps its desktop-only conditional spread.
+      // app shell, while canonical workspace routes and settings stay inside it.
       expect(routeConfig).toMatch(
-        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\('sources\/:sourceName\/oauth-install', 'routes\/source-oauth-install\.ts'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*route\('sources', 'routes\/sources\.tsx',\s*\[\s*route\(':sourceName', 'routes\/source-detail\.tsx'\),?\s*\]\),\s*route\('schema', 'routes\/schema\.tsx', \[\s*index\('routes\/schema-empty\.tsx'\),\s*route\(':schemaName\/:tableName', 'routes\/schema-table\.tsx'\),?\s*\]\),\s*route\('traces', 'routes\/traces\.tsx',\s*\[\s*route\(':traceId', 'routes\/trace-detail\.tsx'\),?\s*\]\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
+        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\('sources\/:sourceName\/oauth-install', 'routes\/source-oauth-install\.ts'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
       )
     })
 

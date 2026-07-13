@@ -8,8 +8,8 @@ import {
   type CreateBundledSourceWithOAuthResponse,
   type SourceInfo,
 } from '@/generated/coral/v1/sources_pb'
+import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
-import { WORKSPACE } from '@/lib/constants'
 import {
   firstMissingRequiredInput,
   firstOAuthMethodInput,
@@ -19,6 +19,7 @@ import {
   splitInstallBindings,
 } from '@/lib/source-install-form'
 import { originLabel } from '@/lib/sources'
+import { firstWorkspaceForRequest } from '@/lib/workspaces.server'
 import {
   oauthInstallEventToNdjson,
   type OAuthInstallStreamEvent,
@@ -47,7 +48,8 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Res
 
   const sourceClient = sourceClientForRequest(request)
   try {
-    const info = await getSourceInfo(sourceClient, name)
+    const workspace = await firstWorkspaceForRequest(request)
+    const info = await getSourceInfo(sourceClient, name, workspace)
     if (info.installed && originLabel(info.origin) !== 'bundled') {
       return ndjsonErrorResponse("Imported sources can't be installed here yet", 400)
     }
@@ -77,7 +79,7 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Res
         oauthCredentialRetrievals,
         secrets,
         variables,
-        workspace: WORKSPACE,
+        workspace,
       }),
       { signal: request.signal },
     )
@@ -176,9 +178,10 @@ function resolveSourceName(paramName: string | undefined, formData: FormData): s
 async function getSourceInfo(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
   name: string,
+  workspace: Workspace,
 ): Promise<SourceInfo> {
   const response = await sourceClient.getSourceInfo(
-    create(GetSourceInfoRequestSchema, { name, workspace: WORKSPACE }),
+    create(GetSourceInfoRequestSchema, { name, workspace }),
   )
   if (!response.sourceInfo) throw new Error(`Source info for ${name} was not found`)
   return response.sourceInfo

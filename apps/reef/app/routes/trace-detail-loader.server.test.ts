@@ -24,7 +24,7 @@ function detail(traceId: string): TraceDetailData {
 }
 
 describe('trace detail loader', () => {
-  const request = new Request('http://reef.test/traces/trace-07')
+  const request = new Request('http://reef.test/workspaces/analytics/traces/trace-07')
 
   it('loads the URL-selected trace without decoding it again', async () => {
     const getTrace = vi.fn().mockResolvedValue(detail('trace/with?reserved'))

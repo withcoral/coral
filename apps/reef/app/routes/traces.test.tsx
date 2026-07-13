@@ -12,6 +12,10 @@ import { render } from 'vitest-browser-react'
 
 import { shouldRevalidate } from './traces'
 import { traceLocation } from '@/views/traces/trace-location'
+import { routePath } from '@/routing/routemap'
+
+const WORKSPACE_ID = 'analytics'
+const TRACES_PATH = routePath('workspaceTraces', { workspaceId: WORKSPACE_ID })
 
 function revalidationArgs(
   currentPath: string,
@@ -21,10 +25,16 @@ function revalidationArgs(
   overrides: Partial<ShouldRevalidateFunctionArgs> = {},
 ): ShouldRevalidateFunctionArgs {
   return {
-    currentParams: currentTraceId === undefined ? {} : { traceId: currentTraceId },
+    currentParams: {
+      workspaceId: WORKSPACE_ID,
+      ...(currentTraceId === undefined ? {} : { traceId: currentTraceId }),
+    },
     currentUrl: new URL(`http://localhost${currentPath}`),
     defaultShouldRevalidate: true,
-    nextParams: nextTraceId === undefined ? {} : { traceId: nextTraceId },
+    nextParams: {
+      workspaceId: WORKSPACE_ID,
+      ...(nextTraceId === undefined ? {} : { traceId: nextTraceId }),
+    },
     nextUrl: new URL(`http://localhost${nextPath}`),
     ...overrides,
   }
@@ -32,8 +42,8 @@ function revalidationArgs(
 
 describe('traces shouldRevalidate', () => {
   it.each([
-    ['/traces', '/traces/trace-a', undefined, 'trace-a'],
-    ['/traces/trace-a', '/traces/trace-b', 'trace-a', 'trace-b'],
+    [TRACES_PATH, `${TRACES_PATH}/trace-a`, undefined, 'trace-a'],
+    [`${TRACES_PATH}/trace-a`, `${TRACES_PATH}/trace-b`, 'trace-a', 'trace-b'],
   ])(
     'skips the parent loader for %s -> %s',
     (currentPath, nextPath, currentTraceId, nextTraceId) => {
@@ -46,7 +56,7 @@ describe('traces shouldRevalidate', () => {
   it('revalidates the parent loader when returning from detail to the list', () => {
     expect(
       shouldRevalidate(
-        revalidationArgs('/traces/trace-b', '/traces', 'trace-b', undefined, {
+        revalidationArgs(`${TRACES_PATH}/trace-b`, TRACES_PATH, 'trace-b', undefined, {
           defaultShouldRevalidate: false,
         }),
       ),
@@ -56,14 +66,14 @@ describe('traces shouldRevalidate', () => {
   it('delegates same-URL and unrelated navigation to React Router', () => {
     expect(
       shouldRevalidate(
-        revalidationArgs('/traces', '/traces', undefined, undefined, {
+        revalidationArgs(TRACES_PATH, TRACES_PATH, undefined, undefined, {
           defaultShouldRevalidate: false,
         }),
       ),
     ).toBe(false)
     expect(
       shouldRevalidate(
-        revalidationArgs('/traces', '/sources', undefined, undefined, {
+        revalidationArgs(TRACES_PATH, '/workspaces/analytics/sources', undefined, undefined, {
           defaultShouldRevalidate: true,
         }),
       ),
@@ -71,8 +81,23 @@ describe('traces shouldRevalidate', () => {
     expect(
       shouldRevalidate(
         revalidationArgs(
-          '/traces/trace-a?search=one',
-          '/traces/trace-a?search=two',
+          `${TRACES_PATH}/trace-a`,
+          '/workspaces/other/traces/trace-a',
+          'trace-a',
+          'trace-a',
+          {
+            currentParams: { traceId: 'trace-a', workspaceId: WORKSPACE_ID },
+            defaultShouldRevalidate: false,
+            nextParams: { traceId: 'trace-a', workspaceId: 'other' },
+          },
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      shouldRevalidate(
+        revalidationArgs(
+          `${TRACES_PATH}/trace-a?search=one`,
+          `${TRACES_PATH}/trace-a?search=two`,
           'trace-a',
           'trace-a',
           {
@@ -86,7 +111,7 @@ describe('traces shouldRevalidate', () => {
   it('never suppresses non-GET revalidation', () => {
     expect(
       shouldRevalidate(
-        revalidationArgs('/traces/trace-a', '/traces', 'trace-a', undefined, {
+        revalidationArgs(`${TRACES_PATH}/trace-a`, TRACES_PATH, 'trace-a', undefined, {
           defaultShouldRevalidate: false,
           formMethod: 'POST',
         }),
@@ -100,7 +125,10 @@ function ParentRoute() {
   return (
     <div>
       {data.traces.map((traceId) => (
-        <Link key={traceId} to={`/traces/${traceId}`}>
+        <Link
+          key={traceId}
+          to={routePath('workspaceTrace', { traceId, workspaceId: WORKSPACE_ID })}
+        >
           {traceId}
         </Link>
       ))}
@@ -115,7 +143,7 @@ function DetailRoute() {
   return (
     <div>
       <span>detail {traceId}</span>
-      <button onClick={() => navigate('/traces')} type="button">
+      <button onClick={() => navigate(TRACES_PATH)} type="button">
         Close
       </button>
     </div>
@@ -124,8 +152,8 @@ function DetailRoute() {
 
 describe('nested traces data routing', () => {
   it('preserves search and pro state in encoded adjacent trace locations', () => {
-    expect(traceLocation('trace/with?reserved', '?search=playwright&pro')).toEqual({
-      pathname: '/traces/trace%2Fwith%3Freserved',
+    expect(traceLocation(WORKSPACE_ID, 'trace/with?reserved', '?search=playwright&pro')).toEqual({
+      pathname: '/workspaces/analytics/traces/trace%2Fwith%3Freserved',
       search: '?search=playwright&pro',
     })
   })
@@ -144,11 +172,11 @@ describe('nested traces data routing', () => {
           ],
           element: <ParentRoute />,
           loader: parentLoader,
-          path: '/traces',
+          path: TRACES_PATH,
           shouldRevalidate,
         },
       ],
-      { initialEntries: ['/traces'] },
+      { initialEntries: [TRACES_PATH] },
     )
     const screen = await render(<RouterProvider router={router} />)
 
@@ -159,7 +187,7 @@ describe('nested traces data routing', () => {
     expect(parentLoader).toHaveBeenCalledOnce()
     await screen.getByRole('button', { name: 'Close' }).click()
 
-    expect(router.state.location.pathname).toBe('/traces')
+    expect(router.state.location.pathname).toBe(TRACES_PATH)
     expect(parentLoader).toHaveBeenCalledTimes(2)
     expect(childLoader).toHaveBeenCalledTimes(2)
   })
@@ -177,17 +205,17 @@ describe('nested traces data routing', () => {
           ],
           element: <ParentRoute />,
           loader: () => ({ traces: ['trace-a'] }),
-          path: '/traces',
+          path: TRACES_PATH,
           shouldRevalidate,
         },
       ],
-      { initialEntries: ['/traces', '/traces/trace-a'], initialIndex: 1 },
+      { initialEntries: [TRACES_PATH, `${TRACES_PATH}/trace-a`], initialIndex: 1 },
     )
     const screen = await render(<RouterProvider router={router} />)
 
     await expect.element(screen.getByText('detail trace-a')).toBeVisible()
     await router.navigate(-1)
-    expect(router.state.location.pathname).toBe('/traces')
+    expect(router.state.location.pathname).toBe(TRACES_PATH)
     await expect.element(screen.getByRole('link', { name: 'trace-a' })).toBeVisible()
   })
 })

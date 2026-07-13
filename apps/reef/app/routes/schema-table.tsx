@@ -1,5 +1,6 @@
 import { fetchTableColumnsFromCoral } from '@/lib/schema-explorer'
 import { catalogClientForRequest } from '@/lib/coral-request.server'
+import { workspaceFromParams } from '@/lib/workspace-routing'
 import { SchemaTableError, SchemaTableView } from '@/views/schema-explorer/schema-table'
 
 import type { Route } from './+types/schema-table'
@@ -12,9 +13,11 @@ import type { Route } from './+types/schema-table'
 // ListColumns calls, so switching tables quickly would otherwise pile up
 // orphaned requests.
 export async function loader({ params, request }: Route.LoaderArgs) {
+  const workspace = workspaceFromParams(params)
   return {
     columns: await fetchTableColumnsFromCoral(
       catalogClientForRequest(request),
+      workspace,
       params.schemaName,
       params.tableName,
       request.signal,

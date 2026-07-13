@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router'
 
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
+import { routePath } from '@/routing/routemap'
 
 import * as s from './traces.css'
 import { SqlCode } from './sql-code'
@@ -21,18 +22,23 @@ function TraceRow({
   referenceTimeMs,
   search,
   trace,
+  workspaceId,
 }: {
   active: boolean
   referenceTimeMs: number
   search: string
   trace: TraceSummaryData
+  workspaceId: string
 }) {
   return (
     <NavLink
       className={s.fullRow}
       data-active={active || undefined}
       data-trace-row-id={trace.traceId}
-      to={{ pathname: `/traces/${encodeURIComponent(trace.traceId)}`, search }}
+      to={{
+        pathname: routePath('workspaceTrace', { traceId: trace.traceId, workspaceId }),
+        search,
+      }}
     >
       <span className={s.statusDot} data-tone={statusTone(trace.status)} />
       <div className={classNames(s.cell, s.cellTimestamp)}>
@@ -62,10 +68,12 @@ export function TraceList({
   activeTraceId,
   referenceTimeMs,
   traces,
+  workspaceId,
 }: {
   activeTraceId?: string | null
   referenceTimeMs: number
   traces: TraceSummaryData[]
+  workspaceId: string
 }) {
   const location = useLocation()
   return (
@@ -77,6 +85,7 @@ export function TraceList({
           referenceTimeMs={referenceTimeMs}
           search={location.search}
           trace={trace}
+          workspaceId={workspaceId}
         />
       ))}
     </div>

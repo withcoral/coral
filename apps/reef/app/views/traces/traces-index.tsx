@@ -6,6 +6,7 @@ import { TextInput } from '@/wax/components/inputs/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
+import { routePath } from '@/routing/routemap'
 
 import * as s from './traces.css'
 import { PageHeader } from './page-header'
@@ -17,6 +18,7 @@ const TRACE_LIST_REFRESH_MS = 30_000
 
 export interface TracesOutletContext {
   traces: TraceSummaryData[]
+  workspaceId: string
 }
 
 function HeaderActions({
@@ -93,11 +95,13 @@ export function TracesIndex({
   loadError,
   referenceTimeMs: loadedReferenceTimeMs,
   traces: loadedTraces,
+  workspaceId,
 }: {
   endpointLabel: string
   loadError: string | null
   referenceTimeMs: number
   traces: TraceSummaryData[]
+  workspaceId: string
 }) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -120,7 +124,8 @@ export function TracesIndex({
   const [searchOpen, setSearchOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const searchVisible = searchOpen || searchText.trim().length > 0
-  const listIsActive = location.pathname === '/traces'
+  const tracesPath = routePath('workspaceTraces', { workspaceId })
+  const listIsActive = location.pathname === tracesPath
 
   const filtered = traces.filter((trace) => {
     const needle = searchText.trim().toLowerCase()
@@ -156,14 +161,17 @@ export function TracesIndex({
           return
         event.preventDefault()
         navigate({
-          pathname: `/traces/${encodeURIComponent(filtered[activeIndex].traceId)}`,
+          pathname: routePath('workspaceTrace', {
+            traceId: filtered[activeIndex].traceId,
+            workspaceId,
+          }),
           search: location.search,
         })
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [activeIndex, filtered, listIsActive, location.search, navigate])
+  }, [activeIndex, filtered, listIsActive, location.search, navigate, workspaceId])
 
   useEffect(() => {
     if (activeIndex === null) return
@@ -227,6 +235,7 @@ export function TracesIndex({
             activeTraceId={activeIndex !== null ? filtered[activeIndex]?.traceId : null}
             referenceTimeMs={referenceTimeMs}
             traces={filtered}
+            workspaceId={workspaceId}
           />
         </div>
       )}
@@ -236,7 +245,7 @@ export function TracesIndex({
         endpointLabel={endpointLabel}
         totalCount={traces.length}
       />
-      <Outlet context={{ traces: filtered } satisfies TracesOutletContext} />
+      <Outlet context={{ traces: filtered, workspaceId } satisfies TracesOutletContext} />
     </section>
   )
 }

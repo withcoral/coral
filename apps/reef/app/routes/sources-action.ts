@@ -7,8 +7,8 @@ import {
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
 } from '@/generated/coral/v1/sources_pb'
+import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
-import { WORKSPACE } from '@/lib/constants'
 import {
   editBindingsFromForm,
   firstMissingRequiredInput,
@@ -20,6 +20,8 @@ import {
 } from '@/lib/source-install-form'
 import { originLabel } from '@/lib/sources'
 import { errorMessage } from '@/lib/utils'
+import { workspaceFromParams } from '@/lib/workspace-routing'
+import { routePath } from '@/routing/routemap'
 
 export {
   editBindingsFromForm,
@@ -41,20 +43,25 @@ export type SourcesActionData =
     }
   | undefined
 
-export async function action({
-  request,
-}: {
+interface SourcesActionArgs {
+  params: { workspaceId?: string }
   request: Request
-}): Promise<SourcesActionData | Response> {
+}
+
+export async function action({
+  params,
+  request,
+}: SourcesActionArgs): Promise<SourcesActionData | Response> {
   const formData = await request.formData()
   const intent = formValue(formData, '_intent')
   const name = formValue(formData, 'name')
   if (!name) return actionError('install', '', 'Missing source name')
 
+  const workspace = workspaceFromParams(params)
   const sourceClient = sourceClientForRequest(request)
   try {
     if (intent === 'install') {
-      const info = await getSourceInfo(sourceClient, name)
+      const info = await getSourceInfo(sourceClient, workspace, name)
       if (info.installed && originLabel(info.origin) !== 'bundled') {
         return actionError('install', name, "Imported sources can't be installed here yet")
       }
@@ -63,23 +70,31 @@ export async function action({
       }
       const missing = firstMissingRequiredInput(info, formData)
       if (missing) return actionError('install', name, `${missing} is required`)
-      await createBundledSource(sourceClient, name, installBindingsFromForm(info, formData))
-      return redirect('/sources')
+      await createBundledSource(
+        sourceClient,
+        workspace,
+        name,
+        installBindingsFromForm(info, formData),
+      )
+      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
     }
     if (intent === 'edit') {
-      const source = await getInstalledSource(sourceClient, name)
+      const source = await getInstalledSource(sourceClient, workspace, name)
       if (originLabel(source.origin) !== 'bundled') {
         return actionError('edit', name, "Imported sources can't be edited here yet")
       }
-      const info = await getSourceInfo(sourceClient, name).catch(() => null)
-      await createBundledSource(sourceClient, name, editBindingsFromForm(source, info, formData))
-      return redirect('/sources')
+      const info = await getSourceInfo(sourceClient, workspace, name).catch(() => null)
+      await createBundledSource(
+        sourceClient,
+        workspace,
+        name,
+        editBindingsFromForm(source, info, formData),
+      )
+      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
     }
     if (intent === 'delete') {
-      await sourceClient.deleteSource(
-        create(DeleteSourceRequestSchema, { name, workspace: WORKSPACE }),
-      )
-      return redirect('/sources')
+      await sourceClient.deleteSource(create(DeleteSourceRequestSchema, { name, workspace }))
+      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
     }
     return actionError('install', name, 'Unknown source action')
   } catch (error) {
@@ -93,10 +108,11 @@ export async function action({
 
 async function getSourceInfo(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
 ) {
   const response = await sourceClient.getSourceInfo(
-    create(GetSourceInfoRequestSchema, { name, workspace: WORKSPACE }),
+    create(GetSourceInfoRequestSchema, { name, workspace }),
   )
   if (!response.sourceInfo) throw new Error(`Source info for ${name} was not found`)
   return response.sourceInfo
@@ -104,17 +120,17 @@ async function getSourceInfo(
 
 async function getInstalledSource(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
 ) {
-  const response = await sourceClient.getSource(
-    create(GetSourceRequestSchema, { name, workspace: WORKSPACE }),
-  )
+  const response = await sourceClient.getSource(create(GetSourceRequestSchema, { name, workspace }))
   if (!response.source) throw new Error(`Source ${name} was not found`)
   return response.source
 }
 
 async function createBundledSource(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
   bindings: InstallInput[],
 ) {
@@ -122,7 +138,7 @@ async function createBundledSource(
   const response = await sourceClient.createBundledSource(
     create(CreateBundledSourceRequestSchema, {
       name,
-      workspace: WORKSPACE,
+      workspace,
       variables,
       secrets,
     }),

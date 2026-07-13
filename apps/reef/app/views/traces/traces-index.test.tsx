@@ -10,6 +10,7 @@ import { userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
 
 import { shouldRevalidate } from '@/routes/traces'
+import { routePath } from '@/routing/routemap'
 
 import { TracesIndex } from './traces-index'
 import type { TraceSummaryData } from './trace-utils'
@@ -20,6 +21,9 @@ interface Data {
   referenceTimeMs: number
   traces: TraceSummaryData[]
 }
+
+const WORKSPACE_ID = 'analytics'
+const TRACES_PATH = routePath('workspaceTraces', { workspaceId: WORKSPACE_ID })
 
 function summary(traceId: string): TraceSummaryData {
   return {
@@ -38,17 +42,17 @@ function summary(traceId: string): TraceSummaryData {
 }
 
 function IndexRoute() {
-  return <TracesIndex {...(useLoaderData() as Data)} />
+  return <TracesIndex {...(useLoaderData() as Data)} workspaceId={WORKSPACE_ID} />
 }
 
-function renderIndex(loader: LoaderFunction, initialEntry = '/traces?pro') {
+function renderIndex(loader: LoaderFunction, initialEntry = `${TRACES_PATH}?pro`) {
   const router = createMemoryRouter(
     [
       {
         children: [{ element: <div>Trace detail</div>, path: ':traceId' }],
         element: <IndexRoute />,
         loader,
-        path: '/traces',
+        path: TRACES_PATH,
         shouldRevalidate,
       },
     ],
@@ -114,7 +118,7 @@ describe('TracesIndex route behavior', () => {
     releaseRefresh?.()
     await vi.runAllTicks()
 
-    await router.navigate('/traces/a?pro')
+    await router.navigate(`${TRACES_PATH}/a?pro`)
     await vi.advanceTimersByTimeAsync(60_000)
     expect(loader).toHaveBeenCalledTimes(2)
   })
@@ -175,7 +179,7 @@ describe('TracesIndex route behavior', () => {
       .toHaveAttribute('data-active', 'true')
     expect(scrollIntoView).toHaveBeenCalled()
     await userEvent.keyboard('{Enter}')
-    expect(router.state.location.pathname).toBe('/traces/alpha')
+    expect(router.state.location.pathname).toBe(`${TRACES_PATH}/alpha`)
     expect(router.state.location.search).toBe('?pro')
     HTMLElement.prototype.scrollIntoView = original
   })

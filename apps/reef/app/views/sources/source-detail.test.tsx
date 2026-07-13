@@ -22,12 +22,13 @@ describe('SourceDetailView', () => {
                 },
                 loadError: null,
               }}
+              sourcesPath="/workspaces/default/sources"
             />
           ),
-          path: '/sources/:sourceName',
+          path: '/workspaces/:workspaceId/sources/:sourceName',
         },
       ],
-      { initialEntries: ['/sources/github'] },
+      { initialEntries: ['/workspaces/default/sources/github'] },
     )
 
     const screen = await render(<RouterProvider router={router} />)

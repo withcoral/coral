@@ -1,3 +1,2 @@
 export const DEFAULT_DEV_CORAL_ENDPOINT = 'http://127.0.0.1:1457'
 export const DEFAULT_DEV_CORAL_PORT = '1457'
-export const WORKSPACE = { name: 'default' } as const

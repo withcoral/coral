@@ -21,7 +21,7 @@ function summary(traceId: string, query = `select '${traceId}'`): TraceSummaryDa
 }
 
 describe('traces list loader', () => {
-  const request = new Request('http://reef.test/traces')
+  const request = new Request('http://reef.test/workspaces/analytics/traces')
 
   it('filters query traces and returns a deterministic endpoint label', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(123_456)

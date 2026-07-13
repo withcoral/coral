@@ -3,6 +3,7 @@ import { NavLink, Outlet, useParams, useRouteError } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
 import type { SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
+import { routePath } from '@/routing/routemap'
 import { PageHeader } from '@/views/traces/page-header'
 import { Container as ButtonContainer } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
@@ -47,8 +48,8 @@ function visibleTablesForSchema(schema: SchemaGroup, search: string) {
   return schema.tables.filter((table) => tableMatchesSearch(table, search))
 }
 
-function tablePath(schemaName: string, tableName: string) {
-  return `/schema/${encodeURIComponent(schemaName)}/${encodeURIComponent(tableName)}`
+function tablePath(workspaceId: string, schemaName: string, tableName: string) {
+  return routePath('workspaceSchemaTable', { schemaName, tableName, workspaceId })
 }
 
 // Header + two-panel scaffold for the error state so it looks like the loaded page.
@@ -61,8 +62,9 @@ function Frame({ children }: { children: React.ReactNode }) {
   )
 }
 
-// Route ErrorBoundary for /schema: the schema is this page's critical data, so
-// a failed load errors the whole page (re-exported by the route module).
+// Route ErrorBoundary for /workspaces/:workspaceId/schema: the schema is this
+// page's critical data, so a failed load errors the whole page (re-exported by
+// the route module).
 export function SchemaExplorerError() {
   const error = useRouteError()
   const retry = useRouteRetry()
@@ -89,7 +91,13 @@ export function SchemaExplorerError() {
 // The schema is awaited in the server loader (critical data): the global
 // navigation progress bar is the pending UI and failures land in the route
 // ErrorBoundary, so this view only renders the loaded state.
-export function SchemaExplorer({ schema }: { schema: SchemaResponse }) {
+export function SchemaExplorer({
+  schema,
+  workspaceId,
+}: {
+  schema: SchemaResponse
+  workspaceId: string
+}) {
   const activeTable = useParams()
   const [search, setSearch] = useState('')
   // Collapsed by default so the initial render is one row per schema, not one per
@@ -202,9 +210,9 @@ export function SchemaExplorer({ schema }: { schema: SchemaResponse }) {
                                   activeTable.schemaName === connector.name &&
                                   activeTable.tableName === table.name
                                 }
-                                key={tablePath(connector.name, table.name)}
+                                key={tablePath(workspaceId, connector.name, table.name)}
                                 size="22"
-                                to={tablePath(connector.name, table.name)}
+                                to={tablePath(workspaceId, connector.name, table.name)}
                                 variant="bare"
                               >
                                 <Icon color="secondary" name="Table2" size="14" />

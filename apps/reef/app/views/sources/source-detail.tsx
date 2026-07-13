@@ -30,12 +30,14 @@ const IMPORTED_EDIT_NOTICE =
 export function SourceDetailView({
   actionData,
   loaderData,
+  sourcesPath,
 }: {
   actionData: SourcesActionData | undefined
   loaderData: {
     entry: CatalogEntry
     loadError: string | null
   }
+  sourcesPath: string
 }) {
   const navigate = useNavigate()
   const navigation = useNavigation()
@@ -55,7 +57,7 @@ export function SourceDetailView({
         entry={entry}
         open
         onOpenChange={(open) => {
-          if (!open) navigate('/sources')
+          if (!open) navigate(sourcesPath)
         }}
         submitting={pendingName === entry.name && pendingIntent === 'install'}
       />
@@ -68,7 +70,7 @@ export function SourceDetailView({
       loadError={loaderData.loadError}
       open
       onOpenChange={(open) => {
-        if (!open) navigate('/sources')
+        if (!open) navigate(sourcesPath)
       }}
     />
   )

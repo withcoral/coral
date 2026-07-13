@@ -1,4 +1,4 @@
-import { createRequestHandler, type ServerBuild } from 'react-router'
+import { createRequestHandler, type LoaderFunctionArgs, type ServerBuild } from 'react-router'
 import { describe, expect, it } from 'vitest'
 
 import { middleware } from './traces'
@@ -38,7 +38,7 @@ const build = {
       id: 'routes/trace-detail',
       module: {
         default: routeComponent,
-        loader: ({ params }) => ({ traceId: params.traceId }),
+        loader: ({ params }: LoaderFunctionArgs) => ({ traceId: params.traceId }),
       },
       parentId: 'routes/traces',
       path: ':traceId',
@@ -51,14 +51,14 @@ const build = {
         middleware,
       },
       parentId: 'root',
-      path: 'traces',
+      path: 'workspaces/:workspaceId/traces',
     },
   },
   ssr: true,
-} as ServerBuild
+} as unknown as ServerBuild
 
 describe('traces response cache policy', () => {
-  it.each(['/traces.data', '/traces/example.data'])(
+  it.each(['/workspaces/analytics/traces.data', '/workspaces/analytics/traces/example.data'])(
     'marks the final %s response as private and non-cacheable',
     async (pathname) => {
       const handleRequest = createRequestHandler(build, 'test')

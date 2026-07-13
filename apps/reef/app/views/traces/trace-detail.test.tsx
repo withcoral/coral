@@ -7,6 +7,9 @@ import { render } from 'vitest-browser-react'
 import type { TraceDetailData, TraceSpanData } from './trace-utils'
 import { TraceDetail } from './trace-detail'
 
+const WORKSPACE_ID = 'analytics'
+const TRACES_PATH = `/workspaces/${WORKSPACE_ID}/traces`
+
 function detail(): TraceDetailData {
   return {
     spans: [],
@@ -111,11 +114,11 @@ function renderDetail(
             path: ':traceId',
           },
         ],
-        element: <Outlet context={{ traces }} />,
-        path: '/traces',
+        element: <Outlet context={{ traces, workspaceId: WORKSPACE_ID }} />,
+        path: TRACES_PATH,
       },
     ],
-    { initialEntries: ['/traces/trace-07?pro'] },
+    { initialEntries: [`${TRACES_PATH}/trace-07?pro`] },
   )
   return { router, screen: render(<RouterProvider router={router} />) }
 }
@@ -150,7 +153,7 @@ describe('TraceDetail', () => {
 
     await expect.element(rendered.getByText('Tracing unavailable')).toBeVisible()
     await rendered.getByRole('button', { name: 'Back to query stream' }).click()
-    expect(router.state.location.pathname).toBe('/traces')
+    expect(router.state.location.pathname).toBe(TRACES_PATH)
     expect(router.state.location.search).toBe('?pro')
   })
 
@@ -191,18 +194,18 @@ describe('TraceDetail', () => {
       traceId,
     }))
     const { router } = renderDetail(null, detail(), traces)
-    await router.navigate('/traces/trace-07?search=playwright&pro')
+    await router.navigate(`${TRACES_PATH}/trace-07?search=playwright&pro`)
 
     dispatchModArrow('ArrowDown')
-    await expect.poll(() => router.state.location.pathname).toBe('/traces/older')
+    await expect.poll(() => router.state.location.pathname).toBe(`${TRACES_PATH}/older`)
     expect(router.state.location.search).toBe('?search=playwright&pro')
 
-    await router.navigate('/traces/trace-07?search=playwright&pro')
+    await router.navigate(`${TRACES_PATH}/trace-07?search=playwright&pro`)
     dispatchModArrow('ArrowUp')
-    await expect.poll(() => router.state.location.pathname).toBe('/traces/newer')
+    await expect.poll(() => router.state.location.pathname).toBe(`${TRACES_PATH}/newer`)
 
     await userEvent.keyboard('{Escape}')
-    await expect.poll(() => router.state.location.pathname).toBe('/traces')
+    await expect.poll(() => router.state.location.pathname).toBe(TRACES_PATH)
     expect(router.state.location.search).toBe('?search=playwright&pro')
   })
 
@@ -211,6 +214,6 @@ describe('TraceDetail', () => {
     const rendered = await screen
     await expect.element(rendered.getByText('No spans for this trace')).toBeVisible()
     await rendered.getByRole('button', { name: 'Back to query stream' }).click()
-    expect(router.state.location.pathname).toBe('/traces')
+    expect(router.state.location.pathname).toBe(TRACES_PATH)
   })
 })

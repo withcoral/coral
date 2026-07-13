@@ -21,10 +21,11 @@ export function shouldRevalidate({
   nextParams,
 }: ShouldRevalidateFunctionArgs) {
   if (formMethod && formMethod.toUpperCase() !== 'GET') return true
+  if (currentParams.workspaceId !== nextParams.workspaceId) return true
   if (currentParams.traceId !== nextParams.traceId) return nextParams.traceId === undefined
   return defaultShouldRevalidate
 }
 
-export default function TracesRoute({ loaderData }: Route.ComponentProps) {
-  return <TracesIndex {...loaderData} />
+export default function TracesRoute({ loaderData, params }: Route.ComponentProps) {
+  return <TracesIndex {...loaderData} workspaceId={params.workspaceId} />
 }

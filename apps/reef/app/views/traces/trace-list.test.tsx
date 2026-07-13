@@ -28,19 +28,23 @@ describe('TraceList', () => {
       [
         {
           element: (
-            <TraceList referenceTimeMs={2_000_000} traces={[summary('trace/with?reserved')]} />
+            <TraceList
+              referenceTimeMs={2_000_000}
+              traces={[summary('trace/with?reserved')]}
+              workspaceId="analytics"
+            />
           ),
-          path: '/traces',
+          path: '/workspaces/:workspaceId/traces',
         },
       ],
-      { initialEntries: ['/traces?pro'] },
+      { initialEntries: ['/workspaces/analytics/traces?pro'] },
     )
 
     const screen = await render(<RouterProvider router={router} />)
 
     await expect
       .element(screen.getByRole('link', { name: /select 'trace\/with\?reserved'/i }))
-      .toHaveAttribute('href', '/traces/trace%2Fwith%3Freserved?pro')
+      .toHaveAttribute('href', '/workspaces/analytics/traces/trace%2Fwith%3Freserved?pro')
   })
 
   it('marks the URL-selected row current independently from keyboard highlighting', async () => {
@@ -53,12 +57,13 @@ describe('TraceList', () => {
               activeTraceId="keyboard-active"
               referenceTimeMs={2_000_000}
               traces={[summary('selected'), summary('keyboard-active')]}
+              workspaceId="analytics"
             />
           ),
-          path: '/traces',
+          path: '/workspaces/:workspaceId/traces',
         },
       ],
-      { initialEntries: ['/traces/selected'] },
+      { initialEntries: ['/workspaces/analytics/traces/selected'] },
     )
 
     const screen = await render(<RouterProvider router={router} />)

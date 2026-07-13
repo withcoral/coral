@@ -14,6 +14,7 @@ import * as s from './traces.css'
 import { HttpSpanDetail } from './http-span-detail'
 import { traceLocation } from './trace-location'
 import type { TracesOutletContext } from './traces-index'
+import { routePath } from '@/routing/routemap'
 import { useTimelineTree, type TimelineRow } from './use-timeline-tree'
 import {
   formatDuration,
@@ -906,7 +907,7 @@ export function TraceDetail({
   loadError: string | null
   traceId: string
 }) {
-  const { traces } = useOutletContext<TracesOutletContext>()
+  const { traces, workspaceId } = useOutletContext<TracesOutletContext>()
   const location = useLocation()
   const navigate = useNavigate()
   const selectedIndex = traces.findIndex((trace) => trace.traceId === traceId)
@@ -926,8 +927,15 @@ export function TraceDetail({
         loadError={loadError}
         newerTraceId={newerTraceId}
         olderTraceId={olderTraceId}
-        onClose={() => navigate({ pathname: '/traces', search: location.search })}
-        onSelectTrace={(nextTraceId) => navigate(traceLocation(nextTraceId, location.search))}
+        onClose={() =>
+          navigate({
+            pathname: routePath('workspaceTraces', { workspaceId }),
+            search: location.search,
+          })
+        }
+        onSelectTrace={(nextTraceId) =>
+          navigate(traceLocation(workspaceId, nextTraceId, location.search))
+        }
         traceId={traceId}
       />
     </div>

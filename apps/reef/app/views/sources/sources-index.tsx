@@ -3,13 +3,16 @@ import { useRevalidator } from 'react-router'
 
 import { SourceCatalogSurface } from '@/components/sources'
 import type { CatalogEntry } from '@/lib/sources'
+import { routePath } from '@/routing/routemap'
 
 export function SourcesIndex({
   entries,
   loadError = null,
+  workspaceId,
 }: {
   entries: CatalogEntry[]
   loadError?: string | null
+  workspaceId: string
 }) {
   const [search, setSearch] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -35,7 +38,7 @@ export function SourcesIndex({
     <SourceCatalogSurface
       entries={entries}
       errorMessage={loadError}
-      getEntryTo={(entry) => `/sources/${encodeURIComponent(entry.name)}`}
+      getEntryTo={(entry) => routePath('workspaceSource', { sourceName: entry.name, workspaceId })}
       loadState={loadError ? 'error' : loading ? 'loading' : 'idle'}
       onRetry={() => revalidator.revalidate()}
       onSearchChange={setSearch}

@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { NavLink, useLocation } from 'react-router'
+import { NavLink, useLocation, useParams } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { IconButton } from '@/wax/components/button'
@@ -9,6 +9,7 @@ import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 import type { IconName } from '@/wax/components/icon'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
+import { routePath } from '@/routing/routemap'
 
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
@@ -17,17 +18,23 @@ interface SidebarProps {
   initialIsMinimized: boolean
 }
 
-const NAV_ITEMS = [
-  { icon: 'Plug', label: 'Sources', paths: ['/', '/sources'], to: '/sources' },
-  { icon: 'Database', label: 'Schema', paths: ['/schema'], to: '/schema' },
-  { icon: 'Activity', label: 'Traces', paths: ['/traces'], to: '/traces' },
-] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
-
 export function Sidebar({ initialIsMinimized }: SidebarProps) {
   const location = useLocation()
+  const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
+  const sourcesPath = workspaceId
+    ? routePath('workspaceSources', { workspaceId })
+    : routePath('home')
+  const schemaPath = workspaceId ? routePath('workspaceSchema', { workspaceId }) : routePath('home')
+  const tracesPath = workspaceId ? routePath('workspaceTraces', { workspaceId }) : routePath('home')
+  const navItems = [
+    { icon: 'Plug', label: 'Sources', paths: [routePath('home'), sourcesPath], to: sourcesPath },
+    { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
+    { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
+  ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
   const isSettingsActive =
-    location.pathname === '/settings' || location.pathname.startsWith('/settings/')
+    location.pathname === routePath('settings') ||
+    location.pathname.startsWith(`${routePath('settings')}/`)
   // Keep the desktop-only settings link stable across SSR and hydration. The
   // actual bridge can only be detected on the client, but the route is included
   // at build time for Electron and omitted from the web build.
@@ -40,7 +47,7 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
       icon="Settings"
       isActive={isSettingsActive}
       isMinimized={isMinimized}
-      to="/settings"
+      to={routePath('settings')}
     >
       Settings
     </SidebarButton>
@@ -105,8 +112,10 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
       </div>
 
       <div className={styles.nav}>
-        {NAV_ITEMS.map((item) => {
-          const isActive = item.paths.includes(location.pathname)
+        {navItems.map((item) => {
+          const isActive = item.paths.some(
+            (path) => location.pathname === path || location.pathname.startsWith(`${path}/`),
+          )
           const button = (
             <SidebarButton
               aria-label={item.label}

@@ -10,7 +10,7 @@ function renderSourcesIndex(entries: CatalogEntry[]) {
   const router = createMemoryRouter(
     [
       {
-        element: <SourcesIndex entries={entries} />,
+        element: <SourcesIndex entries={entries} workspaceId="team alpha" />,
         path: '/',
       },
     ],
@@ -34,7 +34,7 @@ describe('SourcesIndex', () => {
 
     await expect
       .element(screen.getByRole('link', { name: /github/i }))
-      .toHaveAttribute('href', '/sources/github')
+      .toHaveAttribute('href', '/workspaces/team%20alpha/sources/github')
   })
 
   it('encodes source names before routing through the source detail route', async () => {
@@ -50,6 +50,6 @@ describe('SourcesIndex', () => {
 
     await expect
       .element(screen.getByRole('link', { name: /foo\?bar/i }))
-      .toHaveAttribute('href', '/sources/foo%3Fbar')
+      .toHaveAttribute('href', '/workspaces/team%20alpha/sources/foo%3Fbar')
   })
 })
