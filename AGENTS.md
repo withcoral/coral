@@ -108,6 +108,11 @@
   `xtask/src/sources.rs`, performance checks live in `xtask/src/perf.rs`, and
   skill export lives in `xtask/src/skills.rs`. Release signing and
   notarization automation lives in `xtask/src/release.rs`.
+- The Electron desktop app version is tied to the CLI release version through
+  release-please. The release workflow builds the macOS desktop app from
+  `apps/desktop`, uploads its DMG/ZIP/update metadata to the same GitHub
+  Release as the CLI artifacts, and the website should link to the
+  `releases/latest/download` DMG rather than storing desktop binaries itself.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
