@@ -404,6 +404,8 @@ fn link_param_matches(item: &str, name: &str, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
 
@@ -412,12 +414,54 @@ mod tests {
         apply_pagination_body_fields, apply_pagination_query_pairs, extract_next_link_url,
         extract_next_url_header, extract_response_cursor_header, page_is_exhausted,
     };
-    use crate::backends::http::request::RenderedRequestBody;
+    use crate::backends::http::request::{RenderedRequestBody, RequestBody, build_request_body};
     use crate::backends::http::test_support::test_http_table_spec;
+    use crate::backends::shared::template::RenderContext;
     use coral_spec::{
-        BodySpec, HttpMethod, PaginationMode, PaginationSpec, ParsedTemplate, RequestSpec,
-        ValidatedPaginationMode, ValueSourceSpec,
+        BodyFieldSpec, BodySpec, HttpMethod, PageSizeSpec, PaginationMode, PaginationSpec,
+        ParsedTemplate, RequestSpec, ValidatedPaginationMode, ValueSourceSpec,
     };
+
+    #[derive(Clone, Copy)]
+    enum PublicBodyOverwrite {
+        None,
+        PageSize(&'static str),
+        Cursor(&'static str),
+    }
+
+    fn body_path(path: &str) -> Vec<String> {
+        path.split('/').map(ToOwned::to_owned).collect()
+    }
+
+    fn render_secret_body(writes: &[(&str, bool)]) -> RenderedRequestBody {
+        let request = RequestSpec {
+            method: HttpMethod::POST,
+            body: BodySpec::Json {
+                fields: writes
+                    .iter()
+                    .map(|(path, secret)| BodyFieldSpec {
+                        path: body_path(path),
+                        when_arg: None,
+                        value: ValueSourceSpec::Input {
+                            key: if *secret { "SECRET" } else { "PUBLIC" }.to_string(),
+                        },
+                    })
+                    .collect(),
+            },
+            ..RequestSpec::default()
+        };
+        let inputs = BTreeMap::from([
+            ("SECRET".to_string(), "hidden".to_string()),
+            ("PUBLIC".to_string(), "visible".to_string()),
+        ]);
+        let empty = HashMap::new();
+        build_request_body(
+            &request,
+            &RenderContext::new(&empty, &empty, &empty, &inputs),
+            &BTreeSet::from(["SECRET".to_string()]),
+        )
+        .expect("body")
+    }
 
     #[test]
     fn extract_next_link_url_resolves_relative_links_on_same_origin() {
@@ -753,6 +797,148 @@ mod tests {
                 .contains("pagination body fields are not supported with text request bodies")
         );
         assert!(body.value.is_none());
+    }
+
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "auditable test table")]
+    fn final_json_body_provenance_follows_semantic_path_overwrites() {
+        use PublicBodyOverwrite::{Cursor, None as NoOverwrite, PageSize};
+
+        type Case = (
+            &'static [(&'static str, bool)],
+            PublicBodyOverwrite,
+            serde_json::Value,
+            bool,
+        );
+        let cases: Vec<Case> = vec![
+            (
+                &[("slot", true), ("slot", false)],
+                NoOverwrite,
+                json!({"slot": "visible"}),
+                false,
+            ),
+            (
+                &[("slot", false), ("slot", true)],
+                NoOverwrite,
+                json!({"slot": "hidden"}),
+                true,
+            ),
+            (
+                &[("payload/token", true), ("payload", false)],
+                NoOverwrite,
+                json!({"payload": "visible"}),
+                false,
+            ),
+            (
+                &[("payload", true), ("payload/token", false)],
+                NoOverwrite,
+                json!({"payload": {"token": "visible"}}),
+                false,
+            ),
+            (
+                &[("payload/token", true), ("payload/public", false)],
+                NoOverwrite,
+                json!({"payload": {"token": "hidden", "public": "visible"}}),
+                true,
+            ),
+            (
+                &[("payload/token", true), ("payload/0", false)],
+                NoOverwrite,
+                json!({"payload": ["visible"]}),
+                false,
+            ),
+            (
+                &[("payload/token", true)],
+                PageSize("payload/token"),
+                json!({"payload": {"token": 25}}),
+                false,
+            ),
+            (
+                &[("payload", true)],
+                PageSize("payload/limit"),
+                json!({"payload": {"limit": 25}}),
+                false,
+            ),
+            (
+                &[("items/0/token", true)],
+                PageSize("items/1/token"),
+                json!({"items": [{"token": "hidden"}, {"token": 25}]}),
+                true,
+            ),
+            (
+                &[("items/00/token", true)],
+                PageSize("items/0/token"),
+                json!({"items": [{"token": 25}]}),
+                false,
+            ),
+            (
+                &[("payload/0", true)],
+                PageSize("payload/limit"),
+                json!({"payload": {"limit": 25}}),
+                false,
+            ),
+            (
+                &[("payload/cursor", true)],
+                Cursor("payload/cursor"),
+                json!({"payload": {"cursor": "cursor-2"}}),
+                false,
+            ),
+        ];
+
+        for (case, (writes, overwrite, expected, depends_on_secret)) in
+            cases.into_iter().enumerate()
+        {
+            let mut body = render_secret_body(writes);
+            let (pagination, state, page_size) = match overwrite {
+                PublicBodyOverwrite::None => {
+                    (PaginationSpec::default(), PageState::default(), None)
+                }
+                PublicBodyOverwrite::PageSize(path) => (
+                    PaginationSpec {
+                        page_size: Some(PageSizeSpec {
+                            default: 25,
+                            max: 100,
+                            query_param: None,
+                            body_path: body_path(path),
+                        }),
+                        ..PaginationSpec::default()
+                    },
+                    PageState::default(),
+                    Some(25),
+                ),
+                PublicBodyOverwrite::Cursor(path) => (
+                    PaginationSpec {
+                        mode: PaginationMode::CursorBody,
+                        cursor_body_path: body_path(path),
+                        response_cursor_path: body_path("meta/next_cursor"),
+                        ..PaginationSpec::default()
+                    },
+                    PageState {
+                        cursor: Some("cursor-2".to_string()),
+                        ..PageState::default()
+                    },
+                    None,
+                ),
+            };
+            let pagination = pagination.validated("demo", "items").expect("pagination");
+            apply_pagination_body_fields(
+                &mut body,
+                &BodySpec::default(),
+                &pagination,
+                &state,
+                page_size,
+            )
+            .expect("pagination body");
+
+            assert!(
+                matches!(&body.value, Some(RequestBody::Json(value)) if value == &expected),
+                "case {case}: {:?}",
+                body.value
+            );
+            // This is body-local final-value provenance; fetch separately preserves monotonic
+            // credential taint when a credential-bearing response creates later pagination state.
+            assert_eq!(body.depends_on_secret(), depends_on_secret, "case {case}");
+        }
     }
 
     #[test]
