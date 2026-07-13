@@ -38,6 +38,12 @@ const MAX_DEVICE_CODE_SESSION_TTL: Duration = Duration::from_hours(1);
 const REFRESH_EXPIRY_SKEW_SECONDS: i64 = 60;
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Duration used for the durable claim that fences one provider refresh.
+#[expect(dead_code, reason = "consumed by B5f")]
+pub(crate) fn oauth_refresh_claim_duration() -> Duration {
+    TOKEN_REQUEST_TIMEOUT
+}
+
 #[derive(Clone)]
 pub(crate) struct OAuthCredentialService {
     http: OAuthHttpClients,
@@ -67,10 +73,13 @@ pub(crate) struct StartOAuthCredentialRequest<'a> {
     pub(crate) credential_inputs: Vec<(String, String)>,
 }
 
-pub(super) struct RefreshOAuthCredentialRequest<'a> {
+pub(crate) struct RefreshOAuthCredentialRequest<'a> {
+    error_subject: String,
+    reconnect_hint: &'static str,
     access_token_material_key: &'a str,
     metadata_prefix: String,
     oauth: &'a ManifestOAuthCredentialSpec,
+    context: OAuthRefreshRequestContext<'a>,
 }
 
 impl<'a> RefreshOAuthCredentialRequest<'a> {
@@ -79,10 +88,71 @@ impl<'a> RefreshOAuthCredentialRequest<'a> {
         oauth: &'a ManifestOAuthCredentialSpec,
     ) -> Self {
         Self {
+            error_subject: format!("source secret '{input_key}'"),
+            reconnect_hint: "reconnect the source",
             access_token_material_key: input_key,
             metadata_prefix: oauth_metadata_prefix(input_key),
             oauth,
+            context: OAuthRefreshRequestContext::Source,
         }
+    }
+
+    #[cfg_attr(not(test), expect(dead_code, reason = "consumed by B5f"))]
+    pub(crate) fn for_identity(
+        identity_name: &str,
+        access_token_material_key: &'a str,
+        oauth: &'a ManifestOAuthCredentialSpec,
+        resolved_source_variables: &'a BTreeMap<String, String>,
+        resolved_client_credential_inputs: Vec<(String, String)>,
+    ) -> Result<Self, AppError> {
+        let client_credential_inputs =
+            normalize_credential_inputs(resolved_client_credential_inputs)?;
+        reject_unknown_credential_inputs(oauth, &client_credential_inputs)?;
+        Ok(Self {
+            error_subject: format!("identity '{identity_name}'"),
+            reconnect_hint: "reconnect the identity",
+            access_token_material_key,
+            metadata_prefix: oauth_metadata_prefix(access_token_material_key),
+            oauth,
+            context: OAuthRefreshRequestContext::Identity {
+                source_variables: resolved_source_variables,
+                client_credential_inputs,
+            },
+        })
+    }
+}
+
+enum OAuthRefreshRequestContext<'a> {
+    Source,
+    Identity {
+        source_variables: &'a BTreeMap<String, String>,
+        client_credential_inputs: BTreeMap<String, String>,
+    },
+}
+
+/// A fully resolved, one-shot OAuth refresh operation.
+///
+/// This intentionally does not implement `Clone` or `Debug`: it owns both the
+/// refresh token and the complete credential material snapshot.
+pub(crate) struct PreparedOAuthRefresh {
+    access_token_material_key: String,
+    metadata_prefix: String,
+    refresh: OAuthRefreshConfig,
+    credential_material: BTreeMap<String, String>,
+}
+
+/// Owned result of a completed OAuth refresh.
+///
+/// This intentionally does not implement `Clone` or `Debug` because the
+/// credential material contains secrets.
+pub(crate) struct RefreshedOAuthCredential {
+    credential_material: BTreeMap<String, String>,
+    safe_metadata: BTreeMap<String, String>,
+}
+
+impl RefreshedOAuthCredential {
+    pub(crate) fn into_parts(self) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+        (self.credential_material, self.safe_metadata)
     }
 }
 
@@ -205,6 +275,12 @@ struct OAuthRefreshConfig {
     client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
     refresh_token: String,
     resource: Option<String>,
+}
+
+struct OAuthRefreshClientFallback {
+    id: Option<String>,
+    secret: Option<String>,
+    secret_transport: Option<ManifestOAuthClientSecretTransport>,
 }
 
 struct OAuthAuthorizationRequest {
@@ -568,29 +644,60 @@ impl OAuthCredentialService {
         Ok(())
     }
 
-    /// Uses persisted credential material as both the refresh input
-    /// (expiry, refresh token, client metadata) and output (new token values).
+    /// Resolve an OAuth refresh plan without performing I/O or mutating the
+    /// borrowed credential material.
+    pub(crate) fn prepare_refresh(
+        request: RefreshOAuthCredentialRequest<'_>,
+        credential_material: &BTreeMap<String, String>,
+    ) -> Result<Option<PreparedOAuthRefresh>, AppError> {
+        let Some(refresh) = oauth_refresh_config(&request, credential_material)? else {
+            return Ok(None);
+        };
+        Ok(Some(PreparedOAuthRefresh {
+            access_token_material_key: request.access_token_material_key.to_string(),
+            metadata_prefix: request.metadata_prefix,
+            refresh,
+            credential_material: credential_material.clone(),
+        }))
+    }
+
+    /// Execute exactly one provider request from a prepared refresh plan.
+    pub(crate) async fn execute_refresh(
+        &self,
+        prepared: PreparedOAuthRefresh,
+    ) -> Result<RefreshedOAuthCredential, AppError> {
+        let PreparedOAuthRefresh {
+            access_token_material_key,
+            metadata_prefix,
+            refresh,
+            mut credential_material,
+        } = prepared;
+        let token = refresh_access_token(&self.http, &refresh).await?;
+        apply_refreshed_token(
+            &access_token_material_key,
+            &metadata_prefix,
+            &mut credential_material,
+            &token,
+        );
+        let safe_metadata = safe_metadata_from_material(&metadata_prefix, &credential_material);
+        Ok(RefreshedOAuthCredential {
+            credential_material,
+            safe_metadata,
+        })
+    }
+
+    /// Compatibility wrapper for source-secret refresh behavior.
     pub(super) async fn refresh_if_needed(
         &self,
         request: RefreshOAuthCredentialRequest<'_>,
         credential_material: &mut BTreeMap<String, String>,
     ) -> Result<bool, AppError> {
-        let Some(refresh) = oauth_refresh_config(
-            request.access_token_material_key,
-            request.metadata_prefix.as_str(),
-            request.oauth,
-            credential_material,
-        )?
-        else {
+        let Some(prepared) = Self::prepare_refresh(request, credential_material)? else {
             return Ok(false);
         };
-        let token = refresh_access_token(&self.http, &refresh).await?;
-        apply_refreshed_token(
-            request.access_token_material_key,
-            request.metadata_prefix.as_str(),
-            credential_material,
-            &token,
-        );
+        let refreshed = self.execute_refresh(prepared).await?;
+        let (refreshed_material, _safe_metadata) = refreshed.into_parts();
+        *credential_material = refreshed_material;
         Ok(true)
     }
 
@@ -1972,11 +2079,10 @@ fn oauth_metadata_prefix(input_key: &str) -> String {
 }
 
 fn oauth_refresh_config(
-    access_token_material_key: &str,
-    metadata_prefix: &str,
-    oauth: &ManifestOAuthCredentialSpec,
+    request: &RefreshOAuthCredentialRequest<'_>,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<OAuthRefreshConfig>, AppError> {
+    let metadata_prefix = request.metadata_prefix.as_str();
     if OAuthMetadataKey::Method.get(metadata_prefix, material) != Some(OAUTH_METADATA_METHOD_VALUE)
     {
         return Ok(None);
@@ -1988,7 +2094,8 @@ fn oauth_refresh_config(
     let expires_at = DateTime::parse_from_rfc3339(expires_at)
         .map_err(|error| {
             AppError::FailedPrecondition(format!(
-                "stored OAuth access token expiry for source secret '{access_token_material_key}' is invalid: {error}"
+                "stored OAuth access token expiry for {} is invalid: {error}",
+                request.error_subject
             ))
         })?
         .with_timezone(&Utc);
@@ -2005,55 +2112,60 @@ fn oauth_refresh_config(
             return Ok(None);
         }
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because no refresh token is stored; reconnect the source"
+            "OAuth access token for {} expired and cannot be refreshed because no refresh token is stored; {}",
+            request.error_subject, request.reconnect_hint
         )));
     };
-    let client_id = OAuthMetadataKey::ClientId
-        .get(metadata_prefix, material)
-        .and_then(trimmed_non_empty)
-        .map(ToString::to_string)
-        .or_else(|| {
-            oauth
-                .client
-                .id
-                .default
-                .as_deref()
-                .and_then(trimmed_non_empty)
-                .map(ToString::to_string)
-        })
-        .ok_or_else(|| {
-            AppError::FailedPrecondition(format!(
-                "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client ID metadata is missing"
-            ))
-        })?;
-    let token_url = OAuthMetadataKey::TokenUrl
-        .get(metadata_prefix, material)
-        .and_then(trimmed_non_empty)
-        .unwrap_or(&oauth.token_url);
-    let token_url = ValidatedOAuthEndpoint::untrusted(token_url, "stored token URL")?;
-    let resource =
-        oauth_refresh_resource(access_token_material_key, metadata_prefix, oauth, material)?;
-    let client_secret_transport = OAuthMetadataKey::ClientSecretTransport
-        .get(metadata_prefix, material)
-        .and_then(trimmed_non_empty)
-        .map(|value| {
-            ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
-                AppError::FailedPrecondition(format!(
-                    "stored OAuth client secret transport for source secret '{access_token_material_key}' is invalid: {value}"
-                ))
-            })
-        })
-        .transpose()?
-        .or_else(|| oauth.client.secret.as_ref().map(|secret| secret.transport));
-    let client_secret = OAuthMetadataKey::ClientSecret
-        .get(metadata_prefix, material)
+    let dynamic_client_registration =
+        OAuthMetadataKey::DynamicClientRegistration.get(metadata_prefix, material) == Some("true");
+    let use_stored_client = matches!(request.context, OAuthRefreshRequestContext::Source)
+        || dynamic_client_registration;
+    let stored_client_value = |key: OAuthMetadataKey| {
+        use_stored_client
+            .then(|| key.get(metadata_prefix, material))
+            .flatten()
+    };
+    let stored_client_id = stored_client_value(OAuthMetadataKey::ClientId)
         .and_then(trimmed_non_empty)
         .map(ToString::to_string);
+    let stored_client_secret = stored_client_value(OAuthMetadataKey::ClientSecret)
+        .and_then(trimmed_non_empty)
+        .map(ToString::to_string);
+    let stored_client_secret_transport =
+        stored_client_value(OAuthMetadataKey::ClientSecretTransport)
+            .and_then(trimmed_non_empty)
+            .map(|value| {
+                ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
+                    AppError::FailedPrecondition(format!(
+                        "stored OAuth client secret transport for {} is invalid; {}",
+                        request.error_subject, request.reconnect_hint
+                    ))
+                })
+            })
+            .transpose()?;
+    let fallback = oauth_refresh_client_fallback(request, dynamic_client_registration)?;
+    let client_id = stored_client_id.or(fallback.id).ok_or_else(|| {
+        let reconnect = match request.context {
+            OAuthRefreshRequestContext::Source => "",
+            OAuthRefreshRequestContext::Identity { .. } => {
+                "; reconnect the identity"
+            }
+        };
+        AppError::FailedPrecondition(format!(
+            "OAuth access token for {} expired and cannot be refreshed because client ID metadata is missing{reconnect}",
+            request.error_subject
+        ))
+    })?;
+    let client_secret = stored_client_secret.or(fallback.secret);
+    let client_secret_transport = stored_client_secret_transport.or(fallback.secret_transport);
     if client_secret_transport.is_some() && client_secret.is_none() {
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client secret metadata is missing"
+            "OAuth access token for {} expired and cannot be refreshed because client secret metadata is missing; {}",
+            request.error_subject, request.reconnect_hint
         )));
     }
+    let token_url = oauth_refresh_token_url(request, material)?;
+    let resource = oauth_refresh_resource(request, material)?;
     Ok(Some(OAuthRefreshConfig {
         token_url,
         client_id,
@@ -2064,20 +2176,135 @@ fn oauth_refresh_config(
     }))
 }
 
+fn oauth_refresh_client_fallback(
+    request: &RefreshOAuthCredentialRequest<'_>,
+    dynamic_client_registration: bool,
+) -> Result<OAuthRefreshClientFallback, AppError> {
+    match &request.context {
+        OAuthRefreshRequestContext::Source => Ok(OAuthRefreshClientFallback {
+            id: request
+                .oauth
+                .client
+                .id
+                .default
+                .as_deref()
+                .and_then(trimmed_non_empty)
+                .map(ToString::to_string),
+            secret: None,
+            secret_transport: request
+                .oauth
+                .client
+                .secret
+                .as_ref()
+                .map(|secret| secret.transport),
+        }),
+        OAuthRefreshRequestContext::Identity { .. } if dynamic_client_registration => {
+            // A registered client is durable provider state. Never replace it
+            // with current static manifest inputs during refresh.
+            Ok(OAuthRefreshClientFallback {
+                id: None,
+                secret: None,
+                secret_transport: None,
+            })
+        }
+        OAuthRefreshRequestContext::Identity {
+            client_credential_inputs,
+            ..
+        } => {
+            let client_id = maybe_resolve_client_id(request.oauth, client_credential_inputs);
+            let client_secret = resolve_client_secret(request.oauth, client_credential_inputs)
+                .map_err(|_error| {
+                    AppError::FailedPrecondition(format!(
+                        "OAuth access token for {} expired and cannot be refreshed because the current client secret input is missing; {}",
+                        request.error_subject, request.reconnect_hint
+                    ))
+                })?;
+            Ok(OAuthRefreshClientFallback {
+                id: client_id,
+                secret: client_secret,
+                secret_transport: request
+                    .oauth
+                    .client
+                    .secret
+                    .as_ref()
+                    .map(|secret| secret.transport),
+            })
+        }
+    }
+}
+
+fn oauth_refresh_token_url(
+    request: &RefreshOAuthCredentialRequest<'_>,
+    material: &BTreeMap<String, String>,
+) -> Result<ValidatedOAuthEndpoint, AppError> {
+    let stored = matches!(request.context, OAuthRefreshRequestContext::Source)
+        .then(|| OAuthMetadataKey::TokenUrl.get(&request.metadata_prefix, material))
+        .flatten()
+        .and_then(trimmed_non_empty);
+    let (token_url, label) = if let Some(stored) = stored {
+        (stored.to_string(), "stored token URL")
+    } else {
+        match &request.context {
+            OAuthRefreshRequestContext::Source => {
+                (request.oauth.token_url.clone(), "stored token URL")
+            }
+            OAuthRefreshRequestContext::Identity {
+                source_variables, ..
+            } => {
+                let endpoints = request
+                    .oauth
+                    .endpoint_urls(source_variables)
+                    .map_err(|error| {
+                        AppError::FailedPrecondition(format!(
+                            "OAuth access token for {} expired and cannot be refreshed because the current token URL could not be rendered: {error}; {}",
+                            request.error_subject, request.reconnect_hint
+                        ))
+                    })?;
+                (endpoints.token_url, "resolved token URL")
+            }
+        }
+    };
+    ValidatedOAuthEndpoint::untrusted(&token_url, label).map_err(|error| {
+        if matches!(request.context, OAuthRefreshRequestContext::Source) {
+            error
+        } else {
+            AppError::FailedPrecondition(format!(
+                "OAuth access token for {} expired and cannot be refreshed because the current token URL is invalid; {}; {error}",
+                request.error_subject, request.reconnect_hint
+            ))
+        }
+    })
+}
+
 fn oauth_refresh_resource(
-    access_token_material_key: &str,
-    metadata_prefix: &str,
-    oauth: &ManifestOAuthCredentialSpec,
+    request: &RefreshOAuthCredentialRequest<'_>,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<String>, AppError> {
-    if let Some(resource) = OAuthMetadataKey::Resource
-        .get(metadata_prefix, material)
-        .and_then(trimmed_non_empty)
+    if matches!(request.context, OAuthRefreshRequestContext::Source)
+        && let Some(resource) = OAuthMetadataKey::Resource
+            .get(&request.metadata_prefix, material)
+            .and_then(trimmed_non_empty)
     {
         return Ok(Some(resource.to_string()));
     }
 
-    oauth_refresh_manifest_resource(access_token_material_key, oauth)
+    match &request.context {
+        OAuthRefreshRequestContext::Source => oauth_refresh_manifest_resource(
+            request.access_token_material_key,
+            request.oauth,
+        ),
+        OAuthRefreshRequestContext::Identity {
+            source_variables, ..
+        } => request
+            .oauth
+            .resource(source_variables)
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "OAuth access token for {} expired and cannot be refreshed because the current OAuth resource could not be rendered: {error}; {}",
+                    request.error_subject, request.reconnect_hint
+                ))
+            }),
+    }
 }
 
 fn oauth_refresh_manifest_resource(
@@ -2163,6 +2390,26 @@ fn safe_metadata(token: &TokenResponse) -> BTreeMap<String, String> {
     metadata
 }
 
+fn safe_metadata_from_material(
+    metadata_prefix: &str,
+    material: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    for (key, public_key) in [
+        (OAuthMetadataKey::TokenType, "token_type"),
+        (OAuthMetadataKey::Scope, "scope"),
+        (
+            OAuthMetadataKey::AccessTokenExpiresAt,
+            "access_token_expires_at",
+        ),
+    ] {
+        if let Some(value) = key.get(metadata_prefix, material) {
+            metadata.insert(public_key.to_string(), value.to_string());
+        }
+    }
+    metadata
+}
+
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -2216,6 +2463,23 @@ mod tests {
 
     fn metadata_key(input_key: &str, key: OAuthMetadataKey) -> String {
         key.key(&oauth_metadata_prefix(input_key))
+    }
+
+    fn expired_refresh_material(input_key: &str) -> (String, BTreeMap<String, String>) {
+        let prefix = oauth_metadata_prefix(input_key);
+        let material = BTreeMap::from([
+            (input_key.to_string(), "expired-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            ),
+            (
+                format!("{prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+        ]);
+        (prefix, material)
     }
 
     #[test]
@@ -2883,6 +3147,206 @@ mod tests {
             assert!(!detail.contains(secret), "diagnostic leaked {secret}");
         }
         material.insert(token_url_key.to_string(), safe_token_url);
+    }
+
+    #[test]
+    fn identity_refresh_preparation_is_pure_and_resolves_current_static_context() {
+        let mut oauth = oauth_spec(
+            "{{input.OAUTH_TOKEN_URL}}",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
+        );
+        oauth.resource = Some("https://{{input.MCP_HOST}}/mcp".to_string());
+        let source_variables = BTreeMap::from([
+            ("OAUTH_TOKEN_URL".into(), "http://127.0.0.1:9/token".into()),
+            ("MCP_HOST".into(), "mcp.example.com".into()),
+        ]);
+        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
+        for (key, value) in [
+            ("client_id", "stale-client"),
+            ("client_secret", "stale-secret"),
+            ("client_secret_transport", "stale-transport-canary"),
+            ("token_url", "http://127.0.0.1:8/stale"),
+            ("resource", "https://stale.example/resource"),
+        ] {
+            material.insert(format!("{prefix}{key}"), value.to_string());
+        }
+        let original = material.clone();
+        let request = RefreshOAuthCredentialRequest::for_identity(
+            "github",
+            "ACCESS_TOKEN",
+            &oauth,
+            &source_variables,
+            vec![
+                ("OAUTH_CLIENT_ID".into(), " current-client ".into()),
+                ("OAUTH_CLIENT_SECRET".into(), " current-secret ".into()),
+            ],
+        )
+        .expect("identity refresh request");
+
+        let prepared = OAuthCredentialService::prepare_refresh(request, &material)
+            .expect("prepare identity refresh")
+            .expect("expired material needs refresh");
+        let refresh = &prepared.refresh;
+
+        assert_eq!(material, original, "preparation must not mutate material");
+        assert_eq!(prepared.credential_material, original);
+        assert_eq!(refresh.token_url.as_str(), "http://127.0.0.1:9/token");
+        assert_eq!(refresh.client_id, "current-client");
+        assert_eq!(refresh.client_secret.as_deref(), Some("current-secret"));
+        assert!(matches!(
+            refresh.client_secret_transport,
+            Some(ManifestOAuthClientSecretTransport::BasicAuth)
+        ));
+        assert_eq!(
+            refresh.resource.as_deref(),
+            Some("https://mcp.example.com/mcp")
+        );
+    }
+
+    #[test]
+    fn identity_refresh_preparation_keeps_registered_client_context_authoritative() {
+        let oauth = oauth_spec(
+            "{{input.OAUTH_TOKEN_URL}}",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
+        );
+        let source_variables = BTreeMap::from([(
+            "OAUTH_TOKEN_URL".to_string(),
+            "http://127.0.0.1:9/token".to_string(),
+        )]);
+        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
+        for (key, value) in [
+            ("client_id", "registered-client"),
+            ("client_secret", "registered-secret"),
+            ("client_secret_transport", "basic_auth"),
+            ("dynamic_client_registration", "true"),
+            ("token_url", "http://127.0.0.1:8/stale"),
+            ("resource", "https://stale.example/resource"),
+        ] {
+            material.insert(format!("{prefix}{key}"), value.to_string());
+        }
+        let request = RefreshOAuthCredentialRequest::for_identity(
+            "github",
+            "ACCESS_TOKEN",
+            &oauth,
+            &source_variables,
+            vec![
+                ("OAUTH_CLIENT_ID".into(), "static-client".into()),
+                ("OAUTH_CLIENT_SECRET".into(), "static-secret".into()),
+            ],
+        )
+        .expect("identity refresh request");
+
+        let prepared = OAuthCredentialService::prepare_refresh(request, &material)
+            .expect("prepare identity refresh")
+            .expect("expired material needs refresh");
+        let refresh = &prepared.refresh;
+
+        assert_eq!(refresh.client_id, "registered-client");
+        assert_eq!(refresh.client_secret.as_deref(), Some("registered-secret"));
+        assert!(matches!(
+            refresh.client_secret_transport,
+            Some(ManifestOAuthClientSecretTransport::BasicAuth)
+        ));
+        assert_eq!(refresh.token_url.as_str(), "http://127.0.0.1:9/token");
+        assert_eq!(refresh.resource, None);
+    }
+
+    #[test]
+    fn identity_refresh_preparation_has_identity_reconnect_diagnostics() {
+        let oauth = oauth_spec(
+            "http://127.0.0.1:9/token",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
+        );
+        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
+        material.extend([
+            (
+                format!("{prefix}dynamic_client_registration"),
+                "true".into(),
+            ),
+            (format!("{prefix}client_id"), "registered-client".into()),
+            (
+                format!("{prefix}client_secret_transport"),
+                "transport-secret-canary".into(),
+            ),
+        ]);
+        let request = RefreshOAuthCredentialRequest::for_identity(
+            "github",
+            "ACCESS_TOKEN",
+            &oauth,
+            &EMPTY_SOURCE_INPUTS,
+            vec![("OAUTH_CLIENT_ID".to_string(), "client".to_string())],
+        )
+        .expect("identity refresh request");
+        let detail = OAuthCredentialService::prepare_refresh(request, &material)
+            .err()
+            .expect("invalid stored transport must fail before claim")
+            .to_string();
+        assert!(detail.contains("identity 'github'"), "{detail}");
+        assert!(detail.contains("reconnect the identity"), "{detail}");
+        assert!(!detail.contains("transport-secret-canary"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn prepared_identity_refresh_executes_once_and_reports_effective_metadata() {
+        let fixture = OAuthFixture::new(Some(r#"{"access_token":"refreshed-token"}"#));
+        let oauth = oauth_spec(
+            &fixture.token_url,
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+                dynamic_registration: None,
+            },
+        );
+        let (prefix, mut material) = expired_refresh_material("ACCESS_TOKEN");
+        material.extend([
+            (format!("{prefix}token_type"), "Bearer".to_string()),
+            (format!("{prefix}scope"), "repo read:org".to_string()),
+        ]);
+        let request = RefreshOAuthCredentialRequest::for_identity(
+            "github",
+            "ACCESS_TOKEN",
+            &oauth,
+            &EMPTY_SOURCE_INPUTS,
+            Vec::new(),
+        )
+        .expect("identity refresh request");
+        let prepared = OAuthCredentialService::prepare_refresh(request, &material)
+            .expect("prepare identity refresh")
+            .expect("expired material needs refresh");
+        let service = OAuthCredentialService::new();
+
+        let refreshed = service
+            .execute_refresh(prepared)
+            .await
+            .expect("execute identity refresh");
+        let captured = fixture.token_server.await.expect("one token request");
+        let (material, safe_metadata) = refreshed.into_parts();
+
+        assert_eq!(captured.form["grant_type"], "refresh_token");
+        assert_eq!(material["ACCESS_TOKEN"], "refreshed-token");
+        assert_eq!(
+            material[&format!("{prefix}refresh_token")],
+            "stored-refresh-token"
+        );
+        assert_eq!(
+            safe_metadata,
+            BTreeMap::from([
+                ("scope".to_string(), "repo read:org".to_string()),
+                ("token_type".to_string(), "Bearer".to_string()),
+            ])
+        );
+        assert!(!material.contains_key(&format!("{prefix}access_token_expires_at")));
     }
 
     #[tokio::test]
