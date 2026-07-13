@@ -31,7 +31,7 @@ discovery, and normalized source-definition models.
   table/function collision checks.
 - Prefer normalized source-spec values over raw YAML plumbing in public
   helpers.
-- Keep DSL v4 runtime IR/projection types separate from their persisted file
-  models. Schema-v3 artifact YAML is a permanent compatibility contract: add
-  optional file fields and explicit file-to-runtime migration defaults rather
-  than making runtime model changes deserialize old installations directly.
+- Keep DSL v4 runtime IR/projection types separate from their persisted DTOs.
+  Schema-v3 artifact YAML is a permanent compatibility contract: add optional
+  DTO fields and explicit DTO-to-runtime migration defaults rather than making
+  runtime model changes deserialize old installations directly.

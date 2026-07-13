@@ -169,7 +169,7 @@ mod tests {
         SemanticIr,
     };
     use crate::PaginationSpec;
-    use crate::v4::artifact_model::{IrOperationInputFile, SemanticIrFile};
+    use crate::v4::artifact_model::{IrOperationInputDto, SemanticIrDto};
     use crate::v4::diagnostics::Diagnostic;
     use crate::v4::ir::mcp::McpExecutionAttachment;
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
@@ -237,8 +237,7 @@ mod tests {
             )],
         };
 
-        let yaml =
-            serde_yaml::to_string(&SemanticIrFile::from(&ir)).expect("serialize semantic IR");
+        let yaml = serde_yaml::to_string(&SemanticIrDto::from(&ir)).expect("serialize semantic IR");
         assert!(
             !yaml.contains('!'),
             "semantic IR should not use YAML local tags: {yaml}"
@@ -247,7 +246,7 @@ mod tests {
         assert!(yaml.contains("type: object"), "missing object tag: {yaml}");
         assert!(yaml.contains("type: scalar"), "missing scalar tag: {yaml}");
 
-        let file: SemanticIrFile =
+        let file: SemanticIrDto =
             serde_yaml::from_str(&yaml).expect("semantic IR file should round-trip");
         SemanticIr::try_from(file).expect("semantic IR should migrate");
     }
@@ -299,7 +298,7 @@ mod tests {
         };
 
         let yaml =
-            serde_yaml::to_string(&SemanticIrFile::from(&ir)).expect("serialize MCP semantic IR");
+            serde_yaml::to_string(&SemanticIrDto::from(&ir)).expect("serialize MCP semantic IR");
         assert!(
             yaml.contains(&format!(
                 "artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}"
@@ -319,7 +318,7 @@ mod tests {
             "missing tool arg input: {yaml}"
         );
 
-        let file: SemanticIrFile =
+        let file: SemanticIrDto =
             serde_yaml::from_str(&yaml).expect("MCP semantic IR file should round-trip");
         SemanticIr::try_from(file).expect("MCP semantic IR should migrate");
     }
@@ -344,7 +343,7 @@ diagnostics: []
 "#
         );
 
-        let error = serde_yaml::from_str::<SemanticIrFile>(&legacy_yaml)
+        let error = serde_yaml::from_str::<SemanticIrDto>(&legacy_yaml)
             .expect_err("semantic IR should reject legacy local tags");
         assert!(
             error.to_string().contains("shape") || error.to_string().contains("type"),
@@ -365,7 +364,7 @@ diagnostics: []
         };
 
         let yaml =
-            serde_yaml::to_string(&IrOperationInputFile::from(&input)).expect("serialize input");
+            serde_yaml::to_string(&IrOperationInputDto::from(&input)).expect("serialize input");
         assert!(
             yaml.contains("location: path"),
             "unexpected serialized input: {yaml}"
@@ -375,7 +374,7 @@ diagnostics: []
             "Rust type names must not leak into artifacts: {yaml}"
         );
 
-        let decoded: IrOperationInputFile = serde_yaml::from_str(&yaml).expect("deserialize input");
+        let decoded: IrOperationInputDto = serde_yaml::from_str(&yaml).expect("deserialize input");
         assert_eq!(decoded.location, IrInputLocation::Path);
     }
 }

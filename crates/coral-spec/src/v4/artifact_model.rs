@@ -29,35 +29,35 @@ pub struct ArtifactMigrationError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SemanticIrFile {
+pub struct SemanticIrDto {
     pub artifact_schema_version: u32,
     pub source_name: String,
     pub surface_id: String,
     pub surface_type: SurfaceType,
     pub importer_version: String,
-    pub operations: Vec<IrOperationFile>,
-    pub types: Vec<IrTypeFile>,
+    pub operations: Vec<IrOperationDto>,
+    pub types: Vec<IrTypeDto>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrOperationFile {
+pub struct IrOperationDto {
     pub id: String,
     pub method_name: String,
     pub description: String,
     pub deprecated: bool,
     pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub naming: Option<IrOperationNamingFile>,
-    pub inputs: Vec<IrOperationInputFile>,
-    pub output: IrOperationOutputFile,
-    pub entity: Option<IrEntityCandidateFile>,
-    pub execution: IrExecutionAttachmentFile,
+    pub naming: Option<IrOperationNamingDto>,
+    pub inputs: Vec<IrOperationInputDto>,
+    pub output: IrOperationOutputDto,
+    pub entity: Option<IrEntityCandidateDto>,
+    pub execution: IrExecutionAttachmentDto,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrOperationNamingFile {
+pub struct IrOperationNamingDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,7 +65,7 @@ pub struct IrOperationNamingFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrOperationInputFile {
+pub struct IrOperationInputDto {
     pub name: String,
     pub location: IrInputLocation,
     pub required: bool,
@@ -77,32 +77,32 @@ pub struct IrOperationInputFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrOperationOutputFile {
+pub struct IrOperationOutputDto {
     pub cardinality: OutputCardinality,
     pub type_ref: String,
     pub row_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrEntityCandidateFile {
+pub struct IrEntityCandidateDto {
     pub name: String,
     pub type_ref: String,
     pub identity_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrTypeFile {
+pub struct IrTypeDto {
     pub id: String,
-    pub shape: IrTypeShapeFile,
+    pub shape: IrTypeShapeDto,
     pub nullable: bool,
     pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
-pub enum IrTypeShapeFile {
+pub enum IrTypeShapeDto {
     Scalar(IrScalarType),
-    Object { fields: Vec<IrFieldFile> },
+    Object { fields: Vec<IrFieldDto> },
     List { item_type_ref: String },
     Map { value_type_ref: String },
     Enum { values: Vec<String> },
@@ -110,7 +110,7 @@ pub enum IrTypeShapeFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrFieldFile {
+pub struct IrFieldDto {
     pub name: String,
     pub type_ref: String,
     pub required: bool,
@@ -120,30 +120,30 @@ pub struct IrFieldFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
-pub enum IrExecutionAttachmentFile {
-    Rest(Box<RestExecutionAttachmentFile>),
-    Mcp(McpExecutionAttachmentFile),
+pub enum IrExecutionAttachmentDto {
+    Rest(Box<RestExecutionAttachmentDto>),
+    Mcp(McpExecutionAttachmentDto),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestExecutionAttachmentFile {
+pub struct RestExecutionAttachmentDto {
     pub method: HttpMethod,
     pub path_template: String,
-    pub parameters: Vec<RestParameterBindingFile>,
-    pub request_body: Option<RestRequestBodyFile>,
-    pub response: RestResponseAttachmentFile,
+    pub parameters: Vec<RestParameterBindingDto>,
+    pub request_body: Option<RestRequestBodyDto>,
+    pub response: RestResponseAttachmentDto,
     pub pagination: PaginationSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestRequestBodyFile {
+pub struct RestRequestBodyDto {
     pub required: bool,
     pub media_type: String,
     pub type_ref: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestParameterBindingFile {
+pub struct RestParameterBindingDto {
     pub input_name: String,
     pub location: IrInputLocation,
     pub wire_name: String,
@@ -152,14 +152,14 @@ pub struct RestParameterBindingFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestResponseAttachmentFile {
+pub struct RestResponseAttachmentDto {
     pub status_code: u16,
     pub media_type: String,
     pub response: ResponseSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpExecutionAttachmentFile {
+pub struct McpExecutionAttachmentDto {
     pub tool_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pagination: Option<McpPaginationSpec>,
@@ -168,28 +168,28 @@ pub struct McpExecutionAttachmentFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectionCatalogFile {
+pub struct ProjectionCatalogDto {
     pub artifact_schema_version: u32,
     pub source_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator_version: Option<String>,
-    pub projections: Vec<ProjectionFile>,
+    pub projections: Vec<ProjectionDto>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectionFile {
+pub struct ProjectionDto {
     pub name: String,
     #[serde(default)]
     pub namespace: String,
-    pub kind: ProjectionKindFile,
+    pub kind: ProjectionKindDto,
     pub description: String,
     pub guide: String,
     pub surface_id: String,
     pub operation_id: String,
     pub visibility: ProjectionVisibility,
-    pub inputs: Vec<ProjectionInputFile>,
-    pub columns: Vec<ProjectionColumnFile>,
+    pub inputs: Vec<ProjectionInputDto>,
+    pub columns: Vec<ProjectionColumnDto>,
     pub search_limits: Option<SearchLimitsSpec>,
     pub detail_hints: Vec<DetailHintSpec>,
     pub diagnostics: Vec<Diagnostic>,
@@ -197,7 +197,7 @@ pub struct ProjectionFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
-pub enum ProjectionKindFile {
+pub enum ProjectionKindDto {
     Table,
     TableFunction {
         function_kind: SourceTableFunctionKind,
@@ -205,7 +205,7 @@ pub enum ProjectionKindFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectionInputFile {
+pub struct ProjectionInputDto {
     pub name: String,
     pub sql_exposure: SqlInputExposure,
     pub source_location: IrInputLocation,
@@ -219,7 +219,7 @@ pub struct ProjectionInputFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectionColumnFile {
+pub struct ProjectionColumnDto {
     pub name: String,
     pub data_type: ManifestDataType,
     pub source_path: Vec<String>,
@@ -227,7 +227,7 @@ pub struct ProjectionColumnFile {
     pub description: String,
 }
 
-impl From<&SemanticIr> for SemanticIrFile {
+impl From<&SemanticIr> for SemanticIrDto {
     fn from(value: &SemanticIr) -> Self {
         Self {
             artifact_schema_version: value.artifact_schema_version,
@@ -235,17 +235,17 @@ impl From<&SemanticIr> for SemanticIrFile {
             surface_id: value.surface_id.clone(),
             surface_type: value.surface_type,
             importer_version: value.importer_version.clone(),
-            operations: value.operations.iter().map(IrOperationFile::from).collect(),
-            types: value.types.iter().map(IrTypeFile::from).collect(),
+            operations: value.operations.iter().map(IrOperationDto::from).collect(),
+            types: value.types.iter().map(IrTypeDto::from).collect(),
             diagnostics: value.diagnostics.clone(),
         }
     }
 }
 
-impl TryFrom<SemanticIrFile> for SemanticIr {
+impl TryFrom<SemanticIrDto> for SemanticIr {
     type Error = ArtifactMigrationError;
 
-    fn try_from(value: SemanticIrFile) -> Result<Self, Self::Error> {
+    fn try_from(value: SemanticIrDto) -> Result<Self, Self::Error> {
         Ok(Self {
             artifact_schema_version: value.artifact_schema_version,
             source_name: value.source_name,
@@ -263,22 +263,22 @@ impl TryFrom<SemanticIrFile> for SemanticIr {
     }
 }
 
-impl From<&ProjectionCatalog> for ProjectionCatalogFile {
+impl From<&ProjectionCatalog> for ProjectionCatalogDto {
     fn from(value: &ProjectionCatalog) -> Self {
         Self {
             artifact_schema_version: value.artifact_schema_version,
             source_name: value.source_name.clone(),
             generator_version: value.generator_version.clone(),
-            projections: value.projections.iter().map(ProjectionFile::from).collect(),
+            projections: value.projections.iter().map(ProjectionDto::from).collect(),
             diagnostics: value.diagnostics.clone(),
         }
     }
 }
 
-impl TryFrom<ProjectionCatalogFile> for ProjectionCatalog {
+impl TryFrom<ProjectionCatalogDto> for ProjectionCatalog {
     type Error = ArtifactMigrationError;
 
-    fn try_from(value: ProjectionCatalogFile) -> Result<Self, Self::Error> {
+    fn try_from(value: ProjectionCatalogDto) -> Result<Self, Self::Error> {
         Ok(Self {
             artifact_schema_version: value.artifact_schema_version,
             source_name: value.source_name,
@@ -293,7 +293,7 @@ impl TryFrom<ProjectionCatalogFile> for ProjectionCatalog {
     }
 }
 
-impl From<&IrOperation> for IrOperationFile {
+impl From<&IrOperation> for IrOperationDto {
     fn from(value: &IrOperation) -> Self {
         Self {
             id: value.id.clone(),
@@ -301,22 +301,18 @@ impl From<&IrOperation> for IrOperationFile {
             description: value.description.clone(),
             deprecated: value.deprecated,
             read_only: value.read_only,
-            naming: value.naming.as_ref().map(IrOperationNamingFile::from),
-            inputs: value
-                .inputs
-                .iter()
-                .map(IrOperationInputFile::from)
-                .collect(),
-            output: IrOperationOutputFile::from(&value.output),
-            entity: value.entity.as_ref().map(IrEntityCandidateFile::from),
-            execution: IrExecutionAttachmentFile::from(&value.execution),
+            naming: value.naming.as_ref().map(IrOperationNamingDto::from),
+            inputs: value.inputs.iter().map(IrOperationInputDto::from).collect(),
+            output: IrOperationOutputDto::from(&value.output),
+            entity: value.entity.as_ref().map(IrEntityCandidateDto::from),
+            execution: IrExecutionAttachmentDto::from(&value.execution),
             diagnostics: value.diagnostics.clone(),
         }
     }
 }
 
-impl From<IrOperationFile> for IrOperation {
-    fn from(value: IrOperationFile) -> Self {
+impl From<IrOperationDto> for IrOperation {
+    fn from(value: IrOperationDto) -> Self {
         Self {
             id: value.id,
             method_name: value.method_name,
@@ -352,44 +348,44 @@ macro_rules! copy_struct {
     };
 }
 
-copy_struct!(IrOperationNamingFile => IrOperationNaming { group, operation });
-copy_struct!(IrOperationInputFile => IrOperationInput {
+copy_struct!(IrOperationNamingDto => IrOperationNaming { group, operation });
+copy_struct!(IrOperationInputDto => IrOperationInput {
     name, location, required, data_type, default_value, description, exclude_from_lookup_keys
 });
-copy_struct!(IrOperationOutputFile => IrOperationOutput { cardinality, type_ref, row_path });
-copy_struct!(IrEntityCandidateFile => IrEntityCandidate { name, type_ref, identity_fields });
-copy_struct!(IrFieldFile => IrField { name, type_ref, required, nullable, description });
-copy_struct!(RestRequestBodyFile => RestRequestBody { required, media_type, type_ref });
-copy_struct!(RestParameterBindingFile => RestParameterBinding {
+copy_struct!(IrOperationOutputDto => IrOperationOutput { cardinality, type_ref, row_path });
+copy_struct!(IrEntityCandidateDto => IrEntityCandidate { name, type_ref, identity_fields });
+copy_struct!(IrFieldDto => IrField { name, type_ref, required, nullable, description });
+copy_struct!(RestRequestBodyDto => RestRequestBody { required, media_type, type_ref });
+copy_struct!(RestParameterBindingDto => RestParameterBinding {
     input_name, location, wire_name, required, data_type
 });
-copy_struct!(RestResponseAttachmentFile => RestResponseAttachment {
+copy_struct!(RestResponseAttachmentDto => RestResponseAttachment {
     status_code, media_type, response
 });
-copy_struct!(McpExecutionAttachmentFile => McpExecutionAttachment {
+copy_struct!(McpExecutionAttachmentDto => McpExecutionAttachment {
     tool_name, pagination, offset_pagination
 });
-copy_struct!(ProjectionInputFile => ProjectionInput {
+copy_struct!(ProjectionInputDto => ProjectionInput {
     name, sql_exposure, source_location, wire_name, required, data_type, default_value,
     description, lookup_key
 });
-copy_struct!(ProjectionColumnFile => ProjectionColumn {
+copy_struct!(ProjectionColumnDto => ProjectionColumn {
     name, data_type, source_path, nullable, description
 });
 
-impl From<&IrType> for IrTypeFile {
+impl From<&IrType> for IrTypeDto {
     fn from(value: &IrType) -> Self {
         Self {
             id: value.id.clone(),
-            shape: IrTypeShapeFile::from(&value.shape),
+            shape: IrTypeShapeDto::from(&value.shape),
             nullable: value.nullable,
             description: value.description.clone(),
         }
     }
 }
 
-impl From<IrTypeFile> for IrType {
-    fn from(value: IrTypeFile) -> Self {
+impl From<IrTypeDto> for IrType {
+    fn from(value: IrTypeDto) -> Self {
         Self {
             id: value.id,
             shape: value.shape.into(),
@@ -399,12 +395,12 @@ impl From<IrTypeFile> for IrType {
     }
 }
 
-impl From<&IrTypeShape> for IrTypeShapeFile {
+impl From<&IrTypeShape> for IrTypeShapeDto {
     fn from(value: &IrTypeShape) -> Self {
         match value {
             IrTypeShape::Scalar(value) => Self::Scalar(*value),
             IrTypeShape::Object { fields } => Self::Object {
-                fields: fields.iter().map(IrFieldFile::from).collect(),
+                fields: fields.iter().map(IrFieldDto::from).collect(),
             },
             IrTypeShape::List { item_type_ref } => Self::List {
                 item_type_ref: item_type_ref.clone(),
@@ -420,42 +416,42 @@ impl From<&IrTypeShape> for IrTypeShapeFile {
     }
 }
 
-impl From<IrTypeShapeFile> for IrTypeShape {
-    fn from(value: IrTypeShapeFile) -> Self {
+impl From<IrTypeShapeDto> for IrTypeShape {
+    fn from(value: IrTypeShapeDto) -> Self {
         match value {
-            IrTypeShapeFile::Scalar(value) => Self::Scalar(value),
-            IrTypeShapeFile::Object { fields } => Self::Object {
+            IrTypeShapeDto::Scalar(value) => Self::Scalar(value),
+            IrTypeShapeDto::Object { fields } => Self::Object {
                 fields: fields.into_iter().map(IrField::from).collect(),
             },
-            IrTypeShapeFile::List { item_type_ref } => Self::List { item_type_ref },
-            IrTypeShapeFile::Map { value_type_ref } => Self::Map { value_type_ref },
-            IrTypeShapeFile::Enum { values } => Self::Enum { values },
-            IrTypeShapeFile::Json => Self::Json,
+            IrTypeShapeDto::List { item_type_ref } => Self::List { item_type_ref },
+            IrTypeShapeDto::Map { value_type_ref } => Self::Map { value_type_ref },
+            IrTypeShapeDto::Enum { values } => Self::Enum { values },
+            IrTypeShapeDto::Json => Self::Json,
         }
     }
 }
 
-impl From<&IrExecutionAttachment> for IrExecutionAttachmentFile {
+impl From<&IrExecutionAttachment> for IrExecutionAttachmentDto {
     fn from(value: &IrExecutionAttachment) -> Self {
         match value {
             IrExecutionAttachment::Rest(value) => {
-                Self::Rest(Box::new(RestExecutionAttachmentFile::from(value.as_ref())))
+                Self::Rest(Box::new(RestExecutionAttachmentDto::from(value.as_ref())))
             }
-            IrExecutionAttachment::Mcp(value) => Self::Mcp(McpExecutionAttachmentFile::from(value)),
+            IrExecutionAttachment::Mcp(value) => Self::Mcp(McpExecutionAttachmentDto::from(value)),
         }
     }
 }
 
-impl From<IrExecutionAttachmentFile> for IrExecutionAttachment {
-    fn from(value: IrExecutionAttachmentFile) -> Self {
+impl From<IrExecutionAttachmentDto> for IrExecutionAttachment {
+    fn from(value: IrExecutionAttachmentDto) -> Self {
         match value {
-            IrExecutionAttachmentFile::Rest(value) => Self::Rest(Box::new((*value).into())),
-            IrExecutionAttachmentFile::Mcp(value) => Self::Mcp(value.into()),
+            IrExecutionAttachmentDto::Rest(value) => Self::Rest(Box::new((*value).into())),
+            IrExecutionAttachmentDto::Mcp(value) => Self::Mcp(value.into()),
         }
     }
 }
 
-impl From<&RestExecutionAttachment> for RestExecutionAttachmentFile {
+impl From<&RestExecutionAttachment> for RestExecutionAttachmentDto {
     fn from(value: &RestExecutionAttachment) -> Self {
         Self {
             method: value.method,
@@ -463,17 +459,17 @@ impl From<&RestExecutionAttachment> for RestExecutionAttachmentFile {
             parameters: value
                 .parameters
                 .iter()
-                .map(RestParameterBindingFile::from)
+                .map(RestParameterBindingDto::from)
                 .collect(),
-            request_body: value.request_body.as_ref().map(RestRequestBodyFile::from),
-            response: RestResponseAttachmentFile::from(&value.response),
+            request_body: value.request_body.as_ref().map(RestRequestBodyDto::from),
+            response: RestResponseAttachmentDto::from(&value.response),
             pagination: value.pagination.clone(),
         }
     }
 }
 
-impl From<RestExecutionAttachmentFile> for RestExecutionAttachment {
-    fn from(value: RestExecutionAttachmentFile) -> Self {
+impl From<RestExecutionAttachmentDto> for RestExecutionAttachment {
+    fn from(value: RestExecutionAttachmentDto) -> Self {
         Self {
             method: value.method,
             path_template: value.path_template,
@@ -489,22 +485,22 @@ impl From<RestExecutionAttachmentFile> for RestExecutionAttachment {
     }
 }
 
-impl From<&Projection> for ProjectionFile {
+impl From<&Projection> for ProjectionDto {
     fn from(value: &Projection) -> Self {
         Self {
             name: value.name.clone(),
             namespace: value.namespace.clone(),
-            kind: ProjectionKindFile::from(&value.kind),
+            kind: ProjectionKindDto::from(&value.kind),
             description: value.description.clone(),
             guide: value.guide.clone(),
             surface_id: value.surface_id.clone(),
             operation_id: value.operation_id.clone(),
             visibility: value.visibility,
-            inputs: value.inputs.iter().map(ProjectionInputFile::from).collect(),
+            inputs: value.inputs.iter().map(ProjectionInputDto::from).collect(),
             columns: value
                 .columns
                 .iter()
-                .map(ProjectionColumnFile::from)
+                .map(ProjectionColumnDto::from)
                 .collect(),
             search_limits: value.search_limits.clone(),
             detail_hints: value.detail_hints.clone(),
@@ -513,8 +509,8 @@ impl From<&Projection> for ProjectionFile {
     }
 }
 
-impl From<ProjectionFile> for Projection {
-    fn from(value: ProjectionFile) -> Self {
+impl From<ProjectionDto> for Projection {
+    fn from(value: ProjectionDto) -> Self {
         Self {
             name: value.name,
             namespace: value.namespace,
@@ -541,7 +537,7 @@ impl From<ProjectionFile> for Projection {
     }
 }
 
-impl From<&ProjectionKind> for ProjectionKindFile {
+impl From<&ProjectionKind> for ProjectionKindDto {
     fn from(value: &ProjectionKind) -> Self {
         match value {
             ProjectionKind::Table => Self::Table,
@@ -552,11 +548,11 @@ impl From<&ProjectionKind> for ProjectionKindFile {
     }
 }
 
-impl From<ProjectionKindFile> for ProjectionKind {
-    fn from(value: ProjectionKindFile) -> Self {
+impl From<ProjectionKindDto> for ProjectionKind {
+    fn from(value: ProjectionKindDto) -> Self {
         match value {
-            ProjectionKindFile::Table => Self::Table,
-            ProjectionKindFile::TableFunction { function_kind } => {
+            ProjectionKindDto::Table => Self::Table,
+            ProjectionKindDto::TableFunction { function_kind } => {
                 Self::TableFunction { function_kind }
             }
         }
@@ -565,12 +561,12 @@ impl From<ProjectionKindFile> for ProjectionKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectionCatalogFile, SemanticIrFile};
+    use super::{ProjectionCatalogDto, SemanticIrDto};
     use crate::v4::{ProjectionCatalog, SemanticIr};
 
     #[test]
     fn schema_v3_semantic_ir_fixture_migrates() {
-        let file: SemanticIrFile =
+        let file: SemanticIrDto =
             serde_yaml::from_str(include_str!("fixtures/v3/semantic-ir.yaml"))
                 .expect("decode schema-v3 semantic IR fixture");
         let runtime = SemanticIr::try_from(file).expect("migrate schema-v3 semantic IR");
@@ -581,7 +577,7 @@ mod tests {
 
     #[test]
     fn schema_v3_projection_fixture_migrates_legacy_defaults() {
-        let file: ProjectionCatalogFile =
+        let file: ProjectionCatalogDto =
             serde_yaml::from_str(include_str!("fixtures/v3/projections.yaml"))
                 .expect("decode schema-v3 projection fixture");
         let runtime = ProjectionCatalog::try_from(file).expect("migrate schema-v3 projections");

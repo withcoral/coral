@@ -83,7 +83,7 @@ mod tests {
     use super::{
         Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
     };
-    use crate::v4::artifact_model::ProjectionCatalogFile;
+    use crate::v4::artifact_model::ProjectionCatalogDto;
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
     use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
@@ -117,7 +117,7 @@ mod tests {
             diagnostics: Vec::new(),
         };
 
-        let yaml = serde_yaml::to_string(&ProjectionCatalogFile::from(&catalog))
+        let yaml = serde_yaml::to_string(&ProjectionCatalogDto::from(&catalog))
             .expect("serialize projection catalog");
         assert!(
             !yaml.contains('!'),
@@ -136,7 +136,7 @@ mod tests {
             "projection catalog should not serialize pagination: {yaml}"
         );
 
-        let file: ProjectionCatalogFile =
+        let file: ProjectionCatalogDto =
             serde_yaml::from_str(&yaml).expect("projection catalog file should round-trip");
         ProjectionCatalog::try_from(file).expect("projection catalog should migrate");
     }
@@ -168,7 +168,7 @@ diagnostics: []
 "
         );
 
-        let file: ProjectionCatalogFile =
+        let file: ProjectionCatalogDto =
             serde_yaml::from_str(&raw).expect("legacy projection catalog should deserialize");
         let catalog = ProjectionCatalog::try_from(file).expect("legacy catalog should migrate");
         assert_eq!(
@@ -188,7 +188,7 @@ diagnostics: []
 "
         );
 
-        let file: ProjectionCatalogFile =
+        let file: ProjectionCatalogDto =
             serde_yaml::from_str(&raw).expect("projection override catalog should deserialize");
         let catalog = ProjectionCatalog::try_from(file).expect("override catalog should migrate");
 

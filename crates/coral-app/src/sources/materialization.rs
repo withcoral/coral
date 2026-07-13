@@ -9,8 +9,8 @@ use std::time::Duration;
 use coral_spec::v4::{
     Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
     MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, ProjectionCatalogFile, ProjectionPaginationInputSyncMode,
-    SURFACE_IMPORTER_VERSION, SemanticIr, SemanticIrFile, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+    ProjectionCatalog, ProjectionCatalogDto, ProjectionPaginationInputSyncMode,
+    SURFACE_IMPORTER_VERSION, SemanticIr, SemanticIrDto, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
     V4MaterializedSource, V4SourceManifest, apply_parameter_metadata_overrides,
     generate_projection_catalog, import_mcp_surface, import_openapi_surface,
     normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
@@ -314,7 +314,7 @@ fn load_projection_catalog(
 ) -> Result<ProjectionCatalog, AppError> {
     let projections = match projections_file.origin {
         V4ProjectionCatalogOrigin::Materialized => {
-            let file: ProjectionCatalogFile =
+            let file: ProjectionCatalogDto =
                 read_artifact_yaml(source_name, "projection catalog", &projections_file.path)?;
             file.try_into().map_err(|error| {
                 incompatible_materialization_error(
@@ -422,7 +422,7 @@ fn load_projected_surface(
     let surface_dir = layout.v4_surface_dir(workspace_name, source_name, &surface.id);
     let raw_source_document_path = surface_dir.join("source-document.raw");
     let semantic_ir_path = surface_dir.join("semantic-ir.yaml");
-    let semantic_ir_file: SemanticIrFile =
+    let semantic_ir_file: SemanticIrDto =
         read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path).map_err(|error| {
             Box::new(materialization_warning(
                 "V4_SEMANTIC_IR_UNAVAILABLE",
@@ -916,7 +916,7 @@ fn write_materialization(
     write_yaml(&temp_dir.join(FINGERPRINT_FILENAME), &fingerprint)?;
     write_yaml(
         &temp_dir.join(PROJECTIONS_FILENAME),
-        &ProjectionCatalogFile::from(&projections),
+        &ProjectionCatalogDto::from(&projections),
     )?;
     write_yaml(&temp_dir.join(DIAGNOSTICS_FILENAME), &diagnostics)?;
     Ok(())
@@ -946,7 +946,7 @@ fn write_surface_artifacts(
     )?;
     write_yaml(
         &surface_dir.join("semantic-ir.yaml"),
-        &SemanticIrFile::from(&materialized_surface.semantic_ir),
+        &SemanticIrDto::from(&materialized_surface.semantic_ir),
     )?;
     Ok(())
 }
@@ -1376,7 +1376,7 @@ fn read_projection_override_yaml(
     source_name: &SourceName,
     path: &Path,
 ) -> Result<ProjectionCatalog, AppError> {
-    let file: ProjectionCatalogFile = read_yaml(path).map_err(|error| {
+    let file: ProjectionCatalogDto = read_yaml(path).map_err(|error| {
         invalid_projection_override_error(
             source_name,
             path,
@@ -1665,7 +1665,7 @@ surfaces:
             "generated lookup key metadata should live in semantic-ir.yaml"
         );
 
-        let semantic_ir_file: SemanticIrFile =
+        let semantic_ir_file: SemanticIrDto =
             read_yaml(&surface_dir.join("semantic-ir.yaml")).expect("read semantic IR");
         let semantic_ir = SemanticIr::try_from(semantic_ir_file).expect("migrate semantic IR");
         let operation = semantic_ir.operations.first().expect("operation");
@@ -1720,7 +1720,7 @@ surfaces:
         )
         .expect("build MCP materialization");
 
-        let semantic_ir_file: SemanticIrFile = read_yaml(
+        let semantic_ir_file: SemanticIrDto = read_yaml(
             &build
                 .temp_dir
                 .join("surfaces")
@@ -1740,7 +1740,7 @@ surfaces:
             vec!["meta".to_string(), "nextCursor".to_string()]
         );
 
-        let projections_file: ProjectionCatalogFile =
+        let projections_file: ProjectionCatalogDto =
             read_yaml(&build.temp_dir.join(PROJECTIONS_FILENAME)).expect("read projections");
         let projections =
             ProjectionCatalog::try_from(projections_file).expect("migrate projections");
@@ -2132,7 +2132,7 @@ operation_overrides:
         let semantic_ir_path = layout
             .v4_surface_dir(&workspace_name(), &source_name(), "rest")
             .join("semantic-ir.yaml");
-        let artifact_ir_file: SemanticIrFile =
+        let artifact_ir_file: SemanticIrDto =
             read_yaml(&semantic_ir_path).expect("read persisted semantic IR");
         let artifact_ir =
             SemanticIr::try_from(artifact_ir_file).expect("migrate persisted semantic IR");

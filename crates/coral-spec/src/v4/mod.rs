@@ -30,7 +30,7 @@ mod projection_tests;
 #[cfg(test)]
 mod test_support;
 
-pub use artifact_model::{ArtifactMigrationError, ProjectionCatalogFile, SemanticIrFile};
+pub use artifact_model::{ArtifactMigrationError, ProjectionCatalogDto, SemanticIrDto};
 pub use artifacts::{
     Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
     validate_materialized_source,
