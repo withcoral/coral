@@ -14,27 +14,30 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
+use coral_api::v1::identity_spec_service_server::{IdentitySpecService, IdentitySpecServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::search_service_server::{SearchService, SearchServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
-    CatalogCounts, CatalogItem, CatalogMetadata, CatalogSearchResult, Column, ColumnHint,
-    ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
-    CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse,
-    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
-    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
-    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
-    ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    SearchFieldRole, SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest,
-    SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind,
-    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    AddIdentitySpecRequest, AddIdentitySpecResponse, CatalogCounts, CatalogItem, CatalogMetadata,
+    CatalogSearchResult, Column, ColumnHint, ColumnSearchResult, CreateBundledSourceRequest,
+    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteIdentitySpecRequest, DeleteIdentitySpecResponse, DeleteSourceRequest,
+    DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest,
+    DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetIdentitySpecRequest,
+    GetIdentitySpecResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, IdentitySpec, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListIdentitySpecsRequest,
+    ListIdentitySpecsResponse, ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest,
+    ListWorkspacesResponse, PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest,
+    SearchCatalogResponse, SearchFieldRole, SearchProvider, SearchProviderCoverage,
+    SearchProviderState, SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchSurfaceKind, SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response, search_result,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -52,6 +55,24 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 fn workspace() -> Workspace {
     Workspace {
         name: "default".to_string(),
+    }
+}
+
+fn identity_spec_manifest(name: &str) -> String {
+    format!(
+        "kind: identity\nspec_version: 1\nname: {name}\nversion: 1.0.0\nissuer: demo\ntype: fixed_token\n"
+    )
+}
+
+fn mock_identity_spec(name: &str, workspace: Option<Workspace>) -> IdentitySpec {
+    IdentitySpec {
+        name: name.to_string(),
+        version: "1.0.0".to_string(),
+        description: "Mock identity spec".to_string(),
+        issuer: "demo".to_string(),
+        identity_type: "fixed_token".to_string(),
+        manifest_yaml: identity_spec_manifest(name),
+        workspace,
     }
 }
 
@@ -740,6 +761,10 @@ struct Captured {
     list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
     create_workspace: Mutex<Vec<CreateWorkspaceRequest>>,
     delete_workspace: Mutex<Vec<DeleteWorkspaceRequest>>,
+    add_identity_spec: Mutex<Vec<AddIdentitySpecRequest>>,
+    list_identity_specs: Mutex<Vec<ListIdentitySpecsRequest>>,
+    get_identity_spec: Mutex<Vec<GetIdentitySpecRequest>>,
+    delete_identity_spec: Mutex<Vec<DeleteIdentitySpecRequest>>,
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -986,6 +1011,93 @@ impl CatalogService for MockCatalogService {
 }
 
 #[derive(Clone)]
+struct MockIdentitySpecService {
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl IdentitySpecService for MockIdentitySpecService {
+    async fn add_identity_spec(
+        &self,
+        request: Request<AddIdentitySpecRequest>,
+    ) -> Result<Response<AddIdentitySpecResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .add_identity_spec
+            .lock()
+            .expect("add_identity_spec capture")
+            .push(request.clone());
+        let replaced = request.input_values.is_empty();
+        Ok(Response::new(AddIdentitySpecResponse {
+            identity_spec: Some(IdentitySpec {
+                name: "demo_oauth".to_string(),
+                version: "1.0.0".to_string(),
+                description: "Mock identity spec".to_string(),
+                issuer: "demo".to_string(),
+                identity_type: "oauth".to_string(),
+                manifest_yaml: request.manifest_yaml,
+                workspace: request.workspace,
+            }),
+            replaced,
+        }))
+    }
+
+    async fn list_identity_specs(
+        &self,
+        request: Request<ListIdentitySpecsRequest>,
+    ) -> Result<Response<ListIdentitySpecsResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .list_identity_specs
+            .lock()
+            .expect("list_identity_specs capture")
+            .push(request.clone());
+        let identity_specs = match request.workspace {
+            Some(workspace) => {
+                let mut identity_specs =
+                    vec![mock_identity_spec("workspace_demo", Some(workspace))];
+                if request.include_global {
+                    identity_specs.push(mock_identity_spec("global_demo", None));
+                }
+                identity_specs
+            }
+            None => vec![mock_identity_spec("global_demo", None)],
+        };
+        Ok(Response::new(ListIdentitySpecsResponse { identity_specs }))
+    }
+
+    async fn get_identity_spec(
+        &self,
+        request: Request<GetIdentitySpecRequest>,
+    ) -> Result<Response<GetIdentitySpecResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .get_identity_spec
+            .lock()
+            .expect("get_identity_spec capture")
+            .push(request.clone());
+        Ok(Response::new(GetIdentitySpecResponse {
+            identity_spec: Some(mock_identity_spec(&request.name, request.workspace)),
+        }))
+    }
+
+    async fn delete_identity_spec(
+        &self,
+        request: Request<DeleteIdentitySpecRequest>,
+    ) -> Result<Response<DeleteIdentitySpecResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .delete_identity_spec
+            .lock()
+            .expect("delete_identity_spec capture")
+            .push(request);
+        Ok(Response::new(DeleteIdentitySpecResponse {
+            orphaned_identities: 2,
+        }))
+    }
+}
+
+#[derive(Clone)]
 struct MockSourceService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
@@ -1222,6 +1334,7 @@ impl MockServer {
         let query_captured = Arc::clone(&captured);
         let search_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
+        let identity_spec_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
         let workspace_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
@@ -1232,6 +1345,9 @@ impl MockServer {
             Server::builder()
                 .add_service(CatalogServiceServer::new(MockCatalogService {
                     captured: catalog_captured,
+                }))
+                .add_service(IdentitySpecServiceServer::new(MockIdentitySpecService {
+                    captured: identity_spec_captured,
                 }))
                 .add_service(QueryServiceServer::new(MockQueryService {
                     config: query_config,
@@ -1396,6 +1512,38 @@ impl MockServer {
             .delete_workspace
             .lock()
             .expect("delete_workspace capture")
+            .clone()
+    }
+
+    pub(crate) fn add_identity_spec_requests(&self) -> Vec<AddIdentitySpecRequest> {
+        self.captured
+            .add_identity_spec
+            .lock()
+            .expect("add_identity_spec capture")
+            .clone()
+    }
+
+    pub(crate) fn list_identity_specs_requests(&self) -> Vec<ListIdentitySpecsRequest> {
+        self.captured
+            .list_identity_specs
+            .lock()
+            .expect("list_identity_specs capture")
+            .clone()
+    }
+
+    pub(crate) fn get_identity_spec_requests(&self) -> Vec<GetIdentitySpecRequest> {
+        self.captured
+            .get_identity_spec
+            .lock()
+            .expect("get_identity_spec capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_identity_spec_requests(&self) -> Vec<DeleteIdentitySpecRequest> {
+        self.captured
+            .delete_identity_spec
+            .lock()
+            .expect("delete_identity_spec capture")
             .clone()
     }
 

@@ -17,8 +17,8 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    DiscoverSourcesResponse, ExecuteSqlResponse, IdentitySpecInputValue, ListSourcesResponse,
+    ListWorkspacesResponse, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -59,6 +59,36 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
         .filter(|line| !line.is_empty())
         .collect()
 }
+
+const IDENTITY_SPEC_WITH_INPUTS: &str = r"kind: identity
+spec_version: 1
+name: demo_oauth
+version: 1.0.0
+issuer: demo
+type: oauth
+inputs:
+  TENANT:
+    kind: variable
+    default: public
+  CLIENT_SECRET:
+    kind: secret
+    required: true
+oauth:
+  method:
+    flow:
+      type: authorization_code
+      pkce: disabled
+    redirect_uri: http://127.0.0.1:53682/oauth/callback
+    endpoints:
+      authorization_url: https://provider.example.com/authorize
+      token_url: https://provider.example.com/token
+    client:
+      id:
+        input: TENANT
+      secret:
+        input: CLIENT_SECRET
+        transport: basic_auth
+";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sql_command_renders_table_output() {
@@ -236,6 +266,183 @@ async fn workspace_remove_sends_request() {
     let requests = server.delete_workspace_requests();
     assert_eq!(requests.len(), 1, "expected one delete_workspace call");
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_add_preserves_manifest_and_maps_non_tty_inputs() {
+    let server = MockServer::start().await;
+    let directory = tempdir().expect("identity spec dir");
+    let manifest = directory.path().join("identity.yaml");
+    std::fs::write(&manifest, IDENTITY_SPEC_WITH_INPUTS).expect("write identity spec");
+    let secret = "super-secret-sentinel";
+
+    let default_assert = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .env("TENANT", "tenant-from-env")
+        .env("CLIENT_SECRET", secret)
+        .args(["identity-spec", "add", "--file"])
+        .arg(&manifest)
+        .assert()
+        .success();
+    let default_stdout = String::from_utf8_lossy(&default_assert.get_output().stdout);
+    let default_stderr = String::from_utf8_lossy(&default_assert.get_output().stderr);
+    assert!(
+        default_stdout.contains("Added identity spec 'demo_oauth'")
+            && default_stdout.contains("workspace 'default'"),
+        "expected default-scope install: {default_stdout}"
+    );
+    assert!(!default_stdout.contains(secret), "secret leaked to stdout");
+    assert!(!default_stderr.contains(secret), "secret leaked to stderr");
+
+    let custom_assert = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .env_remove("TENANT")
+        .env_remove("CLIENT_SECRET")
+        .args(["--workspace", "work", "identity-spec", "add", "--file"])
+        .arg(&manifest)
+        .assert()
+        .success();
+    let custom_stdout = String::from_utf8_lossy(&custom_assert.get_output().stdout);
+    assert!(
+        custom_stdout.contains("Replaced identity spec 'demo_oauth'")
+            && custom_stdout.contains("workspace 'work'"),
+        "expected custom-scope replacement: {custom_stdout}"
+    );
+
+    let requests = server.add_identity_spec_requests();
+    assert_eq!(requests.len(), 2, "expected two add_identity_spec calls");
+    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].manifest_yaml, IDENTITY_SPEC_WITH_INPUTS);
+    assert_eq!(
+        requests[0].input_values,
+        vec![
+            IdentitySpecInputValue {
+                key: "TENANT".to_string(),
+                value: "tenant-from-env".to_string(),
+            },
+            IdentitySpecInputValue {
+                key: "CLIENT_SECRET".to_string(),
+                value: secret.to_string(),
+            },
+        ]
+    );
+    assert_workspace_name(requests[1].workspace.as_ref(), "work");
+    assert_eq!(requests[1].manifest_yaml, IDENTITY_SPEC_WITH_INPUTS);
+    assert!(
+        requests[1].input_values.is_empty(),
+        "replacement must omit unavailable inputs"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_list_and_info_render_requested_scopes() {
+    let server = MockServer::start().await;
+
+    let default_assert = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .args(["identity-spec", "list", "--include-global"])
+        .assert()
+        .success();
+    let default_stdout = String::from_utf8_lossy(&default_assert.get_output().stdout);
+    for expected in [
+        "Identity Spec",
+        "Scope",
+        "workspace_demo",
+        "workspace:default",
+        "global_demo",
+    ] {
+        assert!(
+            default_stdout.contains(expected),
+            "expected {expected:?} in list output: {default_stdout}"
+        );
+    }
+    assert!(
+        nonempty_lines(&default_stdout)
+            .iter()
+            .any(|line| line.starts_with("global_demo") && line.ends_with("global")),
+        "expected global scope column: {default_stdout}"
+    );
+
+    let custom_assert = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .args(["--workspace", "work", "identity-spec", "list"])
+        .assert()
+        .success();
+    let custom_stdout = String::from_utf8_lossy(&custom_assert.get_output().stdout);
+    assert!(custom_stdout.contains("workspace:work"), "{custom_stdout}");
+    assert!(!custom_stdout.contains("global_demo"), "{custom_stdout}");
+
+    let list_requests = server.list_identity_specs_requests();
+    assert_eq!(list_requests.len(), 2, "expected two list calls");
+    assert_default_workspace(list_requests[0].workspace.as_ref());
+    assert!(list_requests[0].include_global);
+    assert_workspace_name(list_requests[1].workspace.as_ref(), "work");
+    assert!(!list_requests[1].include_global);
+
+    let info_assert = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args(["identity-spec", "info", "global_demo", "--global"])
+        .assert()
+        .success();
+    let info_stdout = String::from_utf8_lossy(&info_assert.get_output().stdout);
+    for expected in [
+        "global_demo",
+        "Scope:       global",
+        "Version:     1.0.0",
+        "Description: Mock identity spec",
+        "Issuer:      demo",
+        "Type:        fixed_token",
+        "Manifest:",
+        "name: global_demo",
+    ] {
+        assert!(
+            info_stdout.contains(expected),
+            "expected {expected:?} in info output: {info_stdout}"
+        );
+    }
+    let get_requests = server.get_identity_spec_requests();
+    assert_eq!(get_requests.len(), 1, "expected one get call");
+    assert_eq!(get_requests[0].name, "global_demo");
+    assert!(get_requests[0].workspace.is_none());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_remove_propagates_force_and_reports_orphan_count() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args([
+            "identity-spec",
+            "remove",
+            "global_demo",
+            "--global",
+            "--force",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        stdout.trim(),
+        "Removed identity spec 'global_demo' from global scope (2 orphaned identities)."
+    );
+    let requests = server.delete_identity_spec_requests();
+    assert_eq!(requests.len(), 1, "expected one delete call");
+    assert_eq!(requests[0].name, "global_demo");
+    assert!(requests[0].workspace.is_none());
+    assert!(requests[0].force);
 
     server.shutdown().await;
 }
