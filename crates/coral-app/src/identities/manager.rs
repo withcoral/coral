@@ -123,6 +123,12 @@ pub(crate) struct IdentityManager {
     #[cfg(test)]
     before_use_cas_gate: Option<BeforeWriteGate>,
     #[cfg(test)]
+    before_refresh_claim_gate: Option<BeforeWriteGate>,
+    #[cfg(test)]
+    before_refresh_wait_gate: Option<BeforeWriteGate>,
+    #[cfg(test)]
+    before_refresh_finalize_gate: Option<BeforeWriteGate>,
+    #[cfg(test)]
     before_retry_gate: Option<BeforeWriteGate>,
 }
 
@@ -137,9 +143,16 @@ struct BeforeWriteGate {
 #[cfg(test)]
 impl BeforeWriteGate {
     async fn wait_once(&self) {
-        if !self.used.swap(true, Ordering::SeqCst) {
+        self.wait_once_and_report().await;
+    }
+
+    async fn wait_once_and_report(&self) -> bool {
+        if self.used.swap(true, Ordering::SeqCst) {
+            false
+        } else {
             self.selected.wait().await;
             self.resume.wait().await;
+            true
         }
     }
 }
@@ -170,6 +183,12 @@ impl IdentityManager {
             before_upsert_gate: None,
             #[cfg(test)]
             before_use_cas_gate: None,
+            #[cfg(test)]
+            before_refresh_claim_gate: None,
+            #[cfg(test)]
+            before_refresh_wait_gate: None,
+            #[cfg(test)]
+            before_refresh_finalize_gate: None,
             #[cfg(test)]
             before_retry_gate: None,
         }
@@ -205,6 +224,48 @@ impl IdentityManager {
         resume: Arc<tokio::sync::Barrier>,
     ) -> Self {
         self.before_use_cas_gate = Some(BeforeWriteGate {
+            selected,
+            resume,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_refresh_wait_gate(
+        mut self,
+        selected: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_refresh_wait_gate = Some(BeforeWriteGate {
+            selected,
+            resume,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_refresh_claim_gate(
+        mut self,
+        selected: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_refresh_claim_gate = Some(BeforeWriteGate {
+            selected,
+            resume,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_refresh_finalize_gate(
+        mut self,
+        selected: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_refresh_finalize_gate = Some(BeforeWriteGate {
             selected,
             resume,
             used: Arc::new(AtomicBool::new(false)),

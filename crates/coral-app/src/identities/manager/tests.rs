@@ -36,10 +36,12 @@ use crate::state::db::{
 use crate::workspaces::WorkspaceName;
 
 mod oauth_create_races;
+mod oauth_refresh_races;
 
 pub(crate) use oauth_create_races::{
     assert_oauth_creation_document_rewrap_race_contract, assert_oauth_creation_race_contract,
 };
+pub(crate) use oauth_refresh_races::assert_oauth_refresh_race_contract;
 
 struct TestKeyProvider(Vec<CredentialEncryptionKey>);
 
@@ -2051,11 +2053,14 @@ async fn refresh_device_oauth_provider(fail_refresh: bool) -> MockServer {
                     "application/json",
                 );
             }
-            let refresh = String::from_utf8_lossy(&request.body).contains("grant_type=refresh_token");
+            let body = String::from_utf8_lossy(&request.body);
+            let refresh = body.contains("grant_type=refresh_token");
             if refresh && fail_refresh {
                 return ResponseTemplate::new(500).set_body_string("provider-secret-canary");
             }
-            let response = if refresh {
+            let response = if refresh && body.contains("refresh_token=isolated-refresh-token") {
+                r#"{"access_token":"isolated-refreshed-token","refresh_token":"isolated-rotated-refresh-token","scope":"repo isolated"}"#
+            } else if refresh {
                 r#"{"access_token":"refreshed-token","refresh_token":"rotated-refresh-token","scope":"repo refreshed"}"#
             } else {
                 r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo user","expires_in":-300}"#

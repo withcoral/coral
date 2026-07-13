@@ -49,6 +49,10 @@ impl IdentityManager {
             return Ok(Unchanged(Box::new((snapshot, prepared))));
         };
         let claim = new_refresh_claim()?;
+        #[cfg(test)]
+        if let Some(gate) = &self.before_refresh_claim_gate {
+            gate.wait_once().await;
+        }
         let claimed_revision = match self
             .try_claim_oauth_refresh_revision(owner, name, &snapshot, &claim)
             .await
@@ -74,6 +78,10 @@ impl IdentityManager {
                 Ok::<_, AppError>((document, material))
             })
             .await?;
+            #[cfg(test)]
+            if let Some(gate) = &self.before_refresh_finalize_gate {
+                gate.wait_once().await;
+            }
             let revision = self
                 .finish_claimed_oauth_refresh(
                     owner,
@@ -137,10 +145,23 @@ impl IdentityManager {
         expected: &IdentityOAuthRefreshClaim,
     ) -> Result<(), AppError> {
         loop {
+            let waited_at_test_gate = {
+                #[cfg(test)]
+                {
+                    match &self.before_refresh_wait_gate {
+                        Some(gate) => gate.wait_once_and_report().await,
+                        None => false,
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    false
+                }
+            };
             let now = now_unix_nanos_i64()?;
             let remaining = expected.deadline_unix_nanos().saturating_sub(now);
             let expired = remaining <= 0;
-            if !expired {
+            if !expired && !waited_at_test_gate {
                 let sleep = Duration::from_nanos(u64::try_from(remaining).unwrap_or(u64::MAX))
                     .min(REFRESH_CLAIM_POLL_INTERVAL);
                 tokio::time::sleep(sleep).await;
