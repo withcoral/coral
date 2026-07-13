@@ -36,6 +36,7 @@
     "@vanilla-extract/recipes": "0.5.7",
     "add-mcp": "^1.11.0",
     "classnames": "2.5.1",
+    "electron-updater": "^6.8.9",
     "isbot": "5.1.43",
     "jotai": "2.20.1",
     "lucide-react": "1.18.0",

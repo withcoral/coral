@@ -33,7 +33,7 @@ uses `CORAL_ENDPOINT` to reach the supervised sidecar.
   the app menu — via `add-mcp`
 - macOS DMG and ZIP packaging via `electron-builder`, with a signed and
   notarized release mode
-- GitHub Releases update metadata for packaged desktop builds
+- GitHub Releases update metadata for packaged desktop auto-updates
 - macOS system theme support
 
 ## Development
