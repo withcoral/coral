@@ -9,6 +9,8 @@ Agents are able to make fewer, more precise tool calls with Coral than they do w
 
 Coral supports a number of [popular data sources](/reference/bundled-sources) bundled in, plus [community source specs](/reference/community-sources) you can import with `coral source add --file`. You can also extend it to accommodate others by writing your own [source specs](/reference/source-spec-reference). You can run SQL from the [CLI](/reference/cli-reference) or through [MCP](/guides/use-coral-over-mcp). And everything is local; your data, credentials and usage history never leave your machine.
 
+When you know what data you need but not which table or table function exposes it, [search Coral's catalog](/guides/search-the-catalog) with a natural language query before you write SQL.
+
 ## Get started
 
 <Steps titleSize="h3">
@@ -120,6 +122,9 @@ For the full internals, crates, gRPC transport, DataFusion integration, see the 
 ## Quick links
 
 <CardGroup cols={2}>
+  <Card title="Search the catalog" href="/guides/search-the-catalog">
+    Find the right table, table function, column, or filter before you write SQL
+  </Card>
   <Card title="Use Coral over MCP" href="/guides/use-coral-over-mcp">
     Set up MCP for Claude Code, Cursor, and other agents
   </Card>

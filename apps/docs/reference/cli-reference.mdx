@@ -81,6 +81,12 @@ answer the question by itself; use the returned `sql_reference` or
 | `--json`  | flag    | `false` | Render the shared machine-readable JSON response          |
 | `--limit` | integer | `10`    | Maximum results to return, from 1 to 50                   |
 
+### JSON response
+
+With `--json`, the response separates `results`, `provider_statuses`, and `truncation`. Table results include `sql_reference`. Table-function results include `sql_reference` and `sql_call_example`. Field-level results include `surface_sql_reference`, identifying the table or table function that owns the matching column, filter, argument, or result column.
+
+For catalog search, the `catalog_metadata` provider status reports whether search found matches, completed with no matches, returned partial coverage, or failed. `truncation` reports when more matches were available than returned.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.

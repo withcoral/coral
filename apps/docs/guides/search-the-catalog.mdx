@@ -1,0 +1,46 @@
+---
+title: "Search the catalog"
+description: "Find relevant tables, table functions, columns, and filters before you write SQL."
+---
+
+Use catalog search when you know what data you need but not which table or table function exposes it. Enter a natural language query and Coral ranks matching tables, table functions, columns, and filters from the sources installed in your current workspace.
+
+Catalog search helps you find where data can be queried. It does not retrieve rows from GitHub, Slack, or another connected source.
+
+## Find the right table or table function
+
+```shellscript
+coral search github issues assigned to me
+```
+
+Among the ranked results, you might see:
+
+```text
+Results
+1. [catalog_metadata] table github.issues
+   SQL: github.issues
+```
+
+The `SQL` line gives you the table reference. When a result is a table function, Coral also shows a `Call` example with its arguments.
+
+Catalog search only identifies these queryable surfaces; it does not execute them or retrieve rows. To fetch rows, use the returned `SQL` reference or `Call` example with `coral sql`. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
+
+## Use catalog search over MCP
+
+Coral exposes catalog search to connected agents through its read-only `search` MCP tool. An agent can use it to find the relevant table or table function before querying your data.
+
+> "Use Coral to show the open GitHub issues assigned to me."
+
+Ask for the result you want; you do not need to mention the `search` tool. The agent can decide when catalog search is needed.
+
+[Set up Coral over MCP](/guides/use-coral-over-mcp).
+
+## Search options
+
+By default, Coral returns up to 10 results. Use `--limit` to request between 1 and 50:
+
+```shellscript
+coral search --limit 5 slack messages text
+```
+
+Use `--json` when a script or another program needs the structured response. See [`coral search` in the CLI reference](/reference/cli-reference#coral-search) for the complete response fields and provider-status details.
