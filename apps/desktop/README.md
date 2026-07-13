@@ -28,7 +28,7 @@ app lifecycle, window and menu, and MCP client configuration.
 - Coral MCP configuration for Codex and Claude Code — from the Settings page and
   the app menu — via `add-mcp`
 - signed, notarized macOS DMG and ZIP packaging via `electron-builder`
-- GitHub Releases update metadata for packaged desktop builds
+- GitHub Releases update metadata for packaged desktop auto-updates
 - macOS system theme support
 
 ## Development
