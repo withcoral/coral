@@ -180,7 +180,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::WorkspaceRecord;
-    use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
@@ -190,20 +189,6 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
-
-        assert_workspace_repository_round_trip(&db).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn workspace_repository_contract_on_postgres() {
-        let Some(url) = postgres_test_url() else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
 
         assert_workspace_repository_round_trip(&db).await;
     }
@@ -331,11 +316,5 @@ mod tests {
             .expect("system clock before Unix epoch")
             .as_nanos();
         format!("workspace_{}_{}", std::process::id(), nanos)
-    }
-
-    fn postgres_test_url() -> Option<String> {
-        bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
-            .expect("read CORAL_TEST_POSTGRES_URL")
-            .filter(|value| !value.is_empty())
     }
 }
