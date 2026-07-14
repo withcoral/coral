@@ -8,6 +8,6 @@ mod sqlite_queue;
 mod sqlite_store;
 mod writer;
 
-pub(crate) use publisher::SearchObservationHandle;
+pub(crate) use publisher::{SearchObservationHandle, SearchObservationSource};
 #[cfg(test)]
 pub(crate) use sqlite_store::SqliteObservedValuesStore;

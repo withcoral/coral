@@ -8,6 +8,7 @@ use crate::hash::sha256_hex;
 use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 
 const SOURCE_SCOPE_FORMAT_VERSION: u8 = 1;
+#[cfg(test)]
 const PRE_ACTIVATION_RUNTIME_CONTRACT_FINGERPRINT: &str = "observed-values/pre-activation/v0";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,6 +29,7 @@ pub(super) struct SourceScopeSeed<'a> {
     credential_revision: Uuid,
 }
 
+#[cfg(test)]
 impl SourceScopeSeed<'static> {
     pub(super) const PRE_ACTIVATION: Self =
         Self::new(PRE_ACTIVATION_RUNTIME_CONTRACT_FINGERPRINT, Uuid::nil());
