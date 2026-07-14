@@ -17,7 +17,7 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::query::input_resolver::{
@@ -49,6 +49,16 @@ pub(crate) struct ValidatedSource {
 enum CredentialResolutionMode {
     Refreshing,
     StoredOnly,
+}
+
+fn is_source_scoped_load_failure(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::MissingSourceInputs { .. }
+            | AppError::MissingOrIncompatibleV4Materialization { .. }
+            | AppError::InvalidV4ProjectionOverride { .. }
+            | AppError::Credentials(CredentialsError::Io(_) | CredentialsError::Parse(_))
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -363,10 +373,7 @@ impl QueryManager {
                         .clear_source_load_failure(workspace_name, &source.name);
                     loaded_sources.push(loaded_source);
                 }
-                Err(
-                    error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
-                    | AppError::InvalidV4ProjectionOverride { .. }),
-                ) => {
+                Err(error) if is_source_scoped_load_failure(&error) => {
                     self.diagnostic_reporter.report_source_load_failure(
                         workspace_name,
                         &source.name,
@@ -439,10 +446,10 @@ impl QueryManager {
             } else {
                 format!("secret '{first}' and {} other(s)", rest.len())
             };
-            return Err(AppError::FailedPrecondition(format!(
-                "source '{}' is missing {detail}",
-                source.name
-            )));
+            return Err(AppError::MissingSourceInputs {
+                source_name: source.name.to_string(),
+                detail,
+            });
         }
         for secret_name in source_spec.declared_secret_names() {
             if let Some(value) = stored_secrets.get(&secret_name) {
@@ -739,6 +746,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingSourceInputs { .. } => "MISSING_SOURCE_INPUTS",
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
@@ -794,10 +802,10 @@ fn validate_required_variables(
         } else {
             format!("variable '{}' and {} other(s)", first.key, rest.len())
         };
-        return Err(AppError::FailedPrecondition(format!(
-            "source '{}' is missing {detail}",
-            source.name
-        )));
+        return Err(AppError::MissingSourceInputs {
+            source_name: source.name.to_string(),
+            detail,
+        });
     }
     Ok(())
 }
@@ -1409,6 +1417,32 @@ surfaces:
             .expect("missing materialization should be isolated");
 
         assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn source_load_isolation_excludes_backend_wide_credential_failures() {
+        let missing_file = AppError::Credentials(CredentialsError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing source credential file",
+        )));
+        let corrupt_file =
+            AppError::Credentials(CredentialsError::Parse("invalid source credentials".into()));
+        let missing_inputs = AppError::MissingSourceInputs {
+            source_name: "demo".into(),
+            detail: "secret 'TOKEN'".into(),
+        };
+        let unavailable_backend =
+            AppError::Credentials(CredentialsError::Unavailable("keychain unavailable".into()));
+        let snapshot_mismatch = AppError::Credentials(CredentialsError::SnapshotStorageMismatch {
+            snapshot: "file",
+            requested: "keychain",
+        });
+
+        assert!(is_source_scoped_load_failure(&missing_file));
+        assert!(is_source_scoped_load_failure(&corrupt_file));
+        assert!(is_source_scoped_load_failure(&missing_inputs));
+        assert!(!is_source_scoped_load_failure(&unavailable_backend));
+        assert!(!is_source_scoped_load_failure(&snapshot_mismatch));
     }
 
     #[tokio::test]

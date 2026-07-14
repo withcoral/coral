@@ -30,6 +30,14 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// One installed source is missing required configured inputs.
+    #[error("failed precondition: source '{source_name}' is missing {detail}")]
+    MissingSourceInputs {
+        /// Source whose required input is absent.
+        source_name: String,
+        /// Human-readable description of the missing input or inputs.
+        detail: String,
+    },
     /// A DSL v4 source has missing or stale generated runtime artifacts.
     #[error(
         "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
@@ -239,6 +247,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::MissingSourceInputs { .. }
         | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::InvalidV4ProjectionOverride { .. }
         | AppError::CredentialRefresh(_)
