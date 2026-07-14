@@ -6,9 +6,16 @@ import type {
   McpClientDescriptor,
   McpClientId,
   McpConfigureResult,
+  McpLaunchConfig,
 } from '../../../desktop/src/shared/types'
 
-export type { CoralDesktopApi, McpClientDescriptor, McpClientId, McpConfigureResult }
+export type {
+  CoralDesktopApi,
+  McpClientDescriptor,
+  McpClientId,
+  McpConfigureResult,
+  McpLaunchConfig,
+}
 
 declare global {
   interface Window {

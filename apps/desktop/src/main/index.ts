@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } from 'e
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId } from '../shared/types'
-import { configureMcpClient, mcpClients } from './mcp-config'
+import { configureMcpClient, getMcpLaunchConfig, mcpClients } from './mcp-config'
 import {
   APP_ENTRY_URL,
   APP_ORIGIN,
@@ -238,7 +238,10 @@ async function stopServices(): Promise<void> {
 
 function registerIpcHandlers() {
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
-  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
+  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) =>
+    configureMcpClient(clientId),
+  )
+  ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
 }
 
 function installMenu() {

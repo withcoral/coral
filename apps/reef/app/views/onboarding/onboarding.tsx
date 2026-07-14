@@ -3,10 +3,13 @@ import { Await, useNavigate, useNavigation, useRevalidator } from 'react-router'
 
 import type { SourcesActionData } from '@/routes/sources-action'
 
+import { OnboardingNextStepsPage } from '@/components/onboarding/onboarding-next-steps-page'
+import type { McpLaunchConfigState } from '@/components/onboarding/onboarding-next-steps-page'
 import { OnboardingSampleQueryPage } from '@/components/onboarding/onboarding-sample-query-page'
 import type { SampleQueryLoadState } from '@/components/onboarding/onboarding-sample-query-page'
 import { OnboardingSourcesPage } from '@/components/onboarding/onboarding-sources-page'
 import type { OnboardingStepState } from '@/components/onboarding/onboarding-steps'
+import { coralDesktopApi, desktopErrorMessage } from '@/lib/coral-desktop'
 import type { OnboardingSampleQueryResult } from '@/lib/onboarding-query'
 import type { CatalogEntry } from '@/lib/sources'
 import { routePath } from '@/routing/routemap'
@@ -29,12 +32,27 @@ export function OnboardingView({
   const navigate = useNavigate()
   const { step } = loaderData
 
+  if (step.step === 'next-steps') {
+    return (
+      <OnboardingNextStepsStep
+        onContinue={() =>
+          navigate(routePath('workspaceSources', { workspaceId: loaderData.workspaceId }))
+        }
+        step={step}
+      />
+    )
+  }
+
   if (step.step === 'query') {
+    const { nextHref } = step
+    if (!nextHref) {
+      throw new Error('The onboarding query step must have a next step')
+    }
+
     const sampleQueryProps = {
       entries: loaderData.entries,
       loadError: loaderData.loadError,
-      onComplete: () =>
-        navigate(routePath('workspaceSources', { workspaceId: loaderData.workspaceId })),
+      onComplete: () => navigate(nextHref),
       step,
     }
 
@@ -69,6 +87,50 @@ export function OnboardingView({
       loadError={loaderData.loadError}
       step={step}
       workspaceId={loaderData.workspaceId}
+    />
+  )
+}
+
+function OnboardingNextStepsStep({
+  onContinue,
+  step,
+}: {
+  onContinue: () => void
+  step: OnboardingStepState
+}) {
+  const [mcpLaunchConfig, setMcpLaunchConfig] = useState<McpLaunchConfigState>({
+    status: 'loading',
+  })
+
+  useEffect(() => {
+    const desktop = coralDesktopApi()
+    if (!desktop) {
+      setMcpLaunchConfig({ status: 'unavailable' })
+      return
+    }
+
+    let cancelled = false
+    desktop
+      .getMcpLaunchConfig()
+      .then((config) => {
+        if (!cancelled) setMcpLaunchConfig({ config, status: 'success' })
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMcpLaunchConfig({ message: desktopErrorMessage(error), status: 'error' })
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return (
+    <OnboardingNextStepsPage
+      mcpLaunchConfig={mcpLaunchConfig}
+      onContinue={onContinue}
+      step={step}
     />
   )
 }

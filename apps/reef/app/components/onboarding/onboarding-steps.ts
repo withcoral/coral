@@ -1,4 +1,4 @@
-export const ONBOARDING_STEPS = ['sources', 'query'] as const
+export const ONBOARDING_STEPS = ['sources', 'query', 'next-steps'] as const
 
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number]
 

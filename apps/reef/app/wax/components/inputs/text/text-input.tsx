@@ -18,6 +18,7 @@ export interface TextInputProps {
   onFocus?: () => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
   placeholder?: string
+  readOnly?: boolean
   ref?: React.Ref<HTMLInputElement>
   type?: 'email' | 'password' | 'search' | 'tel' | 'text' | 'url'
   value?: string
@@ -36,6 +37,7 @@ export function TextInput({
   onFocus,
   onKeyDown,
   placeholder,
+  readOnly,
   ref,
   type = 'text',
   value,
@@ -66,6 +68,7 @@ export function TextInput({
           onFocus={onFocus}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
+          readOnly={readOnly}
           ref={ref}
           type={type}
           value={value}

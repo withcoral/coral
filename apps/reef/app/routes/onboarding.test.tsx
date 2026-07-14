@@ -2,6 +2,7 @@ import { createMemoryRouter, RouterProvider, useActionData, useLoaderData } from
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 
+import { CORAL_AGENT_SETUP_PROMPT } from '@/components/onboarding/onboarding-next-steps-page'
 import { oauthInstallEventToNdjson } from '@/lib/source-oauth-install-stream'
 import type { CatalogEntry } from '@/lib/sources'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
@@ -68,7 +69,10 @@ const oauthGithub: CatalogEntry = {
   ],
 }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  delete window.coralDesktop
+})
 
 describe('onboarding sources step', () => {
   it('opens the installation dialog when an unconfigured source card is clicked', async () => {
@@ -362,41 +366,70 @@ describe('onboarding sources step', () => {
 
     await screen.getByRole('button', { name: 'Retry' }).click()
 
-    await expect.element(screen.getByRole('button', { name: 'Finish setup' })).toBeEnabled()
+    await expect.element(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
     expect(loadSources).toHaveBeenCalledTimes(3)
     expect(runSampleQuery).toHaveBeenCalledOnce()
   })
 
-  it('enters the normal app without persisting completion', async () => {
+  it('shows next steps before entering the normal app', async () => {
     let resolveSampleQuery: ((result: { rows: never[]; status: 'success' }) => void) | undefined
     const sampleQuery = new Promise<{ rows: never[]; status: 'success' }>((resolve) => {
       resolveSampleQuery = resolve
     })
-    const props = {
-      actionData: undefined,
-      loaderData: {
+    const getMcpLaunchConfig = vi.fn(async () => ({
+      args: ['mcp-stdio'],
+      command: '/Applications/Coral.app/Contents/Resources/coral/coral',
+    }))
+    window.coralDesktop = {
+      configureMcp: vi.fn(),
+      getMcpLaunchConfig,
+      listMcpClients: vi.fn(),
+    }
+    const loadOnboarding = ({ request }: { request: Request }) => {
+      const step = getOnboardingStepState(new URL(request.url).searchParams.get('step'))
+      return {
         entries: [installedGithub],
         loadError: null,
-        sampleQuery,
-        step: queryStep,
+        sampleQuery: step.step === 'query' ? sampleQuery : null,
+        step,
         workspaceId: WORKSPACE_ID,
-      },
+      }
     }
     const router = createMemoryRouter(
       [
-        { element: <OnboardingView {...props} />, path: '/onboarding' },
+        {
+          Component: TestOnboardingRoute,
+          loader: loadOnboarding,
+          path: '/onboarding',
+        },
         { element: <p>Normal app</p>, path: `/workspaces/${WORKSPACE_ID}/sources` },
       ],
       { initialEntries: ['/onboarding?step=query'] },
     )
     const screen = await render(<RouterProvider router={router} />)
-    const finish = screen.getByRole('button', { name: 'Finish setup' })
+    const continueToNextSteps = screen.getByRole('button', {
+      name: 'Continue',
+    })
 
     await expect.element(screen.getByText('Running query')).toBeVisible()
-    await expect.element(finish).toBeDisabled()
+    await expect.element(continueToNextSteps).toBeDisabled()
     resolveSampleQuery?.({ rows: [], status: 'success' })
-    await expect.element(finish).toBeEnabled()
-    await finish.click()
+    await expect.element(continueToNextSteps).toBeEnabled()
+    await continueToNextSteps.click()
+
+    await expect
+      .element(screen.getByRole('tab', { name: 'AI-assisted' }))
+      .toHaveAttribute('aria-selected', 'true')
+    expect(
+      screen.getByRole('textbox', { exact: true, name: 'Coral agent setup prompt' }).element()
+        .textContent,
+    ).toBe(CORAL_AGENT_SETUP_PROMPT)
+    await screen.getByRole('tab', { name: 'Manual' }).click()
+    await expect
+      .element(screen.getByLabelText('Coral MCP server configuration', { exact: true }))
+      .toHaveTextContent('/Applications/Coral.app/Contents/Resources/coral/coral')
+    expect(getMcpLaunchConfig).toHaveBeenCalledOnce()
+    await screen.getByRole('button', { name: "Take me to Coral's dashboard" }).click()
 
     await expect.element(screen.getByText('Normal app')).toBeVisible()
   })

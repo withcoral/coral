@@ -1,5 +1,10 @@
 import { agents, upsertServer, type AgentType, type McpServerConfig } from 'add-mcp'
-import type { McpClientDescriptor, McpClientId, McpConfigureResult } from '../shared/types'
+import type {
+  McpClientDescriptor,
+  McpClientId,
+  McpConfigureResult,
+  McpLaunchConfig,
+} from '../shared/types'
 import { externalCoralPath } from './sidecar'
 
 const MCP_CLIENT_IDS: readonly McpClientId[] = ['codex', 'claude-code']
@@ -26,13 +31,16 @@ function findClient(clientId: McpClientId): McpClientDescriptor {
   return descriptorForClient(clientId)
 }
 
+export async function getMcpLaunchConfig(): Promise<McpLaunchConfig> {
+  return {
+    args: ['mcp-stdio'],
+    command: await externalCoralPath(),
+  }
+}
+
 export async function configureMcpClient(clientId: McpClientId): Promise<McpConfigureResult> {
   const client = findClient(clientId)
-  const coralPath = await externalCoralPath()
-  const serverConfig: McpServerConfig = {
-    command: coralPath,
-    args: ['mcp-stdio'],
-  }
+  const serverConfig: McpServerConfig = await getMcpLaunchConfig()
 
   const result = upsertServer(agentTypeForClient(client.id), 'coral', serverConfig, {
     local: false,

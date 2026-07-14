@@ -37,7 +37,7 @@ export interface OnboardingSampleQueryPageProps {
 export function OnboardingSampleQueryPage({
   connectedSources,
   continueDisabled = false,
-  continueLabel = 'Finish setup',
+  continueLabel = 'Continue',
   errorMessage = null,
   errorTitle,
   loadState = 'idle',

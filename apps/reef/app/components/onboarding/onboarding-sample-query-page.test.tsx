@@ -74,7 +74,7 @@ describe('OnboardingSampleQueryPage', () => {
     expect(onRetry).toHaveBeenCalledOnce()
   })
 
-  it('allows setup to finish when the catalog query succeeds without result metadata', async () => {
+  it('allows setup to continue when the catalog query succeeds without result metadata', async () => {
     const screen = await render(
       <OnboardingSampleQueryPage
         connectedSources={[github]}
@@ -83,7 +83,7 @@ describe('OnboardingSampleQueryPage', () => {
       />,
     )
 
-    await expect.element(screen.getByRole('button', { name: 'Finish setup' })).toBeEnabled()
+    await expect.element(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
     await expect.element(screen.getByText('Results')).toBeVisible()
     await expect.element(screen.getByText('No rows returned.')).toBeVisible()
   })
@@ -116,7 +116,7 @@ describe('OnboardingSampleQueryPage', () => {
       <OnboardingSampleQueryPage connectedSources={[]} loadState="success" step={queryStep} />,
     )
 
-    await expect.element(screen.getByRole('button', { name: 'Finish setup' })).toBeDisabled()
+    await expect.element(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
     await expect.element(screen.getByText('No connected sources')).toBeVisible()
   })
 })

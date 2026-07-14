@@ -11,7 +11,13 @@ export interface McpConfigureResult {
   configPath: string
 }
 
+export interface McpLaunchConfig {
+  args: string[]
+  command: string
+}
+
 export interface CoralDesktopApi {
-  listMcpClients(): Promise<McpClientDescriptor[]>
   configureMcp(clientId: McpClientId): Promise<McpConfigureResult>
+  getMcpLaunchConfig(): Promise<McpLaunchConfig>
+  listMcpClients(): Promise<McpClientDescriptor[]>
 }
