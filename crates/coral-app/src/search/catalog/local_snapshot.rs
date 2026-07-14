@@ -19,8 +19,7 @@ use coral_spec::{
 use crate::bootstrap::AppError;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
-    clear_source_load_failure, incompatible_materialization_error, load_v4_materialization,
-    report_source_load_failure,
+    SourceDiagnosticReporter, incompatible_materialization_error, load_v4_materialization,
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
@@ -38,13 +37,23 @@ use crate::workspaces::WorkspaceName;
 pub(crate) struct CatalogSnapshotLoader {
     config_store: ConfigStore,
     layout: AppStateLayout,
+    diagnostic_reporter: SourceDiagnosticReporter,
 }
 
 impl CatalogSnapshotLoader {
     pub(crate) fn new(config_store: ConfigStore, layout: AppStateLayout) -> Self {
+        Self::with_diagnostic_reporter(config_store, layout, SourceDiagnosticReporter::default())
+    }
+
+    pub(crate) fn with_diagnostic_reporter(
+        config_store: ConfigStore,
+        layout: AppStateLayout,
+        diagnostic_reporter: SourceDiagnosticReporter,
+    ) -> Self {
         Self {
             config_store,
             layout,
+            diagnostic_reporter,
         }
     }
 
@@ -70,7 +79,8 @@ impl CatalogSnapshotLoader {
         for source in config.workspace_sources(workspace_name) {
             match self.load_source_catalog(workspace_name, &source) {
                 Ok(source_catalog) => {
-                    clear_source_load_failure(workspace_name, &source.name);
+                    self.diagnostic_reporter
+                        .clear_source_load_failure(workspace_name, &source.name);
                     catalog.tables.extend(source_catalog.tables);
                     catalog
                         .table_functions
@@ -80,7 +90,7 @@ impl CatalogSnapshotLoader {
                     error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
                     | AppError::InvalidV4ProjectionOverride { .. }),
                 ) => {
-                    report_source_load_failure(
+                    self.diagnostic_reporter.report_source_load_failure(
                         workspace_name,
                         &source.name,
                         "SOURCE_LOAD_FAILED",
@@ -118,14 +128,21 @@ impl CatalogSnapshotLoader {
                 &source.name,
                 &installed.manifest_yaml,
                 v4,
+                &self.diagnostic_reporter,
             )?;
-            runtime_components_for_v4_source(workspace_name, &source.name, v4, &materialized)
-                .map_err(|error| {
-                    incompatible_materialization_error(
-                        &source.name,
-                        format!("failed to assemble runtime package: {error}"),
-                    )
-                })
+            runtime_components_for_v4_source(
+                workspace_name,
+                &source.name,
+                v4,
+                &materialized,
+                &self.diagnostic_reporter,
+            )
+            .map_err(|error| {
+                incompatible_materialization_error(
+                    &source.name,
+                    format!("failed to assemble runtime package: {error}"),
+                )
+            })
         } else {
             Ok(runtime_components_from_manifest(&source_spec))
         }

@@ -21,7 +21,7 @@ use coral_spec::{
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::sources::materialization::report_runtime_surface_diagnostics;
+use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) fn runtime_components_for_v4_source(
@@ -29,6 +29,7 @@ pub(crate) fn runtime_components_for_v4_source(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
+    diagnostic_reporter: &SourceDiagnosticReporter,
 ) -> Result<Vec<RuntimeSourceComponent>, AppError> {
     let mut components = Vec::new();
     let mut diagnostics = Vec::new();
@@ -62,7 +63,11 @@ pub(crate) fn runtime_components_for_v4_source(
             }
         }
     }
-    report_runtime_surface_diagnostics(workspace_name, source_name, &diagnostics);
+    diagnostic_reporter.report_runtime_surface_diagnostics(
+        workspace_name,
+        source_name,
+        &diagnostics,
+    );
     if published_surface_count > 0 && components.is_empty() {
         return Err(AppError::FailedPrecondition(format!(
             "DSL v4 source '{}' has no usable published surfaces{}",
@@ -448,6 +453,7 @@ mod tests {
             &source_name,
             manifest,
             materialized,
+            &crate::sources::materialization::SourceDiagnosticReporter::default(),
         )
     }
 

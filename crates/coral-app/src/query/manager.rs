@@ -26,8 +26,7 @@ use crate::query::input_resolver::{
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
-    clear_source_load_failure, incompatible_materialization_error, load_v4_materialization,
-    report_source_load_failure,
+    SourceDiagnosticReporter, incompatible_materialization_error, load_v4_materialization,
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
@@ -67,9 +66,11 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    diagnostic_reporter: SourceDiagnosticReporter,
 }
 
 impl QueryManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         workspace_manager: WorkspaceManager,
@@ -78,6 +79,26 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        Self::with_diagnostic_reporter(
+            config_store,
+            workspace_manager,
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+            SourceDiagnosticReporter::default(),
+        )
+    }
+
+    pub(crate) fn with_diagnostic_reporter(
+        config_store: ConfigStore,
+        workspace_manager: WorkspaceManager,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        diagnostic_reporter: SourceDiagnosticReporter,
+    ) -> Self {
         Self {
             config_store,
             workspace_manager: Arc::new(workspace_manager),
@@ -85,6 +106,7 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            diagnostic_reporter,
         }
     }
 
@@ -337,14 +359,15 @@ impl QueryManager {
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((loaded_source, _version)) => {
-                    clear_source_load_failure(workspace_name, &source.name);
+                    self.diagnostic_reporter
+                        .clear_source_load_failure(workspace_name, &source.name);
                     loaded_sources.push(loaded_source);
                 }
                 Err(
                     error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
                     | AppError::InvalidV4ProjectionOverride { .. }),
                 ) => {
-                    report_source_load_failure(
+                    self.diagnostic_reporter.report_source_load_failure(
                         workspace_name,
                         &source.name,
                         "SOURCE_LOAD_FAILED",
@@ -372,10 +395,17 @@ impl QueryManager {
                 &source.name,
                 &installed.manifest_yaml,
                 v4,
+                &self.diagnostic_reporter,
             )?;
             Some(
-                runtime_components_for_v4_source(workspace_name, &source.name, v4, &materialized)
-                    .map_err(|error| {
+                runtime_components_for_v4_source(
+                    workspace_name,
+                    &source.name,
+                    v4,
+                    &materialized,
+                    &self.diagnostic_reporter,
+                )
+                .map_err(|error| {
                     incompatible_materialization_error(
                         &source.name,
                         format!("failed to assemble runtime package: {error}"),

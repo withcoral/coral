@@ -53,6 +53,7 @@ use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
+use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
 use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -279,11 +280,13 @@ impl ServerBuilder {
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
-        let source_manager = SourceManager::new(
+        let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
             workspace_lifecycle_lock.clone(),
+            diagnostic_reporter.clone(),
         );
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
@@ -302,15 +305,21 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::with_diagnostic_reporter(
             config_store.clone(),
             workspace_manager.clone(),
             credential_manager,
             query_runtime_context,
             layout.clone(),
             self.config.engine_extensions_providers,
+            diagnostic_reporter.clone(),
         );
-        let search_manager = SearchManager::new(layout, &config_store, workspace_manager.clone());
+        let search_manager = SearchManager::with_diagnostic_reporter(
+            layout,
+            &config_store,
+            workspace_manager.clone(),
+            diagnostic_reporter,
+        );
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {

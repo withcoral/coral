@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coral_spec::v4::{
@@ -42,9 +42,124 @@ pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
 pub(crate) const PARAMETER_METADATA_OVERRIDE_FILENAME: &str = "parameter_metadata.yaml";
 
 type ReportedDiagnosticKey = (String, String);
-type ReportedDiagnostics = BTreeMap<String, BTreeSet<ReportedDiagnosticKey>>;
+type ReportedDiagnosticStateKey = (String, String, String);
+type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<ReportedDiagnosticKey>>;
 
-static REPORTED_LOAD_DIAGNOSTICS: OnceLock<Mutex<ReportedDiagnostics>> = OnceLock::new();
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceDiagnosticReporter {
+    reported: Arc<Mutex<ReportedDiagnostics>>,
+}
+
+impl SourceDiagnosticReporter {
+    pub(crate) fn report_source_load_failure(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        code: &str,
+        detail: &str,
+    ) {
+        let diagnostic = Diagnostic {
+            code: code.to_string(),
+            severity: DiagnosticSeverity::Warning,
+            message: detail.to_string(),
+            surface_id: None,
+            operation_id: None,
+            projection_name: None,
+        };
+        self.report_source_diagnostics(
+            workspace_name,
+            source_name,
+            "source",
+            std::iter::once(&diagnostic),
+        );
+    }
+
+    pub(crate) fn clear_source_load_failure(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        self.report_source_diagnostics(
+            workspace_name,
+            source_name,
+            "source",
+            std::iter::empty::<&Diagnostic>(),
+        );
+    }
+
+    pub(crate) fn report_runtime_surface_diagnostics(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        diagnostics: &[Diagnostic],
+    ) {
+        self.report_source_diagnostics(workspace_name, source_name, "runtime", diagnostics.iter());
+    }
+
+    pub(crate) fn clear_source(&self, workspace_name: &WorkspaceName, source_name: &SourceName) {
+        let mut reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reported.retain(|(workspace, source, _stage), _diagnostics| {
+            workspace != workspace_name.as_str() || source != source_name.as_str()
+        });
+    }
+
+    fn report_source_diagnostics<'a>(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        stage: &str,
+        diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+    ) {
+        let state_key = (
+            workspace_name.to_string(),
+            source_name.to_string(),
+            stage.to_string(),
+        );
+        let diagnostics = diagnostics.into_iter().collect::<Vec<_>>();
+        let current = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code.clone(), diagnostic.message.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = reported.get(&state_key).cloned().unwrap_or_default();
+        for diagnostic in diagnostics {
+            let key = (diagnostic.code.clone(), diagnostic.message.clone());
+            if previous.contains(&key) {
+                continue;
+            }
+            tracing::warn!(
+                diagnostic.code = %diagnostic.code,
+                diagnostic.stage = stage,
+                workspace = %workspace_name,
+                source = %source_name,
+                surface = diagnostic.surface_id.as_deref().unwrap_or(""),
+                operation = diagnostic.operation_id.as_deref().unwrap_or(""),
+                projection = diagnostic.projection_name.as_deref().unwrap_or(""),
+                detail = %diagnostic.message,
+                "DSL v4 source load diagnostic"
+            );
+        }
+        if current.is_empty() {
+            reported.remove(&state_key);
+        } else {
+            reported.insert(state_key, current);
+        }
+    }
+
+    #[cfg(test)]
+    fn tracked_stage_count(&self) -> usize {
+        self.reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
@@ -162,6 +277,7 @@ pub(crate) fn load_v4_materialization(
     source_name: &SourceName,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
+    diagnostic_reporter: &SourceDiagnosticReporter,
 ) -> Result<V4MaterializedSource, AppError> {
     let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
     let projections_file = layout.v4_projection_catalog_file(workspace_name, source_name);
@@ -238,7 +354,7 @@ pub(crate) fn load_v4_materialization(
             "no published projection surfaces could be loaded",
         ));
     }
-    report_source_diagnostics(
+    diagnostic_reporter.report_source_diagnostics(
         workspace_name,
         source_name,
         "materialization",
@@ -251,8 +367,18 @@ pub(crate) fn load_v4_materialization(
         projections,
         diagnostics,
     };
-    if let Err(error) = validate_materialized_source_structure(manifest, &materialized) {
-        return Err(match projections_file.origin {
+    validate_loaded_materialized_source(source_name, manifest, &projections_file, &materialized)?;
+    Ok(materialized)
+}
+
+fn validate_loaded_materialized_source(
+    source_name: &SourceName,
+    manifest: &V4SourceManifest,
+    projections_file: &V4ProjectionCatalogFile,
+    materialized: &V4MaterializedSource,
+) -> Result<(), AppError> {
+    validate_materialized_source_structure(manifest, materialized).map_err(|error| {
+        match projections_file.origin {
             V4ProjectionCatalogOrigin::Materialized => {
                 incompatible_materialization_error(source_name, error.to_string())
             }
@@ -261,9 +387,8 @@ pub(crate) fn load_v4_materialization(
                 &projections_file.path,
                 error.to_string(),
             ),
-        });
-    }
-    Ok(materialized)
+        }
+    })
 }
 
 fn load_optional_fingerprint(
@@ -550,86 +675,6 @@ fn collect_projection_coherence_diagnostics(
             ));
             failed_surfaces.insert(surface.id.clone());
         }
-    }
-}
-
-pub(crate) fn report_source_load_failure(
-    workspace_name: &WorkspaceName,
-    source_name: &SourceName,
-    code: &str,
-    detail: &str,
-) {
-    let diagnostic = Diagnostic {
-        code: code.to_string(),
-        severity: DiagnosticSeverity::Warning,
-        message: detail.to_string(),
-        surface_id: None,
-        operation_id: None,
-        projection_name: None,
-    };
-    report_source_diagnostics(
-        workspace_name,
-        source_name,
-        "source",
-        std::iter::once(&diagnostic),
-    );
-}
-
-pub(crate) fn clear_source_load_failure(workspace_name: &WorkspaceName, source_name: &SourceName) {
-    report_source_diagnostics(
-        workspace_name,
-        source_name,
-        "source",
-        std::iter::empty::<&Diagnostic>(),
-    );
-}
-
-pub(crate) fn report_runtime_surface_diagnostics(
-    workspace_name: &WorkspaceName,
-    source_name: &SourceName,
-    diagnostics: &[Diagnostic],
-) {
-    report_source_diagnostics(workspace_name, source_name, "runtime", diagnostics.iter());
-}
-
-fn report_source_diagnostics<'a>(
-    workspace_name: &WorkspaceName,
-    source_name: &SourceName,
-    stage: &str,
-    diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
-) {
-    let state_key = format!("{workspace_name}\u{1f}{source_name}\u{1f}{stage}");
-    let diagnostics = diagnostics.into_iter().collect::<Vec<_>>();
-    let current = diagnostics
-        .iter()
-        .map(|diagnostic| (diagnostic.code.clone(), diagnostic.message.clone()))
-        .collect::<BTreeSet<_>>();
-    let mut reported = REPORTED_LOAD_DIAGNOSTICS
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let previous = reported.get(&state_key).cloned().unwrap_or_default();
-    for diagnostic in diagnostics {
-        let key = (diagnostic.code.clone(), diagnostic.message.clone());
-        if previous.contains(&key) {
-            continue;
-        }
-        tracing::warn!(
-            diagnostic.code = %diagnostic.code,
-            diagnostic.stage = stage,
-            workspace = %workspace_name,
-            source = %source_name,
-            surface = diagnostic.surface_id.as_deref().unwrap_or(""),
-            operation = diagnostic.operation_id.as_deref().unwrap_or(""),
-            projection = diagnostic.projection_name.as_deref().unwrap_or(""),
-            detail = %diagnostic.message,
-            "DSL v4 source load diagnostic"
-        );
-    }
-    if current.is_empty() {
-        reported.remove(&state_key);
-    } else {
-        reported.insert(state_key, current);
     }
 }
 
@@ -1452,6 +1497,23 @@ mod tests {
         SourceName::parse("github_v4_materialization_test").expect("source name")
     }
 
+    fn load_v4_materialization(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        manifest_yaml: &str,
+        manifest: &V4SourceManifest,
+    ) -> Result<V4MaterializedSource, AppError> {
+        super::load_v4_materialization(
+            layout,
+            workspace_name,
+            source_name,
+            manifest_yaml,
+            manifest,
+            &SourceDiagnosticReporter::default(),
+        )
+    }
+
     fn assert_load_diagnostic(materialized: &V4MaterializedSource, code: &str) {
         assert!(
             materialized
@@ -1581,6 +1643,37 @@ paths:
         }));
 
         assert!(result.is_none(), "request methods must include an id");
+    }
+
+    #[test]
+    fn diagnostic_reporter_owns_and_clears_source_state() {
+        let reporter = SourceDiagnosticReporter::default();
+        let independent_reporter = SourceDiagnosticReporter::default();
+        let workspace_name = workspace_name();
+        let source_name = source_name();
+        reporter.report_source_load_failure(
+            &workspace_name,
+            &source_name,
+            "SOURCE_LOAD_FAILED",
+            "test failure",
+        );
+        reporter.report_runtime_surface_diagnostics(
+            &workspace_name,
+            &source_name,
+            &[materialization_warning(
+                "V4_RUNTIME_SURFACE_ASSEMBLY_FAILED",
+                "test runtime failure",
+                Some("rest".to_string()),
+            )],
+        );
+
+        assert_eq!(reporter.tracked_stage_count(), 2);
+        assert_eq!(reporter.clone().tracked_stage_count(), 2);
+        assert_eq!(independent_reporter.tracked_stage_count(), 0);
+
+        reporter.clear_source(&workspace_name, &source_name);
+
+        assert_eq!(reporter.tracked_stage_count(), 0);
     }
 
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
