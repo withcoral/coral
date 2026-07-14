@@ -1,9 +1,6 @@
 //! Live observed-value source-scope loading.
 
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use crate::bootstrap::AppError;
 use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
@@ -12,7 +9,7 @@ use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::query_source_from_installed_manifest;
-use crate::state::{AppStateLayout, ConfigStore, V4ProjectionCatalogOrigin};
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
@@ -20,39 +17,12 @@ pub(crate) struct ObservedValuesLiveScopeLoader {
     config_store: ConfigStore,
     diagnostic_reporter: SourceDiagnosticReporter,
     layout: AppStateLayout,
-    cache: Arc<Mutex<BTreeMap<WorkspaceName, ObservedValuesLiveScopeCacheEntry>>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ObservedValuesLiveScopeLoad {
     pub(crate) live_scopes: Vec<ObservedValuesLiveScope>,
     pub(crate) failed_sources: Vec<ObservedValuesLiveScopeLoadFailure>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ObservedValuesLiveScopeCacheEntry {
-    key: ObservedValuesLiveScopeCacheKey,
-    load: ObservedValuesLiveScopeLoad,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ObservedValuesLiveScopeCacheKey {
-    sources: Vec<ObservedValuesLiveScopeCacheSource>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ObservedValuesLiveScopeCacheSource {
-    source: InstalledSource,
-    manifest: Option<FileFingerprint>,
-    v4_fingerprint: Option<FileFingerprint>,
-    v4_projection_catalog: Option<FileFingerprint>,
-    v4_projection_catalog_origin: V4ProjectionCatalogOrigin,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileFingerprint {
-    len: u64,
-    modified: Option<SystemTime>,
 }
 
 impl ObservedValuesLiveScopeLoader {
@@ -65,7 +35,6 @@ impl ObservedValuesLiveScopeLoader {
             config_store,
             diagnostic_reporter,
             layout,
-            cache: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -73,22 +42,17 @@ impl ObservedValuesLiveScopeLoader {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<ObservedValuesLiveScopeLoad, AppError> {
-        let (sources, cache_key) = {
-            let _state_lock = self.config_store.state_lock_shared()?;
-            let config = self.config_store.load_config_unlocked()?;
-            let sources = config.workspace_sources(workspace_name);
-            let cache_key = self.cache_key(workspace_name, &sources);
-            (sources, cache_key)
-        };
-        if let Some(load) = self.cached_load(workspace_name, &cache_key)? {
-            return Ok(load);
-        }
-        let load = self.load_uncached(workspace_name, sources);
-        self.store_cached_load(workspace_name, cache_key, load.clone())?;
-        Ok(load)
+        // Rebuild from the canonical runtime package on every search. Its
+        // contract includes materialized artifacts and per-surface overrides;
+        // a separate cache key would duplicate that dependency graph and risk
+        // admitting observations under a stale scope.
+        let _state_lock = self.config_store.state_lock_shared()?;
+        let config = self.config_store.load_config_unlocked()?;
+        let sources = config.workspace_sources(workspace_name);
+        Ok(self.load_sources(workspace_name, sources))
     }
 
-    fn load_uncached(
+    fn load_sources(
         &self,
         workspace_name: &WorkspaceName,
         sources: Vec<InstalledSource>,
@@ -142,75 +106,6 @@ impl ObservedValuesLiveScopeLoader {
             .map(|scope| scope.live_scope())
             .collect())
     }
-
-    fn cache_key(
-        &self,
-        workspace_name: &WorkspaceName,
-        sources: &[InstalledSource],
-    ) -> ObservedValuesLiveScopeCacheKey {
-        ObservedValuesLiveScopeCacheKey {
-            sources: sources
-                .iter()
-                .map(|source| {
-                    let projection_catalog = self
-                        .layout
-                        .v4_projection_catalog_file(workspace_name, &source.name);
-                    ObservedValuesLiveScopeCacheSource {
-                        source: source.clone(),
-                        manifest: file_fingerprint(
-                            self.layout.manifest_file(workspace_name, &source.name),
-                        ),
-                        v4_fingerprint: file_fingerprint(
-                            self.layout
-                                .v4_fingerprint_file(workspace_name, &source.name),
-                        ),
-                        v4_projection_catalog: file_fingerprint(&projection_catalog.path),
-                        v4_projection_catalog_origin: projection_catalog.origin,
-                    }
-                })
-                .collect(),
-        }
-    }
-
-    fn cached_load(
-        &self,
-        workspace_name: &WorkspaceName,
-        cache_key: &ObservedValuesLiveScopeCacheKey,
-    ) -> Result<Option<ObservedValuesLiveScopeLoad>, AppError> {
-        let cache = self.cache.lock().map_err(live_scope_cache_error)?;
-        Ok(cache
-            .get(workspace_name)
-            .filter(|entry| &entry.key == cache_key)
-            .map(|entry| entry.load.clone()))
-    }
-
-    fn store_cached_load(
-        &self,
-        workspace_name: &WorkspaceName,
-        key: ObservedValuesLiveScopeCacheKey,
-        load: ObservedValuesLiveScopeLoad,
-    ) -> Result<(), AppError> {
-        let mut cache = self.cache.lock().map_err(live_scope_cache_error)?;
-        cache.insert(
-            workspace_name.clone(),
-            ObservedValuesLiveScopeCacheEntry { key, load },
-        );
-        Ok(())
-    }
-}
-
-fn file_fingerprint(path: impl AsRef<Path>) -> Option<FileFingerprint> {
-    let metadata = std::fs::metadata(path).ok()?;
-    Some(FileFingerprint {
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
-    })
-}
-
-fn live_scope_cache_error(error: impl std::fmt::Display) -> AppError {
-    AppError::FailedPrecondition(format!(
-        "observed-values live scope cache is unavailable: {error}"
-    ))
 }
 
 #[cfg(test)]
@@ -289,16 +184,13 @@ mod tests {
     }
 
     #[test]
-    fn credential_revision_change_invalidates_cached_live_scope() {
+    fn credential_revision_change_changes_live_scope() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let source = SourceName::parse("github").expect("source");
-        config_store
-            .create_legacy_workspace_entry_for_tests(&workspace)
-            .expect("create workspace");
         install_source(
             &layout,
             &config_store,
@@ -313,11 +205,9 @@ mod tests {
         );
 
         let first = loader.load(&workspace).expect("first live scope");
-        let cached_first = loader.load(&workspace).expect("cached first live scope");
         set_credential_revision(&config_store, &workspace, &source, Uuid::from_u128(1));
         let second = loader.load(&workspace).expect("second live scope");
 
-        assert_eq!(first, cached_first);
         assert!(first.failed_sources.is_empty());
         assert!(second.failed_sources.is_empty());
         assert_eq!(first.live_scopes.len(), 1);
@@ -336,9 +226,6 @@ mod tests {
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_revision = Uuid::from_u128(42);
-        config_store
-            .create_legacy_workspace_entry_for_tests(&workspace)
-            .expect("create workspace");
         let installed_source = install_secured_source(
             &layout,
             &config_store,
