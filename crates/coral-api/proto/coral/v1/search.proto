@@ -29,19 +29,17 @@ message SearchResponse {
   SearchResultTruncation truncation = 3;
 }
 
-// Search index maintenance request.
+// Request to rebuild all app-owned local search indexes.
 message RebuildSearchIndexRequest {
   // Workspace whose local search data should be rebuilt.
   Workspace workspace = 1;
-  // Index provider to rebuild.
-  SearchIndexProvider provider = 2;
   // Force a rebuild even when the persisted fingerprint says the projection is current.
-  bool force = 3;
+  bool force = 2;
 }
 
 // Search index maintenance response.
 message RebuildSearchIndexResponse {
-  // Maintenance results for the providers selected by the request.
+  // Maintenance results for rebuilt providers.
   repeated SearchMaintenanceResult results = 1;
 }
 
@@ -61,14 +59,6 @@ message ClearSearchDataResponse {
   repeated SearchMaintenanceResult results = 1;
   // Best-effort local storage cleanup after data removal.
   SearchStorageCleanupResult storage_cleanup = 2;
-}
-
-// Search index provider selection for maintenance.
-enum SearchIndexProvider {
-  // Unknown index provider.
-  SEARCH_INDEX_PROVIDER_UNSPECIFIED = 0;
-  // Catalog metadata provider.
-  SEARCH_INDEX_PROVIDER_CATALOG = 1;
 }
 
 // Search data scope for destructive maintenance.

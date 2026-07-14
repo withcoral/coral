@@ -6,8 +6,8 @@ use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::engine::UniversalSearchEngine;
 use crate::search::maintenance::{
     ClearSearchDataRequest, ClearSearchDataResponse, RebuildSearchIndexRequest,
-    RebuildSearchIndexResponse, SearchIndexProvider, SearchMaintenanceResult,
-    SearchProviderClearRequest, SearchProviderMaintenance, SearchProviderRebuildRequest,
+    RebuildSearchIndexResponse, SearchMaintenanceResult, SearchProviderClearRequest,
+    SearchProviderMaintenance, SearchProviderRebuildRequest,
 };
 use crate::search::result::{SearchManagerError, SearchRequest, SearchResponse};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -45,9 +45,7 @@ impl SearchManager {
         request: &RebuildSearchIndexRequest,
     ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
         self.require_workspace(&request.workspace_name)?;
-        let result = match request.provider {
-            SearchIndexProvider::Catalog => self.rebuild_catalog_index(request)?,
-        };
+        let result = self.rebuild_catalog_index(request)?;
         Ok(RebuildSearchIndexResponse {
             results: vec![result],
         })
