@@ -12,7 +12,9 @@ use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
 
 use crate::hash::sha256_hex;
-use crate::search::observed::sensitive::{is_sensitive_column, is_sensitive_value};
+use crate::search::observed::sensitive::{
+    exclude_sensitive_json_fields, is_sensitive_column, is_sensitive_value,
+};
 use crate::search::observed::sqlite_queue::{ObservedValueCandidate, ObservedValuesQueuePayload};
 
 #[derive(Debug, Clone, Default)]
@@ -26,22 +28,25 @@ impl ObservedValuesCollector {
         let mut observed_bytes = 0_usize;
         let mut seen = HashSet::new();
         let schema = batch.schema();
-        for column_index in 0..batch.num_columns() {
-            let field = schema.field(column_index);
-            let column_name = field.name();
-            if is_sensitive_column(column_name) {
-                continue;
-            }
-            let column = batch.column(column_index);
-            for row_index in 0..batch.num_rows() {
+        let eligible_column_indices = (0..batch.num_columns())
+            .filter(|&column_index| !is_sensitive_column(schema.field(column_index).name()))
+            .collect::<Vec<_>>();
+        for row_index in 0..batch.num_rows() {
+            for &column_index in &eligible_column_indices {
                 if values.len() >= self.budget.candidate_limit {
                     return ObservedValuesQueuePayload { values };
                 }
+                let field = schema.field(column_index);
+                let column_name = field.name();
+                let column = batch.column(column_index);
                 let Some(display_value) = observed_display_value(
                     column.as_ref(),
                     row_index,
                     self.budget.value_bytes_limit,
                 ) else {
+                    continue;
+                };
+                let Some(display_value) = exclude_sensitive_json_fields(display_value) else {
                     continue;
                 };
                 if is_sensitive_value(&display_value) {
@@ -148,6 +153,8 @@ mod tests {
     use arrow::record_batch::RecordBatch;
 
     use super::{ObservedValuesCollectionBudget, ObservedValuesCollector};
+    use crate::search::observed::sqlite_queue::ObservedValuesQueuePayload;
+    use crate::search::observed::writer::payload_json_with_budget;
 
     #[test]
     fn suppresses_sensitive_columns_and_values() {
@@ -167,7 +174,7 @@ mod tests {
             .map(|candidate| candidate.display_value.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(values, ["Grace", "Ada", "ok"]);
+        assert_eq!(values, ["Grace", "ok", "Ada"]);
     }
 
     #[test]
@@ -219,6 +226,23 @@ mod tests {
     }
 
     #[test]
+    fn excludes_sensitive_json_fields_while_preserving_benign_siblings() {
+        let payload = ObservedValuesCollector::default().collect_batch(&batch(
+            ["metadata"],
+            [vec![
+                r#"{"name":"Ada","api_key":"literal-secret","nested":{"project":"coral","refresh_token":"other-secret"}}"#,
+            ]],
+        ));
+        let values = payload
+            .values
+            .iter()
+            .map(|candidate| candidate.display_value.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, [r#"{"name":"Ada","nested":{"project":"coral"}}"#]);
+    }
+
+    #[test]
     fn collection_budget_caps_candidates() {
         let collector = ObservedValuesCollector::with_budget(ObservedValuesCollectionBudget {
             candidate_limit: 1,
@@ -266,6 +290,110 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(values, [("first", "Repeat"), ("second", "Distinct")]);
+    }
+
+    #[test]
+    fn candidate_budget_uses_row_major_order() {
+        let collector = ObservedValuesCollector::with_budget(ObservedValuesCollectionBudget {
+            candidate_limit: 4,
+            candidate_bytes_limit: usize::MAX,
+            value_bytes_limit: usize::MAX,
+            job_bytes_limit: usize::MAX,
+        });
+        let payload = collector.collect_batch(&batch(
+            ["first", "second", "third"],
+            [
+                vec!["first-1", "first-2", "first-3"],
+                vec!["second-1", "second-2", "second-3"],
+                vec!["third-1", "third-2", "third-3"],
+            ],
+        ));
+        let values = payload
+            .values
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.column_name.as_str(),
+                    candidate.display_value.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values,
+            [
+                ("first", "first-1"),
+                ("second", "second-1"),
+                ("third", "third-1"),
+                ("first", "first-2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn serialized_job_budget_preserves_late_columns_with_row_major_collection() {
+        let payload = ObservedValuesCollector::default().collect_batch(&batch(
+            ["id", "title", "description"],
+            [
+                vec!["id-1", "id-2", "id-3", "id-4", "id-5", "id-6"],
+                vec![
+                    "title-1", "title-2", "title-3", "title-4", "title-5", "title-6",
+                ],
+                vec![
+                    "useful-1", "useful-2", "useful-3", "useful-4", "useful-5", "useful-6",
+                ],
+            ],
+        ));
+        let first_row_values = payload
+            .values
+            .get(..3)
+            .expect("three candidates from the first row")
+            .to_vec();
+        let job_bytes_limit = serde_json::to_string(&ObservedValuesQueuePayload {
+            values: first_row_values,
+        })
+        .expect("first-row payload json")
+        .len();
+        let first_column_payload = ObservedValuesQueuePayload {
+            values: payload
+                .values
+                .iter()
+                .filter(|candidate| candidate.column_name == "id")
+                .cloned()
+                .collect(),
+        };
+        assert!(
+            serde_json::to_string(&first_column_payload)
+                .expect("first-column payload json")
+                .len()
+                > job_bytes_limit,
+            "the first column alone should exceed the serialized job budget"
+        );
+
+        let payload_json = payload_json_with_budget(payload, job_bytes_limit)
+            .expect("serialize row-major payload")
+            .expect("first row should fit the serialized job budget");
+        let payload: ObservedValuesQueuePayload =
+            serde_json::from_str(&payload_json).expect("decode row-major payload");
+        let values = payload
+            .values
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.column_name.as_str(),
+                    candidate.display_value.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values,
+            [
+                ("id", "id-1"),
+                ("title", "title-1"),
+                ("description", "useful-1"),
+            ]
+        );
     }
 
     fn batch<const N: usize>(

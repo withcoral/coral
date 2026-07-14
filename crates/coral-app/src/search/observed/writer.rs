@@ -21,6 +21,7 @@ pub(super) struct ObservedValuesWriter {
 #[derive(Debug)]
 pub(super) struct ObservedValuesWrite {
     pub(super) workspace_name: WorkspaceName,
+    pub(super) owner_source_name: String,
     pub(super) source_name: String,
     pub(super) source_scope_id: String,
     pub(super) surface_kind: ObservedValuesSurfaceKind,
@@ -90,6 +91,7 @@ fn run_observed_values_writer(
             }
         };
         let job = ObservedValuesQueueJob {
+            owner_source_name: write.owner_source_name,
             source_name: write.source_name,
             source_scope_id: write.source_scope_id,
             surface_kind: write.surface_kind,

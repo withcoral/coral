@@ -1,5 +1,7 @@
 //! Sensitive observed-value detection.
 
+use serde_json::Value;
+
 const SENSITIVE_COLUMN_NAMES: &[&str] = &[
     "apikey",
     "authorization",
@@ -34,6 +36,51 @@ pub(super) fn is_sensitive_value(value: &str) -> bool {
     is_sensitive_token(trimmed)
         || contains_sensitive_token(trimmed)
         || contains_sensitive_key_value_pair(trimmed)
+}
+
+pub(super) fn exclude_sensitive_json_fields(value: String) -> Option<String> {
+    let Ok(mut structured_value) = serde_json::from_str::<Value>(&value) else {
+        return Some(value);
+    };
+    if !remove_sensitive_fields(&mut structured_value) {
+        return Some(value);
+    }
+    if !has_observable_content(&structured_value) {
+        return None;
+    }
+    serde_json::to_string(&structured_value).ok()
+}
+
+fn remove_sensitive_fields(value: &mut Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            let original_field_count = fields.len();
+            fields.retain(|name, _| !is_sensitive_column(name));
+            let mut removed_field = fields.len() != original_field_count;
+            for value in fields.values_mut() {
+                removed_field |= remove_sensitive_fields(value);
+            }
+            removed_field
+        }
+        Value::Array(values) => {
+            let mut removed_field = false;
+            for value in values {
+                removed_field |= remove_sensitive_fields(value);
+            }
+            removed_field
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
+
+fn has_observable_content(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(values) => values.iter().any(has_observable_content),
+        Value::Object(fields) => fields.values().any(has_observable_content),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
 }
 
 fn is_sensitive_token(value: &str) -> bool {

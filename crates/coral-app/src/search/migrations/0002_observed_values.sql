@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS observed_source_generations (
 
 CREATE TABLE IF NOT EXISTS observed_values (
     workspace TEXT NOT NULL,
+    owner_source_name TEXT NOT NULL,
     source_name TEXT NOT NULL,
     source_scope_id TEXT NOT NULL,
     surface_kind TEXT NOT NULL,
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS observed_values (
     workspace_generation INTEGER NOT NULL,
     PRIMARY KEY (
         workspace,
+        owner_source_name,
         source_name,
         source_scope_id,
         surface_kind,
@@ -40,6 +42,7 @@ CREATE TABLE IF NOT EXISTS observed_values (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS observed_values_fts USING fts5(
     workspace UNINDEXED,
+    owner_source_name UNINDEXED,
     source_name UNINDEXED,
     source_scope_id UNINDEXED,
     surface_kind UNINDEXED,
@@ -54,6 +57,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS observed_values_fts USING fts5(
 CREATE TABLE IF NOT EXISTS observed_queue_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace TEXT NOT NULL,
+    owner_source_name TEXT NOT NULL,
     source_name TEXT NOT NULL,
     source_scope_id TEXT NOT NULL,
     surface_kind TEXT NOT NULL,
@@ -70,10 +74,16 @@ CREATE TABLE IF NOT EXISTS observed_queue_jobs (
 CREATE INDEX IF NOT EXISTS idx_observed_queue_jobs_workspace_id
     ON observed_queue_jobs (workspace, id);
 CREATE INDEX IF NOT EXISTS idx_observed_queue_jobs_source
-    ON observed_queue_jobs (workspace, source_name, source_scope_id);
+    ON observed_queue_jobs (
+        workspace,
+        owner_source_name,
+        source_name,
+        source_scope_id
+    );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_observed_queue_jobs_pending_scope
     ON observed_queue_jobs (
         workspace,
+        owner_source_name,
         source_name,
         source_scope_id,
         surface_kind,
@@ -82,4 +92,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_observed_queue_jobs_pending_scope
         source_generation
     );
 CREATE INDEX IF NOT EXISTS idx_observed_values_source
-    ON observed_values (workspace, source_name, source_scope_id);
+    ON observed_values (
+        workspace,
+        owner_source_name,
+        source_name,
+        source_scope_id
+    );

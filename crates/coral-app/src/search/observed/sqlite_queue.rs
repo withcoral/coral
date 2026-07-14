@@ -56,6 +56,9 @@ pub(crate) struct ObservedValueCandidate {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesQueueJob {
+    /// Canonical installed source that owns lifecycle clears and generations.
+    pub(crate) owner_source_name: String,
+    /// Runtime component schema used in SQL and search results.
     pub(crate) source_name: String,
     pub(crate) source_scope_id: String,
     pub(crate) surface_kind: ObservedValuesSurfaceKind,

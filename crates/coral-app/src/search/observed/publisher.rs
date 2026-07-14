@@ -154,7 +154,8 @@ impl SourceScanObservedValuesPublisher {
         }
         match self.writer.try_enqueue(ObservedValuesWrite {
             workspace_name: self.workspace_name.clone(),
-            source_name: scope.observed_source_name.clone(),
+            owner_source_name: scope.owner_source_name.clone(),
+            source_name: scope.source_name.clone(),
             source_scope_id: scope.source_scope_id.clone(),
             surface_kind,
             surface_name: observation.surface_name.to_string(),
@@ -166,7 +167,8 @@ impl SourceScanObservedValuesPublisher {
             Err(ObservedValuesTryEnqueueError::Full) => {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
-                    source = %scope.observed_source_name,
+                    source = %scope.source_name,
+                    source_owner = %scope.owner_source_name,
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer queue is full"
                 );
@@ -174,7 +176,8 @@ impl SourceScanObservedValuesPublisher {
             Err(ObservedValuesTryEnqueueError::Disconnected) => {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
-                    source = %scope.observed_source_name,
+                    source = %scope.source_name,
+                    source_owner = %scope.owner_source_name,
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer is stopped"
                 );
@@ -200,7 +203,10 @@ mod tests {
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use coral_engine::{QuerySource, SourceObservationSurfaceKind, SourceScanObservation};
+    use coral_engine::{
+        QuerySource, RuntimeSourceComponent, RuntimeSourcePackage, SourceObservationSurfaceKind,
+        SourceScanObservation,
+    };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::json;
     use tempfile::tempdir;
@@ -284,6 +290,67 @@ mod tests {
         assert!(payloads.contains("hello"));
         assert!(!payloads.contains("literal-secret"));
         assert!(!payloads.contains("ghp_supersecret"));
+    }
+
+    #[test]
+    fn publisher_preserves_owner_and_query_schema_for_multi_surface_v4_package() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let handle = SearchObservationHandle::new(layout.clone());
+        let source = multi_surface_v4_query_source();
+        let extensions = handle.extensions_for(&workspace, &[source]);
+        let publisher = extensions
+            .source_observation_publishers
+            .first()
+            .expect("publisher");
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "title",
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["Fix the bug"]))],
+        )
+        .expect("batch");
+
+        for source_name in ["github_v4_rest", "github_v4_mcp"] {
+            publisher.publish_source_scan(SourceScanObservation {
+                source_name,
+                surface_kind: SourceObservationSurfaceKind::Table,
+                surface_name: "list_issues",
+                batch: &batch,
+            });
+        }
+
+        let identities = wait_for_source_identities(&layout, &workspace, 2);
+        assert_eq!(
+            identities,
+            [
+                (
+                    "github_v4".to_string(),
+                    "github_v4_rest".to_string(),
+                    "list_issues".to_string(),
+                ),
+                (
+                    "github_v4".to_string(),
+                    "github_v4_mcp".to_string(),
+                    "list_issues".to_string(),
+                ),
+            ]
+        );
+
+        let store = SqliteObservedValuesStore::new(layout);
+        store
+            .clear_source(&workspace, "github_v4")
+            .expect("clear logical source owner");
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("queue count"),
+            0
+        );
     }
 
     #[test]
@@ -424,6 +491,49 @@ tables:
         )
     }
 
+    fn multi_surface_v4_query_source() -> QuerySource {
+        // Multi-surface v4 sources reach the engine through this backend-ready
+        // package shape: one installed owner with one schema per component.
+        QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github_v4".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: vec![
+                    http_component("github_v4_rest"),
+                    http_component("github_v4_mcp"),
+                ],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("multi-surface query source")
+    }
+
+    fn http_component(source_name: &str) -> RuntimeSourceComponent {
+        let yaml = format!(
+            r"
+dsl_version: 3
+name: {source_name}
+version: 0.1.0
+backend: http
+base_url: https://api.github.com
+tables:
+  - name: list_issues
+    description: Issues
+    request:
+      path: /issues
+    columns:
+      - name: title
+        type: Utf8
+"
+        );
+        let manifest = parse_source_manifest_yaml(&yaml).expect("component manifest");
+        RuntimeSourceComponent::Http(manifest.as_http().expect("HTTP component").clone())
+    }
+
     fn wait_for_payloads(layout: &AppStateLayout, workspace: &WorkspaceName) -> Vec<String> {
         let store = SqliteObservedValuesStore::new(layout.clone());
         for _ in 0..100 {
@@ -434,6 +544,24 @@ tables:
             thread::sleep(Duration::from_millis(10));
         }
         panic!("observed-values writer did not enqueue payload");
+    }
+
+    fn wait_for_source_identities(
+        layout: &AppStateLayout,
+        workspace: &WorkspaceName,
+        expected_count: usize,
+    ) -> Vec<(String, String, String)> {
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        for _ in 0..100 {
+            let identities = store
+                .queue_source_identities(workspace)
+                .expect("queue source identities");
+            if identities.len() == expected_count {
+                return identities;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("observed-values writer did not enqueue expected source identities");
     }
 
     fn observed_candidate(display_value: &str) -> ObservedValueCandidate {
