@@ -2437,9 +2437,9 @@ tables:
         );
     }
 
-    #[test]
-    fn runtime_contract_fingerprint_ignores_refreshed_credential_material() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+    #[tokio::test]
+    async fn runtime_contract_fingerprint_ignores_refreshed_credential_material() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace = WorkspaceName::default();
         let source_name = SourceName::parse("secured_messages").expect("source name");

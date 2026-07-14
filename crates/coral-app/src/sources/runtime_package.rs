@@ -896,7 +896,7 @@ mod tests {
             projections: ProjectionCatalog {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "demo".to_string(),
-                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
                 projections: Vec::new(),
                 diagnostics: Vec::new(),
             },

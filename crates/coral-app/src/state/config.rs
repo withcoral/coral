@@ -1931,6 +1931,7 @@ max_concurrency = 0
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
