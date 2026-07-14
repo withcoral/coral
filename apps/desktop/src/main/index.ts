@@ -10,7 +10,7 @@ import {
   registerAppSchemePrivileges,
 } from './app-renderer'
 import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
-import { checkForDesktopUpdates, installAutoUpdater } from './auto-update'
+import { checkForDesktopUpdates, desktopUpdatesSupported, installAutoUpdater } from './auto-update'
 
 const SHUTDOWN_TIMEOUT_MS = 6000
 
@@ -270,7 +270,7 @@ function installMenu() {
           label: 'Configure MCP',
           submenu: mcpSubmenu,
         },
-        ...(app.isPackaged
+        ...(desktopUpdatesSupported()
           ? ([
               {
                 label: 'Check for Updates...',
