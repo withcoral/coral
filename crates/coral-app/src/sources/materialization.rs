@@ -227,23 +227,10 @@ pub(crate) fn load_v4_materialization(
         &mut projections,
         projection_sync_mode,
     );
-    let materialized = V4MaterializedSource {
-        fingerprint,
-        surfaces,
-        projections,
-        diagnostics: {
-            diagnostics.append(&mut load_diagnostics);
-            diagnostics
-        },
-    };
     if originally_published > 0
-        && !materialized
-            .projections
-            .projections
-            .iter()
-            .any(|projection| {
-                projection.visibility == coral_spec::v4::ProjectionVisibility::Published
-            })
+        && !projections.projections.iter().any(|projection| {
+            projection.visibility == coral_spec::v4::ProjectionVisibility::Published
+        })
     {
         return Err(incompatible_materialization_error(
             source_name,
@@ -254,12 +241,15 @@ pub(crate) fn load_v4_materialization(
         workspace_name,
         source_name,
         "materialization",
-        materialized
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code.starts_with("V4_")),
+        load_diagnostics.iter(),
     );
-    Ok(materialized)
+    diagnostics.append(&mut load_diagnostics);
+    Ok(V4MaterializedSource {
+        fingerprint,
+        surfaces,
+        projections,
+        diagnostics,
+    })
 }
 
 fn load_optional_fingerprint(
