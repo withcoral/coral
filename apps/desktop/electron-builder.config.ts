@@ -52,6 +52,10 @@ const config: Configuration = {
     entitlementsInherit: 'resources/entitlements.mac.inherit.plist',
     hardenedRuntime: true,
     icon: 'resources/icons/icon.icns',
+    // identity null makes non-release builds deterministically unsigned;
+    // otherwise electron-builder auto-discovers a Developer ID certificate
+    // from the developer's keychain and signs local packages.
+    identity: releaseBuild ? undefined : null,
     notarize: releaseBuild,
     target: ['dmg', 'zip'],
   },

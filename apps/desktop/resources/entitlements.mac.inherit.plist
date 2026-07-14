@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Inherited by child processes the app spawns (Electron helper processes,
+  the bundled coral sidecar). Mirrors entitlements.mac.plist — see there
+  for why each exception is needed.
+-->
 <plist version="1.0">
   <dict>
     <key>com.apple.security.cs.allow-jit</key>
