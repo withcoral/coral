@@ -5,10 +5,10 @@
     reason = "observed-values provider substrate is staged before app wiring in the next PR"
 )]
 
-use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::sqlite_queue::{
-    ObservedValuesEnqueueResult, ObservedValuesGeneration, ObservedValuesQueueJob,
+    ObservedValuesEnqueueResult, ObservedValuesEpoch, ObservedValuesQueueJob,
 };
 use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
 use crate::state::AppStateLayout;
@@ -29,125 +29,44 @@ impl SqliteObservedValuesStore {
         Self { layout }
     }
 
-    pub(crate) fn current_generations(
+    pub(crate) fn capture_epoch(
         &self,
         workspace_name: &WorkspaceName,
         owner_source_name: &str,
-    ) -> Result<ObservedValuesGeneration, SqliteSearchError> {
+    ) -> Result<ObservedValuesEpoch, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
-        observed_generations(&connection, workspace_name, owner_source_name)
+        read_epoch(&connection, workspace_name, owner_source_name)
     }
 
-    pub(crate) fn enqueue_source_scan(
+    pub(crate) fn enqueue_if_current(
         &self,
         workspace_name: &WorkspaceName,
         job: &ObservedValuesQueueJob,
-        expected_generation: ObservedValuesGeneration,
+        captured_epoch: ObservedValuesEpoch,
     ) -> Result<ObservedValuesEnqueueResult, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current_generation =
-            observed_generations(&transaction, workspace_name, &job.owner_source_name)?;
-        if current_generation != expected_generation {
-            transaction.commit()?;
-            return Ok(ObservedValuesEnqueueResult::StaleGeneration);
-        }
-        if pending_queue_job_id(&transaction, workspace_name, job, expected_generation)?.is_none()
-            && pending_queue_job_count(&transaction, workspace_name)?
-                >= MAX_PENDING_QUEUE_JOBS_PER_WORKSPACE
-        {
-            transaction.commit()?;
-            return Ok(ObservedValuesEnqueueResult::QueueFull);
-        }
-
-        transaction.execute(
-            "
-            INSERT INTO observed_queue_jobs (
-                workspace,
-                owner_source_name,
-                source_name,
-                source_scope_id,
-                surface_kind,
-                surface_name,
-                workspace_generation,
-                source_generation,
-                payload_json,
-                created_at,
-                updated_at
-            )
-            VALUES (
-                ?1,
-                ?2,
-                ?3,
-                ?4,
-                ?5,
-                ?6,
-                ?7,
-                ?8,
-                ?9,
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-            )
-            ON CONFLICT(
-                workspace,
-                owner_source_name,
-                source_name,
-                source_scope_id,
-                surface_kind,
-                surface_name,
-                workspace_generation,
-                source_generation
-            ) DO UPDATE SET
-                payload_json = excluded.payload_json,
-                attempts = 0,
-                last_error = '',
-                updated_at = excluded.updated_at
-            ",
-            params![
-                workspace_name.as_str(),
-                &job.owner_source_name,
-                &job.source_name,
-                &job.source_scope_id,
-                job.surface_kind.as_str(),
-                &job.surface_name,
-                expected_generation.workspace_generation,
-                expected_generation.source_generation,
-                &job.payload_json,
-            ],
-        )?;
-        let job_id = pending_queue_job_id(&transaction, workspace_name, job, expected_generation)?
-            .expect("pending observed-values queue job should exist after upsert");
+        let result =
+            enqueue_if_current_in_transaction(&transaction, workspace_name, job, captured_epoch)?;
         transaction.commit()?;
-        Ok(ObservedValuesEnqueueResult::Enqueued { job_id })
+        Ok(result)
     }
 
-    pub(crate) fn clear_workspace(
+    pub(crate) fn clear_workspace_and_advance_epoch(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<(), SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "DELETE FROM observed_values_fts WHERE workspace = ?1",
-            params![workspace_name.as_str()],
-        )?;
-        transaction.execute(
-            "DELETE FROM observed_values WHERE workspace = ?1",
-            params![workspace_name.as_str()],
-        )?;
-        transaction.execute(
-            "DELETE FROM observed_queue_jobs WHERE workspace = ?1",
-            params![workspace_name.as_str()],
-        )?;
-        increment_workspace_generation(&transaction, workspace_name)?;
+        clear_workspace_in_transaction(&transaction, workspace_name)?;
         transaction.commit()?;
         Ok(())
     }
 
-    pub(crate) fn clear_source(
+    pub(crate) fn clear_source_and_advance_epoch(
         &self,
         workspace_name: &WorkspaceName,
         owner_source_name: &str,
@@ -155,19 +74,7 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "DELETE FROM observed_values_fts WHERE workspace = ?1 AND owner_source_name = ?2",
-            params![workspace_name.as_str(), owner_source_name],
-        )?;
-        transaction.execute(
-            "DELETE FROM observed_values WHERE workspace = ?1 AND owner_source_name = ?2",
-            params![workspace_name.as_str(), owner_source_name],
-        )?;
-        transaction.execute(
-            "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND owner_source_name = ?2",
-            params![workspace_name.as_str(), owner_source_name],
-        )?;
-        increment_source_generation(&transaction, workspace_name, owner_source_name)?;
+        clear_source_in_transaction(&transaction, workspace_name, owner_source_name)?;
         transaction.commit()?;
         Ok(())
     }
@@ -230,6 +137,124 @@ impl SqliteObservedValuesStore {
     }
 }
 
+fn enqueue_if_current_in_transaction(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    job: &ObservedValuesQueueJob,
+    captured_epoch: ObservedValuesEpoch,
+) -> Result<ObservedValuesEnqueueResult, SqliteSearchError> {
+    let current_epoch = read_epoch(transaction, workspace_name, &job.owner_source_name)?;
+    if current_epoch != captured_epoch {
+        return Ok(ObservedValuesEnqueueResult::StaleEpoch);
+    }
+    if pending_queue_job_id(transaction, workspace_name, job, captured_epoch)?.is_none()
+        && pending_queue_job_count(transaction, workspace_name)?
+            >= MAX_PENDING_QUEUE_JOBS_PER_WORKSPACE
+    {
+        return Ok(ObservedValuesEnqueueResult::QueueFull);
+    }
+
+    transaction.execute(
+        "
+            INSERT INTO observed_queue_jobs (
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                workspace_generation,
+                source_generation,
+                payload_json,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                ?1,
+                ?2,
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7,
+                ?8,
+                ?9,
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            )
+            ON CONFLICT(
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                workspace_generation,
+                source_generation
+            ) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                attempts = 0,
+                last_error = '',
+                updated_at = excluded.updated_at
+            ",
+        params![
+            workspace_name.as_str(),
+            &job.owner_source_name,
+            &job.source_name,
+            &job.source_scope_id,
+            job.surface_kind.as_str(),
+            &job.surface_name,
+            captured_epoch.workspace_generation,
+            captured_epoch.source_generation,
+            &job.payload_json,
+        ],
+    )?;
+    let job_id = pending_queue_job_id(transaction, workspace_name, job, captured_epoch)?
+        .expect("pending observed-values queue job should exist after upsert");
+    Ok(ObservedValuesEnqueueResult::Enqueued { job_id })
+}
+
+fn clear_workspace_in_transaction(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+) -> Result<(), SqliteSearchError> {
+    transaction.execute(
+        "DELETE FROM observed_values_fts WHERE workspace = ?1",
+        params![workspace_name.as_str()],
+    )?;
+    transaction.execute(
+        "DELETE FROM observed_values WHERE workspace = ?1",
+        params![workspace_name.as_str()],
+    )?;
+    transaction.execute(
+        "DELETE FROM observed_queue_jobs WHERE workspace = ?1",
+        params![workspace_name.as_str()],
+    )?;
+    advance_workspace_epoch(transaction, workspace_name)?;
+    Ok(())
+}
+
+fn clear_source_in_transaction(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    owner_source_name: &str,
+) -> Result<(), SqliteSearchError> {
+    transaction.execute(
+        "DELETE FROM observed_values_fts WHERE workspace = ?1 AND owner_source_name = ?2",
+        params![workspace_name.as_str(), owner_source_name],
+    )?;
+    transaction.execute(
+        "DELETE FROM observed_values WHERE workspace = ?1 AND owner_source_name = ?2",
+        params![workspace_name.as_str(), owner_source_name],
+    )?;
+    transaction.execute(
+        "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND owner_source_name = ?2",
+        params![workspace_name.as_str(), owner_source_name],
+    )?;
+    advance_source_epoch(transaction, workspace_name, owner_source_name)?;
+    Ok(())
+}
+
 fn pending_queue_job_count(
     connection: &Connection,
     workspace_name: &WorkspaceName,
@@ -247,7 +272,7 @@ fn pending_queue_job_id(
     connection: &Connection,
     workspace_name: &WorkspaceName,
     job: &ObservedValuesQueueJob,
-    generation: ObservedValuesGeneration,
+    epoch: ObservedValuesEpoch,
 ) -> Result<Option<i64>, SqliteSearchError> {
     connection
         .query_row(
@@ -270,8 +295,8 @@ fn pending_queue_job_id(
                 &job.source_scope_id,
                 job.surface_kind.as_str(),
                 &job.surface_name,
-                generation.workspace_generation,
-                generation.source_generation,
+                epoch.workspace_generation,
+                epoch.source_generation,
             ],
             |row| row.get(0),
         )
@@ -279,11 +304,11 @@ fn pending_queue_job_id(
         .map_err(SqliteSearchError::from)
 }
 
-fn observed_generations(
+fn read_epoch(
     connection: &Connection,
     workspace_name: &WorkspaceName,
     owner_source_name: &str,
-) -> Result<ObservedValuesGeneration, SqliteSearchError> {
+) -> Result<ObservedValuesEpoch, SqliteSearchError> {
     let workspace_generation = connection
         .query_row(
             "
@@ -295,7 +320,7 @@ fn observed_generations(
             |row| row.get(0),
         )
         .optional()?
-        .unwrap_or(ObservedValuesGeneration::ZERO.workspace_generation);
+        .unwrap_or(ObservedValuesEpoch::ZERO.workspace_generation);
     let source_generation = connection
         .query_row(
             "
@@ -307,14 +332,14 @@ fn observed_generations(
             |row| row.get(0),
         )
         .optional()?
-        .unwrap_or(ObservedValuesGeneration::ZERO.source_generation);
-    Ok(ObservedValuesGeneration {
+        .unwrap_or(ObservedValuesEpoch::ZERO.source_generation);
+    Ok(ObservedValuesEpoch {
         workspace_generation,
         source_generation,
     })
 }
 
-fn increment_workspace_generation(
+fn advance_workspace_epoch(
     connection: &Connection,
     workspace_name: &WorkspaceName,
 ) -> Result<(), SqliteSearchError> {
@@ -331,7 +356,7 @@ fn increment_workspace_generation(
     Ok(())
 }
 
-fn increment_source_generation(
+fn advance_source_epoch(
     connection: &Connection,
     workspace_name: &WorkspaceName,
     owner_source_name: &str,
@@ -356,10 +381,19 @@ fn increment_source_generation(
 
 #[cfg(test)]
 mod tests {
-    use super::SqliteObservedValuesStore;
+    use std::sync::mpsc::sync_channel;
+    use std::thread;
+    use std::time::Duration;
+
+    use rusqlite::TransactionBehavior;
+
+    use super::{
+        SqliteObservedValuesStore, clear_source_in_transaction, enqueue_if_current_in_transaction,
+    };
     use crate::search::observed::sqlite_queue::{
         ObservedValuesEnqueueResult, ObservedValuesQueueJob, ObservedValuesSurfaceKind,
     };
+    use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
     use tempfile::tempdir;
@@ -371,11 +405,9 @@ mod tests {
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
-        let generation = store
-            .current_generations(&workspace, "github")
-            .expect("generation");
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
         let result = store
-            .enqueue_source_scan(&workspace, &test_job(), generation)
+            .enqueue_if_current(&workspace, &test_job(), epoch)
             .expect("enqueue");
 
         assert!(matches!(
@@ -398,14 +430,14 @@ mod tests {
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout);
-        let generation = store
-            .current_generations(&workspace, "github")
-            .expect("generation");
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
         store
-            .enqueue_source_scan(&workspace, &test_job(), generation)
+            .enqueue_if_current(&workspace, &test_job(), epoch)
             .expect("enqueue");
 
-        store.clear_workspace(&workspace).expect("clear workspace");
+        store
+            .clear_workspace_and_advance_epoch(&workspace)
+            .expect("clear workspace");
 
         assert_eq!(
             store
@@ -415,38 +447,183 @@ mod tests {
         );
         assert_eq!(
             store
-                .current_generations(&workspace, "github")
-                .expect("generation")
+                .capture_epoch(&workspace, "github")
+                .expect("epoch")
                 .workspace_generation,
             1
         );
     }
 
     #[test]
-    fn stale_source_generation_is_not_enqueued() {
+    fn stale_source_epoch_is_not_enqueued() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout);
-        let stale_generation = store
-            .current_generations(&workspace, "github")
-            .expect("generation");
+        let stale_epoch = store.capture_epoch(&workspace, "github").expect("epoch");
 
         store
-            .clear_source(&workspace, "github")
+            .clear_source_and_advance_epoch(&workspace, "github")
             .expect("clear source");
         let result = store
-            .enqueue_source_scan(&workspace, &test_job(), stale_generation)
+            .enqueue_if_current(&workspace, &test_job(), stale_epoch)
             .expect("enqueue");
 
-        assert_eq!(result, ObservedValuesEnqueueResult::StaleGeneration);
+        assert_eq!(result, ObservedValuesEnqueueResult::StaleEpoch);
         assert_eq!(
             store
                 .pending_queue_job_count(&workspace)
                 .expect("queue count"),
             0
         );
+    }
+
+    #[test]
+    fn clear_transaction_committing_first_rejects_in_flight_observation() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let captured_epoch = store
+            .capture_epoch(&workspace, "github")
+            .expect("captured epoch");
+
+        let search_store =
+            SqliteSearchStore::open_workspace(&layout, &workspace).expect("search store");
+        let mut connection = search_store.connect_for_test().expect("connection");
+        let mut contending_connection = search_store.connect_for_test().expect("contender");
+        contending_connection
+            .busy_timeout(Duration::ZERO)
+            .expect("disable contender wait");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("clear transaction");
+        clear_source_in_transaction(&transaction, &workspace, "github")
+            .expect("clear source in transaction");
+
+        let (contended_tx, contended_rx) = sync_channel(0);
+        let (retry_tx, retry_rx) = sync_channel(0);
+        let worker = thread::spawn({
+            let store = store.clone();
+            let workspace = workspace.clone();
+            move || {
+                contended_tx
+                    .send(immediate_transaction_is_locked(&mut contending_connection))
+                    .expect("report lock contention");
+                retry_rx.recv().expect("retry after clear commit");
+                store.enqueue_if_current(&workspace, &test_job(), captured_epoch)
+            }
+        });
+        assert!(
+            contended_rx.recv().expect("lock contention result"),
+            "enqueue must contend with the open clear transaction"
+        );
+        transaction.commit().expect("commit clear");
+        retry_tx.send(()).expect("resume enqueue");
+
+        let result = worker.join().expect("enqueue worker").expect("enqueue");
+        assert_eq!(result, ObservedValuesEnqueueResult::StaleEpoch);
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("queue count"),
+            0
+        );
+    }
+
+    #[test]
+    fn enqueue_transaction_committing_first_is_removed_by_clear() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let captured_epoch = store
+            .capture_epoch(&workspace, "github")
+            .expect("captured epoch");
+
+        let search_store =
+            SqliteSearchStore::open_workspace(&layout, &workspace).expect("search store");
+        let mut connection = search_store.connect_for_test().expect("connection");
+        let mut contending_connection = search_store.connect_for_test().expect("contender");
+        contending_connection
+            .busy_timeout(Duration::ZERO)
+            .expect("disable contender wait");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("enqueue transaction");
+        let result = enqueue_if_current_in_transaction(
+            &transaction,
+            &workspace,
+            &test_job(),
+            captured_epoch,
+        )
+        .expect("enqueue in transaction");
+        assert!(matches!(
+            result,
+            ObservedValuesEnqueueResult::Enqueued { .. }
+        ));
+
+        let (contended_tx, contended_rx) = sync_channel(0);
+        let (retry_tx, retry_rx) = sync_channel(0);
+        let worker = thread::spawn({
+            let store = store.clone();
+            let workspace = workspace.clone();
+            move || {
+                contended_tx
+                    .send(immediate_transaction_is_locked(&mut contending_connection))
+                    .expect("report lock contention");
+                retry_rx.recv().expect("retry after enqueue commit");
+                store.clear_source_and_advance_epoch(&workspace, "github")
+            }
+        });
+        assert!(
+            contended_rx.recv().expect("lock contention result"),
+            "clear must contend with the open enqueue transaction"
+        );
+        transaction.commit().expect("commit enqueue");
+        retry_tx.send(()).expect("resume clear");
+        worker.join().expect("clear worker").expect("clear source");
+
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("queue count"),
+            0
+        );
+    }
+
+    #[test]
+    fn workspace_clear_invalidates_captured_source_epoch() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let captured_epoch = store
+            .capture_epoch(&workspace, "github")
+            .expect("captured epoch");
+
+        store
+            .clear_workspace_and_advance_epoch(&workspace)
+            .expect("clear workspace");
+        let result = store
+            .enqueue_if_current(&workspace, &test_job(), captured_epoch)
+            .expect("enqueue");
+
+        assert_eq!(result, ObservedValuesEnqueueResult::StaleEpoch);
+    }
+
+    fn immediate_transaction_is_locked(connection: &mut rusqlite::Connection) -> bool {
+        match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
+            Ok(transaction) => {
+                drop(transaction);
+                false
+            }
+            Err(error) => SqliteSearchError::from(error).is_lock_contention(),
+        }
     }
 
     #[test]
@@ -456,22 +633,12 @@ mod tests {
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout);
-        let generation = store
-            .current_generations(&workspace, "github")
-            .expect("generation");
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
         store
-            .enqueue_source_scan(
-                &workspace,
-                &test_job_with("scope", "issues", "Bug"),
-                generation,
-            )
+            .enqueue_if_current(&workspace, &test_job_with("scope", "issues", "Bug"), epoch)
             .expect("first enqueue");
         store
-            .enqueue_source_scan(
-                &workspace,
-                &test_job_with("scope", "issues", "Fix"),
-                generation,
-            )
+            .enqueue_if_current(&workspace, &test_job_with("scope", "issues", "Fix"), epoch)
             .expect("second enqueue");
 
         assert_eq!(
@@ -493,28 +660,26 @@ mod tests {
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout);
-        let generation = store
-            .current_generations(&workspace, "github")
-            .expect("generation");
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
         store
-            .enqueue_source_scan(
+            .enqueue_if_current(
                 &workspace,
                 &test_job_with("scope-1", "issues", "One"),
-                generation,
+                epoch,
             )
             .expect("first enqueue");
         store
-            .enqueue_source_scan(
+            .enqueue_if_current(
                 &workspace,
                 &test_job_with("scope-2", "issues", "Two"),
-                generation,
+                epoch,
             )
             .expect("second enqueue");
         let result = store
-            .enqueue_source_scan(
+            .enqueue_if_current(
                 &workspace,
                 &test_job_with("scope-3", "issues", "Three"),
-                generation,
+                epoch,
             )
             .expect("third enqueue");
 

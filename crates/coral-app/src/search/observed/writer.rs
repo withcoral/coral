@@ -1,11 +1,10 @@
 //! Bounded observed-values writer lifecycle and durable queue handoff.
 
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-
 use serde::Serialize;
+use tokio::sync::mpsc::{self, Receiver, Sender, error::TrySendError};
 
 use crate::search::observed::sqlite_queue::{
-    ObservedValueCandidate, ObservedValuesEnqueueResult, ObservedValuesGeneration,
+    ObservedValueCandidate, ObservedValuesEnqueueResult, ObservedValuesEpoch,
     ObservedValuesQueueJob, ObservedValuesQueuePayload, ObservedValuesSurfaceKind,
 };
 use crate::search::observed::sqlite_store::SqliteObservedValuesStore;
@@ -15,7 +14,7 @@ const OBSERVED_VALUES_WRITE_QUEUE_CAPACITY: usize = 128;
 
 #[derive(Debug, Clone)]
 pub(super) struct ObservedValuesWriter {
-    sender: SyncSender<ObservedValuesWrite>,
+    sender: Sender<ObservedValuesWrite>,
 }
 
 #[derive(Debug)]
@@ -26,20 +25,29 @@ pub(super) struct ObservedValuesWrite {
     pub(super) source_scope_id: String,
     pub(super) surface_kind: ObservedValuesSurfaceKind,
     pub(super) surface_name: String,
-    pub(super) payload: ObservedValuesQueuePayload,
-    pub(super) max_job_bytes: usize,
-    pub(super) generation: ObservedValuesGeneration,
+    pub(super) payload_json: String,
+    pub(super) epoch: ObservedValuesEpoch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ObservedValuesTryEnqueueError {
+pub(super) enum ObservedValuesTryReserveError {
     Full,
     Disconnected,
 }
 
+pub(super) struct ObservedValuesWritePermit<'a> {
+    permit: mpsc::Permit<'a, ObservedValuesWrite>,
+}
+
+impl ObservedValuesWritePermit<'_> {
+    pub(super) fn send(self, write: ObservedValuesWrite) {
+        self.permit.send(write);
+    }
+}
+
 impl ObservedValuesWriter {
     pub(super) fn start(store: SqliteObservedValuesStore) -> Self {
-        let (sender, receiver) = sync_channel(OBSERVED_VALUES_WRITE_QUEUE_CAPACITY);
+        let (sender, receiver) = mpsc::channel(OBSERVED_VALUES_WRITE_QUEUE_CAPACITY);
         if let Err(error) = std::thread::Builder::new()
             .name("coral-observed-values-writer".to_string())
             .spawn(move || run_observed_values_writer(&store, receiver))
@@ -52,55 +60,35 @@ impl ObservedValuesWriter {
         Self { sender }
     }
 
-    pub(super) fn try_enqueue(
+    pub(super) fn try_reserve(
         &self,
-        write: ObservedValuesWrite,
-    ) -> Result<(), ObservedValuesTryEnqueueError> {
-        self.sender.try_send(write).map_err(|error| match error {
-            TrySendError::Full(_) => ObservedValuesTryEnqueueError::Full,
-            TrySendError::Disconnected(_) => ObservedValuesTryEnqueueError::Disconnected,
-        })
+    ) -> Result<ObservedValuesWritePermit<'_>, ObservedValuesTryReserveError> {
+        self.sender
+            .try_reserve()
+            .map(|permit| ObservedValuesWritePermit { permit })
+            .map_err(|error| match error {
+                TrySendError::Full(()) => ObservedValuesTryReserveError::Full,
+                TrySendError::Closed(()) => ObservedValuesTryReserveError::Disconnected,
+            })
     }
 }
 
 fn run_observed_values_writer(
     store: &SqliteObservedValuesStore,
-    receiver: Receiver<ObservedValuesWrite>,
+    mut receiver: Receiver<ObservedValuesWrite>,
 ) {
-    for write in receiver {
-        let payload_json = match payload_json_with_budget(write.payload, write.max_job_bytes) {
-            Ok(Some(payload_json)) => payload_json,
-            Ok(None) => {
-                tracing::debug!(
-                    workspace = %write.workspace_name.as_str(),
-                    source = %write.source_name,
-                    surface = %write.surface_name,
-                    "dropping observed-values source-scan observation because serialized payload exceeds job budget"
-                );
-                continue;
-            }
-            Err(error) => {
-                tracing::debug!(
-                    workspace = %write.workspace_name.as_str(),
-                    source = %write.source_name,
-                    surface = %write.surface_name,
-                    error = %error,
-                    "failed to serialize observed-values source-scan observation"
-                );
-                continue;
-            }
-        };
+    while let Some(write) = receiver.blocking_recv() {
         let job = ObservedValuesQueueJob {
             owner_source_name: write.owner_source_name,
             source_name: write.source_name,
             source_scope_id: write.source_scope_id,
             surface_kind: write.surface_kind,
             surface_name: write.surface_name,
-            payload_json,
+            payload_json: write.payload_json,
         };
-        match store.enqueue_source_scan(&write.workspace_name, &job, write.generation) {
+        match store.enqueue_if_current(&write.workspace_name, &job, write.epoch) {
             Ok(ObservedValuesEnqueueResult::Enqueued { .. }) => {}
-            Ok(ObservedValuesEnqueueResult::StaleGeneration) => {
+            Ok(ObservedValuesEnqueueResult::StaleEpoch) => {
                 tracing::debug!(
                     workspace = %write.workspace_name.as_str(),
                     source = %job.source_name,
@@ -169,4 +157,46 @@ pub(super) fn payload_json_with_budget(
 fn payload_json_for_values(values: &[ObservedValueCandidate]) -> Result<String, String> {
     serde_json::to_string(&ObservedValuesQueuePayloadRef { values })
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ObservedValuesTryReserveError, ObservedValuesWrite, ObservedValuesWriter};
+    use crate::search::observed::sqlite_queue::{ObservedValuesEpoch, ObservedValuesSurfaceKind};
+    use crate::workspaces::WorkspaceName;
+
+    #[test]
+    fn writer_capacity_is_reserved_before_a_write_is_built() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let writer = ObservedValuesWriter { sender };
+
+        let permit = writer.try_reserve().expect("first reservation");
+        assert!(matches!(
+            writer.try_reserve(),
+            Err(ObservedValuesTryReserveError::Full)
+        ));
+
+        permit.send(test_write());
+        assert!(matches!(
+            writer.try_reserve(),
+            Err(ObservedValuesTryReserveError::Full)
+        ));
+        receiver.try_recv().expect("reserved write");
+        writer
+            .try_reserve()
+            .expect("capacity should return after dequeue");
+    }
+
+    fn test_write() -> ObservedValuesWrite {
+        ObservedValuesWrite {
+            workspace_name: WorkspaceName::default(),
+            owner_source_name: "github".to_string(),
+            source_name: "github".to_string(),
+            source_scope_id: "scope".to_string(),
+            surface_kind: ObservedValuesSurfaceKind::Table,
+            surface_name: "issues".to_string(),
+            payload_json: r#"{"values":[]}"#.to_string(),
+            epoch: ObservedValuesEpoch::ZERO,
+        }
+    }
 }
