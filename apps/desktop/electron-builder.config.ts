@@ -3,6 +3,7 @@ import type { Configuration } from 'electron-builder'
 const config: Configuration = {
   appId: 'com.withcoral.desktop',
   productName: 'Coral',
+  artifactName: 'coral-desktop-${os}-${arch}.${ext}',
   publish: [
     {
       provider: 'github',
@@ -43,7 +44,6 @@ const config: Configuration = {
     },
   ],
   mac: {
-    artifactName: 'coral-desktop-mac-${arch}.${ext}',
     category: 'public.app-category.developer-tools',
     icon: 'resources/icons/icon.icns',
     target: ['dmg', 'zip'],

@@ -15,11 +15,11 @@
     "type-check": "tsc --noEmit",
     "check": "npm run type-check",
     "prepackage": "npm run build",
-    "package": "electron-builder --config electron-builder.config.ts",
+    "package": "electron-builder --publish never --config electron-builder.config.ts",
     "prepackage:dir": "npm run build",
     "package:dir": "electron-builder --dir --config electron-builder.config.ts",
     "prepackage:dmg": "npm run build",
-    "package:dmg": "electron-builder --mac dmg --config electron-builder.config.ts",
+    "package:dmg": "electron-builder --mac dmg --publish never --config electron-builder.config.ts",
     "prepackage:mac": "CORAL_DESKTOP_UNIVERSAL=1 npm run build",
     "package:mac": "electron-builder --mac --universal --publish never --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
