@@ -24,7 +24,7 @@ use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_p
 use crate::query::input_resolver::{
     CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
 };
-use crate::search::observed::SearchObservationHandle;
+use crate::search::observed::{SearchObservationHandle, SearchObservationSource};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
@@ -550,8 +550,18 @@ impl QueryManager {
         if matches!(source_observation_mode, SourceObservationMode::Enabled)
             && let Some(search_observations) = &self.search_observations
         {
+            let observation_sources = selected_sources
+                .iter()
+                .map(|source| {
+                    SearchObservationSource::new(
+                        &source.query_source,
+                        source.runtime_contract_fingerprint.as_str(),
+                        source.source.credential_revision,
+                    )
+                })
+                .collect::<Vec<_>>();
             let observed_extensions =
-                search_observations.extensions_for(workspace_name, &query_sources);
+                search_observations.extensions_for(workspace_name, &observation_sources);
             extensions
                 .source_observation_publishers
                 .extend(observed_extensions.source_observation_publishers);
