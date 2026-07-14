@@ -343,23 +343,14 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
-      # The updater compares the app's embedded version against release tags;
-      # a manual tag on a commit whose desktop version was never bumped would
-      # publish latest-mac.yml with a stale version.
-      - name: Verify desktop version matches release tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          if [ "v$version" != "$TAG_NAME" ]; then
-            echo "Desktop version v$version does not match release tag $TAG_NAME." >&2
-            exit 1
-          fi
+      - name: Build xtask
+        run: cargo build --locked -p xtask
 
+      # Version/tag agreement, credential preflight, API-key staging,
+      # packaging, and signature/notarization/artifact verification all live
+      # in xtask so they are testable and cannot drift from this workflow.
       - name: Build, sign, and notarize desktop app
-        shell: bash
         env:
-          CORAL_DESKTOP_RELEASE: "1"
           CSC_LINK: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
           CSC_NAME: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
@@ -368,49 +359,9 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
-          set -euo pipefail
-          if [ -z "${APPLE_TEAM_ID:-}" ] && [[ "${CSC_NAME:-}" =~ \(([A-Z0-9]{10})\) ]]; then
-            export APPLE_TEAM_ID="${BASH_REMATCH[1]}"
-          fi
-          if [ -z "${APPLE_TEAM_ID:-}" ]; then
-            echo "APPLE_TEAM_ID must be set as a release environment variable or be present in APPLE_CODESIGN_IDENTITY." >&2
-            exit 1
-          fi
-
-          # Preflight the signing and notarization credentials: app-builder-lib
-          # warns and skips notarization when credentials cannot be constructed,
-          # which would otherwise only surface at stapler validation after the
-          # full build.
-          for var in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER; do
-            if [ -z "${!var:-}" ]; then
-              echo "$var must be set for a release desktop build." >&2
-              exit 1
-            fi
-          done
-
-          # electron-builder's notarization (@electron/notarize) expects
-          # APPLE_API_KEY to be a *path* to the App Store Connect .p8 key, not
-          # its contents — decode the base64 secret to a file first.
-          APPLE_API_KEY="$RUNNER_TEMP/app-store-connect-api-key.p8"
-          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8_BASE64" | base64 --decode > "$APPLE_API_KEY"
-          test -s "$APPLE_API_KEY"
-          export APPLE_API_KEY
-
-          npm run package:mac --prefix apps/desktop
-
-      - name: Verify desktop app signature and notarization
-        shell: bash
-        run: |
-          set -euo pipefail
-          app_bundle="$(find apps/desktop/dist -name 'Coral.app' -type d -prune | head -n 1)"
-          if [ -z "$app_bundle" ]; then
-            echo "Could not find packaged Coral.app under apps/desktop/dist." >&2
-            exit 1
-          fi
-          codesign --verify --deep --strict --verbose=2 "$app_bundle"
-          xcrun stapler validate "$app_bundle"
-          # Same artifact assertions as the Validate workflow's package job.
-          node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist
+          ./target/debug/xtask release-desktop-macos-package \
+            --tag "$TAG_NAME" \
+            --work-dir "$RUNNER_TEMP/coral-desktop-release"
 
       - name: Upload desktop artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
