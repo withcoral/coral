@@ -291,7 +291,7 @@ mod tests {
             variables: BTreeMap::new(),
             secrets: vec!["TOKEN".to_string()],
             credential_storage: None,
-            credential_revision: Default::default(),
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         }
     }

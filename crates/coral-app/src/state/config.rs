@@ -1246,7 +1246,7 @@ mod tests {
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
-            credential_revision: Default::default(),
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         }
     }
