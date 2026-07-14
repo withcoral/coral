@@ -531,7 +531,7 @@ mod tests {
                 types: Vec::new(),
                 diagnostics: Vec::new(),
             },
-            source_document_sha256: String::new(),
+            source_document_sha256: None,
             normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
             raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
         }
@@ -563,7 +563,7 @@ mod tests {
                 types: Vec::new(),
                 diagnostics: Vec::new(),
             },
-            source_document_sha256: String::new(),
+            source_document_sha256: None,
             normalized_source_document_path: raw_source_document_path.clone(),
             raw_source_document_path,
         }
@@ -643,7 +643,7 @@ mod tests {
                 types: Vec::new(),
                 diagnostics: Vec::new(),
             },
-            source_document_sha256: String::new(),
+            source_document_sha256: None,
             normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
             raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
         }

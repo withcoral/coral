@@ -622,9 +622,8 @@ fn load_projected_surface(
         MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir,
-            source_document_sha256: fingerprint.map_or_else(String::new, |fingerprint| {
-                fingerprint.descriptor_sha256.clone()
-            }),
+            source_document_sha256: fingerprint
+                .map(|fingerprint| fingerprint.descriptor_sha256.clone()),
             normalized_source_document_path: surface_dir.join("source-document.yaml"),
             raw_source_document_path,
         },
@@ -918,7 +917,7 @@ fn write_materialization(
         materialized_surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir: materialized_surface.semantic_ir.clone(),
-            source_document_sha256: materialized_surface.observed_sha256.clone(),
+            source_document_sha256: Some(materialized_surface.observed_sha256.clone()),
             normalized_source_document_path: surface_dir.join("source-document.yaml"),
             raw_source_document_path: surface_dir.join("source-document.raw"),
         });
@@ -2237,6 +2236,12 @@ surfaces:
         .expect("corrupted optional fingerprint should not fail");
 
         assert!(materialized.fingerprint.is_none());
+        assert!(
+            materialized
+                .surfaces
+                .iter()
+                .all(|surface| surface.source_document_sha256.is_none())
+        );
         assert_load_diagnostic(&materialized, "V4_FINGERPRINT_UNAVAILABLE");
     }
 

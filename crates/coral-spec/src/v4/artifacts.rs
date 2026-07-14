@@ -25,7 +25,7 @@ pub struct V4MaterializedSource {
 pub struct MaterializedSurface {
     pub surface_id: String,
     pub semantic_ir: SemanticIr,
-    pub source_document_sha256: String,
+    pub source_document_sha256: Option<String>,
     pub normalized_source_document_path: PathBuf,
     pub raw_source_document_path: PathBuf,
 }
@@ -244,7 +244,7 @@ surfaces:
                 types: Vec::new(),
                 diagnostics: Vec::new(),
             },
-            source_document_sha256: format!("{surface_id}-sha"),
+            source_document_sha256: Some(format!("{surface_id}-sha")),
             normalized_source_document_path: PathBuf::from(format!(
                 "surfaces/{surface_id}/source-document.yaml"
             )),
@@ -310,10 +310,13 @@ surfaces:
             serde_yaml::from_str(include_str!("fixtures/v3/projections.yaml"))
                 .expect("decode projection fixture");
         materialized.projections = ProjectionCatalog::try_from(dto).expect("migrate projections");
-        materialized
+        let duplicate = materialized
             .projections
             .projections
-            .push(materialized.projections.projections[0].clone());
+            .first()
+            .expect("fixture projection")
+            .clone();
+        materialized.projections.projections.push(duplicate);
 
         let error = validate_materialized_source_structure(&manifest, &materialized)
             .expect_err("duplicate projection should fail structural validation");
