@@ -23,6 +23,7 @@ pub(crate) fn queryable_table_summary_values(tables: &[TableSummary]) -> Vec<Val
 
 #[derive(Serialize)]
 struct QueryableTableSummaryValue<'a> {
+    catalog_name: &'a str,
     schema_name: &'a str,
     table_name: &'a str,
     name: String,
@@ -35,12 +36,13 @@ struct QueryableTableSummaryValue<'a> {
 impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
     fn from(table: &'a TableSummary) -> Self {
         Self {
+            catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format_table_name(&table.schema_name, &table.namespace, &table.name),
+            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             sql_reference: format_schema_table_equivalent(
+                &table.catalog_name,
                 &table.schema_name,
-                &table.namespace,
                 &table.name,
             ),
             description: &table.description,
@@ -53,6 +55,7 @@ impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct MissingTableSummaryValue<'a> {
+    pub(crate) catalog_name: &'a str,
     pub(crate) schema_name: &'a str,
     pub(crate) table_name: &'a str,
     pub(crate) name: String,
@@ -63,33 +66,31 @@ pub(crate) struct MissingTableSummaryValue<'a> {
 impl<'a> From<&'a TableSummary> for MissingTableSummaryValue<'a> {
     fn from(table: &'a TableSummary) -> Self {
         Self {
+            catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format_table_name(&table.schema_name, &table.namespace, &table.name),
+            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             description: &table.description,
             required_filters: &table.required_filters,
         }
     }
 }
 
-pub(crate) fn format_table_name(schema_name: &str, namespace: &str, table_name: &str) -> String {
-    if namespace.is_empty() {
+pub(crate) fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str) -> String {
+    if catalog_name.is_empty() {
         format!("{schema_name}.{table_name}")
     } else {
-        format!("{schema_name}.{namespace}.{table_name}")
+        format!("{catalog_name}.{schema_name}.{table_name}")
     }
 }
 
-/// SQL reference for a relation: `schema.name`, or `schema.namespace.name`
-/// when the relation lives inside a source-owned namespace (database
-/// sources). Callers whose relations never have a namespace (table
-/// functions) pass an empty namespace.
+/// SQL reference for a relation: `schema.name`, or `catalog.schema.name`.
 pub(crate) fn format_schema_table_equivalent(
+    catalog_name: &str,
     schema_name: &str,
-    namespace: &str,
     table_name: &str,
 ) -> String {
-    if namespace.is_empty() {
+    if catalog_name.is_empty() {
         format!(
             "{}.{}",
             format_sql_identifier(schema_name),
@@ -98,8 +99,8 @@ pub(crate) fn format_schema_table_equivalent(
     } else {
         format!(
             "{}.{}.{}",
+            format_sql_identifier(catalog_name),
             format_sql_identifier(schema_name),
-            format_sql_identifier(namespace),
             format_sql_identifier(table_name)
         )
     }

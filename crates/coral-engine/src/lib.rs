@@ -41,7 +41,7 @@
 //! # async fn demo(
 //! #     sources: &[QuerySource],
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None, None).await?;
+//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None, None, None).await?;
 //! # Ok(())
 //! # }
 //! # Ok(())
@@ -94,12 +94,13 @@ impl CoralQuery {
     pub async fn list_tables(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
-            .list_tables(schema_filter, table_filter))
+            .list_tables(catalog_filter, schema_filter, table_filter))
     }
 
     /// Lists queryable catalog metadata from the provided source set.
@@ -117,11 +118,12 @@ impl CoralQuery {
     pub async fn list_catalog(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, CoreError> {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
-            .catalog_info(schema_filter))
+            .catalog_info(catalog_filter, schema_filter))
     }
 
     /// Describes one table or returns lightweight table metadata for missing-table help.
@@ -137,12 +139,13 @@ impl CoralQuery {
     pub async fn describe_table(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
+        catalog_name: Option<&str>,
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, CoreError> {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
-            .describe_table(schema_name, table_name))
+            .describe_table(catalog_name, schema_name, table_name))
     }
 
     /// Executes one `SQL` statement over the provided source set.

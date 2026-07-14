@@ -22,13 +22,10 @@ pub struct ColumnInfo {
 /// Describes one queryable table.
 #[derive(Debug, Clone)]
 pub struct TableInfo {
-    /// `SQL` schema name (the source's schema).
+    /// `SQL` catalog name. Empty for two-part table references.
+    pub catalog_name: String,
+    /// `SQL` schema name.
     pub schema_name: String,
-    /// Inner namespace for tables living inside a source-owned catalog
-    /// (database sources: the remote schema, queried as
-    /// `schema.namespace.table`). Empty for tables addressed as
-    /// `schema.table`.
-    pub namespace: String,
     /// Table name within the schema.
     pub table_name: String,
     /// User-facing table description.

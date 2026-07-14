@@ -191,7 +191,7 @@ async fn coral_columns_default_row_order_matches_ordinal_position() {
 async fn list_tables_matches_catalog() {
     let (_temp, sources) = build_catalog_sources();
 
-    let listed = CoralQuery::list_tables(&sources, test_runtime(), None, None)
+    let listed = CoralQuery::list_tables(&sources, test_runtime(), None, None, None)
         .await
         .expect("list_tables should succeed");
     let catalog_rows = execution_to_rows(
@@ -224,7 +224,7 @@ async fn list_tables_matches_catalog() {
 
 #[tokio::test]
 async fn list_tables_returns_system_catalog_when_no_sources() {
-    let tables = CoralQuery::list_tables(&[], test_runtime(), None, None)
+    let tables = CoralQuery::list_tables(&[], test_runtime(), None, None, None)
         .await
         .expect("source-free catalog should succeed");
 
@@ -660,7 +660,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "is_required_filter",
             "description",
             "filter_mode",
-            "namespace",
+            "catalog_name",
         ]
     );
 }
@@ -750,7 +750,7 @@ async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
 async fn list_catalog_matches_table_function_metadata() {
     let sources = vec![build_source(http_manifest_with_function())];
 
-    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), Some("searchy"))
+    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), None, Some("searchy"))
         .await
         .expect("list_catalog should succeed");
 
@@ -779,7 +779,7 @@ async fn list_catalog_matches_table_function_metadata() {
 async fn list_catalog_collects_tables_and_functions_together() {
     let sources = vec![build_source(http_manifest_with_function())];
 
-    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), Some("searchy"))
+    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), None, Some("searchy"))
         .await
         .expect("list_catalog should succeed");
 

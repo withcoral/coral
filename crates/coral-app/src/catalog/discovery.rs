@@ -66,8 +66,8 @@ pub(crate) struct CatalogSearchResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CatalogMetadataField {
+    CatalogName,
     SchemaName,
-    Namespace,
     TableName,
     FunctionName,
     Name,
@@ -81,8 +81,8 @@ pub(crate) enum CatalogMetadataField {
 impl CatalogMetadataField {
     pub(crate) fn as_proto_name(self) -> &'static str {
         match self {
+            Self::CatalogName => "catalog_name",
             Self::SchemaName => "schema_name",
-            Self::Namespace => "namespace",
             Self::TableName => "table_name",
             Self::FunctionName => "function_name",
             Self::Name => "name",
@@ -133,13 +133,19 @@ impl ColumnMetadataField {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CatalogTableRef<'a> {
+    pub(crate) catalog_name: Option<&'a str>,
     pub(crate) schema_name: &'a str,
     pub(crate) table_name: &'a str,
 }
 
 impl<'a> CatalogTableRef<'a> {
-    pub(crate) fn new(schema_name: &'a str, table_name: &'a str) -> Self {
+    pub(crate) fn new(
+        catalog_name: Option<&'a str>,
+        schema_name: &'a str,
+        table_name: &'a str,
+    ) -> Self {
         Self {
+            catalog_name,
             schema_name,
             table_name,
         }
@@ -156,6 +162,7 @@ pub(crate) struct ListColumnsQuery<'a> {
 
 pub(crate) struct SearchCatalogQuery<'a> {
     pub(crate) pattern: &'a str,
+    pub(crate) catalog_name: Option<&'a str>,
     pub(crate) schema_name: Option<&'a str>,
     pub(crate) kind: Option<CatalogItemKind>,
     pub(crate) ignore_case: bool,
@@ -177,6 +184,7 @@ impl CatalogDiscovery {
     pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_name: Option<&str>,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
@@ -184,7 +192,7 @@ impl CatalogDiscovery {
     ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name, attribution)
+            .list_catalog(workspace_name, catalog_name, schema_name, attribution)
             .await?;
         let counts = catalog_counts(&catalog);
         let items = catalog_items(catalog, kind);
@@ -197,13 +205,14 @@ impl CatalogDiscovery {
     async fn catalog_items(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_name: Option<&str>,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         attribution: &QueryAttribution,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name, attribution)
+            .list_catalog(workspace_name, catalog_name, schema_name, attribution)
             .await?;
         Ok(catalog_items(catalog, kind))
     }
@@ -218,6 +227,7 @@ impl CatalogDiscovery {
             .queries
             .describe_table(
                 workspace_name,
+                table_ref.catalog_name,
                 table_ref.schema_name,
                 table_ref.table_name,
                 attribution,
@@ -276,7 +286,13 @@ impl CatalogDiscovery {
         let regex = compile_metadata_regex(query.pattern, query.ignore_case)
             .map_err(QueryManagerError::App)?;
         let matches = self
-            .catalog_items(workspace_name, query.schema_name, query.kind, attribution)
+            .catalog_items(
+                workspace_name,
+                query.catalog_name,
+                query.schema_name,
+                query.kind,
+                attribution,
+            )
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -300,6 +316,7 @@ impl CatalogDiscovery {
             .queries
             .list_tables(
                 workspace_name,
+                query.table_ref.catalog_name,
                 Some(query.table_ref.schema_name),
                 Some(query.table_ref.table_name),
                 attribution,
@@ -338,10 +355,16 @@ impl CatalogDiscovery {
     }
 }
 
-fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
+fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &str, &'static str) {
     match item {
-        CatalogItem::Table(table) => (&table.schema_name, &table.table_name, "table"),
+        CatalogItem::Table(table) => (
+            &table.catalog_name,
+            &table.schema_name,
+            &table.table_name,
+            "table",
+        ),
         CatalogItem::TableFunction(function) => (
+            "",
             &function.schema_name,
             &function.function_name,
             "table_function",
@@ -408,17 +431,16 @@ fn catalog_item_matched_fields(item: &CatalogItem, regex: &Regex) -> Vec<Catalog
 }
 
 fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadataField> {
-    let schema_name = table_addressable_schema_name(table);
+    let addressable_schema = table_addressable_schema_name(table);
     let name = table_addressable_name(table);
     let mut matches = Vec::new();
-    let namespace_matches = !table.namespace.is_empty() && regex.is_match(&table.namespace);
+    if !table.catalog_name.is_empty() && regex.is_match(&table.catalog_name) {
+        matches.push(CatalogMetadataField::CatalogName);
+    }
     if regex.is_match(&table.schema_name)
-        || (!namespace_matches && schema_name != table.schema_name && regex.is_match(&schema_name))
+        || (addressable_schema != table.schema_name && regex.is_match(&addressable_schema))
     {
         matches.push(CatalogMetadataField::SchemaName);
-    }
-    if namespace_matches {
-        matches.push(CatalogMetadataField::Namespace);
     }
     if regex.is_match(&table.table_name) {
         matches.push(CatalogMetadataField::TableName);
@@ -508,7 +530,7 @@ fn available_table_schemas(tables: &[TableInfo]) -> Vec<String> {
 fn same_schema_tables(tables: &[TableInfo], table_ref: CatalogTableRef<'_>) -> Vec<TableInfo> {
     tables
         .iter()
-        .filter(|table| table_schema_matches(table, table_ref.schema_name))
+        .filter(|table| table_qualifier_matches(table, table_ref))
         .take(MISSING_TABLE_SUGGESTION_LIMIT)
         .cloned()
         .collect()
@@ -519,10 +541,9 @@ fn missing_table_suggestions(
     table_ref: CatalogTableRef<'_>,
     same_schema_tables: &[TableInfo],
 ) -> Vec<TableInfo> {
-    let suggestion_schema = (!same_schema_tables.is_empty()).then_some(table_ref.schema_name);
     let mut suggestions = all_tables
         .iter()
-        .filter(|table| suggestion_schema.is_none_or(|schema| table_schema_matches(table, schema)))
+        .filter(|table| same_schema_tables.is_empty() || table_qualifier_matches(table, table_ref))
         .filter(|table| table_metadata_contains_literal(table, table_ref.table_name))
         .take(MISSING_TABLE_SUGGESTION_LIMIT)
         .cloned()
@@ -542,8 +563,8 @@ fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
     let schema_name = table_addressable_schema_name(table);
     let name = table_addressable_name(table);
     let candidates = [
+        table.catalog_name.as_str(),
         table.schema_name.as_str(),
-        table.namespace.as_str(),
         schema_name.as_str(),
         table.table_name.as_str(),
         name.as_str(),
@@ -560,10 +581,10 @@ fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
 }
 
 fn table_addressable_schema_name(table: &TableInfo) -> String {
-    if table.namespace.is_empty() {
+    if table.catalog_name.is_empty() {
         table.schema_name.clone()
     } else {
-        format!("{}.{}", table.schema_name, table.namespace)
+        format!("{}.{}", table.catalog_name, table.schema_name)
     }
 }
 
@@ -576,18 +597,12 @@ fn table_addressable_name(table: &TableInfo) -> String {
 }
 
 fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
-    table.table_name == table_ref.table_name && table_schema_matches(table, table_ref.schema_name)
+    table.table_name == table_ref.table_name && table_qualifier_matches(table, table_ref)
 }
 
-fn table_schema_matches(table: &TableInfo, schema_name: &str) -> bool {
-    if table.schema_name == schema_name {
-        return true;
-    }
-    !table.namespace.is_empty()
-        && schema_name
-            .strip_prefix(&table.schema_name)
-            .and_then(|rest| rest.strip_prefix('.'))
-            .is_some_and(|rest| rest == table.namespace)
+fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
+    table.catalog_name == table_ref.catalog_name.unwrap_or_default()
+        && table.schema_name == table_ref.schema_name
 }
 
 pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
@@ -627,8 +642,8 @@ mod tests {
 
     fn table(required_filters: Vec<String>) -> TableInfo {
         TableInfo {
+            catalog_name: String::new(),
             schema_name: "github".to_string(),
-            namespace: String::new(),
             table_name: "Pull.Requests".to_string(),
             description: "Pull request table".to_string(),
             guide: "Query pull requests.".to_string(),
@@ -637,10 +652,10 @@ mod tests {
         }
     }
 
-    fn database_table(namespace: &str, table_name: &str) -> TableInfo {
+    fn database_table(schema_name: &str, table_name: &str) -> TableInfo {
         let mut table = table(Vec::new());
-        table.schema_name = "coral_db".to_string();
-        table.namespace = namespace.to_string();
+        table.catalog_name = "coral_db".to_string();
+        table.schema_name = schema_name.to_string();
         table.table_name = table_name.to_string();
         table
     }
@@ -664,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn database_namespace_matches_catalog_discovery_metadata() {
+    fn database_catalog_and_schema_match_catalog_discovery_metadata() {
         let main = database_table("main", "users");
         let analytics = database_table("analytics", "events");
         let tables = vec![main, analytics];
@@ -672,11 +687,11 @@ mod tests {
 
         assert!(table_matches_ref(
             main_table,
-            CatalogTableRef::new("coral_db.main", "users")
+            CatalogTableRef::new(Some("coral_db"), "main", "users")
         ));
         assert!(!table_matches_ref(
             main_table,
-            CatalogTableRef::new("coral_db.analytics", "users")
+            CatalogTableRef::new(Some("coral_db"), "analytics", "users")
         ));
         assert_eq!(
             table_matched_fields(
@@ -687,7 +702,7 @@ mod tests {
         );
         assert_eq!(
             table_matched_fields(main_table, &regex::Regex::new("^main$").expect("regex")),
-            vec![CatalogMetadataField::Namespace]
+            vec![CatalogMetadataField::SchemaName]
         );
         assert_eq!(
             table_matched_fields(
@@ -701,21 +716,25 @@ mod tests {
             available_table_schemas(&tables),
             vec!["coral_db.analytics", "coral_db.main"]
         );
-        let same_schema =
-            same_schema_tables(&tables, CatalogTableRef::new("coral_db.main", "missing"));
+        let same_schema = same_schema_tables(
+            &tables,
+            CatalogTableRef::new(Some("coral_db"), "main", "missing"),
+        );
         assert_eq!(same_schema.len(), 1);
         let same_schema_table = same_schema.first().expect("same schema table");
-        assert_eq!(same_schema_table.namespace, "main");
+        assert_eq!(same_schema_table.catalog_name, "coral_db");
+        assert_eq!(same_schema_table.schema_name, "main");
         assert_eq!(same_schema_table.table_name, "users");
 
         let suggestions = missing_table_suggestions(
             &tables,
-            CatalogTableRef::new("coral_db.main", "user"),
+            CatalogTableRef::new(Some("coral_db"), "main", "user"),
             &same_schema,
         );
         assert_eq!(suggestions.len(), 1);
         let suggestion = suggestions.first().expect("suggestion");
-        assert_eq!(suggestion.namespace, "main");
+        assert_eq!(suggestion.catalog_name, "coral_db");
+        assert_eq!(suggestion.schema_name, "main");
         assert_eq!(suggestion.table_name, "users");
         assert!(table_metadata_contains_literal(
             same_schema_table,

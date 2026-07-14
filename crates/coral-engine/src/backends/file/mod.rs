@@ -150,6 +150,7 @@ impl CompiledBackendSource for FileCompiledSource {
             schemas: vec![BackendSchemaRegistration {
                 tables,
                 source: RegisteredSource {
+                    catalog_name: None,
                     schema_name,
                     tables: table_infos,
                     table_functions: vec![],

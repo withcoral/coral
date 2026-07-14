@@ -42,6 +42,8 @@ pub(crate) enum CatalogToolKind {
 
 #[derive(JsonSchema)]
 pub(crate) struct ListCatalogArguments {
+    #[schemars(description = "Optional exact SQL catalog name to list.")]
+    pub(crate) catalog: Option<String>,
     #[schemars(description = "Optional exact SQL schema name to list.")]
     pub(crate) schema: Option<String>,
     #[schemars(
@@ -59,6 +61,8 @@ pub(crate) struct SearchCatalogArguments {
         description = "Rust regex pattern to match database catalog metadata."
     )]
     pub(crate) pattern: String,
+    #[schemars(description = "Optional exact SQL catalog name to search.")]
+    pub(crate) catalog: Option<String>,
     #[schemars(description = "Optional exact SQL schema name to search.")]
     pub(crate) schema: Option<String>,
     #[schemars(
@@ -74,6 +78,8 @@ pub(crate) struct SearchCatalogArguments {
 
 #[derive(JsonSchema)]
 pub(crate) struct DescribeTableArguments {
+    #[schemars(description = "Optional SQL catalog name. Omit for two-part tables.")]
+    pub(crate) catalog: Option<String>,
     #[schemars(length(min = 1), description = "Exact SQL schema name.")]
     pub(crate) schema: String,
     #[schemars(
@@ -85,6 +91,8 @@ pub(crate) struct DescribeTableArguments {
 
 #[derive(JsonSchema)]
 pub(crate) struct ListColumnsArguments {
+    #[schemars(description = "Optional SQL catalog name. Omit for two-part tables.")]
+    pub(crate) catalog: Option<String>,
     #[schemars(length(min = 1), description = "Exact SQL schema name.")]
     pub(crate) schema: String,
     #[schemars(
@@ -180,6 +188,7 @@ pub(crate) fn list_catalog_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<ListCatalogArguments, ErrorData> {
     Ok(ListCatalogArguments {
+        catalog: optional_string_argument(arguments, "catalog")?,
         schema: optional_string_argument(arguments, "schema")?,
         kind: optional_catalog_kind_argument(arguments)?,
         pagination: parse_pagination(arguments)?,
@@ -191,6 +200,7 @@ pub(crate) fn search_catalog_arguments(
 ) -> Result<SearchCatalogArguments, ErrorData> {
     Ok(SearchCatalogArguments {
         pattern: required_string_argument(arguments, "pattern")?,
+        catalog: optional_string_argument(arguments, "catalog")?,
         schema: optional_string_argument(arguments, "schema")?,
         kind: optional_catalog_kind_argument(arguments)?,
         ignore_case: optional_bool_argument(arguments, "ignore_case", DEFAULT_IGNORE_CASE)?,
@@ -202,6 +212,7 @@ pub(crate) fn describe_table_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<DescribeTableArguments, ErrorData> {
     Ok(DescribeTableArguments {
+        catalog: optional_string_argument(arguments, "catalog")?,
         schema: required_string_argument(arguments, "schema")?,
         table: required_string_argument(arguments, "table")?,
     })
@@ -211,6 +222,7 @@ pub(crate) fn list_columns_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<ListColumnsArguments, ErrorData> {
     Ok(ListColumnsArguments {
+        catalog: optional_string_argument(arguments, "catalog")?,
         schema: required_string_argument(arguments, "schema")?,
         table: required_string_argument(arguments, "table")?,
         pattern: optional_non_empty_string_argument(arguments, "pattern")?,
@@ -251,15 +263,17 @@ fn default_required_only() -> bool {
 }
 
 pub(crate) fn describe_table_value(
+    catalog: Option<&str>,
     schema: &str,
     table: &str,
     response: &DescribeTableResponse,
 ) -> Value {
-    serde_json::to_value(describe_table_output(schema, table, response))
+    serde_json::to_value(describe_table_output(catalog, schema, table, response))
         .expect("describe table output value serializes")
 }
 
 fn describe_table_output<'a>(
+    catalog: Option<&'a str>,
     schema: &'a str,
     table: &'a str,
     response: &'a DescribeTableResponse,
@@ -268,6 +282,7 @@ fn describe_table_output<'a>(
         return DescribeTableOutput::Found(FoundTableValue::from(table));
     }
     DescribeTableOutput::Missing(missing_table_value(
+        catalog,
         schema,
         table,
         &response.available_schemas,
@@ -277,15 +292,19 @@ fn describe_table_output<'a>(
 }
 
 pub(crate) fn list_columns_table_fallback_value(
+    catalog: Option<&str>,
     schema: &str,
     table: &str,
     response: &DescribeTableResponse,
 ) -> Value {
-    serde_json::to_value(list_columns_table_fallback_output(schema, table, response))
-        .expect("list columns table fallback output value serializes")
+    serde_json::to_value(list_columns_table_fallback_output(
+        catalog, schema, table, response,
+    ))
+    .expect("list columns table fallback output value serializes")
 }
 
 fn list_columns_table_fallback_output<'a>(
+    catalog: Option<&'a str>,
     schema: &'a str,
     table: &'a str,
     response: &'a DescribeTableResponse,
@@ -294,6 +313,7 @@ fn list_columns_table_fallback_output<'a>(
         return ListColumnsOutput::Found(FoundTableValue::from(table));
     }
     ListColumnsOutput::Missing(missing_table_value(
+        catalog,
         schema,
         table,
         &response.available_schemas,
@@ -303,6 +323,7 @@ fn list_columns_table_fallback_output<'a>(
 }
 
 fn missing_table_value<'a>(
+    catalog: Option<&'a str>,
     schema: &'a str,
     table: &'a str,
     available_schemas: &'a [String],
@@ -321,6 +342,7 @@ fn missing_table_value<'a>(
     let search_arguments = if same_schema_tables.is_empty() {
         SuggestedCallArguments {
             pattern: Some(escaped_table),
+            catalog: None,
             schema: None,
             kind: Some(CatalogToolKind::Table),
             limit: None,
@@ -328,6 +350,7 @@ fn missing_table_value<'a>(
     } else {
         SuggestedCallArguments {
             pattern: Some(escaped_table),
+            catalog,
             schema: Some(schema),
             kind: Some(CatalogToolKind::Table),
             limit: None,
@@ -342,6 +365,7 @@ fn missing_table_value<'a>(
             tool: CatalogSuggestedTool::ListCatalog,
             arguments: SuggestedCallArguments {
                 pattern: None,
+                catalog,
                 schema: Some(schema),
                 kind: Some(CatalogToolKind::Table),
                 limit: Some(10),
@@ -350,7 +374,11 @@ fn missing_table_value<'a>(
     }
     MissingTableValue {
         found: false,
-        requested: RequestedTable { schema, table },
+        requested: RequestedTable {
+            catalog,
+            schema,
+            table,
+        },
         available_schemas,
         same_schema_tables,
         suggestions,
@@ -402,7 +430,7 @@ fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<CatalogItemVa
 }
 
 fn minimal_table_function_call_example(function: &ProtoTableFunction) -> String {
-    let reference = format_schema_table_equivalent(&function.schema_name, "", &function.name);
+    let reference = format_schema_table_equivalent("", &function.schema_name, &function.name);
     let required_arguments = function
         .arguments
         .iter()
@@ -433,6 +461,7 @@ fn catalog_search_result_value(
 }
 
 pub(crate) fn list_columns_value(
+    catalog: Option<&str>,
     schema: &str,
     table: &str,
     response: &ListColumnsResponse,
@@ -444,6 +473,7 @@ pub(crate) fn list_columns_value(
         .filter_map(column_search_result_value)
         .collect::<Vec<_>>();
     serde_json::to_value(ListColumnsOutput::Page(ListColumnsPageValue::new(
+        catalog,
         schema,
         table,
         columns,
@@ -547,6 +577,8 @@ impl<'a> CatalogSearchPageValue<'a> {
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct ListColumnsPageValue<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog_name: Option<&'a str>,
     schema_name: &'a str,
     table_name: &'a str,
     columns: Vec<ColumnSearchValue<'a>>,
@@ -563,12 +595,14 @@ struct ListColumnsPageValue<'a> {
 
 impl<'a> ListColumnsPageValue<'a> {
     fn new(
+        catalog_name: Option<&'a str>,
         schema_name: &'a str,
         table_name: &'a str,
         columns: Vec<ColumnSearchValue<'a>>,
         pagination: &PaginationResponse,
     ) -> Self {
         Self {
+            catalog_name,
             schema_name,
             table_name,
             columns,
@@ -615,6 +649,7 @@ struct CatalogTableFunctionSearchItemValue<'a> {
 #[schemars(deny_unknown_fields)]
 struct FoundTableValue<'a> {
     found: bool,
+    catalog_name: &'a str,
     schema_name: &'a str,
     table_name: &'a str,
     name: String,
@@ -629,9 +664,10 @@ impl<'a> From<&'a ProtoTable> for FoundTableValue<'a> {
     fn from(table: &'a ProtoTable) -> Self {
         Self {
             found: true,
+            catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format_table_name(&table.schema_name, &table.namespace, &table.name),
+            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             description: &table.description,
             guide: &table.guide,
             required_filters: &table.required_filters,
@@ -655,6 +691,8 @@ struct MissingTableValue<'a> {
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct RequestedTable<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog: Option<&'a str>,
     schema: &'a str,
     table: &'a str,
 }
@@ -679,6 +717,8 @@ struct SuggestedCallArguments<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pattern: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    catalog: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     schema: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<CatalogToolKind>,
@@ -690,6 +730,7 @@ struct SuggestedCallArguments<'a> {
 #[schemars(deny_unknown_fields)]
 struct CatalogTableItemValue<'a> {
     kind: CatalogTableKind,
+    catalog_name: &'a str,
     schema_name: &'a str,
     name: String,
     sql_reference: String,
@@ -701,11 +742,12 @@ impl<'a> From<&'a ProtoTableSummary> for CatalogTableItemValue<'a> {
     fn from(table: &'a ProtoTableSummary) -> Self {
         Self {
             kind: CatalogTableKind::Table,
+            catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
-            name: format_table_name(&table.schema_name, &table.namespace, &table.name),
+            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             sql_reference: format_schema_table_equivalent(
+                &table.catalog_name,
                 &table.schema_name,
-                &table.namespace,
                 &table.name,
             ),
             description: &table.description,
@@ -751,8 +793,8 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
             sql_reference: format_schema_table_equivalent(
-                &function.schema_name,
                 "",
+                &function.schema_name,
                 &function.name,
             ),
             sql_call_example: minimal_table_function_call_example(function),

@@ -197,6 +197,11 @@ Coral gives your agent a read-only SQL view over the sources you have installed 
 - join and aggregate across sources when the question needs more than one API call
 - use the same local credentials and workspace state as the Coral CLI
 
+Catalog results expose `catalog_name`, `schema_name`, and `sql_reference`
+separately. Ordinary Coral sources use `schema.table`; database sources use
+`catalog.schema.table`. Pass `catalog` alongside `schema` to catalog tools when
+addressing a database table.
+
 Set up and update sources with the CLI. The MCP server is the agent-facing query surface, not a source installer.
 
 Only connect Coral to agents you trust. A connected agent can query any source installed in that Coral workspace. See [Security](/project/security) for more detail.

@@ -274,36 +274,33 @@ async fn register_runtime_sources(
     register_sources(ctx, source_candidates, source_decorators).await
 }
 
-/// Matches a user-supplied source/schema filter against one table.
-///
-/// Database sources expose three-part names, so a table is addressable by its
-/// source schema (`coral_db`) or the dotted schema-namespace combination
-/// (`coral_db.main`). Tables without a namespace reduce to the plain
-/// schema-name match.
-fn table_schema_matches(schema_name: &str, namespace: &str, value: &str) -> bool {
-    if schema_name == value {
-        return true;
-    }
-    !namespace.is_empty()
-        && value
-            .strip_prefix(schema_name)
-            .and_then(|rest| rest.strip_prefix('.'))
-            .is_some_and(|rest| rest == namespace)
+fn table_qualifier_matches(
+    table: &TableInfo,
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+) -> bool {
+    catalog_filter.is_none_or(|value| table.catalog_name == value)
+        && schema_filter.is_none_or(|value| table.schema_name == value)
+}
+
+fn table_reference_matches(
+    table: &TableInfo,
+    catalog_name: Option<&str>,
+    schema_name: &str,
+) -> bool {
+    table.catalog_name == catalog_name.unwrap_or_default() && table.schema_name == schema_name
 }
 
 impl QueryRuntimeAdapter {
     pub(crate) fn list_tables(
         &self,
-        source_filter: Option<&str>,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Vec<TableInfo> {
         self.tables
             .iter()
-            .filter(|table| {
-                source_filter.is_none_or(|value| {
-                    table_schema_matches(&table.schema_name, &table.namespace, value)
-                })
-            })
+            .filter(|table| table_qualifier_matches(table, catalog_filter, schema_filter))
             .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
             .cloned()
             .collect()
@@ -322,10 +319,18 @@ impl QueryRuntimeAdapter {
             .collect()
     }
 
-    pub(crate) fn catalog_info(&self, source_filter: Option<&str>) -> CatalogInfo {
+    pub(crate) fn catalog_info(
+        &self,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
+    ) -> CatalogInfo {
         CatalogInfo {
-            tables: self.list_tables(source_filter, None),
-            table_functions: self.list_table_functions(source_filter, None),
+            tables: self.list_tables(catalog_filter, schema_filter, None),
+            table_functions: if catalog_filter.is_none() {
+                self.list_table_functions(schema_filter, None)
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -335,9 +340,9 @@ impl QueryRuntimeAdapter {
                 .tables
                 .iter()
                 .filter(|table| {
-                    schema_filters.iter().any(|schema| {
-                        table_schema_matches(&table.schema_name, &table.namespace, schema)
-                    })
+                    schema_filters
+                        .iter()
+                        .any(|name| table.schema_name == *name || table.catalog_name == *name)
                 })
                 .cloned()
                 .collect(),
@@ -354,12 +359,17 @@ impl QueryRuntimeAdapter {
         }
     }
 
-    pub(crate) fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
+    pub(crate) fn describe_table(
+        &self,
+        catalog_name: Option<&str>,
+        schema_name: &str,
+        table_name: &str,
+    ) -> DescribeTableInfo {
         if let Some(table) = self
             .tables
             .iter()
             .find(|table| {
-                table_schema_matches(&table.schema_name, &table.namespace, schema_name)
+                table_reference_matches(table, catalog_name, schema_name)
                     && table.table_name == table_name
             })
             .cloned()
@@ -559,20 +569,11 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, table_name)) = relation_parts(table_reference) else {
             return;
         };
-        // Three-part references put the source schema in the catalog slot and
-        // the inner namespace in the schema slot.
         let catalog_name = table_reference.catalog();
-        if self.tables.iter().any(|table| match catalog_name {
-            Some(catalog) => {
-                table.schema_name == catalog
-                    && table.namespace == schema_name
-                    && table.table_name == table_name
-            }
-            None => {
-                table.schema_name == schema_name
-                    && table.namespace.is_empty()
-                    && table.table_name == table_name
-            }
+        if self.tables.iter().any(|table| {
+            table.catalog_name == catalog_name.unwrap_or_default()
+                && table.schema_name == schema_name
+                && table.table_name == table_name
         }) {
             tables.insert(QueryTableUsage::new(
                 self.source_name_for_schema(catalog_name.unwrap_or(schema_name)),
@@ -865,8 +866,8 @@ fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
 
 fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
     TableInfo {
+        catalog_name: table.catalog_name.clone(),
         schema_name: table.schema_name.clone(),
-        namespace: table.namespace.clone(),
         table_name: table.table_name.clone(),
         description: table.description.clone(),
         guide: table.guide.clone(),
@@ -905,8 +906,8 @@ mod tests {
             fallback_runtime: None,
             memory: QueryMemoryConfig::default(),
             tables: vec![TableInfo {
+                catalog_name: String::new(),
                 schema_name: "demo".to_string(),
-                namespace: String::new(),
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
                 guide: "Query event rows.".to_string(),
@@ -930,7 +931,7 @@ mod tests {
 
     #[test]
     fn describe_table_hit_returns_full_table_without_missing_context() {
-        let result = adapter_with_table().describe_table("demo", "events");
+        let result = adapter_with_table().describe_table(None, "demo", "events");
 
         let table = result.table.expect("exact table");
         assert_eq!(table.columns.len(), 1);
@@ -939,7 +940,7 @@ mod tests {
 
     #[test]
     fn describe_table_miss_returns_columnless_context_tables() {
-        let result = adapter_with_table().describe_table("demo", "missing");
+        let result = adapter_with_table().describe_table(None, "demo", "missing");
 
         assert!(result.table.is_none());
         assert_eq!(result.missing_context_tables.len(), 1);

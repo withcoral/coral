@@ -288,6 +288,7 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
             kind: 1,
             pagination: Some(PaginationRequest {
@@ -322,6 +323,7 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "missing".to_string(),
             kind: 1,
             pagination: Some(PaginationRequest {
@@ -1454,6 +1456,7 @@ async fn rejects_invalid_workspace_and_source_names() {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),
             }),
+            catalog_name: String::new(),
             schema_name: String::new(),
             kind: 1,
             pagination: None,

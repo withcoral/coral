@@ -69,13 +69,13 @@ pub(crate) fn guide_resource_content(
     let mut schemas = tables
         .iter()
         .filter(|table| table.schema_name != "coral")
-        .map(|table| table.schema_name.as_str())
+        .map(addressable_schema_name)
         .collect::<BTreeSet<_>>();
     schemas.extend(
         table_function_schema_names
             .iter()
-            .map(String::as_str)
-            .filter(|schema| *schema != "coral"),
+            .filter(|schema| *schema != "coral")
+            .cloned(),
     );
     if schemas.is_empty() {
         if sources.is_empty() {
@@ -93,13 +93,13 @@ pub(crate) fn guide_resource_content(
     let columns_example = first_visible_table(tables).map_or_else(
         || {
             "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
-FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
+FROM coral.columns WHERE catalog_name = '<catalog>' AND schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
                 .to_string()
         },
-        |(schema_name, table_name)| {
+        |(catalog_name, schema_name, table_name)| {
             format!(
                 "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
-FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
+FROM coral.columns WHERE catalog_name = '{catalog_name}' AND schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
             )
         },
     );
@@ -139,14 +139,32 @@ fn tables_resource_description(visible_table_count: usize) -> String {
     format!("Fully qualified database tables in Coral ({visible_table_count} table(s)).")
 }
 
-fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
+fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str, &str)> {
     tables
         .iter()
         .filter(|table| table.schema_name != "coral")
         .min_by(|left, right| {
-            (&left.schema_name, &left.name).cmp(&(&right.schema_name, &right.name))
+            (&left.catalog_name, &left.schema_name, &left.name).cmp(&(
+                &right.catalog_name,
+                &right.schema_name,
+                &right.name,
+            ))
         })
-        .map(|table| (table.schema_name.as_str(), table.name.as_str()))
+        .map(|table| {
+            (
+                table.catalog_name.as_str(),
+                table.schema_name.as_str(),
+                table.name.as_str(),
+            )
+        })
+}
+
+fn addressable_schema_name(table: &TableSummary) -> String {
+    if table.catalog_name.is_empty() {
+        table.schema_name.clone()
+    } else {
+        format!("{}.{}", table.catalog_name, table.schema_name)
+    }
 }
 
 struct RenderedQueryExample {
@@ -252,7 +270,7 @@ mod tests {
                 name: "default".to_string(),
             }),
             schema_name: schema_name.to_string(),
-            namespace: String::new(),
+            catalog_name: String::new(),
             name: name.to_string(),
             description: format!("{name} description"),
             required_filters: Vec::new(),

@@ -61,9 +61,9 @@ message Table {
   repeated string required_filters = 6;
   // User-facing query guidance.
   string guide = 7;
-  // Inner namespace for database sources (the remote schema); such tables
-  // are addressed as schema_name.namespace.name. Empty for two-part tables.
-  string namespace = 8;
+  // SQL catalog containing the schema. Empty for two-part tables; otherwise
+  // the table is addressed as catalog_name.schema_name.name.
+  string catalog_name = 8;
 }
 
 // Table metadata without full column definitions.
@@ -81,9 +81,9 @@ message TableSummary {
   repeated string required_filters = 5;
   // User-facing query guidance.
   string guide = 6;
-  // Inner namespace for database sources (the remote schema); such tables
-  // are addressed as schema_name.namespace.name. Empty for two-part tables.
-  string namespace = 7;
+  // SQL catalog containing the schema. Empty for two-part tables; otherwise
+  // the table is addressed as catalog_name.schema_name.name.
+  string catalog_name = 7;
 }
 
 // An argument accepted by a query-visible table function.
@@ -164,6 +164,8 @@ message ListCatalogRequest {
   CatalogItemKind kind = 3;
   // Optional page request. Missing or zero limit keeps the unbounded behavior.
   PaginationRequest pagination = 4;
+  // Optional exact SQL catalog name. Empty matches tables in every catalog.
+  string catalog_name = 5;
 }
 
 // Returns queryable catalog items in one workspace.
@@ -190,6 +192,8 @@ message SearchCatalogRequest {
   CatalogItemKind kind = 5;
   // Optional page request. Missing or zero limit applies the search default.
   PaginationRequest pagination = 6;
+  // Optional exact SQL catalog name. Empty searches tables in every catalog.
+  string catalog_name = 7;
 }
 
 // One catalog search match.
@@ -216,6 +220,8 @@ message DescribeTableRequest {
   string schema_name = 2;
   // Exact table name.
   string table_name = 3;
+  // SQL catalog containing the schema. Empty for two-part tables.
+  string catalog_name = 4;
 }
 
 // Returns one table, or app-owned missing-table discovery context.
@@ -246,6 +252,8 @@ message ListColumnsRequest {
   bool required_only = 6;
   // Optional page request. Missing or zero limit applies the column-list default.
   PaginationRequest pagination = 7;
+  // SQL catalog containing the schema. Empty for two-part tables.
+  string catalog_name = 8;
 }
 
 // One column search match.

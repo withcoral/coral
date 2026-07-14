@@ -234,7 +234,7 @@ async fn registered_source_for_catalog(
             };
             if let Some(provider) = provider {
                 tables.push(RegisteredTable {
-                    namespace: Some(schema_name.clone()),
+                    schema_name: Some(schema_name.clone()),
                     table_name,
                     description: String::new(),
                     guide: String::new(),
@@ -248,6 +248,7 @@ async fn registered_source_for_catalog(
     }
     let secret_keys = source_secrets.keys().cloned().collect::<BTreeSet<_>>();
     Ok(RegisteredSource {
+        catalog_name: Some(common.name.clone()),
         schema_name: common.name.clone(),
         tables,
         table_functions: Vec::new(),
@@ -376,14 +377,15 @@ mod tests {
             &sources,
             QueryRuntimeConfig::default(),
             Some("coral_db"),
+            Some("main"),
             Some("users"),
         )
         .await
         .expect("list tables");
         assert_eq!(tables.len(), 1);
         let table = tables.first().expect("table metadata");
-        assert_eq!(table.schema_name, "coral_db");
-        assert_eq!(table.namespace, "main");
+        assert_eq!(table.catalog_name, "coral_db");
+        assert_eq!(table.schema_name, "main");
         assert_eq!(table.table_name, "users");
 
         let result = CoralQuery::execute_sql(
@@ -409,24 +411,23 @@ mod tests {
         let catalog_result = CoralQuery::execute_sql(
             &sources,
             QueryRuntimeConfig::default(),
-            "SELECT schema_name, namespace, table_name FROM coral.tables \
-             WHERE schema_name = 'coral_db' AND namespace = 'main' AND table_name = 'users'",
+            "SELECT catalog_name, schema_name, table_name FROM coral.tables \
+             WHERE catalog_name = 'coral_db' AND schema_name = 'main' AND table_name = 'users'",
         )
         .await
         .expect("query coral tables");
         assert_eq!(catalog_result.row_count(), 1);
 
-        for filter in ["coral_db", "coral_db.main"] {
-            let tables = CoralQuery::list_tables(
-                &sources,
-                QueryRuntimeConfig::default(),
-                Some(filter),
-                Some("users"),
-            )
-            .await
-            .expect("list tables by source filter");
-            assert_eq!(tables.len(), 1, "filter '{filter}' should match");
-        }
+        let tables = CoralQuery::list_tables(
+            &sources,
+            QueryRuntimeConfig::default(),
+            Some("coral_db"),
+            Some("main"),
+            Some("users"),
+        )
+        .await
+        .expect("list tables by catalog and schema");
+        assert_eq!(tables.len(), 1);
 
         let source = sources.first().expect("source");
         CoralQuery::validate_source(source, QueryRuntimeConfig::default(), &[])

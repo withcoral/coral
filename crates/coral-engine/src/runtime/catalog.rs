@@ -215,10 +215,10 @@ const TABLES_COLUMNS: &[SystemColumnDefinition] = &[
         description: "JSON search-limit metadata when the table declares provider search limits.",
     },
     SystemColumnDefinition {
-        name: "namespace",
+        name: "catalog_name",
         data_type: "Utf8",
         nullable: false,
-        description: "Inner namespace for database sources (the remote schema, queried as schema_name.namespace.table_name). Empty for tables queried as schema_name.table_name.",
+        description: "SQL catalog containing the table. Empty for tables queried as schema_name.table_name.",
     },
 ];
 
@@ -284,10 +284,10 @@ const COLUMNS_COLUMNS: &[SystemColumnDefinition] = &[
         description: "Filter matching mode for virtual filter columns.",
     },
     SystemColumnDefinition {
-        name: "namespace",
+        name: "catalog_name",
         data_type: "Utf8",
         nullable: false,
-        description: "Inner namespace for database sources (the remote schema, queried as schema_name.namespace.table_name). Empty for tables queried as schema_name.table_name.",
+        description: "SQL catalog containing the table. Empty for tables queried as schema_name.table_name.",
     },
 ];
 
@@ -469,8 +469,8 @@ fn system_table_infos() -> Vec<TableInfo> {
     SYSTEM_TABLE_DEFINITIONS
         .iter()
         .map(|table| TableInfo {
+            catalog_name: String::new(),
             schema_name: SYSTEM_SCHEMA.to_string(),
-            namespace: String::new(),
             table_name: table.table_name.to_string(),
             description: table.description.to_string(),
             guide: table.guide.to_string(),
@@ -499,8 +499,11 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
     let mut tables = system_table_infos();
     tables.extend(active_sources.iter().flat_map(|source| {
         source.tables.iter().map(move |table| TableInfo {
-            schema_name: source.schema_name.clone(),
-            namespace: table.namespace.clone().unwrap_or_default(),
+            catalog_name: source.catalog_name.clone().unwrap_or_default(),
+            schema_name: table
+                .schema_name
+                .clone()
+                .unwrap_or_else(|| source.schema_name.clone()),
             table_name: table.table_name.clone(),
             description: table.description.clone(),
             guide: table.guide.clone(),
@@ -522,7 +525,11 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
         })
     }));
     tables.sort_by(|left, right| {
-        (&left.schema_name, &left.table_name).cmp(&(&right.schema_name, &right.table_name))
+        (&left.catalog_name, &left.schema_name, &left.table_name).cmp(&(
+            &right.catalog_name,
+            &right.schema_name,
+            &right.table_name,
+        ))
     });
     tables
 }
@@ -571,8 +578,8 @@ pub(crate) fn collect_table_functions(
 }
 
 struct CatalogTable {
+    catalog_name: String,
     schema_name: String,
-    namespace: String,
     table_name: String,
     description: String,
     guide: String,
@@ -588,14 +595,14 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         Field::new("guide", DataType::Utf8, false),
         Field::new("required_filters", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
-        Field::new("namespace", DataType::Utf8, false),
+        Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
     let mut rows = SYSTEM_TABLE_DEFINITIONS
         .iter()
         .map(|table| CatalogTable {
+            catalog_name: String::new(),
             schema_name: SYSTEM_SCHEMA.to_string(),
-            namespace: String::new(),
             table_name: table.table_name.to_string(),
             description: table.description.to_string(),
             guide: table.guide.to_string(),
@@ -604,8 +611,11 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         })
         .chain(active_sources.iter().flat_map(|source| {
             source.tables.iter().map(move |table| CatalogTable {
-                schema_name: source.schema_name.clone(),
-                namespace: table.namespace.clone().unwrap_or_default(),
+                catalog_name: source.catalog_name.clone().unwrap_or_default(),
+                schema_name: table
+                    .schema_name
+                    .clone()
+                    .unwrap_or_else(|| source.schema_name.clone()),
                 table_name: table.table_name.clone(),
                 description: table.description.clone(),
                 guide: table.guide.clone(),
@@ -616,9 +626,9 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         .collect::<Vec<_>>();
 
     rows.sort_by(|left, right| {
-        (&left.schema_name, &left.namespace, &left.table_name).cmp(&(
+        (&left.catalog_name, &left.schema_name, &left.table_name).cmp(&(
+            &right.catalog_name,
             &right.schema_name,
-            &right.namespace,
             &right.table_name,
         ))
     });
@@ -632,7 +642,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.required_filters.as_str()))),
             utf8_column(rows.iter().map(|row| row.search_limits_json.as_deref())),
-            utf8_column(rows.iter().map(|row| Some(row.namespace.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.catalog_name.as_str()))),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -811,8 +821,8 @@ fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
 }
 
 struct CatalogColumn {
+    catalog_name: String,
     schema_name: String,
-    namespace: String,
     table_name: String,
     column_name: String,
     data_type: String,
@@ -836,7 +846,7 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         Field::new("is_required_filter", DataType::Boolean, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("filter_mode", DataType::Utf8, true),
-        Field::new("namespace", DataType::Utf8, false),
+        Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
     let rows = catalog_column_rows(active_sources);
@@ -850,14 +860,14 @@ fn catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn
     rows.extend(source_catalog_column_rows(active_sources));
     rows.sort_by(|left, right| {
         (
+            &left.catalog_name,
             &left.schema_name,
-            &left.namespace,
             &left.table_name,
             left.ordinal_position,
         )
             .cmp(&(
+                &right.catalog_name,
                 &right.schema_name,
-                &right.namespace,
                 &right.table_name,
                 right.ordinal_position,
             ))
@@ -874,8 +884,8 @@ fn system_catalog_column_rows() -> Vec<CatalogColumn> {
                 .iter()
                 .enumerate()
                 .map(move |(position, column)| CatalogColumn {
+                    catalog_name: String::new(),
                     schema_name: SYSTEM_SCHEMA.to_string(),
-                    namespace: String::new(),
                     table_name: table.table_name.to_string(),
                     column_name: column.name.to_string(),
                     data_type: column.data_type.to_string(),
@@ -895,14 +905,18 @@ fn source_catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<Catalo
         .iter()
         .flat_map(|source| {
             source.tables.iter().flat_map(move |table| {
-                let namespace = table.namespace.clone().unwrap_or_default();
+                let catalog_name = source.catalog_name.clone().unwrap_or_default();
+                let schema_name = table
+                    .schema_name
+                    .clone()
+                    .unwrap_or_else(|| source.schema_name.clone());
                 table
                     .columns
                     .iter()
                     .enumerate()
                     .map(move |(position, column)| CatalogColumn {
-                        schema_name: source.schema_name.clone(),
-                        namespace: namespace.clone(),
+                        catalog_name: catalog_name.clone(),
+                        schema_name: schema_name.clone(),
                         table_name: table.table_name.clone(),
                         column_name: column.name.clone(),
                         data_type: column.data_type.clone(),
@@ -970,7 +984,7 @@ fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<
             utf8_column(rows.iter().map(|row| row.filter_mode.as_deref())),
             Arc::new(
                 rows.iter()
-                    .map(|row| Some(row.namespace.as_str()))
+                    .map(|row| Some(row.catalog_name.as_str()))
                     .collect::<StringArray>(),
             ),
         ],
@@ -990,6 +1004,7 @@ mod tests {
     #[test]
     fn collect_table_functions_preserves_registered_function_schema() {
         let functions = collect_table_functions(&[RegisteredSource {
+            catalog_name: None,
             schema_name: "source_schema".to_string(),
             tables: Vec::new(),
             table_functions: vec![RegisteredTableFunction {

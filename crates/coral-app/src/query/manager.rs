@@ -84,11 +84,12 @@ impl QueryManager {
     pub(crate) async fn list_tables(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let trace_sql = list_tables_trace_sql(schema_filter, table_filter);
+        let trace_sql = list_tables_trace_sql(catalog_filter, schema_filter, table_filter);
         run_query_operation(
             QueryOperation::ListTables,
             workspace_name,
@@ -102,9 +103,15 @@ impl QueryManager {
                     .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
-                    .await
-                    .map_err(QueryManagerError::Core)
+                CoralQuery::list_tables(
+                    &sources,
+                    runtime,
+                    catalog_filter,
+                    schema_filter,
+                    table_filter,
+                )
+                .await
+                .map_err(QueryManagerError::Core)
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
             |_, _| {},
@@ -115,10 +122,11 @@ impl QueryManager {
     pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let trace_sql = list_catalog_trace_sql(schema_filter);
+        let trace_sql = list_catalog_trace_sql(catalog_filter, schema_filter);
         run_query_operation(
             QueryOperation::ListCatalog,
             workspace_name,
@@ -132,7 +140,7 @@ impl QueryManager {
                     .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::list_catalog(&sources, runtime, schema_filter)
+                CoralQuery::list_catalog(&sources, runtime, catalog_filter, schema_filter)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -155,11 +163,12 @@ impl QueryManager {
     pub(crate) async fn describe_table(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_name: Option<&str>,
         schema_name: &str,
         table_name: &str,
         attribution: &QueryAttribution,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let trace_sql = describe_table_trace_sql(schema_name, table_name);
+        let trace_sql = describe_table_trace_sql(catalog_name, schema_name, table_name);
         run_query_operation(
             QueryOperation::DescribeTable,
             workspace_name,
@@ -173,7 +182,7 @@ impl QueryManager {
                     .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
                 let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
+                CoralQuery::describe_table(&sources, runtime, catalog_name, schema_name, table_name)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -503,24 +512,43 @@ impl QueryOperation {
     }
 }
 
-fn list_tables_trace_sql(schema_filter: Option<&str>, table_filter: Option<&str>) -> String {
-    match (schema_filter, table_filter) {
-        (Some(schema), Some(table)) => format!("LIST TABLES {schema}.{table}"),
-        (Some(schema), None) => format!("LIST TABLES {schema}.*"),
-        (None, Some(table)) => format!("LIST TABLES *.{table}"),
-        (None, None) => "LIST TABLES *.*".to_string(),
+fn list_tables_trace_sql(
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    table_filter: Option<&str>,
+) -> String {
+    match (catalog_filter, schema_filter, table_filter) {
+        (Some(catalog), Some(schema), Some(table)) => {
+            format!("LIST TABLES {catalog}.{schema}.{table}")
+        }
+        (Some(catalog), Some(schema), None) => format!("LIST TABLES {catalog}.{schema}.*"),
+        (None, Some(schema), Some(table)) => format!("LIST TABLES {schema}.{table}"),
+        (None, Some(schema), None) => format!("LIST TABLES {schema}.*"),
+        (Some(catalog), None, Some(table)) => format!("LIST TABLES {catalog}.*.{table}"),
+        (Some(catalog), None, None) => format!("LIST TABLES {catalog}.*.*"),
+        (None, None, Some(table)) => format!("LIST TABLES *.{table}"),
+        (None, None, None) => "LIST TABLES *.*".to_string(),
     }
 }
 
-fn list_catalog_trace_sql(schema_filter: Option<&str>) -> String {
-    match schema_filter {
-        Some(schema) => format!("LIST CATALOG {schema}"),
-        None => "LIST CATALOG".to_string(),
+fn list_catalog_trace_sql(catalog_filter: Option<&str>, schema_filter: Option<&str>) -> String {
+    match (catalog_filter, schema_filter) {
+        (Some(catalog), Some(schema)) => format!("LIST CATALOG {catalog}.{schema}"),
+        (Some(catalog), None) => format!("LIST CATALOG {catalog}.*"),
+        (None, Some(schema)) => format!("LIST CATALOG {schema}"),
+        (None, None) => "LIST CATALOG".to_string(),
     }
 }
 
-fn describe_table_trace_sql(schema_name: &str, table_name: &str) -> String {
-    format!("DESCRIBE TABLE {schema_name}.{table_name}")
+fn describe_table_trace_sql(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    table_name: &str,
+) -> String {
+    catalog_name.map_or_else(
+        || format!("DESCRIBE TABLE {schema_name}.{table_name}"),
+        |catalog| format!("DESCRIBE TABLE {catalog}.{schema_name}.{table_name}"),
+    )
 }
 
 async fn run_query_operation<T, Fut, RowCount>(
@@ -993,6 +1021,7 @@ mod tests {
         let _list_catalog_result = service
             .list_catalog(tagged_catalog_request(ListCatalogRequest {
                 workspace: Some(default_workspace_proto()),
+                catalog_name: String::new(),
                 schema_name: String::new(),
                 kind: 0,
                 pagination: Some(PaginationRequest {
@@ -1004,6 +1033,7 @@ mod tests {
         let _search_catalog_result = service
             .search_catalog(tagged_catalog_request(SearchCatalogRequest {
                 workspace: Some(default_workspace_proto()),
+                catalog_name: String::new(),
                 pattern: "tables".to_string(),
                 ignore_case: true,
                 schema_name: String::new(),
@@ -1017,6 +1047,7 @@ mod tests {
         let _describe_table_result = service
             .describe_table(tagged_catalog_request(DescribeTableRequest {
                 workspace: Some(default_workspace_proto()),
+                catalog_name: String::new(),
                 schema_name: "coral".to_string(),
                 table_name: "tables".to_string(),
             }))
@@ -1024,6 +1055,7 @@ mod tests {
         let _list_columns_result = service
             .list_columns(tagged_catalog_request(ListColumnsRequest {
                 workspace: Some(default_workspace_proto()),
+                catalog_name: String::new(),
                 schema_name: "coral".to_string(),
                 table_name: "tables".to_string(),
                 pattern: None,

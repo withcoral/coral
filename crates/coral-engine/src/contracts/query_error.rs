@@ -478,10 +478,10 @@ fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
     } else {
         format!("`{reference}` or `{fully_quoted_reference}`")
     };
-    let reference_shape = if info.namespace.is_empty() {
+    let reference_shape = if info.catalog_name.is_empty() {
         "schema.table"
     } else {
-        "schema.namespace.table"
+        "catalog.schema.table"
     };
 
     format!(
@@ -492,12 +492,12 @@ fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
 }
 
 fn raw_schema_table_name(info: &TableInfo) -> String {
-    if info.namespace.is_empty() {
+    if info.catalog_name.is_empty() {
         format!("{}.{}", info.schema_name, info.table_name)
     } else {
         format!(
             "{}.{}.{}",
-            info.schema_name, info.namespace, info.table_name
+            info.catalog_name, info.schema_name, info.table_name
         )
     }
 }
@@ -506,26 +506,24 @@ fn raw_schema_table_name(info: &TableInfo) -> String {
 /// names stay one quoted identifier; case-preserving names are quoted
 /// only when they would otherwise round-trip wrong).
 fn format_schema_table(info: &TableInfo) -> String {
-    if info.namespace.is_empty() {
+    if info.catalog_name.is_empty() {
         format!(
             "{}.{}",
             quote_dotted_identifier(&info.schema_name),
             quote_identifier(&info.table_name)
         )
     } else {
-        // Namespaced tables resolve only through their source catalog:
-        // schema.namespace.table.
         format!(
             "{}.{}.{}",
-            quote_dotted_identifier(&info.schema_name),
-            quote_identifier(&info.namespace),
+            quote_dotted_identifier(&info.catalog_name),
+            quote_identifier(&info.schema_name),
             quote_identifier(&info.table_name)
         )
     }
 }
 
 fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
-    if info.namespace.is_empty() {
+    if info.catalog_name.is_empty() {
         format!(
             "{}.{}",
             quote_identifier_always(&info.schema_name),
@@ -534,8 +532,8 @@ fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
     } else {
         format!(
             "{}.{}.{}",
+            quote_identifier_always(&info.catalog_name),
             quote_identifier_always(&info.schema_name),
-            quote_identifier_always(&info.namespace),
             quote_identifier_always(&info.table_name)
         )
     }
@@ -618,10 +616,7 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
             }
 
             // Pick the longest contiguous prefix of `body` that matches a
-            // registered source schema or database schema.namespace compound
-            // (case-insensitive). This recovers dotted source names like
-            // `"foo.bar"` from their exploded form and keeps namespaced
-            // database misses scoped to the remote namespace.
+            // registered schema or catalog.schema pair (case-insensitive).
             for schema_len in (1..body.len()).rev() {
                 let candidate_schema = join_ref_parts(
                     body.get(..schema_len)
@@ -669,10 +664,8 @@ fn table_schema_matches(info: &TableInfo, schema_lower: &str) -> bool {
     if info.schema_name.to_lowercase() == schema_lower {
         return true;
     }
-    // Namespaced tables are referenced as schema.namespace.table, so the
-    // failing reference's schema part may be the dotted compound.
-    !info.namespace.is_empty()
-        && format!("{}.{}", info.schema_name, info.namespace).to_lowercase() == schema_lower
+    !info.catalog_name.is_empty()
+        && format!("{}.{}", info.catalog_name, info.schema_name).to_lowercase() == schema_lower
 }
 
 // ---------------------------------------------------------------------------
@@ -701,8 +694,8 @@ mod tests {
 
     fn table(schema: &str, name: &str) -> TableInfo {
         TableInfo {
+            catalog_name: String::new(),
             schema_name: schema.to_string(),
-            namespace: String::new(),
             table_name: name.to_string(),
             description: String::new(),
             guide: String::new(),
@@ -711,9 +704,9 @@ mod tests {
         }
     }
 
-    fn namespaced_table(schema: &str, namespace: &str, name: &str) -> TableInfo {
+    fn catalog_table(catalog: &str, schema: &str, name: &str) -> TableInfo {
         TableInfo {
-            namespace: namespace.to_string(),
+            catalog_name: catalog.to_string(),
             ..table(schema, name)
         }
     }
@@ -902,8 +895,8 @@ mod tests {
     }
 
     #[test]
-    fn table_not_found_namespaced_reference_uses_compound_schema() {
-        let tables = vec![namespaced_table("coral_db", "main", "users")];
+    fn table_not_found_catalog_reference_uses_compound_schema() {
+        let tables = vec![catalog_table("coral_db", "main", "users")];
         let err = StructuredQueryError::table_not_found(
             &tr(&["datafusion", "coral_db", "main", "usrs"]),
             &tables,
@@ -1038,8 +1031,8 @@ mod tests {
 
         // `FROM "coral_db.main.users"` is one bare table name under the
         // synthetic `public` schema. For database surfaces, the flat string
-        // must match schema.namespace.table, not just schema.table.
-        let tables = vec![namespaced_table("coral_db", "main", "users")];
+        // must match catalog.schema.table, not just schema.table.
+        let tables = vec![catalog_table("coral_db", "main", "users")];
         let err = StructuredQueryError::table_not_found(
             &tr(&["datafusion", "public", "coral_db.main.users"]),
             &tables,
@@ -1064,7 +1057,7 @@ mod tests {
             "hint should show per-identifier quoting as the alternative, got: {hint}"
         );
         assert!(
-            hint.contains("do not quote the whole `schema.namespace.table` string"),
+            hint.contains("do not quote the whole `catalog.schema.table` string"),
             "hint should explicitly reject whole-reference quoting, got: {hint}"
         );
     }

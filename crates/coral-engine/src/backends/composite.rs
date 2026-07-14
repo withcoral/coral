@@ -126,6 +126,7 @@ impl CompositeSchemaRegistration {
         BackendSchemaRegistration {
             tables: self.tables,
             source: RegisteredSource {
+                catalog_name: None,
                 schema_name: self.schema_name,
                 tables: self.registered_tables,
                 table_functions: self.registered_functions,

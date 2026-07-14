@@ -44,10 +44,9 @@ pub(crate) struct RegisteredColumn {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTable {
-    /// Inner namespace for sources whose tables live inside a source-owned
-    /// catalog (database sources: the remote schema). `None` for sources
-    /// whose tables sit directly in the default catalog.
-    pub(crate) namespace: Option<String>,
+    /// SQL schema containing this table when it differs from the source's
+    /// default schema. Database tables set this to their remote schema.
+    pub(crate) schema_name: Option<String>,
     pub(crate) table_name: String,
     pub(crate) description: String,
     pub(crate) guide: String,
@@ -110,6 +109,9 @@ pub(crate) struct RegisteredInput {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredSource {
+    /// SQL catalog containing this source's schemas. Database sources set this
+    /// to their source name; two-part sources leave it unset.
+    pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) table_functions: Vec<RegisteredTableFunction>,
@@ -329,7 +331,7 @@ pub(crate) fn build_registered_table(
     required_filters: Vec<String>,
 ) -> RegisteredTable {
     RegisteredTable {
-        namespace: None,
+        schema_name: None,
         table_name: common.name.clone(),
         description: common.description.clone(),
         guide: common.guide.clone(),
