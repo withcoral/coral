@@ -1,6 +1,6 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,6 +33,9 @@ use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+use crate::trajectory_memory::{
+    RawTrajectoryStep, TrajectoryMemoryManager, TrajectoryOutputSummary,
+};
 use crate::workspaces::{WorkspaceManager, WorkspaceName};
 
 #[derive(Debug)]
@@ -67,6 +70,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    trajectory_memory: Option<TrajectoryMemoryManager>,
 }
 
 impl QueryManager {
@@ -85,7 +89,16 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            trajectory_memory: None,
         }
+    }
+
+    pub(crate) fn with_trajectory_memory(
+        mut self,
+        trajectory_memory: TrajectoryMemoryManager,
+    ) -> Self {
+        self.trajectory_memory = Some(trajectory_memory);
+        self
     }
 
     pub(crate) async fn list_tables(
@@ -97,10 +110,13 @@ impl QueryManager {
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let trace_sql = list_tables_trace_sql(schema_filter, table_filter);
         run_query_operation(
-            QueryOperation::ListTables,
-            workspace_name,
-            &trace_sql,
-            attribution.task_id.as_ref(),
+            QueryOperationContext {
+                operation: QueryOperation::ListTables,
+                workspace_name,
+                sql: &trace_sql,
+                task_id: attribution.task_id.as_ref(),
+                trajectory_memory: self.trajectory_memory.as_ref(),
+            },
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -121,6 +137,7 @@ impl QueryManager {
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
             |_, _| {},
+            |tables| Some(summary_from_tables(tables)),
         )
         .await
     }
@@ -133,10 +150,13 @@ impl QueryManager {
     ) -> Result<CatalogInfo, QueryManagerError> {
         let trace_sql = list_catalog_trace_sql(schema_filter);
         run_query_operation(
-            QueryOperation::ListCatalog,
-            workspace_name,
-            &trace_sql,
-            attribution.task_id.as_ref(),
+            QueryOperationContext {
+                operation: QueryOperation::ListCatalog,
+                workspace_name,
+                sql: &trace_sql,
+                task_id: attribution.task_id.as_ref(),
+                trajectory_memory: self.trajectory_memory.as_ref(),
+            },
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -167,6 +187,7 @@ impl QueryManager {
                 )
             },
             |_, _| {},
+            |catalog| Some(summary_from_catalog(catalog)),
         )
         .await
     }
@@ -180,10 +201,13 @@ impl QueryManager {
     ) -> Result<DescribeTableInfo, QueryManagerError> {
         let trace_sql = describe_table_trace_sql(schema_name, table_name);
         run_query_operation(
-            QueryOperation::DescribeTable,
-            workspace_name,
-            &trace_sql,
-            attribution.task_id.as_ref(),
+            QueryOperationContext {
+                operation: QueryOperation::DescribeTable,
+                workspace_name,
+                sql: &trace_sql,
+                task_id: attribution.task_id.as_ref(),
+                trajectory_memory: self.trajectory_memory.as_ref(),
+            },
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -199,6 +223,7 @@ impl QueryManager {
             },
             |_| None,
             |_, _| {},
+            |description| Some(summary_from_describe_table(description)),
         )
         .await
     }
@@ -210,10 +235,13 @@ impl QueryManager {
         attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
-            QueryOperation::ExecuteSql,
-            workspace_name,
-            sql,
-            attribution.task_id.as_ref(),
+            QueryOperationContext {
+                operation: QueryOperation::ExecuteSql,
+                workspace_name,
+                sql,
+                task_id: attribution.task_id.as_ref(),
+                trajectory_memory: self.trajectory_memory.as_ref(),
+            },
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -229,6 +257,7 @@ impl QueryManager {
             },
             |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
             |span, execution| record_query_provenance(span, execution.provenance()),
+            |execution| Some(summary_from_execution(execution)),
         )
         .await
     }
@@ -240,10 +269,13 @@ impl QueryManager {
         attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
         run_query_operation(
-            QueryOperation::ExplainSql,
-            workspace_name,
-            sql,
-            attribution.task_id.as_ref(),
+            QueryOperationContext {
+                operation: QueryOperation::ExplainSql,
+                workspace_name,
+                sql,
+                task_id: attribution.task_id.as_ref(),
+                trajectory_memory: self.trajectory_memory.as_ref(),
+            },
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
@@ -259,6 +291,7 @@ impl QueryManager {
             },
             |_| None,
             |_, _| {},
+            |_| None,
         )
         .await
     }
@@ -522,6 +555,94 @@ fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QueryS
         .collect()
 }
 
+fn summary_from_tables(tables: &[TableInfo]) -> TrajectoryOutputSummary {
+    let sources = tables
+        .iter()
+        .map(|table| table.schema_name.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let relations = tables
+        .iter()
+        .map(|table| format!("{}.{}", table.schema_name, table.table_name))
+        .collect();
+    TrajectoryOutputSummary {
+        sources,
+        relations,
+        column_count: None,
+    }
+}
+
+fn summary_from_catalog(catalog: &CatalogInfo) -> TrajectoryOutputSummary {
+    let mut relations = catalog
+        .tables
+        .iter()
+        .map(|table| format!("{}.{}", table.schema_name, table.table_name))
+        .collect::<Vec<_>>();
+    relations.extend(
+        catalog
+            .table_functions
+            .iter()
+            .map(|function| format!("{}.{}", function.schema_name, function.function_name)),
+    );
+    let sources = relations
+        .iter()
+        .filter_map(|relation| relation.split('.').next().map(ToString::to_string))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    TrajectoryOutputSummary {
+        sources,
+        relations,
+        column_count: None,
+    }
+}
+
+fn summary_from_describe_table(description: &DescribeTableInfo) -> TrajectoryOutputSummary {
+    let tables = description
+        .table
+        .iter()
+        .chain(&description.missing_context_tables)
+        .cloned()
+        .collect::<Vec<_>>();
+    summary_from_tables(&tables)
+}
+
+fn summary_from_provenance(provenance: &QueryExecutionProvenance) -> TrajectoryOutputSummary {
+    let sources = provenance.sources().to_vec();
+    let relations = provenance
+        .tables()
+        .iter()
+        .map(|table| {
+            format!(
+                "{}.{}.{}",
+                table.source_name(),
+                table.schema_name(),
+                table.table_name()
+            )
+        })
+        .chain(provenance.table_functions().iter().map(|function| {
+            format!(
+                "{}.{}.{}",
+                function.source_name(),
+                function.schema_name(),
+                function.function_name()
+            )
+        }))
+        .collect();
+    TrajectoryOutputSummary {
+        sources,
+        relations,
+        column_count: None,
+    }
+}
+
+fn summary_from_execution(execution: &QueryExecution) -> TrajectoryOutputSummary {
+    let mut summary = summary_from_provenance(execution.provenance());
+    summary.column_count = Some(u64::try_from(execution.schema().len()).unwrap_or(u64::MAX));
+    summary
+}
+
 #[derive(Clone, Copy)]
 enum QueryOperation {
     ExecuteSql,
@@ -529,6 +650,14 @@ enum QueryOperation {
     ListTables,
     ListCatalog,
     DescribeTable,
+}
+
+struct QueryOperationContext<'a> {
+    operation: QueryOperation,
+    workspace_name: &'a WorkspaceName,
+    sql: &'a str,
+    task_id: Option<&'a TaskId>,
+    trajectory_memory: Option<&'a TrajectoryMemoryManager>,
 }
 
 impl QueryOperation {
@@ -564,19 +693,25 @@ fn describe_table_trace_sql(schema_name: &str, table_name: &str) -> String {
 }
 
 async fn run_query_operation<T, Fut, RowCount>(
-    operation: QueryOperation,
-    workspace_name: &WorkspaceName,
-    sql: &str,
-    task_id: Option<&TaskId>,
+    context: QueryOperationContext<'_>,
     query: Fut,
     row_count: RowCount,
     record_success_fields: impl FnOnce(&tracing::Span, &T),
+    capture_summary: impl FnOnce(&T) -> Option<TrajectoryOutputSummary>,
 ) -> Result<T, QueryManagerError>
 where
     Fut: Future<Output = Result<T, QueryManagerError>>,
     RowCount: FnOnce(&T) -> Option<u64>,
 {
+    let QueryOperationContext {
+        operation,
+        workspace_name,
+        sql,
+        task_id,
+        trajectory_memory,
+    } = context;
     let started_at = Instant::now();
+    let started_at_unix_nanos = trajectory_timestamp();
     let query_span = create_query_span(operation, workspace_name, sql, task_id);
     let result = query.instrument(query_span.clone()).await;
 
@@ -588,27 +723,69 @@ where
         result.is_ok(),
     );
 
-    if result.is_ok() {
-        query_span.record("status", "ok");
-        query_span.set_status(OtelStatus::Ok);
-        if let Some(row_count) = row_count {
-            query_span.record("row_count", row_count);
-        }
-        if let Ok(value) = &result {
+    let (status, error_kind, error_type, error_message) = match &result {
+        Ok(value) => {
+            query_span.record("status", "ok");
+            query_span.set_status(OtelStatus::Ok);
+            if let Some(row_count) = row_count {
+                query_span.record("row_count", row_count);
+            }
             record_success_fields(&query_span, value);
+            ("success", None, None, None)
         }
-    } else if let Err(error) = &result {
-        let error_kind = query_error_kind(error);
-        let error_type = query_error_type(error);
-        let error_message = query_error_message(error);
-        query_span.record("status", "error");
-        query_span.record("error.kind", error_kind);
-        query_span.record("error.type", error_type.as_str());
-        query_span.record("exception.message", error_message.as_str());
-        query_span.set_status(OtelStatus::error(error_message));
+        Err(error) => {
+            let error_kind = query_error_kind(error);
+            let error_type = query_error_type(error);
+            let error_message = query_error_message(error);
+            query_span.record("status", "error");
+            query_span.record("error.kind", error_kind);
+            query_span.record("error.type", error_type.as_str());
+            query_span.record("exception.message", error_message.as_str());
+            query_span.set_status(OtelStatus::error(error_message.clone()));
+            (
+                "error",
+                Some(error_kind.to_string()),
+                Some(error_type),
+                Some(error_message),
+            )
+        }
+    };
+
+    let output_summary = result.as_ref().ok().and_then(capture_summary);
+    if let (Some(trajectory_memory), Some(task_id)) = (trajectory_memory, task_id)
+        && let Err(error) = trajectory_memory
+            .record_raw_step(
+                workspace_name,
+                RawTrajectoryStep {
+                    task_id: *task_id,
+                    started_at_unix_nanos,
+                    completed_at_unix_nanos: trajectory_timestamp(),
+                    operation: operation.as_str().to_string(),
+                    input: sql.to_string(),
+                    status,
+                    row_count,
+                    output_summary,
+                    error_kind,
+                    error_type,
+                    error_message,
+                },
+            )
+            .await
+    {
+        tracing::warn!(%error, task_id = %task_id, "failed to capture raw trajectory step");
     }
 
     result
+}
+
+fn trajectory_timestamp() -> i64 {
+    match crate::state::db::now_unix_nanos_i64() {
+        Ok(timestamp) => timestamp,
+        Err(error) => {
+            tracing::warn!(%error, "failed to timestamp raw trajectory step");
+            0
+        }
+    }
 }
 
 fn create_query_span(

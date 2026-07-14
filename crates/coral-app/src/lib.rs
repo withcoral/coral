@@ -57,6 +57,7 @@ mod state;
 mod storage;
 mod task;
 pub mod telemetry;
+mod trajectory_memory;
 mod transport;
 mod workspaces;
 

@@ -63,6 +63,7 @@ use crate::task::service::TaskService;
 use crate::task::store::TaskStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
+use crate::trajectory_memory::TrajectoryMemoryManager;
 use crate::transport::GrpcRequestContextLayer;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
 
@@ -317,6 +318,7 @@ impl ServerBuilder {
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
+        let trajectory_memory = TrajectoryMemoryManager::new(Arc::clone(&coral_db));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -331,8 +333,10 @@ impl ServerBuilder {
             query_runtime_context,
             layout.clone(),
             self.config.engine_extensions_providers,
-        );
-        let search_manager = SearchManager::new(layout, &config_store, workspace_manager.clone());
+        )
+        .with_trajectory_memory(trajectory_memory.clone());
+        let search_manager = SearchManager::new(layout, &config_store, workspace_manager.clone())
+            .with_trajectory_memory(trajectory_memory);
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {
