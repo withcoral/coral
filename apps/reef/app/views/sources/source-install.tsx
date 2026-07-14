@@ -23,7 +23,7 @@ import type {
 } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
-import { ProviderLogo } from '@/components/sources'
+import { formatSourceName, ProviderLogo } from '@/components/sources'
 import * as styles from './source-install.css'
 
 type InstallProgress =
@@ -106,6 +106,7 @@ function SourceInstallDialogContent({
   const [methodChoices, setMethodChoices] = useState<Record<string, number>>({})
   const [progress, setProgress] = useState<InstallProgress>({ kind: 'idle' })
   const [streamError, setStreamError] = useState<string | null>(null)
+  const sourceDisplayName = formatSourceName(entry.name)
 
   const inputSpecs = entry.inputSpecs
   const inputs: CatalogSourceInputSpec[] = inputSpecs ?? []
@@ -216,7 +217,7 @@ function SourceInstallDialogContent({
         <div className={styles.headerText}>
           <Dialog.Title className={styles.headerTitleRow}>
             <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-              {entry.name}
+              {sourceDisplayName}
             </Typography.HeadingMedium>
             <span className={styles.headerPill}>Core</span>
           </Dialog.Title>

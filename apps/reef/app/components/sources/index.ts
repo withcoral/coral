@@ -1,4 +1,5 @@
 export { ProviderLogo, type ProviderLogoSize } from './provider-logo'
+export { formatSourceName } from './source-name'
 export {
   buildSourceCatalogView,
   sourceCatalogEntryId,

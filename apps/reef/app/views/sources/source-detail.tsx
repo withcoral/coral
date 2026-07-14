@@ -18,7 +18,7 @@ import type {
 import type { action as sourceDetailAction } from '@/routes/source-detail'
 import type { SourcesActionData } from '@/routes/sources-action'
 
-import { ProviderLogo } from '@/components/sources'
+import { formatSourceName, ProviderLogo } from '@/components/sources'
 import * as styles from './source-detail.css'
 import { SourceInstallDialog } from './source-install'
 
@@ -116,6 +116,7 @@ function SourceDetailDialogContent({
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const { actionError, pendingIntent, removeError } = useSourceDetailActionState(entry, loadError)
+  const sourceDisplayName = formatSourceName(entry.name)
 
   const source = entry.source ?? null
   const inputSpecs = entry.inputSpecs
@@ -167,7 +168,7 @@ function SourceDetailDialogContent({
           <div className={styles.headerText}>
             <Dialog.Title className={styles.headerTitleRow}>
               <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-                {entry.name}
+                {sourceDisplayName}
               </Typography.HeadingMedium>
               {origin ? (
                 <span className={styles.headerPill}>{originBadgeLabel(origin)}</span>
@@ -271,7 +272,7 @@ function SourceDetailDialogContent({
             <RemoveConfirmation
               deleting={deleting}
               error={removeError}
-              name={entry.name}
+              name={sourceDisplayName}
               onCancel={() => setConfirmingRemove(false)}
             />
           </Dialog.Popup>
