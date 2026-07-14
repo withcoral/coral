@@ -19,11 +19,16 @@ Among the ranked results, you might see:
 Results
 1. [catalog_metadata] table github.issues
    SQL: github.issues
+2. [catalog_metadata] table function github.search_issues
+   SQL reference: github.search_issues
+   Call: github.search_issues(q => '<value>')
 ```
 
-The `SQL` line gives you the table reference. When a result is a table function, Coral also shows a `Call` example with its arguments.
+The `SQL` line gives you the table reference. For a table function, `SQL reference` identifies the function and `Call` shows its required arguments.
 
 Catalog search only identifies these queryable surfaces; it does not execute them or retrieve rows. To fetch rows, use the returned `SQL` reference or `Call` example with `coral sql`. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
+
+By default, Coral returns up to 10 results. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
 
 ## Use catalog search over MCP
 
@@ -34,13 +39,3 @@ Coral exposes catalog search to connected agents through its read-only `search` 
 Ask for the result you want; you do not need to mention the `search` tool. The agent can decide when catalog search is needed.
 
 [Set up Coral over MCP](/guides/use-coral-over-mcp).
-
-## Search options
-
-By default, Coral returns up to 10 results. Use `--limit` to request between 1 and 50:
-
-```shellscript
-coral search --limit 5 slack messages text
-```
-
-Use `--json` when a script or another program needs the structured response. See [`coral search` in the CLI reference](/reference/cli-reference#coral-search) for the complete response fields and provider-status details.
