@@ -16,7 +16,7 @@ use coral_engine::{
 use crate::bootstrap::AppError;
 use crate::search::observed::collector::ObservedValuesCollector;
 use crate::search::observed::source_scope::{
-    ObservedSourceSurfaceScope, SurfaceKey, source_surface_scopes,
+    ObservedSourceSurfaceScope, SourceScopeSeed, SurfaceKey, source_surface_scopes,
 };
 use crate::search::observed::sqlite_queue::{ObservedValuesEpoch, ObservedValuesSurfaceKind};
 use crate::search::observed::sqlite_store::SqliteObservedValuesStore;
@@ -68,7 +68,7 @@ impl SearchObservationHandle {
                     continue;
                 }
             };
-            for scope in source_surface_scopes(source) {
+            for scope in source_surface_scopes(source, SourceScopeSeed::PRE_ACTIVATION) {
                 scopes.insert(scope.key(), RegisteredSurface { scope, epoch });
             }
         }
@@ -245,9 +245,10 @@ mod tests {
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::json;
     use tempfile::tempdir;
+    use uuid::Uuid;
 
     use super::SearchObservationHandle;
-    use crate::search::observed::source_scope::source_surface_scopes;
+    use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
     use crate::search::observed::sqlite_queue::{
         ObservedValueCandidate, ObservedValuesQueuePayload,
     };
@@ -257,25 +258,49 @@ mod tests {
     use crate::workspaces::WorkspaceName;
 
     #[test]
-    fn http_request_shape_changes_source_scope() {
-        let first = http_query_source("/issues");
-        let second = http_query_source("/search/issues");
+    fn opaque_scope_seed_is_deterministic() {
+        let source = http_query_source("/issues");
 
-        let first_scope = source_surface_scopes(&first).pop().expect("first scope");
-        let second_scope = source_surface_scopes(&second).pop().expect("second scope");
+        let first_scope = source_surface_scopes(&source, SourceScopeSeed::PRE_ACTIVATION)
+            .pop()
+            .expect("first scope");
+        let second_scope = source_surface_scopes(&source, SourceScopeSeed::PRE_ACTIVATION)
+            .pop()
+            .expect("second scope");
 
-        assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
+        assert_eq!(first_scope.source_scope_id, second_scope.source_scope_id);
     }
 
     #[test]
-    fn basic_auth_shape_changes_source_scope() {
-        let first = basic_auth_query_source("{{ input.user }}", "{{ input.password }}");
-        let second = basic_auth_query_source("{{ input.user }}", "{{ input.alt_password }}");
+    fn opaque_runtime_contract_and_credential_inputs_partition_scopes() {
+        let source = http_query_source("/issues");
+        let first_scope = source_surface_scopes(
+            &source,
+            SourceScopeSeed::new("runtime-contract-a", Uuid::from_u128(1)),
+        )
+        .pop()
+        .expect("first scope");
+        let contract_changed = source_surface_scopes(
+            &source,
+            SourceScopeSeed::new("runtime-contract-b", Uuid::from_u128(1)),
+        )
+        .pop()
+        .expect("contract scope");
+        let credential_changed = source_surface_scopes(
+            &source,
+            SourceScopeSeed::new("runtime-contract-a", Uuid::from_u128(2)),
+        )
+        .pop()
+        .expect("credential scope");
 
-        let first_scope = source_surface_scopes(&first).pop().expect("first scope");
-        let second_scope = source_surface_scopes(&second).pop().expect("second scope");
-
-        assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
+        assert_ne!(
+            first_scope.source_scope_id,
+            contract_changed.source_scope_id
+        );
+        assert_ne!(
+            first_scope.source_scope_id,
+            credential_changed.source_scope_id
+        );
     }
 
     #[test]
@@ -447,49 +472,6 @@ tables:
         );
         let manifest = parse_source_manifest_yaml(&yaml).expect("manifest");
         QuerySource::from_manifest(&manifest, BTreeMap::new(), BTreeMap::new())
-    }
-
-    fn basic_auth_query_source(username: &str, password: &str) -> QuerySource {
-        let yaml = format!(
-            r#"
-dsl_version: 3
-name: github
-version: 0.1.0
-backend: http
-base_url: https://api.github.com
-inputs:
-  user:
-    kind: variable
-    required: true
-  password:
-    kind: secret
-    required: true
-  alt_password:
-    kind: secret
-    required: true
-auth:
-  type: BasicAuth
-  username: "{username}"
-  password: "{password}"
-tables:
-  - name: issues
-    description: Issues
-    request:
-      path: /issues
-    columns:
-      - name: title
-        type: Utf8
-"#
-        );
-        let manifest = parse_source_manifest_yaml(&yaml).expect("manifest");
-        QuerySource::from_manifest(
-            &manifest,
-            BTreeMap::from([("user".to_string(), "octocat".to_string())]),
-            BTreeMap::from([
-                ("password".to_string(), "literal-secret".to_string()),
-                ("alt_password".to_string(), "other-secret".to_string()),
-            ]),
-        )
     }
 
     fn secret_input_query_source() -> QuerySource {
