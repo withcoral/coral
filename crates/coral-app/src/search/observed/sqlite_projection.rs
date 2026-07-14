@@ -405,7 +405,7 @@ fn observed_queue_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Obse
 fn observed_generations(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    source_name: &str,
+    owner_source_name: &str,
 ) -> Result<ObservedValuesEpoch, SqliteSearchError> {
     let workspace_generation = connection
         .query_row(
@@ -426,7 +426,7 @@ fn observed_generations(
             FROM observed_source_generations
             WHERE workspace = ?1 AND source_name = ?2
             ",
-            params![workspace_name.as_str(), source_name],
+            params![workspace_name.as_str(), owner_source_name],
             |row| row.get(0),
         )
         .optional()?
@@ -547,11 +547,9 @@ mod tests {
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
-        let generation = store
-            .capture_epoch(&workspace, "github")
-            .expect("generation");
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
         store
-            .enqueue_if_current(&workspace, &test_job(), generation)
+            .enqueue_if_current(&workspace, &test_job(), epoch)
             .expect("enqueue");
         let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
         let mut connection = backing.connect_for_test().expect("connection");
@@ -585,15 +583,108 @@ mod tests {
         assert_eq!(attempts, 1);
     }
 
+    #[test]
+    fn multi_surface_projection_preserves_owner_and_query_schemas() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store
+            .capture_epoch(&workspace, "github_v4")
+            .expect("owner epoch");
+
+        for (source_name, source_scope_id, display_value) in [
+            ("github_v4_rest", "rest-scope", "REST payment outage"),
+            ("github_v4_mcp", "mcp-scope", "MCP payment outage"),
+        ] {
+            store
+                .enqueue_if_current(
+                    &workspace,
+                    &test_job_with_identity(
+                        "github_v4",
+                        source_name,
+                        source_scope_id,
+                        display_value,
+                    ),
+                    epoch,
+                )
+                .expect("enqueue component observation");
+        }
+
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+        let result = drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+        )
+        .expect("drain");
+        assert_eq!(result.queue_jobs_processed, 2);
+        assert_eq!(result.canonical_rows_upserted, 2);
+        assert_eq!(result.fts_rows_written, 2);
+
+        let canonical_identities = identity_rows(
+            &connection,
+            "SELECT owner_source_name, source_name FROM observed_values \
+             WHERE workspace = ?1 ORDER BY source_name",
+            &workspace,
+        );
+        let searched_identities = identity_rows(
+            &connection,
+            "SELECT owner_source_name, source_name FROM observed_values_fts \
+             WHERE workspace = ?1 AND observed_values_fts MATCH 'payment' \
+             ORDER BY source_name",
+            &workspace,
+        );
+        let expected = vec![
+            ("github_v4".to_string(), "github_v4_mcp".to_string()),
+            ("github_v4".to_string(), "github_v4_rest".to_string()),
+        ];
+        assert_eq!(canonical_identities, expected);
+        assert_eq!(searched_identities, expected);
+
+        let cleared = store
+            .clear_source_and_advance_epoch(&workspace, "github_v4")
+            .expect("clear logical source owner");
+        assert_eq!(cleared.values, 2);
+        assert_eq!(cleared.fts_rows, 2);
+    }
+
     fn test_job() -> ObservedValuesQueueJob {
+        test_job_with_identity("github", "github", "scope", "Payment outage")
+    }
+
+    fn test_job_with_identity(
+        owner_source_name: &str,
+        source_name: &str,
+        source_scope_id: &str,
+        display_value: &str,
+    ) -> ObservedValuesQueueJob {
         ObservedValuesQueueJob {
-            owner_source_name: "github".to_string(),
-            source_name: "github".to_string(),
-            source_scope_id: "scope".to_string(),
+            owner_source_name: owner_source_name.to_string(),
+            source_name: source_name.to_string(),
+            source_scope_id: source_scope_id.to_string(),
             surface_kind: ObservedValuesSurfaceKind::Table,
             surface_name: "issues".to_string(),
-            payload_json: r#"{"values":[{"column_name":"title","display_value":"Payment outage","search_text":"payment outage","value_key":"payment-outage"}]}"#
-                .to_string(),
+            payload_json: format!(
+                r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"payment outage","value_key":"{source_name}-payment-outage"}}]}}"#,
+            ),
         }
+    }
+
+    fn identity_rows(
+        connection: &rusqlite::Connection,
+        sql: &str,
+        workspace: &WorkspaceName,
+    ) -> Vec<(String, String)> {
+        let mut statement = connection.prepare(sql).expect("identity query");
+        let rows = statement
+            .query_map(params![workspace.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("query identity rows");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("collect identity rows")
     }
 }
