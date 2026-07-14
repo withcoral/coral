@@ -262,13 +262,7 @@ SELECT table_schema AS schema_name,
        table_name,
        table_type AS relation_type
 FROM information_schema.tables
-WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-UNION ALL
-SELECT schemaname AS schema_name,
-       matviewname AS table_name,
-       'MATERIALIZED VIEW' AS relation_type
-FROM pg_matviews
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')";
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
 
 const MYSQL_RELATIONS_SQL: &str = "
 SELECT TABLE_SCHEMA AS schema_name,
@@ -303,10 +297,8 @@ async fn database_catalog<T: 'static, P: 'static>(
     inventory_sql: &str,
 ) -> DataFusionResult<DatabaseCatalog> {
     let relations = load_database_inventory(&pool, inventory_sql).await?;
-    let provider = Arc::new(CoralDatabaseCatalogProvider::new(
-        Arc::clone(&pool),
-        &relations,
-    )) as Arc<dyn CatalogProvider>;
+    let provider =
+        Arc::new(CoralDatabaseCatalogProvider::new(&pool, &relations)) as Arc<dyn CatalogProvider>;
     Ok(DatabaseCatalog {
         provider,
         relations,
@@ -375,7 +367,7 @@ struct CoralDatabaseCatalogProvider {
 }
 
 impl CoralDatabaseCatalogProvider {
-    fn new<T: 'static, P: 'static>(pool: Pool<T, P>, relations: &[DatabaseRelation]) -> Self {
+    fn new<T: 'static, P: 'static>(pool: &Pool<T, P>, relations: &[DatabaseRelation]) -> Self {
         let mut by_schema = BTreeMap::<String, BTreeMap<String, TableType>>::new();
         for relation in relations {
             by_schema
@@ -389,7 +381,7 @@ impl CoralDatabaseCatalogProvider {
                 let provider = CoralDatabaseSchemaProvider {
                     schema_name: schema_name.clone(),
                     tables,
-                    pool: Arc::clone(&pool),
+                    pool: Arc::clone(pool),
                 };
                 (schema_name, Arc::new(provider) as Arc<dyn SchemaProvider>)
             })
@@ -429,7 +421,7 @@ impl<T: 'static, P: 'static> fmt::Debug for CoralDatabaseSchemaProvider<T, P> {
             .debug_struct("CoralDatabaseSchemaProvider")
             .field("schema_name", &self.schema_name)
             .field("tables", &self.tables)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
