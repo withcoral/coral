@@ -12,22 +12,8 @@ use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
 
 use crate::hash::sha256_hex;
+use crate::search::observed::sensitive::{is_sensitive_column, is_sensitive_value};
 use crate::search::observed::sqlite_queue::{ObservedValueCandidate, ObservedValuesQueuePayload};
-
-const SENSITIVE_COLUMN_NAMES: &[&str] = &[
-    "apikey",
-    "authorization",
-    "authtoken",
-    "cookie",
-    "credential",
-    "password",
-    "passwd",
-    "privatekey",
-    "refreshtoken",
-    "secret",
-    "session",
-    "token",
-];
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ObservedValuesCollector {
@@ -106,13 +92,18 @@ pub(crate) struct ObservedValuesCollectionBudget {
     pub(crate) job_bytes_limit: usize,
 }
 
+const DEFAULT_CANDIDATE_LIMIT: usize = 10_000;
+const DEFAULT_CANDIDATE_BYTES_LIMIT: usize = 8 * 1024 * 1024;
+const DEFAULT_VALUE_BYTES_LIMIT: usize = 4 * 1024;
+const DEFAULT_JOB_BYTES_LIMIT: usize = 1024 * 1024;
+
 impl Default for ObservedValuesCollectionBudget {
     fn default() -> Self {
         Self {
-            candidate_limit: 10_000,
-            candidate_bytes_limit: 8 * 1024 * 1024,
-            value_bytes_limit: 4 * 1024,
-            job_bytes_limit: 1024 * 1024,
+            candidate_limit: DEFAULT_CANDIDATE_LIMIT,
+            candidate_bytes_limit: DEFAULT_CANDIDATE_BYTES_LIMIT,
+            value_bytes_limit: DEFAULT_VALUE_BYTES_LIMIT,
+            job_bytes_limit: DEFAULT_JOB_BYTES_LIMIT,
         }
     }
 }
@@ -146,82 +137,6 @@ fn normalize_search_text(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
-}
-
-fn is_sensitive_column(column_name: &str) -> bool {
-    let normalized = column_name
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    SENSITIVE_COLUMN_NAMES
-        .iter()
-        .any(|name| normalized.contains(name))
-}
-
-fn is_sensitive_value(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.contains("-----BEGIN ") || trimmed.contains(" PRIVATE KEY-----") {
-        return true;
-    }
-    is_sensitive_token(trimmed)
-        || contains_sensitive_token(trimmed)
-        || contains_sensitive_key_value_pair(trimmed)
-}
-
-fn is_sensitive_token(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    if (lower.starts_with("sk-") && value.len() >= 20)
-        || lower.starts_with("ghp_")
-        || lower.starts_with("github_pat_")
-        || lower.starts_with("xoxb-")
-        || lower.starts_with("xoxp-")
-        || lower.starts_with("xoxa-")
-        || lower.starts_with("ya29.")
-    {
-        return true;
-    }
-    looks_like_jwt(value)
-}
-
-fn contains_sensitive_token(value: &str) -> bool {
-    value
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')))
-        .any(is_sensitive_token)
-}
-
-fn contains_sensitive_key_value_pair(value: &str) -> bool {
-    value
-        .split(|ch: char| {
-            matches!(
-                ch,
-                '?' | '&' | ';' | ',' | '"' | '\'' | '{' | '}' | '[' | ']' | ' ' | '\t' | '\n'
-            )
-        })
-        .filter_map(|segment| segment.split_once('=').or_else(|| segment.split_once(':')))
-        .any(|(key, value)| !value.trim().is_empty() && is_sensitive_column(key))
-}
-
-fn looks_like_jwt(value: &str) -> bool {
-    let mut parts = value.split('.');
-    let Some(header) = parts.next() else {
-        return false;
-    };
-    let Some(payload) = parts.next() else {
-        return false;
-    };
-    let Some(signature) = parts.next() else {
-        return false;
-    };
-    if parts.next().is_some() {
-        return false;
-    }
-    [header, payload, signature].iter().all(|part| {
-        part.len() >= 8
-            && part
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    })
 }
 
 #[cfg(test)]
