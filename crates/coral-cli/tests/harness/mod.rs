@@ -69,7 +69,7 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: schema_name.to_string(),
-        namespace: String::new(),
+        catalog_name: String::new(),
         name: name.to_string(),
         description: String::new(),
         guide: String::new(),
@@ -82,7 +82,7 @@ fn mock_visible_table() -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: "local_messages".to_string(),
-        namespace: String::new(),
+        catalog_name: String::new(),
         name: "messages".to_string(),
         description: "Fixture messages".to_string(),
         guide: "Query fixture messages.".to_string(),
@@ -136,7 +136,7 @@ fn table_summary(table: &Table) -> TableSummary {
     TableSummary {
         workspace: table.workspace.clone(),
         schema_name: table.schema_name.clone(),
-        namespace: table.namespace.clone(),
+        catalog_name: table.catalog_name.clone(),
         name: table.name.clone(),
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),

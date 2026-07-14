@@ -67,7 +67,7 @@ pub(crate) async fn register(
     }
     catalog.register_schema(SYSTEM_SCHEMA, planning_schema)?;
 
-    let tables_sql = tables_view_sql(&catalog_names);
+    let tables_sql = tables_view_sql();
     let tables_view = view_table_for_sql(ctx, &tables_sql).await?;
     meta_tables.insert("tables".to_string(), Arc::new(tables_view));
 
@@ -89,28 +89,17 @@ async fn view_table_for_sql(ctx: &SessionContext, sql: &str) -> Result<ViewTable
     Ok(ViewTable::new(plan, Some(sql.to_string())))
 }
 
-fn tables_view_sql(catalog_names: &[&str]) -> String {
-    let static_sql = format!(
-        "SELECT schema_name, table_name, description, guide, required_filters, \
-         search_limits_json, namespace FROM {SYSTEM_SCHEMA}.{STATIC_TABLES_TABLE}"
-    );
-    if catalog_names.is_empty() {
-        return static_sql;
-    }
+fn tables_view_sql() -> String {
     format!(
-        "{static_sql} UNION ALL \
-         SELECT table_catalog AS schema_name, table_name, '' AS description, '' AS guide, \
-         '' AS required_filters, '' AS search_limits_json, table_schema AS namespace \
-         FROM information_schema.tables \
-         WHERE table_catalog IN ({}) AND table_schema <> 'information_schema'",
-        sql_string_list(catalog_names)
+        "SELECT schema_name, table_name, description, guide, required_filters, \
+         search_limits_json, catalog_name FROM {SYSTEM_SCHEMA}.{STATIC_TABLES_TABLE}"
     )
 }
 
 fn columns_view_sql(catalog_names: &[&str]) -> String {
     let static_sql = format!(
         "SELECT schema_name, table_name, ordinal_position, column_name, data_type, \
-         is_nullable, is_virtual, is_required_filter, description, filter_mode, namespace \
+         is_nullable, is_virtual, is_required_filter, description, filter_mode, catalog_name \
          FROM {SYSTEM_SCHEMA}.{STATIC_COLUMNS_TABLE}"
     );
     if catalog_names.is_empty() {
@@ -118,11 +107,11 @@ fn columns_view_sql(catalog_names: &[&str]) -> String {
     }
     format!(
         "{static_sql} UNION ALL \
-         SELECT table_catalog AS schema_name, table_name, \
+         SELECT table_schema AS schema_name, table_name, \
          CAST(ordinal_position AS INT) AS ordinal_position, column_name, data_type, \
          is_nullable = 'YES' AS is_nullable, false AS is_virtual, \
          false AS is_required_filter, '' AS description, '' AS filter_mode, \
-         table_schema AS namespace \
+         table_catalog AS catalog_name \
          FROM information_schema.columns \
          WHERE table_catalog IN ({}) AND table_schema <> 'information_schema'",
         sql_string_list(catalog_names)
@@ -168,7 +157,6 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
         .iter()
         .map(|row| table_function_result_columns_json(row))
         .collect::<Result<Vec<_>>>()?;
-
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -623,11 +611,11 @@ pub(crate) fn collect_static_tables(active_sources: &[RegisteredSource]) -> Vec<
 /// Collect typed table metadata by querying the public `coral` catalog views.
 pub(crate) async fn collect_tables(
     ctx: &SessionContext,
-    source_filter: Option<&str>,
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
     table_filter: Option<&str>,
 ) -> Result<Vec<TableInfo>> {
-    let source_filters = source_filter.into_iter().collect::<Vec<_>>();
-    collect_tables_with_filters(ctx, &source_filters, table_filter).await
+    collect_tables_with_filters(ctx, catalog_filter, schema_filter, &[], table_filter).await
 }
 
 /// Collect typed table metadata for any of the supplied source/schema filters.
@@ -635,17 +623,31 @@ pub(crate) async fn collect_tables_for_schema_filters(
     ctx: &SessionContext,
     schema_filters: &[&str],
 ) -> Result<Vec<TableInfo>> {
-    collect_tables_with_filters(ctx, schema_filters, None).await
+    collect_tables_with_filters(ctx, None, None, schema_filters, None).await
 }
 
 async fn collect_tables_with_filters(
     ctx: &SessionContext,
-    source_filters: &[&str],
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    qualifier_filters: &[&str],
     table_filter: Option<&str>,
 ) -> Result<Vec<TableInfo>> {
-    let mut tables = collect_table_info_by_key(ctx, source_filters, table_filter).await?;
+    let mut tables = collect_table_info_by_key(
+        ctx,
+        catalog_filter,
+        schema_filter,
+        qualifier_filters,
+        table_filter,
+    )
+    .await?;
 
-    let columns_sql = catalog_columns_query(source_filters, table_filter);
+    let columns_sql = catalog_columns_query(
+        catalog_filter,
+        schema_filter,
+        qualifier_filters,
+        table_filter,
+    );
     let column_batches = ctx.sql(&columns_sql).await?.collect().await?;
     apply_column_infos_from_batches(&mut tables, &column_batches)?;
 
@@ -660,11 +662,24 @@ async fn collect_tables_with_filters(
 /// Collect table metadata without column expansion.
 pub(crate) async fn collect_table_metadata(
     ctx: &SessionContext,
-    source_filter: Option<&str>,
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
     table_filter: Option<&str>,
 ) -> Result<Vec<TableInfo>> {
-    let source_filters = source_filter.into_iter().collect::<Vec<_>>();
-    let mut tables = collect_table_info_by_key(ctx, &source_filters, table_filter)
+    let mut tables =
+        collect_table_info_by_key(ctx, catalog_filter, schema_filter, &[], table_filter)
+            .await?
+            .into_values()
+            .collect::<Vec<_>>();
+    sort_tables(&mut tables);
+    Ok(tables)
+}
+
+pub(crate) async fn collect_table_metadata_for_qualifier(
+    ctx: &SessionContext,
+    qualifier_filter: &str,
+) -> Result<Vec<TableInfo>> {
+    let mut tables = collect_table_info_by_key(ctx, None, None, &[qualifier_filter], None)
         .await?
         .into_values()
         .collect::<Vec<_>>();
@@ -674,47 +689,97 @@ pub(crate) async fn collect_table_metadata(
 
 async fn collect_table_info_by_key(
     ctx: &SessionContext,
-    source_filters: &[&str],
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    qualifier_filters: &[&str],
     table_filter: Option<&str>,
 ) -> Result<TableInfoByKey> {
-    let tables_sql = catalog_tables_query(source_filters, table_filter);
+    let tables_sql = catalog_tables_query(
+        catalog_filter,
+        schema_filter,
+        qualifier_filters,
+        table_filter,
+    );
     let table_batches = ctx.sql(&tables_sql).await?.collect().await?;
-    collect_table_infos_from_batches(&table_batches, source_filters, table_filter)
+    collect_table_infos_from_batches(
+        &table_batches,
+        catalog_filter,
+        schema_filter,
+        qualifier_filters,
+        table_filter,
+    )
 }
 
-fn catalog_tables_query(source_filters: &[&str], table_filter: Option<&str>) -> String {
+fn catalog_tables_query(
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    qualifier_filters: &[&str],
+    table_filter: Option<&str>,
+) -> String {
     let mut sql =
-        "SELECT schema_name, namespace, table_name, description, guide, required_filters \
+        "SELECT catalog_name, schema_name, table_name, description, guide, required_filters \
          FROM coral.tables"
             .to_string();
-    append_catalog_filter(&mut sql, source_filters, table_filter);
+    append_catalog_filter(
+        &mut sql,
+        catalog_filter,
+        schema_filter,
+        qualifier_filters,
+        table_filter,
+    );
     sql
 }
 
-fn catalog_columns_query(source_filters: &[&str], table_filter: Option<&str>) -> String {
+fn catalog_columns_query(
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    qualifier_filters: &[&str],
+    table_filter: Option<&str>,
+) -> String {
     let mut sql =
-        "SELECT schema_name, namespace, table_name, ordinal_position, column_name, data_type, \
+        "SELECT catalog_name, schema_name, table_name, ordinal_position, column_name, data_type, \
          is_nullable, is_virtual, is_required_filter, description FROM coral.columns"
             .to_string();
-    append_catalog_filter(&mut sql, source_filters, table_filter);
+    append_catalog_filter(
+        &mut sql,
+        catalog_filter,
+        schema_filter,
+        qualifier_filters,
+        table_filter,
+    );
     sql
 }
 
-fn append_catalog_filter(sql: &mut String, source_filters: &[&str], table_filter: Option<&str>) {
+fn append_catalog_filter(
+    sql: &mut String,
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    qualifier_filters: &[&str],
+    table_filter: Option<&str>,
+) {
     let mut predicates = Vec::new();
-    if !source_filters.is_empty() {
-        let source_predicates = source_filters
+    if let Some(catalog_filter) = catalog_filter {
+        predicates.push(format!(
+            "catalog_name = {}",
+            sql_string_literal(catalog_filter)
+        ));
+    }
+    if let Some(schema_filter) = schema_filter {
+        predicates.push(format!(
+            "schema_name = {}",
+            sql_string_literal(schema_filter)
+        ));
+    }
+    if !qualifier_filters.is_empty() {
+        let qualifier_predicates = qualifier_filters
             .iter()
             .map(|filter| {
                 let literal = sql_string_literal(filter);
-                format!(
-                    "(schema_name = {literal} OR \
-                     (namespace <> '' AND concat(schema_name, '.', namespace) = {literal}))"
-                )
+                format!("(catalog_name = {literal} OR schema_name = {literal})")
             })
             .collect::<Vec<_>>()
             .join(" OR ");
-        predicates.push(format!("({source_predicates})"));
+        predicates.push(format!("({qualifier_predicates})"));
     }
     if let Some(table_filter) = table_filter {
         predicates.push(format!("table_name = {}", sql_string_literal(table_filter)));
@@ -727,9 +792,9 @@ fn append_catalog_filter(sql: &mut String, source_filters: &[&str], table_filter
 
 fn sort_tables(tables: &mut [TableInfo]) {
     tables.sort_by(|left, right| {
-        (&left.schema_name, &left.namespace, &left.table_name).cmp(&(
+        (&left.catalog_name, &left.schema_name, &left.table_name).cmp(&(
+            &right.catalog_name,
             &right.schema_name,
-            &right.namespace,
             &right.table_name,
         ))
     });
@@ -739,36 +804,44 @@ type TableInfoByKey = HashMap<(String, String, String), TableInfo>;
 
 fn collect_table_infos_from_batches(
     batches: &[RecordBatch],
-    source_filters: &[&str],
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    qualifier_filters: &[&str],
     table_filter: Option<&str>,
 ) -> Result<TableInfoByKey> {
     let mut tables = HashMap::new();
     for batch in batches {
+        let catalog_names = string_array(batch, "catalog_name")?;
         let schema_names = string_array(batch, "schema_name")?;
-        let namespaces = string_array(batch, "namespace")?;
         let table_names = string_array(batch, "table_name")?;
         let descriptions = string_array(batch, "description")?;
         let guides = string_array(batch, "guide")?;
         let required_filters = string_array(batch, "required_filters")?;
 
         for row in 0..batch.num_rows() {
+            let catalog_name = catalog_names.value(row).to_string();
             let schema_name = schema_names.value(row).to_string();
-            let namespace = namespaces.value(row).to_string();
             let table_name = table_names.value(row).to_string();
             if !table_matches_query_filter(
+                &catalog_name,
                 &schema_name,
-                &namespace,
                 &table_name,
-                source_filters,
+                catalog_filter,
+                schema_filter,
+                qualifier_filters,
                 table_filter,
             ) {
                 continue;
             }
             tables.insert(
-                (schema_name.clone(), namespace.clone(), table_name.clone()),
+                (
+                    catalog_name.clone(),
+                    schema_name.clone(),
+                    table_name.clone(),
+                ),
                 TableInfo {
+                    catalog_name,
                     schema_name,
-                    namespace,
                     table_name,
                     description: descriptions.value(row).to_string(),
                     guide: guides.value(row).to_string(),
@@ -786,8 +859,8 @@ fn apply_column_infos_from_batches(
     batches: &[RecordBatch],
 ) -> Result<()> {
     for batch in batches {
+        let catalog_names = string_array(batch, "catalog_name")?;
         let schema_names = string_array(batch, "schema_name")?;
-        let namespaces = string_array(batch, "namespace")?;
         let table_names = string_array(batch, "table_name")?;
         let positions = int32_array(batch, "ordinal_position")?;
         let column_names = string_array(batch, "column_name")?;
@@ -799,8 +872,8 @@ fn apply_column_infos_from_batches(
 
         for row in 0..batch.num_rows() {
             let key = (
+                catalog_names.value(row).to_string(),
                 schema_names.value(row).to_string(),
-                namespaces.value(row).to_string(),
                 table_names.value(row).to_string(),
             );
             let Some(table) = tables.get_mut(&key) else {
@@ -856,34 +929,21 @@ fn split_required_filters(value: &str) -> Vec<String> {
 }
 
 fn table_matches_query_filter(
+    catalog_name: &str,
     schema_name: &str,
-    namespace: &str,
     table_name: &str,
-    source_filters: &[&str],
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    qualifier_filters: &[&str],
     table_filter: Option<&str>,
 ) -> bool {
-    (source_filters.is_empty()
-        || source_filters
-            .iter()
-            .any(|value| table_schema_matches(schema_name, namespace, value)))
+    catalog_filter.is_none_or(|value| catalog_name == value)
+        && schema_filter.is_none_or(|value| schema_name == value)
+        && (qualifier_filters.is_empty()
+            || qualifier_filters
+                .iter()
+                .any(|value| catalog_name == *value || schema_name == *value))
         && table_filter.is_none_or(|value| table_name == value)
-}
-
-/// Matches a user-supplied source/schema filter against one table.
-///
-/// Database sources expose three-part names, so a table is addressable by its
-/// source schema (`coral_db`) or the dotted schema-namespace combination
-/// (`coral_db.main`). Tables without a namespace reduce to the plain
-/// schema-name match.
-fn table_schema_matches(schema_name: &str, namespace: &str, value: &str) -> bool {
-    if value == schema_name {
-        return true;
-    }
-    !namespace.is_empty()
-        && value
-            .strip_prefix(schema_name)
-            .and_then(|rest| rest.strip_prefix('.'))
-            .is_some_and(|rest| rest == namespace)
 }
 
 /// Collect typed source-scoped table function metadata for the active source set.
@@ -1358,7 +1418,6 @@ mod tests {
         let functions = collect_table_functions(&[RegisteredSource {
             catalog_name: None,
             schema_name: "source_schema".to_string(),
-            catalog_name: None,
             tables: Vec::new(),
             table_functions: vec![RegisteredTableFunction {
                 schema_name: "function_schema".to_string(),

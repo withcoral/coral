@@ -128,7 +128,6 @@ impl CompositeSchemaRegistration {
             source: RegisteredSource {
                 catalog_name: None,
                 schema_name: self.schema_name,
-                catalog_name: None,
                 tables: self.registered_tables,
                 table_functions: self.registered_functions,
                 inputs: self.inputs,

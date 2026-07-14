@@ -113,7 +113,6 @@ pub(crate) struct RegisteredSource {
     /// to their source name; two-part sources leave it unset.
     pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
-    pub(crate) catalog_name: Option<String>,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) table_functions: Vec<RegisteredTableFunction>,
     pub(crate) inputs: Vec<RegisteredInput>,

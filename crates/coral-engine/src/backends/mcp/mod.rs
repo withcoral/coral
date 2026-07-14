@@ -250,7 +250,6 @@ impl CompiledBackendSource for McpCompiledSource {
                 source: RegisteredSource {
                     catalog_name: None,
                     schema_name,
-                    catalog_name: None,
                     tables: table_infos,
                     table_functions: table_function_infos,
                     inputs,
