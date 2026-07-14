@@ -296,7 +296,7 @@ impl UdfParameterTypeBinding {
         }
 
         if self.is_string_shaped()
-            && let Some(value) = string_shaped_literal_value(value, self.data_type)
+            && let Some(value) = value.try_as_str().flatten()
         {
             return Some(QueryParameterValue::string(value));
         }
@@ -315,7 +315,8 @@ impl UdfParameterTypeBinding {
                 ScalarValue::Boolean(Some(value)) => Some(QueryParameterValue::boolean(*value)),
                 _ => None,
             },
-            ManifestDataType::Utf8 | ManifestDataType::Json | ManifestDataType::Timestamp => None,
+            ManifestDataType::Timestamp => timestamp_parameter_from_scalar(value),
+            ManifestDataType::Utf8 | ManifestDataType::Json => None,
         }
     }
 
@@ -328,7 +329,10 @@ impl UdfParameterTypeBinding {
             }
             (ManifestDataType::Int64, QueryParameterValue::Integer(_))
             | (ManifestDataType::Float64, QueryParameterValue::Float(_))
-            | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_)) => Some(value.clone()),
+            | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_))
+            | (ManifestDataType::Timestamp, QueryParameterValue::Timestamp(_)) => {
+                Some(value.clone())
+            }
             (ManifestDataType::Float64, QueryParameterValue::Integer(value)) => {
                 float_parameter_from_integer(*value)
             }
@@ -345,6 +349,7 @@ impl UdfParameterTypeBinding {
             ManifestDataType::Int64 => QueryParameterValue::null_integer(),
             ManifestDataType::Float64 => QueryParameterValue::null_float(),
             ManifestDataType::Boolean => QueryParameterValue::null_boolean(),
+            ManifestDataType::Timestamp => QueryParameterValue::null_timestamp(),
             _ => unreachable!("string-binding manifest types returned above"),
         }
     }
@@ -385,29 +390,12 @@ fn float_parameter_from_integer(value: Option<i64>) -> Option<QueryParameterValu
     Some(QueryParameterValue::float(value))
 }
 
-fn string_shaped_literal_value(value: &ScalarValue, data_type: ManifestDataType) -> Option<String> {
-    if let Some(value) = value.try_as_str().flatten() {
-        return Some(value.to_string());
-    }
-
-    if data_type == ManifestDataType::Timestamp
-        && matches!(
-            value,
-            ScalarValue::TimestampSecond(_, _)
-                | ScalarValue::TimestampMillisecond(_, _)
-                | ScalarValue::TimestampMicrosecond(_, _)
-                | ScalarValue::TimestampNanosecond(_, _)
-        )
-    {
-        return value
-            .cast_to(&DataType::Utf8)
-            .ok()?
-            .try_as_str()
-            .flatten()
-            .map(str::to_string);
-    }
-
-    None
+fn timestamp_parameter_from_scalar(value: &ScalarValue) -> Option<QueryParameterValue> {
+    let data_type = crate::types::arrow_data_type(ManifestDataType::Timestamp);
+    let ScalarValue::TimestampMicrosecond(Some(value), _) = value.cast_to(&data_type).ok()? else {
+        return None;
+    };
+    Some(QueryParameterValue::timestamp_micros(value))
 }
 
 fn query_parameter_value_kind(value: &QueryParameterValue) -> &'static str {
@@ -416,6 +404,7 @@ fn query_parameter_value_kind(value: &QueryParameterValue) -> &'static str {
         QueryParameterValue::Integer(_) => "integer",
         QueryParameterValue::Float(_) => "float",
         QueryParameterValue::Boolean(_) => "boolean",
+        QueryParameterValue::Timestamp(_) => "timestamp",
     }
 }
 
@@ -425,6 +414,10 @@ fn scalar_literal_kind(value: &ScalarValue) -> &'static str {
         ScalarValue::Int64(_) => "integer",
         ScalarValue::Float64(_) => "float",
         ScalarValue::Boolean(_) => "boolean",
+        ScalarValue::TimestampSecond(_, _)
+        | ScalarValue::TimestampMillisecond(_, _)
+        | ScalarValue::TimestampMicrosecond(_, _)
+        | ScalarValue::TimestampNanosecond(_, _) => "timestamp",
         _ => "unsupported literal",
     }
 }
@@ -634,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn udf_argument_values_formats_native_timestamp_literals() {
+    fn udf_argument_values_preserves_native_timestamp_literals() {
         let mut udf = udf();
         udf.arguments = vec![argument("since", ManifestDataType::Timestamp)];
         let timestamp =
@@ -642,7 +635,10 @@ mod tests {
 
         assert_eq!(
             udf_argument_values(&udf, &[Expr::Literal(timestamp, None)]).unwrap(),
-            params([("since", QueryParameterValue::string("2024-01-01T00:00:00Z"))])
+            params([(
+                "since",
+                QueryParameterValue::timestamp_micros(1_704_067_200_000_000)
+            )])
         );
     }
 
@@ -660,7 +656,10 @@ mod tests {
 
         assert_eq!(
             udf_argument_values(&udf, &[timestamp]).unwrap(),
-            params([("since", QueryParameterValue::string("2024-01-01T00:00:00Z"))])
+            params([(
+                "since",
+                QueryParameterValue::timestamp_micros(1_704_067_200_000_000)
+            )])
         );
     }
 }
