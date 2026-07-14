@@ -106,7 +106,7 @@ impl<'a> OpenApiImporter<'a> {
         match error {
             RefError::External(reference) => {
                 self.diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_OPERATION_REF_UNSUPPORTED",
+                    "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
                     format!(
                         "OpenAPI operation {method_name} {path} references external operation '{reference}', but Coral currently requires dereferenced or bundled OpenAPI documents"
                     ),
@@ -116,7 +116,7 @@ impl<'a> OpenApiImporter<'a> {
             }
             RefError::NotFound(reference) => {
                 self.diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_OPERATION_REF_UNRESOLVED",
+                    "OPENAPI_REF_NOT_FOUND",
                     format!("OpenAPI operation {method_name} {path} reference '{reference}' was not found"),
                     self.surface.id.clone(),
                     None,

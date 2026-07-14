@@ -87,7 +87,7 @@ paths:
     let diagnostic = ir
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == "OPENAPI_OPERATION_REF_UNSUPPORTED")
+        .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
         .expect("unsupported operation ref diagnostic");
     assert_eq!(diagnostic.surface_id.as_deref(), Some("rest"));
     assert!(diagnostic.operation_id.is_none());
