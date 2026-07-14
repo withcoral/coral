@@ -1,23 +1,21 @@
 //! App-domain task lifecycle orchestration.
 
-use std::sync::Arc;
-
 use super::id::TaskId;
-use super::store::{TaskEnd, TaskEventStore, TaskStart, TaskStatus, TaskStoreError};
+use super::store::{TaskEnd, TaskStart, TaskStatus, TaskStore, TaskStoreError};
 use crate::workspaces::WorkspaceName;
 
 /// Coordinates task lifecycle persistence and validation.
 #[derive(Clone)]
 pub(crate) struct TaskManager {
-    store: Arc<dyn TaskEventStore>,
+    store: TaskStore,
 }
 
 impl TaskManager {
-    pub(crate) fn new(store: Arc<dyn TaskEventStore>) -> Self {
+    pub(crate) fn new(store: TaskStore) -> Self {
         Self { store }
     }
 
-    pub(crate) fn start_task(
+    pub(crate) async fn start_task(
         &self,
         workspace: WorkspaceName,
         intent: String,
@@ -27,17 +25,17 @@ impl TaskManager {
             workspace,
             intent,
         };
-        self.store.start_task(&start)?;
+        self.store.start_task(&start).await?;
         Ok(start)
     }
 
-    pub(crate) fn end_task(
+    pub(crate) async fn end_task(
         &self,
         workspace: WorkspaceName,
         task_id: TaskId,
         status: TaskStatus,
     ) -> Result<TaskEnd, TaskManagerError> {
-        if !self.store.contains_started_task(&workspace, &task_id)? {
+        if self.store.task(&workspace, &task_id).await?.is_none() {
             return Err(TaskManagerError::TaskNotFound {
                 task_id: task_id.to_string(),
             });
@@ -47,7 +45,7 @@ impl TaskManager {
             workspace,
             status,
         };
-        self.store.end_task(&end)?;
+        self.store.end_task(&end).await?;
         Ok(end)
     }
 }

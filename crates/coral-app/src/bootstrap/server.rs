@@ -60,7 +60,7 @@ use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_stat
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
-use crate::task::store::JsonlTaskEventStore;
+use crate::task::store::TaskStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcRequestContextLayer;
@@ -316,7 +316,7 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -762,6 +762,7 @@ mod tests {
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tempfile::TempDir;
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
@@ -778,7 +779,7 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
-    use crate::task::store::JsonlTaskEventStore;
+    use crate::task::store::TaskStore;
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
@@ -938,18 +939,23 @@ backend = "unsupported"
         assert_eq!(task_end.task_status, TaskStatus::Success as i32);
 
         let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let workspace = WorkspaceName::default();
-        let tasks =
-            std::fs::read_to_string(layout.task_events_file(&workspace)).expect("task events file");
-        assert!(tasks.contains(&task.task_id));
-        assert!(
-            tasks.contains("find the HR onboarding form"),
-            "task events should contain start intent, got: {tasks}"
-        );
-        assert!(
-            tasks.contains("success"),
-            "task events should contain end status, got: {tasks}"
-        );
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(layout.database_file())
+                    .create_if_missing(false),
+            )
+            .await
+            .expect("open database");
+        let stored: (String, Option<String>) =
+            sqlx::query_as("SELECT intent, status FROM tasks WHERE workspace_id = ? AND id = ?")
+                .bind("default")
+                .bind(&task.task_id)
+                .fetch_one(&pool)
+                .await
+                .expect("task row");
+        assert_eq!(stored.0, "find the HR onboarding form");
+        assert_eq!(stored.1.as_deref(), Some("success"));
         server.shutdown().await.expect("shutdown");
     }
 
@@ -969,7 +975,7 @@ backend = "unsupported"
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1408,7 +1414,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1528,7 +1534,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1645,7 +1651,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),

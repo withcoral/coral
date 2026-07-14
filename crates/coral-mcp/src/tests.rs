@@ -19,6 +19,7 @@ use rmcp::{
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -443,6 +444,21 @@ fn assert_tool_error_text_contains(result: &CallToolResult, expected: &str) {
     );
 }
 
+async fn sqlite_task_count(temp: &TempDir) -> i64 {
+    let options = SqliteConnectOptions::new()
+        .filename(temp.path().join("coral-config/coral.db"))
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("open Coral SQLite database");
+    let task_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks")
+        .fetch_one(&pool)
+        .await
+        .expect("count tasks");
+    task_count.0
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -619,26 +635,23 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .contains("unknown argument 'initialize_session'")
     );
 
-    let tasks_path = temp
-        .path()
-        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
-    let raw = fs::read_to_string(&tasks_path).expect("task file should exist");
-    let records = raw
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
-        .collect::<Vec<_>>();
-    assert_eq!(records.len(), 2);
-    let root_record = records
-        .iter()
-        .find(|record| record["task_id"] == root_task_id.as_str())
-        .expect("root task record");
-    assert_eq!(root_record["workspace"], "default");
-    assert_eq!(root_record["intent"], "Investigate customer renewal risk");
-    let end_record = records
-        .iter()
-        .find(|record| record["task_id"] == root_task_id.as_str() && record["event"] == "end")
-        .expect("task end record");
-    assert_eq!(end_record["task_status"], "success");
+    let options = SqliteConnectOptions::new()
+        .filename(temp.path().join("coral-config/coral.db"))
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("open Coral SQLite database");
+    let root_record: (String, Option<String>) =
+        sqlx::query_as("SELECT intent, status FROM tasks WHERE workspace_id = ? AND id = ?")
+            .bind("default")
+            .bind(&root_task_id)
+            .fetch_one(&pool)
+            .await
+            .expect("root task row");
+    assert_eq!(root_record.0, "Investigate customer renewal risk");
+    assert_eq!(root_record.1.as_deref(), Some("success"));
+    assert_eq!(sqlite_task_count(&temp).await, 1);
 
     let blank_intent = client
         .call_tool(
@@ -653,8 +666,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .to_string()
             .contains("missing string argument 'intent'")
     );
-    let raw_after_error = fs::read_to_string(&tasks_path).expect("task file should exist");
-    assert_eq!(raw_after_error.lines().count(), 2);
+    assert_eq!(sqlite_task_count(&temp).await, 1);
 
     session.shutdown().await;
 }
@@ -703,12 +715,7 @@ async fn mcp_task_tools_are_disabled_by_default() {
             .to_string()
             .contains("tool 'open_episode' not found")
     );
-    assert!(
-        !temp
-            .path()
-            .join("coral-config/workspaces/default/tasks/tasks.jsonl")
-            .exists()
-    );
+    assert_eq!(sqlite_task_count(&temp).await, 0);
 
     session.shutdown().await;
 }

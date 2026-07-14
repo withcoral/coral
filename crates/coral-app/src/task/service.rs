@@ -38,6 +38,7 @@ impl TaskServiceApi for TaskService {
             let workspace = workspace_name_from_proto(request.workspace.as_ref())?;
             let start = task
                 .start_task(workspace, request.intent)
+                .await
                 .map_err(|error| task_manager_status(&error))?;
             Ok(Response::new(StartTaskResponse {
                 task: Some(task_start_to_proto(&start)),
@@ -59,6 +60,7 @@ impl TaskServiceApi for TaskService {
             let task_status = task_status_from_proto(request.task_status).map_err(app_status)?;
             let end = task
                 .end_task(workspace, task_id, task_status)
+                .await
                 .map_err(|error| task_manager_status(&error))?;
             Ok(Response::new(EndTaskResponse {
                 task_end: Some(task_end_to_proto(&end)),
@@ -107,7 +109,7 @@ fn task_manager_status(error: &TaskManagerError) -> Status {
         TaskManagerError::Store(TaskStoreError::InvalidIntent { .. }) => {
             Status::invalid_argument(error.to_string())
         }
-        TaskManagerError::Store(TaskStoreError::Io(_) | TaskStoreError::Serde(_)) => {
+        TaskManagerError::Store(TaskStoreError::Database(_) | TaskStoreError::Clock(_)) => {
             warn!(%error, "failed to persist task lifecycle event");
             Status::internal("failed to persist task lifecycle event")
         }
@@ -116,7 +118,6 @@ fn task_manager_status(error: &TaskManagerError) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::sync::Arc;
 
     use coral_api::v1::{EndTaskRequest, StartTaskRequest, TaskStatus, Workspace};
@@ -125,19 +126,30 @@ mod tests {
 
     use super::{TaskService, TaskServiceApi};
     use crate::state::AppStateLayout;
+    use crate::state::db::DbRepos;
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
     use crate::task::manager::TaskManager;
-    use crate::task::store::JsonlTaskEventStore;
-    use crate::workspaces::WorkspaceName;
+    use crate::task::store::TaskStore;
 
     const UNKNOWN_TASK_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
-    fn service() -> (TempDir, AppStateLayout, TaskService) {
+    async fn service() -> (TempDir, Arc<CoralDb>, TaskService) {
         let dir = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(dir.path().join("coral-config")))
             .expect("layout should resolve");
-        let task = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default database is sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let task = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let service = TaskService::new(task);
-        (dir, layout, service)
+        (dir, db, service)
     }
 
     fn workspace(name: &str) -> Workspace {
@@ -148,7 +160,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_task_persists_task() {
-        let (_dir, layout, service) = service();
+        let (_dir, db, service) = service().await;
 
         let response = service
             .start_task(Request::new(StartTaskRequest {
@@ -161,16 +173,19 @@ mod tests {
 
         let task = response.task.expect("task");
         uuid::Uuid::parse_str(&task.task_id).expect("task id is a UUID");
-        let raw =
-            fs::read_to_string(layout.task_events_file(&WorkspaceName::parse("acme").unwrap()))
-                .expect("task file");
-        assert!(raw.contains(&task.task_id));
-        assert!(raw.contains("Find renewal risk"));
+        let mut session = db.as_ref();
+        let stored = session
+            .tasks()
+            .get("acme", &task.task_id)
+            .await
+            .expect("get task")
+            .expect("task row");
+        assert_eq!(stored.intent, "Find renewal risk");
     }
 
     #[tokio::test]
     async fn end_task_persists_success_status() {
-        let (_dir, layout, service) = service();
+        let (_dir, db, service) = service().await;
 
         let task = service
             .start_task(Request::new(StartTaskRequest {
@@ -195,14 +210,19 @@ mod tests {
         let task_end = response.task_end.expect("task end");
         assert_eq!(task_end.task_id, task.task_id);
         assert_eq!(task_end.task_status, TaskStatus::Success as i32);
-        let raw = fs::read_to_string(layout.task_events_file(&WorkspaceName::default()))
-            .expect("task file");
-        assert!(raw.contains("success"), "got: {raw}");
+        let mut session = db.as_ref();
+        let stored = session
+            .tasks()
+            .get("default", &task.task_id)
+            .await
+            .expect("get task")
+            .expect("task row");
+        assert_eq!(stored.status.as_deref(), Some("success"));
     }
 
     #[tokio::test]
     async fn start_task_rejects_blank_intent() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _db, service) = service().await;
 
         let status = service
             .start_task(Request::new(StartTaskRequest {
@@ -217,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_task_rejects_unknown_task() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _db, service) = service().await;
 
         let status = service
             .end_task(Request::new(EndTaskRequest {
@@ -233,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_task_rejects_malformed_task_id() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _db, service) = service().await;
 
         let status = service
             .end_task(Request::new(EndTaskRequest {
@@ -249,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_task_rejects_unspecified_status() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _db, service) = service().await;
         let task = service
             .start_task(Request::new(StartTaskRequest {
                 workspace: Some(workspace("default")),

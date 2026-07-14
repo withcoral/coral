@@ -138,13 +138,6 @@ impl AppStateLayout {
         self.search_dir(workspace_name).join("search.sqlite3")
     }
 
-    /// Per-workspace task lifecycle event log (JSONL).
-    pub(crate) fn task_events_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
-        self.workspace_dir(workspace_name)
-            .join("tasks")
-            .join("tasks.jsonl")
-    }
-
     pub(crate) fn source_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -348,14 +341,6 @@ mod tests {
                 .join("default")
                 .join("search")
                 .join("search.sqlite3")
-        );
-        assert_eq!(
-            layout.task_events_file(&workspace_name),
-            config_dir
-                .join("workspaces")
-                .join("default")
-                .join("tasks")
-                .join("tasks.jsonl")
         );
         assert_eq!(
             layout.local_trace_store_dir(),
