@@ -329,6 +329,7 @@ fn projection_columns(
                 source_path: Vec::new(),
                 nullable: true,
                 description: "Full decoded tool response row rendered as text.".to_string(),
+                do_not_index: false,
             },
             ProjectionColumn {
                 name: "result_json".to_string(),
@@ -336,6 +337,7 @@ fn projection_columns(
                 source_path: Vec::new(),
                 nullable: true,
                 description: "Full decoded tool response row rendered as JSON.".to_string(),
+                do_not_index: false,
             },
         ];
     }
@@ -346,6 +348,7 @@ fn projection_columns(
             source_path: Vec::new(),
             nullable: true,
             description: String::new(),
+            do_not_index: false,
         }];
     };
     let IrTypeShape::Object { fields } = &row_type.shape else {
@@ -355,6 +358,7 @@ fn projection_columns(
             source_path: Vec::new(),
             nullable: true,
             description: row_type.description.clone(),
+            do_not_index: false,
         }];
     };
     let mut columns = Vec::new();
@@ -374,6 +378,7 @@ fn projection_columns(
             source_path: vec![field.name.clone()],
             nullable: true,
             description: field.description.clone(),
+            do_not_index: false,
         });
     }
     columns

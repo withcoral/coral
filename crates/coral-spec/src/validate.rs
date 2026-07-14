@@ -939,6 +939,7 @@ mod tests {
             r#virtual: false,
             description: String::new(),
             expr: None,
+            do_not_index: false,
         }
     }
 
@@ -982,6 +983,34 @@ mod tests {
             error.to_string().contains("unknown variant `Banana`"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn column_spec_do_not_index_defaults_false_and_round_trips() {
+        let default = serde_json::from_value::<ColumnSpec>(json!({
+            "name": "title",
+            "type": "Utf8",
+        }))
+        .expect("default column policy");
+        assert!(!default.do_not_index);
+        assert!(
+            serde_json::to_value(&default)
+                .expect("serialize default column")
+                .get("do_not_index")
+                .is_none()
+        );
+
+        let excluded = serde_json::from_value::<ColumnSpec>(json!({
+            "name": "internal_note",
+            "type": "Utf8",
+            "do_not_index": true,
+        }))
+        .expect("explicit column policy");
+        let serialized = serde_json::to_value(&excluded).expect("serialize excluded column");
+        assert_eq!(serialized.get("do_not_index"), Some(&json!(true)));
+        let round_tripped =
+            serde_json::from_value::<ColumnSpec>(serialized).expect("round-trip column policy");
+        assert!(round_tripped.do_not_index);
     }
 
     fn base_request() -> RequestSpec {
