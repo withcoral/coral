@@ -73,6 +73,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             expr: Some(ExprSpec::Path {
                 path: column.source_path.clone(),
             }),
+            do_not_index: column.do_not_index,
         })
         .collect::<Vec<_>>();
     let existing = columns
@@ -94,6 +95,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
                 expr: Some(ExprSpec::FromFilter {
                     key: input.name.clone(),
                 }),
+                do_not_index: false,
             }),
     );
     columns

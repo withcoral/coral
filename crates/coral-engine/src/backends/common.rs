@@ -9,8 +9,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceBackend, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
+    ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, FilterSpec, ManifestDataType, ManifestInputKind,
+    ManifestInputSpec, SearchLimitsSpec, SourceBackend, SourceTableFunctionKind,
+    SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
@@ -385,11 +386,14 @@ pub(crate) fn schema_from_columns(
 
     let mut fields = Vec::with_capacity(columns.len());
     for column in columns {
-        fields.push(Field::new(
-            &column.name,
-            arrow_type_for_column(column),
-            column.nullable,
-        ));
+        let mut field = Field::new(&column.name, arrow_type_for_column(column), column.nullable);
+        if column.do_not_index {
+            field = field.with_metadata(HashMap::from([(
+                DO_NOT_INDEX_COLUMN_METADATA_KEY.to_string(),
+                "true".to_string(),
+            )]));
+        }
+        fields.push(field);
     }
     Ok(Arc::new(Schema::new(fields)))
 }
@@ -435,6 +439,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schema_marks_source_authored_do_not_index_columns() {
+        let schema = schema_from_columns(
+            &[
+                test_column("visible", false),
+                test_column("internal_note", true),
+            ],
+            "demo",
+            "items",
+        )
+        .expect("schema");
+
+        assert!(
+            !schema
+                .field_with_name("visible")
+                .expect("visible field")
+                .metadata()
+                .contains_key(DO_NOT_INDEX_COLUMN_METADATA_KEY)
+        );
+        assert_eq!(
+            schema
+                .field_with_name("internal_note")
+                .expect("excluded field")
+                .metadata()
+                .get(DO_NOT_INDEX_COLUMN_METADATA_KEY)
+                .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
     fn default_http_client_is_shared_only_within_registration_context() {
         let build_count = AtomicUsize::new(0);
         let first_context = BackendRegistrationContext::default();
@@ -469,5 +503,17 @@ mod tests {
         reqwest::Client::builder()
             .build()
             .map_err(|error| error.to_string())
+    }
+
+    fn test_column(name: &str, do_not_index: bool) -> ColumnSpec {
+        ColumnSpec {
+            name: name.to_string(),
+            data_type: ManifestDataType::Utf8,
+            nullable: true,
+            r#virtual: false,
+            description: String::new(),
+            expr: None,
+            do_not_index,
+        }
     }
 }

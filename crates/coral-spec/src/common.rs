@@ -21,6 +21,10 @@ use crate::{ManifestError, ParsedTemplate, Result};
 
 const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
 
+/// Arrow field metadata key marking a source-authored column as excluded from
+/// observed-value indexing.
+pub const DO_NOT_INDEX_COLUMN_METADATA_KEY: &str = "coral.do_not_index";
+
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
 pub struct SourceManifestCommon {
@@ -989,6 +993,9 @@ pub struct ColumnSpec {
     pub description: String,
     #[serde(default)]
     pub expr: Option<ExprSpec>,
+    /// Excludes this column from observed-value indexing when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub do_not_index: bool,
 }
 
 impl ColumnSpec {

@@ -14,6 +14,7 @@ use arrow::array::{
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
+use coral_spec::DO_NOT_INDEX_COLUMN_METADATA_KEY;
 
 use crate::hash::sha256_hex;
 use crate::search::observed::sensitive::{is_sensitive_column, sanitize_observed_value};
@@ -32,7 +33,13 @@ impl ObservedValuesCollector {
         let mut seen = HashSet::new();
         let schema = batch.schema();
         let eligible_column_indices = (0..batch.num_columns())
-            .filter(|&column_index| !is_sensitive_column(schema.field(column_index).name()))
+            .filter(|&column_index| {
+                let field = schema.field(column_index);
+                !field
+                    .metadata()
+                    .contains_key(DO_NOT_INDEX_COLUMN_METADATA_KEY)
+                    && !is_sensitive_column(field.name())
+            })
             .collect::<Vec<_>>();
         for row_index in 0..batch.num_rows() {
             for &column_index in &eligible_column_indices {
@@ -188,15 +195,47 @@ fn normalize_search_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use arrow::array::{BinaryArray, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
 
-    use super::{ObservedValuesCollectionBudget, ObservedValuesCollector, raw_value_len};
+    use super::{
+        DO_NOT_INDEX_COLUMN_METADATA_KEY, ObservedValuesCollectionBudget, ObservedValuesCollector,
+        raw_value_len,
+    };
     use crate::search::observed::sqlite_queue::ObservedValuesQueuePayload;
     use crate::search::observed::writer::payload_json_with_budget;
+
+    #[test]
+    fn excludes_source_authored_do_not_index_columns_before_collection() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("internal_note", DataType::Utf8, false).with_metadata(HashMap::from([(
+                DO_NOT_INDEX_COLUMN_METADATA_KEY.to_string(),
+                "true".to_string(),
+            )])),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["Grace"])),
+                Arc::new(StringArray::from(vec!["persist-me-never"])),
+            ],
+        )
+        .expect("record batch");
+
+        let payload = ObservedValuesCollector::default().collect_batch(&batch);
+        let values = payload
+            .values
+            .iter()
+            .map(|candidate| candidate.display_value.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, ["Grace"]);
+    }
 
     #[test]
     fn suppresses_sensitive_columns_and_values() {

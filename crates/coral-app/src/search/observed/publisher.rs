@@ -230,7 +230,7 @@ fn observed_surface_kind(kind: SourceObservationSurfaceKind) -> ObservedValuesSu
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
@@ -242,7 +242,7 @@ mod tests {
         QuerySource, RuntimeSourceComponent, RuntimeSourcePackage, SourceObservationSurfaceKind,
         SourceScanObservation,
     };
-    use coral_spec::parse_source_manifest_yaml;
+    use coral_spec::{DO_NOT_INDEX_COLUMN_METADATA_KEY, parse_source_manifest_yaml};
     use serde_json::json;
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -348,6 +348,47 @@ mod tests {
         assert!(payloads.contains("coral"));
         assert!(!payloads.contains("literal-secret"));
         assert!(!payloads.contains("ghp_supersecret"));
+    }
+
+    #[test]
+    fn publisher_does_not_persist_source_authored_do_not_index_columns() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let handle = SearchObservationHandle::new(layout.clone());
+        let extensions = handle.extensions_for(&workspace, &[secret_input_query_source()]);
+        let publisher = extensions
+            .source_observation_publishers
+            .first()
+            .expect("publisher");
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("name", DataType::Utf8, false),
+                Field::new("internal_note", DataType::Utf8, false).with_metadata(HashMap::from([
+                    (
+                        DO_NOT_INDEX_COLUMN_METADATA_KEY.to_string(),
+                        "true".to_string(),
+                    ),
+                ])),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["Grace"])),
+                Arc::new(StringArray::from(vec!["persist-me-never"])),
+            ],
+        )
+        .expect("batch");
+
+        publisher.publish_source_scan(SourceScanObservation {
+            source_name: "github",
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "issues",
+            batch: &batch,
+        });
+
+        let payloads = wait_for_payloads(&layout, &workspace).join("\n");
+        assert!(payloads.contains("Grace"));
+        assert!(!payloads.contains("persist-me-never"));
     }
 
     #[test]

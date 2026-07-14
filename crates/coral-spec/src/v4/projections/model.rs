@@ -80,12 +80,16 @@ pub struct ProjectionColumn {
     pub source_path: Vec<String>,
     pub nullable: bool,
     pub description: String,
+    /// Excludes this column from observed-value indexing when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub do_not_index: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
+        Projection, ProjectionCatalog, ProjectionColumn, ProjectionKind, ProjectionVisibility,
+        SqlInputExposure,
     };
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
     use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
@@ -108,7 +112,14 @@ mod tests {
                 operation_id: "issues/search".to_string(),
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
-                columns: Vec::new(),
+                columns: vec![ProjectionColumn {
+                    name: "internal_note".to_string(),
+                    data_type: ManifestDataType::Utf8,
+                    source_path: vec!["internalNote".to_string()],
+                    nullable: true,
+                    description: String::new(),
+                    do_not_index: true,
+                }],
                 search_limits: Some(SearchLimitsSpec {
                     default_top_k: 30,
                     max_top_k: 100,
@@ -137,9 +148,24 @@ mod tests {
             !yaml.contains("pagination:"),
             "projection catalog should not serialize pagination: {yaml}"
         );
+        assert!(
+            yaml.contains("do_not_index: true"),
+            "projection catalog should serialize explicit indexing policy: {yaml}"
+        );
 
-        serde_yaml::from_str::<ProjectionCatalog>(&yaml)
+        let decoded = serde_yaml::from_str::<ProjectionCatalog>(&yaml)
             .expect("projection catalog should round-trip");
+        assert!(
+            decoded
+                .projections
+                .first()
+                .expect("projection")
+                .columns
+                .first()
+                .expect("column")
+                .do_not_index,
+            "projection column policy should survive round-trip"
+        );
     }
 
     #[test]
@@ -161,7 +187,12 @@ projections:
     operation_id: issues/search
     visibility: published
     inputs: []
-    columns: []
+    columns:
+      - name: title
+        data_type: Utf8
+        source_path: [title]
+        nullable: true
+        description: ''
     search_limits: null
     detail_hints: []
     diagnostics: []
@@ -174,6 +205,17 @@ diagnostics: []
         assert_eq!(
             catalog.projections.first().expect("projection").namespace,
             ""
+        );
+        assert!(
+            !catalog
+                .projections
+                .first()
+                .expect("projection")
+                .columns
+                .first()
+                .expect("column")
+                .do_not_index,
+            "legacy projection columns should default to indexable"
         );
     }
 
