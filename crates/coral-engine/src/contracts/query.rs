@@ -446,6 +446,8 @@ pub enum QueryParameterValue {
     Float(Option<f64>),
     /// Boolean value, or a typed boolean NULL.
     Boolean(Option<bool>),
+    /// UTC timestamp as microseconds since the Unix epoch, or a typed timestamp NULL.
+    Timestamp(Option<i64>),
 }
 
 impl QueryParameterValue {
@@ -495,6 +497,18 @@ impl QueryParameterValue {
     #[must_use]
     pub fn null_boolean() -> Self {
         Self::Boolean(None)
+    }
+
+    /// Builds a non-null UTC timestamp from microseconds since the Unix epoch.
+    #[must_use]
+    pub fn timestamp_micros(value: i64) -> Self {
+        Self::Timestamp(Some(value))
+    }
+
+    /// Builds a typed timestamp NULL.
+    #[must_use]
+    pub fn null_timestamp() -> Self {
+        Self::Timestamp(None)
     }
 }
 

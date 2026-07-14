@@ -14,7 +14,7 @@ use coral_spec::backends::file::{FilePartitionDataType, PartitionColumnSpec, Par
 use super::listing::parse_bool;
 
 fn arrow_type(data_type: FilePartitionDataType) -> DataType {
-    crate::types::arrow_column_type(data_type.into())
+    crate::types::arrow_data_type(data_type.into())
 }
 
 fn scalar_from_path(

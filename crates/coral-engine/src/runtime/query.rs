@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use arrow::datatypes::{Field, FieldRef};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use coral_spec::ManifestDataType;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{ScalarValue, TableReference};
@@ -728,7 +728,7 @@ fn infer_source_function_parameter_fields(
                 &placeholder.id,
                 Arc::new(Field::new(
                     "",
-                    crate::types::arrow_parameter_type(argument.data_type),
+                    crate::types::arrow_data_type(argument.data_type),
                     true,
                 )),
             )?;
@@ -769,9 +769,7 @@ fn set_parameter_field(
 ) -> Result<(), DataFusionError> {
     match parameter_fields.get(parameter) {
         Some(Some(existing))
-            if existing.data_type() != field.data_type()
-                && !(crate::types::is_string_family(existing.data_type())
-                    && crate::types::is_string_family(field.data_type())) =>
+            if !parameter_types_are_compatible(existing.data_type(), field.data_type()) =>
         {
             Err(DataFusionError::Plan(format!(
                 "conflicting types for parameter {parameter}: {} and {}; use explicit casts so every use has one type",
@@ -784,6 +782,20 @@ fn set_parameter_field(
             parameter_fields.insert(parameter.to_string(), Some(field));
             Ok(())
         }
+    }
+}
+
+fn parameter_types_are_compatible(left: &DataType, right: &DataType) -> bool {
+    if left == right {
+        return true;
+    }
+
+    match (
+        crate::types::manifest_data_type_for_arrow(left),
+        crate::types::manifest_data_type_for_arrow(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -853,6 +865,9 @@ fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
         QueryParameterValue::Integer(value) => ScalarValue::Int64(*value),
         QueryParameterValue::Float(value) => ScalarValue::Float64(*value),
         QueryParameterValue::Boolean(value) => ScalarValue::Boolean(*value),
+        QueryParameterValue::Timestamp(value) => {
+            ScalarValue::TimestampMicrosecond(*value, Some("+00:00".into()))
+        }
     }
 }
 

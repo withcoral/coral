@@ -223,6 +223,28 @@ async fn infer_udf_signature_uses_explicit_cast_for_argument_type() {
 }
 
 #[tokio::test]
+async fn infer_udf_signature_accepts_timestamp_source_argument_and_cast() {
+    let source = build_source(search_function_manifest("mixed_timestamp_search"));
+
+    let signature = CoralQuery::infer_udf_signature(
+        &[source],
+        test_runtime(),
+        udf(
+            "mixed_timestamp",
+            "select cast($since as TIMESTAMP) as since \
+             from mixed_timestamp_search.search_issues(q => 'open', since => $since)",
+        ),
+    )
+    .await
+    .expect("timestamp source argument and timestamp cast should agree");
+
+    assert_eq!(
+        argument_types(&signature),
+        [("since", ManifestDataType::Timestamp)]
+    );
+}
+
+#[tokio::test]
 async fn infer_udf_signature_uses_column_comparison_for_argument_type() {
     let temp = tempfile::tempdir().expect("temp dir");
     write_jsonl_file(
