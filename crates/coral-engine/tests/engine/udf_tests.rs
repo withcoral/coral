@@ -475,12 +475,15 @@ async fn infer_udf_signature_uses_explicit_cast_for_argument_type() {
 
 #[tokio::test]
 async fn infer_udf_signature_accepts_timestamp_source_argument_and_cast() {
-    let source = build_source(search_function_manifest("mixed_timestamp_search"));
+    let source = build_source(search_function_manifest(
+        "mixed_timestamp_search",
+        "https://example.test",
+    ));
 
     let signature = CoralQuery::infer_udf_signature(
         &[source],
         test_runtime(),
-        udf(
+        udf_sql(
             "mixed_timestamp",
             "select cast($since as TIMESTAMP) as since \
              from mixed_timestamp_search.search_issues(q => 'open', since => $since)",
