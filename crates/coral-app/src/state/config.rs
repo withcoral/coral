@@ -6,6 +6,7 @@ use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, Q
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 use tracing::{info_span, warn};
+use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
@@ -204,6 +205,8 @@ struct PersistedInstalledSource {
     secrets: Vec<String>,
     #[serde(default)]
     credential_storage: Option<CredentialStorageKind>,
+    #[serde(default, skip_serializing_if = "Uuid::is_nil")]
+    credential_revision: Uuid,
     origin: SourceOrigin,
 }
 
@@ -215,6 +218,7 @@ impl PersistedInstalledSource {
             variables: self.variables,
             secrets: self.secrets,
             credential_storage: self.credential_storage,
+            credential_revision: self.credential_revision,
             origin: self.origin,
         }
     }
@@ -227,6 +231,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
             credential_storage: value.credential_storage,
+            credential_revision: value.credential_revision,
             origin: value.origin,
         }
     }
@@ -874,6 +879,14 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("credential_storage");
             }
+            if source.credential_revision.is_nil() {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("credential_revision");
+            } else {
+                source_item["credential_revision"] = value(source.credential_revision.to_string());
+            }
             source_item["origin"] = value(source.origin.as_config_value());
         }
 
@@ -1233,6 +1246,7 @@ mod tests {
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
+            credential_revision: Default::default(),
             origin: SourceOrigin::Imported,
         }
     }
@@ -1902,6 +1916,57 @@ max_concurrency = 0
             sources[0].credential_storage,
             Some(CredentialStorageKind::Keychain)
         );
+    }
+
+    #[test]
+    fn round_trips_non_nil_source_credential_revision() {
+        let workspace_name = default_workspace();
+        let mut source = installed_source("github");
+        source.credential_revision = uuid::Uuid::parse_str("c59a9c41-0e51-45d4-bfb7-f05df71eed53")
+            .expect("credential revision");
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, source.clone());
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+        assert!(raw.contains(&format!(
+            "credential_revision = \"{}\"",
+            source.credential_revision
+        )));
+
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        assert_eq!(sources[0].credential_revision, source.credential_revision);
+    }
+
+    #[test]
+    fn source_config_without_credential_revision_defaults_to_nil() {
+        let raw = r#"
+version = 1
+
+[workspaces.default]
+
+[workspaces.default.sources.github]
+variables = {}
+secrets = ["GITHUB_TOKEN"]
+credential_storage = "file"
+origin = "imported"
+"#;
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("legacy config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&default_workspace());
+
+        assert!(sources[0].credential_revision.is_nil());
     }
 
     #[test]

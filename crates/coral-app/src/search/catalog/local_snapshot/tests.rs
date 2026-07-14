@@ -324,6 +324,7 @@ fn loader_fails_closed_when_installed_manifest_cannot_be_read() {
                 variables: BTreeMap::new(),
                 secrets: Vec::new(),
                 credential_storage: None,
+                credential_revision: Default::default(),
                 origin: SourceOrigin::Imported,
             },
         )
@@ -420,6 +421,7 @@ fn install_imported_source(
                 variables: BTreeMap::new(),
                 secrets: Vec::new(),
                 credential_storage: None,
+                credential_revision: Default::default(),
                 origin: SourceOrigin::Imported,
             },
         )
