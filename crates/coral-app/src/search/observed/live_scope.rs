@@ -301,10 +301,9 @@ mod tests {
         assert!(second.failed_sources.is_empty());
         assert_eq!(first.live_scopes.len(), 1);
         assert_eq!(second.live_scopes.len(), 1);
-        assert_ne!(
-            first.live_scopes[0].source_scope_id,
-            second.live_scopes[0].source_scope_id
-        );
+        let first_scope = first.live_scopes.first().expect("first live scope");
+        let second_scope = second.live_scopes.first().expect("second live scope");
+        assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
     }
 
     #[test]
@@ -434,7 +433,7 @@ tables:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
-                    credential_revision: Default::default(),
+                    credential_revision: Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -458,7 +457,7 @@ tables:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
-                    credential_revision: Default::default(),
+                    credential_revision: Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -494,7 +493,7 @@ tables:
         std::fs::write(
             layout.manifest_file(workspace, source),
             format!(
-                r#"
+                r"
 name: {source}
 version: 1.0.0
 dsl_version: 3
@@ -518,7 +517,7 @@ tables:
     columns:
       - name: id
         type: Utf8
-"#
+"
             ),
         )
         .expect("write manifest");
