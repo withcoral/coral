@@ -257,14 +257,20 @@ impl SqliteSearchError {
     }
 
     pub(crate) fn is_storage_exhaustion(&self) -> bool {
-        matches!(
-            self,
-            Self::Sqlite(error)
-                if matches!(
-                    error.sqlite_error_code(),
-                    Some(ErrorCode::DiskFull | ErrorCode::OutOfMemory | ErrorCode::TooBig)
-                )
-        )
+        match self {
+            Self::Io(error) => matches!(
+                error.kind(),
+                io::ErrorKind::StorageFull
+                    | io::ErrorKind::QuotaExceeded
+                    | io::ErrorKind::OutOfMemory
+                    | io::ErrorKind::FileTooLarge
+            ),
+            Self::Sqlite(error) => matches!(
+                error.sqlite_error_code(),
+                Some(ErrorCode::DiskFull | ErrorCode::OutOfMemory | ErrorCode::TooBig)
+            ),
+            Self::UnsupportedCapability { .. } | Self::UnsupportedSchemaVersion { .. } => false,
+        }
     }
 }
 
@@ -290,7 +296,11 @@ fn wal_checkpoint_truncate(
 }
 
 fn ensure_sqlite_file(path: &Path) -> Result<(), SqliteSearchError> {
-    match create_new_file_private(path) {
+    sqlite_file_creation_result(create_new_file_private(path))
+}
+
+fn sqlite_file_creation_result(result: io::Result<std::fs::File>) -> Result<(), SqliteSearchError> {
+    match result {
         Ok(file) => {
             drop(file);
             Ok(())
@@ -317,29 +327,45 @@ fn detect_capabilities(
 ) -> Result<SqliteSearchCapabilities, SqliteSearchError> {
     let sqlite_version =
         connection.query_row("SELECT sqlite_version()", [], |row| row.get::<_, String>(0))?;
-    let fts5 = connection
-        .execute_batch(
-            "
-            CREATE VIRTUAL TABLE temp.coral_search_fts5_check USING fts5(value);
-            DROP TABLE temp.coral_search_fts5_check;
-            ",
-        )
-        .is_ok();
-    let trigram = connection
-        .execute_batch(
+    let fts5 = probe_capability(
+        connection,
+        "
+        CREATE VIRTUAL TABLE temp.coral_search_fts5_check USING fts5(value);
+        DROP TABLE temp.coral_search_fts5_check;
+        ",
+    )?;
+    let trigram = if fts5 {
+        probe_capability(
+            connection,
             "
             CREATE VIRTUAL TABLE temp.coral_search_trigram_check
             USING fts5(value, tokenize = 'trigram');
             DROP TABLE temp.coral_search_trigram_check;
             ",
-        )
-        .is_ok();
+        )?
+    } else {
+        false
+    };
 
     Ok(SqliteSearchCapabilities {
         sqlite_version,
         fts5,
         trigram,
     })
+}
+
+fn probe_capability(connection: &Connection, sql: &str) -> Result<bool, SqliteSearchError> {
+    classify_capability_probe(connection.execute_batch(sql))
+}
+
+fn classify_capability_probe(result: rusqlite::Result<()>) -> Result<bool, SqliteSearchError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == ErrorCode::Unknown => {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn ensure_supported(capabilities: &SqliteSearchCapabilities) -> Result<(), SqliteSearchError> {
@@ -433,14 +459,15 @@ fn schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError>
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{io, time::Duration};
 
     use rusqlite::{Connection, OptionalExtension as _};
     use tempfile::tempdir;
 
     use super::{
         SEARCH_SQLITE_MIGRATIONS, SEARCH_SQLITE_SCHEMA_VERSION, SqliteSearchError,
-        SqliteSearchStore, WalCheckpointOutcome, configure_connection, wal_checkpoint_truncate,
+        SqliteSearchStore, WalCheckpointOutcome, classify_capability_probe, configure_connection,
+        sqlite_file_creation_result, wal_checkpoint_truncate,
     };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
@@ -525,6 +552,57 @@ mod tests {
         ));
 
         assert!(error.is_storage_exhaustion());
+    }
+
+    #[test]
+    fn storage_full_file_creation_error_preserves_exhaustion_category() {
+        let error = sqlite_file_creation_result(Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "fixture disk full",
+        )))
+        .expect_err("storage-full file creation must fail");
+
+        assert!(matches!(
+            &error,
+            SqliteSearchError::Io(error) if error.kind() == io::ErrorKind::StorageFull
+        ));
+        assert!(error.is_storage_exhaustion());
+    }
+
+    #[test]
+    fn capability_probe_only_treats_plain_sqlite_error_as_unsupported() {
+        assert!(classify_capability_probe(Ok(())).expect("successful probe"));
+        assert!(
+            !classify_capability_probe(Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some("fixture unsupported capability".to_string()),
+            )))
+            .expect("plain SQLite error should mean unsupported capability")
+        );
+    }
+
+    #[test]
+    fn capability_probe_preserves_operational_sqlite_errors() {
+        for code in [
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_NOMEM,
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_CORRUPT,
+        ] {
+            let expected = rusqlite::ffi::Error::new(code).code;
+            let error = classify_capability_probe(Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None,
+            )))
+            .expect_err("operational probe failure must be preserved");
+
+            match error {
+                SqliteSearchError::Sqlite(error) => {
+                    assert_eq!(error.sqlite_error_code(), Some(expected));
+                }
+                other => panic!("expected SQLite error for code {code}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

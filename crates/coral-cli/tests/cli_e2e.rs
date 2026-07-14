@@ -18,10 +18,9 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::{
     CatalogRebuildResult, DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse,
-    ListWorkspacesResponse, RebuildSearchIndexResponse, SearchDataScope, SearchIndexProvider,
-    SearchMaintenanceResult, SearchMaintenanceState, SearchProvider, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, search_clear_target,
-    search_maintenance_result,
+    ListWorkspacesResponse, RebuildSearchIndexResponse, SearchDataScope, SearchMaintenanceResult,
+    SearchMaintenanceState, SearchProvider, Source, SourceCredentialStorage, SourceInfo,
+    SourceOrigin, Workspace, search_clear_target, search_maintenance_result,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -916,7 +915,6 @@ async fn search_index_rebuild_calls_app_maintenance_rpc() {
     let requests = server.rebuild_search_index_requests();
     assert_eq!(requests.len(), 1, "expected one rebuild call");
     assert_default_workspace(requests[0].workspace.as_ref());
-    assert_eq!(requests[0].provider, SearchIndexProvider::Catalog as i32);
     assert!(requests[0].force);
 
     server.shutdown().await;

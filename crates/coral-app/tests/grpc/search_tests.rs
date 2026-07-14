@@ -5,10 +5,9 @@
 
 use coral_api::v1::{
     ClearSearchDataRequest, RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope,
-    SearchFieldRole, SearchIndexProvider, SearchMaintenanceState, SearchProvider,
-    SearchProviderState, SearchRequest, SearchSurfaceKind, TableFunctionKind,
-    ValidateSourceRequest, Workspace, catalog_item, search_clear_target, search_maintenance_result,
-    search_result,
+    SearchFieldRole, SearchMaintenanceState, SearchProvider, SearchProviderState, SearchRequest,
+    SearchSurfaceKind, TableFunctionKind, ValidateSourceRequest, Workspace, catalog_item,
+    search_clear_target, search_maintenance_result, search_result,
 };
 use coral_client::default_workspace;
 use serde_json::json;
@@ -223,7 +222,6 @@ async fn rebuild_search_index_forces_catalog_projection_refresh() {
         .search_client()
         .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
             workspace: Some(default_workspace()),
-            provider: SearchIndexProvider::Catalog as i32,
             force: false,
         }))
         .await
@@ -244,7 +242,6 @@ async fn rebuild_search_index_forces_catalog_projection_refresh() {
         .search_client()
         .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
             workspace: Some(default_workspace()),
-            provider: SearchIndexProvider::Catalog as i32,
             force: true,
         }))
         .await
@@ -282,7 +279,6 @@ async fn clear_search_data_removes_catalog_projection_and_next_search_recreates_
         .search_client()
         .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
             workspace: Some(default_workspace()),
-            provider: SearchIndexProvider::Catalog as i32,
             force: false,
         }))
         .await
