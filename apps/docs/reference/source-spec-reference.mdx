@@ -72,6 +72,19 @@ Each column also supports:
 
 - `nullable` (boolean, default `true`): whether the column can contain NULL values
 - `description` (string): human-readable description, surfaced through `coral.columns`
+- `do_not_index` (boolean, default `false`): exclude the column from observed-value
+  indexing before Coral inspects or persists its values
+
+Set `do_not_index: true` on a field whose values should not be indexed or stored
+in plaintext in Coral's local search database. The field remains queryable
+through SQL:
+
+```yaml
+columns:
+  - name: internal_note
+    type: Utf8
+    do_not_index: true
+```
 
 ### Nested field naming
 
