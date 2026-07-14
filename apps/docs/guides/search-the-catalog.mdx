@@ -3,9 +3,11 @@ title: "Search the catalog"
 description: "Find relevant tables, table functions, columns, and filters before you write SQL."
 ---
 
-Use catalog search when you know what data you need but not which table or table function exposes it. Enter a natural language query and Coral ranks matching tables, table functions, columns, and filters from the sources installed in your current workspace.
+Catalog search helps you find the right table or table function when you know what you want to query but not where to start. Enter a natural language description, and Coral ranks matching tables, table functions, columns, and filters in your current workspace.
 
-Catalog search helps you find where data can be queried. It does not retrieve rows from GitHub, Slack, or another connected source.
+<Note>
+Catalog search looks only at Coral's catalog metadata. It does not query connected sources or return source rows.
+</Note>
 
 ## Use catalog search from the CLI
 
@@ -26,7 +28,7 @@ Results
 
 The `SQL` line gives you the table reference. For a table function, `SQL reference` identifies the function and `Call` shows its required arguments.
 
-Catalog search only identifies these queryable surfaces; it does not execute them or retrieve rows. To fetch rows, use the returned `SQL` reference or `Call` example with `coral sql`. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
+To fetch rows, use the result's `SQL` reference or `Call` example in a query with `coral sql`. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
 
 By default, Coral returns up to 10 results. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
 
