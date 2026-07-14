@@ -13,6 +13,7 @@ export default [
   route('sources/:sourceName/oauth-install', 'routes/source-oauth-install.ts'),
   layout('routes/app-shell.tsx', [
     index('routes/index.tsx'),
+    route(routePattern('workspaces'), 'routes/workspaces-action.ts'),
     route(routePattern('workspaceSources'), 'routes/sources.tsx', [
       route(':sourceName', 'routes/source-detail.tsx'),
     ]),

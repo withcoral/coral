@@ -1,10 +1,11 @@
-import { createMemoryRouter, RouterProvider } from 'react-router'
+import { createMemoryRouter, data, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
 
 import { Sidebar } from './sidebar'
 import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
+import { validateWorkspaceName } from '@/lib/workspace-name'
 import { routePath, routePattern } from '@/routing/routemap'
 
 const WORKSPACES = [{ name: 'default' }, { name: 'analytics' }]
@@ -16,6 +17,19 @@ async function renderSidebar(
 ) {
   const router = createMemoryRouter(
     [
+      {
+        action: async ({ request }) => {
+          const formData = await request.formData()
+          const nameValue = formData.get('name')
+          const name = typeof nameValue === 'string' ? nameValue : ''
+          if (formData.get('intent') !== 'create') {
+            return data({ error: 'Unsupported workspace action.', name }, { status: 400 })
+          }
+          const error = validateWorkspaceName(name)
+          return data({ error: error ?? '', name }, { status: error ? 400 : 200 })
+        },
+        path: routePattern('workspaces'),
+      },
       {
         element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
         path: routePattern('workspaceSource'),
@@ -48,7 +62,7 @@ async function renderSidebar(
     { initialEntries: [initialEntry] },
   )
 
-  return render(<RouterProvider router={router} />)
+  return Object.assign(await render(<RouterProvider router={router} />), { router })
 }
 
 describe('Sidebar', () => {
@@ -159,6 +173,63 @@ describe('Sidebar', () => {
     await expect.element(activeWorkspace).toHaveAttribute('aria-checked', 'true')
     expect(defaultWorkspace.element().querySelector('svg')).toBeNull()
     expect(activeWorkspace.element().querySelector('svg')).not.toBeNull()
+  })
+
+  it('opens and closes the create workspace dialog from the workspace menu', async () => {
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    await screen.getByRole('menuitem', { name: 'Create workspace' }).click()
+    await expect.element(screen.getByRole('heading', { name: 'Create workspace' })).toBeVisible()
+
+    await screen.getByRole('button', { name: 'Close' }).click()
+    await expect
+      .element(screen.getByRole('heading', { name: 'Create workspace' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('keeps the create workspace dialog closed after back and forward navigation', async () => {
+    const tracesPath = routePath('workspaceTraces', { workspaceId: 'analytics' })
+    const sourcesPath = routePath('workspaceSources', { workspaceId: 'analytics' })
+    const screen = await renderSidebar(false, tracesPath, WORKSPACES)
+
+    await screen.getByRole('link', { name: 'Sources' }).click()
+    await expect.poll(() => screen.router.state.location.pathname).toBe(sourcesPath)
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    await screen.getByRole('menuitem', { name: 'Create workspace' }).click()
+    await expect.element(screen.getByRole('heading', { name: 'Create workspace' })).toBeVisible()
+
+    await screen.router.navigate(-1)
+    await expect.poll(() => screen.router.state.location.pathname).toBe(tracesPath)
+    await expect
+      .element(screen.getByRole('heading', { name: 'Create workspace' }))
+      .not.toBeInTheDocument()
+
+    await screen.router.navigate(1)
+    await expect.poll(() => screen.router.state.location.pathname).toBe(sourcesPath)
+    await expect
+      .element(screen.getByRole('heading', { name: 'Create workspace' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('keeps validation errors while open and clears them when reopening', async () => {
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    await screen.getByRole('menuitem', { name: 'Create workspace' }).click()
+    await screen.getByLabelText('Workspace name').fill('New Team')
+    await screen.getByRole('button', { name: 'Create workspace' }).click()
+
+    await expect
+      .element(screen.getByRole('alert'))
+      .toHaveTextContent('Workspace name may only contain lowercase letters, numbers, and hyphens')
+    await expect.element(screen.getByRole('heading', { name: 'Create workspace' })).toBeVisible()
+
+    await screen.getByRole('button', { name: 'Close' }).click()
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    await screen.getByRole('menuitem', { name: 'Create workspace' }).click()
+
+    await expect.element(screen.getByRole('alert')).not.toBeInTheDocument()
   })
 
   it.each([

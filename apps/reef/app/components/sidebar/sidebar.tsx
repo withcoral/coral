@@ -1,4 +1,5 @@
 import classNames from 'classnames'
+import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, useLocation, useParams } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
@@ -11,6 +12,7 @@ import type { IconName } from '@/wax/components/icon'
 import * as Menu from '@/wax/components/menu'
 import { getAvatarColorFromSeed } from '@/wax/components/avatar/utils/get-avatar-color'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
+import { WorkspaceCreationDialog } from '@/components/workspaces'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { workspacePathForCurrentSection } from '@/lib/workspace-routing'
 import { routePath } from '@/routing/routemap'
@@ -27,6 +29,9 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const location = useLocation()
   const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
+  const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false)
+  const createWorkspaceDialogSession = useRef(0)
+  const createWorkspaceFetcherKey = `create-workspace-${createWorkspaceDialogSession.current}`
   const currentWorkspace = workspaces.find((workspace) => workspace.name === workspaceId)
   const workspaceNavTarget = currentWorkspace ?? workspaces[0]
   const workspaceSelectorLabel = workspaceNavTarget?.name ?? 'Coral'
@@ -69,6 +74,15 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const handleToggleSidebar = (event: KeyboardEvent) => {
     event.preventDefault()
     toggleSidebar()
+  }
+
+  useEffect(() => {
+    setCreateWorkspaceDialogOpen(false)
+  }, [location.key])
+
+  const handleCreateWorkspaceDialogOpenChange = (open: boolean) => {
+    if (open) createWorkspaceDialogSession.current += 1
+    setCreateWorkspaceDialogOpen(open)
   }
 
   return (
@@ -139,8 +153,18 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
                   </Menu.RadioGroup>
                 )}
               </Menu.Group>
+              <Menu.Separator />
+              <Menu.Item icon="Plus" onClick={() => handleCreateWorkspaceDialogOpenChange(true)}>
+                Create workspace
+              </Menu.Item>
             </Menu.Content>
           </Menu.Container>
+
+          <WorkspaceCreationDialog
+            fetcherKey={createWorkspaceFetcherKey}
+            onOpenChange={handleCreateWorkspaceDialogOpenChange}
+            open={createWorkspaceDialogOpen}
+          />
 
           {!isMinimized && (
             <div className={styles.toggleButton}>

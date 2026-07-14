@@ -343,6 +343,9 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
       expect(routeConfig).toContain("index('routes/index.tsx')")
       expect(routeConfig).toContain(
+        "route(routePattern('workspaces'), 'routes/workspaces-action.ts')",
+      )
+      expect(routeConfig).toContain(
         "route(routePattern('workspaceSources'), 'routes/sources.tsx', [",
       )
       expect(routeConfig).toContain("route(':sourceName', 'routes/source-detail.tsx')")
