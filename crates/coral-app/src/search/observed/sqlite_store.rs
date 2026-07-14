@@ -1020,6 +1020,71 @@ mod tests {
     }
 
     #[test]
+    fn eviction_preserves_same_value_key_owned_by_another_source() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let initial_store = SqliteObservedValuesStore::new(layout.clone());
+        for owner_source_name in ["owner-a", "owner-b"] {
+            let generation = initial_store
+                .capture_epoch(&workspace, owner_source_name)
+                .expect("generation");
+            initial_store
+                .enqueue_if_current(
+                    &workspace,
+                    &test_job_with_owner(owner_source_name),
+                    generation,
+                )
+                .expect("enqueue owner observation");
+        }
+        initial_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("initial drain");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        connection
+            .execute(
+                "
+                UPDATE observed_values
+                SET last_observed_at = CASE owner_source_name
+                    WHEN 'owner-a' THEN '2020-01-01T00:00:00.000Z'
+                    ELSE '2021-01-01T00:00:00.000Z'
+                END
+                WHERE workspace = ?1
+                ",
+                params![workspace.as_str()],
+            )
+            .expect("order observed rows for eviction");
+        drop(connection);
+        drop(backing);
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout.clone(),
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: 1,
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 1,
+            },
+        );
+
+        let result = governed_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("governance drain");
+
+        assert_eq!(result.evicted_rows, 1);
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        for table_name in ["observed_values", "observed_values_fts"] {
+            assert_eq!(
+                projected_owner_names(&connection, table_name, &workspace),
+                ["owner-b"],
+                "eviction should remove one exact {table_name} identity"
+            );
+        }
+    }
+
+    #[test]
     fn drain_queue_keeps_failed_payload_for_retry() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -1180,6 +1245,17 @@ mod tests {
         }
     }
 
+    fn test_job_with_owner(owner_source_name: &str) -> ObservedValuesQueueJob {
+        ObservedValuesQueueJob {
+            owner_source_name: owner_source_name.to_string(),
+            source_name: "shared_query_schema".to_string(),
+            source_scope_id: "shared-scope".to_string(),
+            surface_kind: ObservedValuesSurfaceKind::Table,
+            surface_name: "issues".to_string(),
+            payload_json: payload_json("Shared value"),
+        }
+    }
+
     fn payload_json(display_value: &str) -> String {
         format!(
             r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"{}","value_key":"key"}}]}}"#,
@@ -1189,6 +1265,22 @@ mod tests {
 
     fn drain_budget() -> ObservedValuesDrainBudget {
         ObservedValuesDrainBudget::new(10, Duration::from_secs(1))
+    }
+
+    fn projected_owner_names(
+        connection: &rusqlite::Connection,
+        table_name: &str,
+        workspace: &WorkspaceName,
+    ) -> Vec<String> {
+        let sql = format!(
+            "SELECT owner_source_name FROM {table_name} WHERE workspace = ?1 ORDER BY owner_source_name"
+        );
+        let mut statement = connection.prepare(&sql).expect("owner query");
+        let rows = statement
+            .query_map(params![workspace.as_str()], |row| row.get(0))
+            .expect("query owner rows");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("collect owner rows")
     }
 
     fn advance_source_epoch_for_test(

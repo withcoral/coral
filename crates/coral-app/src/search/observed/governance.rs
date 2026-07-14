@@ -42,6 +42,7 @@ pub(super) struct ObservedValuesGovernanceResult {
 
 #[derive(Debug, Clone)]
 struct ObservedValueKey {
+    owner_source_name: String,
     source_name: String,
     source_scope_id: String,
     surface_kind: String,
@@ -148,6 +149,7 @@ fn select_observed_value_keys(
     let mut statement = connection.prepare(
         "
         SELECT
+            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -158,6 +160,7 @@ fn select_observed_value_keys(
         WHERE workspace = ?1
           AND (?2 IS NULL OR julianday(last_observed_at) < julianday('now', ?2))
         ORDER BY last_observed_at ASC,
+            owner_source_name ASC,
             source_name ASC,
             surface_name ASC,
             column_name ASC,
@@ -173,12 +176,13 @@ fn select_observed_value_keys(
         ],
         |row| {
             Ok(ObservedValueKey {
-                source_name: row.get(0)?,
-                source_scope_id: row.get(1)?,
-                surface_kind: row.get(2)?,
-                surface_name: row.get(3)?,
-                column_name: row.get(4)?,
-                value_key: row.get(5)?,
+                owner_source_name: row.get(0)?,
+                source_name: row.get(1)?,
+                source_scope_id: row.get(2)?,
+                surface_kind: row.get(3)?,
+                surface_name: row.get(4)?,
+                column_name: row.get(5)?,
+                value_key: row.get(6)?,
             })
         },
     )?;
@@ -200,6 +204,7 @@ fn delete_observed_value_keys(
         }
         let key_params = params![
             workspace_name.as_str(),
+            &key.owner_source_name,
             &key.source_name,
             &key.source_scope_id,
             &key.surface_kind,
@@ -211,12 +216,13 @@ fn delete_observed_value_keys(
             "
             DELETE FROM observed_values_fts
             WHERE workspace = ?1
-              AND source_name = ?2
-              AND source_scope_id = ?3
-              AND surface_kind = ?4
-              AND surface_name = ?5
-              AND column_name = ?6
-              AND value_key = ?7
+              AND owner_source_name = ?2
+              AND source_name = ?3
+              AND source_scope_id = ?4
+              AND surface_kind = ?5
+              AND surface_name = ?6
+              AND column_name = ?7
+              AND value_key = ?8
             ",
             key_params,
         )?;
@@ -224,15 +230,17 @@ fn delete_observed_value_keys(
             "
             DELETE FROM observed_values
             WHERE workspace = ?1
-              AND source_name = ?2
-              AND source_scope_id = ?3
-              AND surface_kind = ?4
-              AND surface_name = ?5
-              AND column_name = ?6
-              AND value_key = ?7
+              AND owner_source_name = ?2
+              AND source_name = ?3
+              AND source_scope_id = ?4
+              AND surface_kind = ?5
+              AND surface_name = ?6
+              AND column_name = ?7
+              AND value_key = ?8
             ",
             params![
                 workspace_name.as_str(),
+                key.owner_source_name,
                 key.source_name,
                 key.source_scope_id,
                 key.surface_kind,
