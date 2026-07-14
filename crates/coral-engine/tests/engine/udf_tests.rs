@@ -613,6 +613,39 @@ async fn published_udf_table_function_executes_udf_sql() {
 }
 
 #[tokio::test]
+async fn published_udf_table_function_coerces_arguments_in_the_expanded_body() {
+    let udf = UdfRuntimeDefinition {
+        name: "format_id".to_string(),
+        description: "Formats an id".to_string(),
+        arguments: vec![udf_argument("id", ManifestDataType::Int64)],
+        implementation: UdfRuntimeImplementation::CoralSql {
+            query: "select concat($id, '-x') as formatted_id".to_string(),
+        },
+        publish: udf_publish("format_id"),
+        result_columns: vec![udf_result_column("formatted_id", DataType::Utf8View)],
+    };
+    let runtime = test_runtime().with_udfs(vec![udf]);
+
+    let execution = CoralQuery::execute_sql(
+        &[],
+        runtime,
+        "select formatted_id from udfs.format_id(id => 42)",
+    )
+    .await
+    .expect("expanded UDF body should receive normal DataFusion type coercion");
+
+    let batch = execution
+        .batches()
+        .first()
+        .expect("format UDF should produce one batch");
+    assert_eq!(execution.arrow_schema().as_ref(), batch.schema().as_ref());
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({"formatted_id": "42-x"})]
+    );
+}
+
+#[tokio::test]
 async fn published_udf_table_function_normalizes_publish_identifiers() {
     let (_temp, source) = events_source("mixed_case_published_udf_events");
     let runtime = test_runtime().with_udfs(vec![mixed_case_published_min_id_udf(

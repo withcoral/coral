@@ -71,13 +71,11 @@ impl UdfCallRegistry {
         Ok(registry)
     }
 
-    /// Installs this relation planner together with the analyzer rule that
-    /// expands the nodes it parks. The two are a pair: any session that can
-    /// plan UDF calls must also be able to expand them.
+    /// Installs the relation planner that parks UDF calls. Runtime bootstrap
+    /// installs the expansion rule before `DataFusion`'s default analyzer rules
+    /// so the expanded body receives normal analysis.
     pub(crate) fn install(self, ctx: &SessionContext) -> Result<()> {
-        ctx.register_relation_planner(Arc::new(self))?;
-        ctx.add_analyzer_rule(Arc::new(UdfCallAnalyzerRule));
-        Ok(())
+        ctx.register_relation_planner(Arc::new(self))
     }
 
     fn insert_function(

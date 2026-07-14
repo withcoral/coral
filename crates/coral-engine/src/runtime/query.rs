@@ -12,7 +12,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::{Expr, LogicalPlan};
-use datafusion::physical_plan::displayable;
+use datafusion::optimizer::Analyzer as DataFusionAnalyzer;
+use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 use tokio::sync::OnceCell;
@@ -38,7 +39,9 @@ use crate::runtime::scoped_table_functions::ScopedTableFunctionName;
 use crate::runtime::source_functions::{
     SOURCE_FUNCTION_NODE_NAME, SourceFunctionNode, SourceFunctionRegistry,
 };
-use crate::runtime::udf_calls::{UDF_CALL_NODE_NAME, UdfCallNode, UdfCallRegistry};
+use crate::runtime::udf_calls::{
+    UDF_CALL_NODE_NAME, UdfCallAnalyzerRule, UdfCallNode, UdfCallRegistry,
+};
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
@@ -274,9 +277,12 @@ fn build_session_context(
         target: "coral_engine::datafusion",
         options: exec_options
     );
+    let mut analyzer_rules = DataFusionAnalyzer::new().rules;
+    analyzer_rules.insert(0, Arc::new(UdfCallAnalyzerRule));
     let mut builder = SessionStateBuilder::new()
         .with_config(session_config)
         .with_runtime_env(runtime_env)
+        .with_analyzer_rules(analyzer_rules)
         .with_default_features();
     if dependent_join.optimizer_enabled() {
         builder = builder.with_optimizer_rule(Arc::new(optimizer::rule(dependent_join.clone())));
@@ -521,12 +527,16 @@ impl QueryRuntimeAdapter {
             .await
             .map_err(SqlExecutionFailure::Planning)?;
         let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
-        let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let provenance = self
             .query_provenance(sql, df.logical_plan())
             .map_err(SqlExecutionFailure::Planning)?;
-        let batches = df
-            .collect()
+        let task_ctx = Arc::new(df.task_ctx());
+        let physical_plan = df
+            .create_physical_plan()
+            .await
+            .map_err(SqlExecutionFailure::Collection)?;
+        let arrow_schema = physical_plan.schema();
+        let batches = collect(physical_plan, task_ctx)
             .await
             .map_err(SqlExecutionFailure::Collection)?;
         let execution = QueryExecution::new(arrow_schema, batches, provenance);
