@@ -531,7 +531,11 @@ components:
 }
 
 #[test]
-fn importer_handles_2xx_response_range_success_codes() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps related success-response selection cases together."
+)]
+fn importer_selects_supported_success_responses() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: response_ranges
@@ -585,6 +589,37 @@ paths:
                 type: object
                 properties:
                   id: {type: string}
+  /vendor-items:
+    get:
+      operationId: vendor/list
+      responses:
+        '200':
+          content:
+            application/vnd.vimeo.video+json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+  /preferred-items:
+    get:
+      operationId: preferred/list
+      responses:
+        '200':
+          content:
+            application/vnd.example+json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+            'application/json; charset=utf-8':
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
 "
         .as_bytes(),
     )
@@ -608,6 +643,28 @@ paths:
         panic!("numeric operation should be REST");
     };
     assert_eq!(numeric_rest.response.status_code, 201);
+
+    let vendor = operations.get("vendor_list").expect("vendor operation");
+    assert_eq!(vendor.output.cardinality, OutputCardinality::List);
+    let IrExecutionAttachment::Rest(vendor_rest) = &vendor.execution else {
+        panic!("vendor operation should be REST");
+    };
+    assert_eq!(
+        vendor_rest.response.media_type,
+        "application/vnd.vimeo.video+json"
+    );
+
+    let preferred = operations
+        .get("preferred_list")
+        .expect("preferred operation");
+    assert_eq!(preferred.output.cardinality, OutputCardinality::List);
+    let IrExecutionAttachment::Rest(preferred_rest) = &preferred.execution else {
+        panic!("preferred operation should be REST");
+    };
+    assert_eq!(
+        preferred_rest.response.media_type,
+        "application/json; charset=utf-8"
+    );
 }
 
 #[test]
@@ -986,6 +1043,7 @@ paths:
     get:
       operationId: odata/list
       parameters:
+        - {name: $count, in: query, schema: {type: boolean}}
         - {name: $skip, in: query, schema: {type: integer, default: 10}}
         - {name: $top, in: query, schema: {type: integer, default: 25}}
       responses:

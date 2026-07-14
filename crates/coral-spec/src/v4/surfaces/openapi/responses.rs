@@ -154,14 +154,14 @@ impl OpenApiImporter<'_> {
             let Some(content) = response.get("content").and_then(Value::as_object) else {
                 continue;
             };
-            let Some(json) = content.get("application/json") else {
+            let Some((media_type, json)) = select_json_content(content) else {
                 continue;
             };
             let schema = json.get("schema").cloned().unwrap_or(Value::Null);
             let headers = response_headers(&response, operation_id, diagnostics, self);
             let candidate = SelectedJsonResponse {
                 status_code: status.representative_status_code(),
-                media_type: "application/json".to_string(),
+                media_type: media_type.to_string(),
                 schema,
                 headers,
             };
@@ -174,6 +174,36 @@ impl OpenApiImporter<'_> {
         preferred_numeric_response(numeric_candidates)
             .or_else(|| range_candidates.into_iter().next())
     }
+}
+
+fn select_json_content(content: &Map<String, Value>) -> Option<(&str, &Value)> {
+    content
+        .iter()
+        .filter(|(media_type, _)| {
+            media_type_essence(media_type).eq_ignore_ascii_case("application/json")
+        })
+        .min_by(|(left, _), (right, _)| left.cmp(right))
+        .or_else(|| {
+            content
+                .iter()
+                .filter(|(media_type, _)| is_structured_json_media_type(media_type))
+                .min_by(|(left, _), (right, _)| left.cmp(right))
+        })
+        .map(|(media_type, value)| (media_type.as_str(), value))
+}
+
+fn is_structured_json_media_type(media_type: &str) -> bool {
+    let Some((type_, subtype)) = media_type_essence(media_type).split_once('/') else {
+        return false;
+    };
+    type_.eq_ignore_ascii_case("application") && subtype.to_ascii_lowercase().ends_with("+json")
+}
+
+fn media_type_essence(media_type: &str) -> &str {
+    media_type
+        .split_once(';')
+        .map_or(media_type, |(essence, _)| essence)
+        .trim()
 }
 
 #[derive(Debug, Clone, Copy)]
