@@ -344,7 +344,7 @@ impl ServerBuilder {
                 }
             });
         start_server(
-            ServerManagers {
+            ServerDependencies {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -493,7 +493,7 @@ struct TraceServerComponents {
     local_trace_store_dir: Option<PathBuf>,
 }
 
-struct ServerManagers {
+struct ServerDependencies {
     source: SourceManager,
     workspace: WorkspaceManager,
     query: QueryManager,
@@ -504,7 +504,7 @@ struct ServerManagers {
 }
 
 async fn start_server(
-    managers: ServerManagers,
+    dependencies: ServerDependencies,
     trace_components: TraceServerComponents,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     mode: ServerMode,
@@ -513,7 +513,7 @@ async fn start_server(
         service: trace_service,
         local_trace_store_dir,
     } = trace_components;
-    let ServerManagers {
+    let ServerDependencies {
         source,
         workspace,
         query,
@@ -521,7 +521,7 @@ async fn start_server(
         search_observations,
         feedback,
         task,
-    } = managers;
+    } = dependencies;
     let source = source.with_search_observation_handle(search_observations.clone());
     let query = query.with_search_observation_handle(search_observations.clone());
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
@@ -797,7 +797,7 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        RunningServer, ServerBuilder, ServerManagers, ServerMode, StaticAsset,
+        RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
         StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
         is_native_grpc_content_type, start_server,
     };
@@ -1055,7 +1055,7 @@ backend = "unsupported"
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
-            ServerManagers {
+            ServerDependencies {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -1497,7 +1497,7 @@ tables:
         let search_manager =
             SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
-            ServerManagers {
+            ServerDependencies {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -1616,7 +1616,7 @@ tables:
         let search_manager =
             SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
-            ServerManagers {
+            ServerDependencies {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -1735,7 +1735,7 @@ tables:
         let search_manager =
             SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
-            ServerManagers {
+            ServerDependencies {
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
