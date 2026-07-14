@@ -10,6 +10,8 @@ import {
   type ListTracesResponse,
 } from '@/generated/coral/v1/traces_pb'
 
+import { WORKSPACE } from './coral-clients'
+
 function grpcWebBaseUrl(): string {
   return import.meta.env.VITE_CORAL_GRPC_WEB_URL ?? window.location.origin
 }
@@ -28,7 +30,7 @@ export async function listTraces(pageSize = 50, pageToken = ''): Promise<ListTra
   if (inFlight) return inFlight
 
   const request = traces
-    .listTraces(create(ListTracesRequestSchema, { pageSize, pageToken }))
+    .listTraces(create(ListTracesRequestSchema, { pageSize, pageToken, workspace: WORKSPACE }))
     .finally(() => listTraceRequests.delete(key))
   listTraceRequests.set(key, request)
   return request
@@ -39,7 +41,7 @@ export async function getTrace(traceId: string): Promise<GetTraceResponse> {
   if (inFlight) return inFlight
 
   const request = traces
-    .getTrace(create(GetTraceRequestSchema, { traceId }))
+    .getTrace(create(GetTraceRequestSchema, { traceId, workspace: WORKSPACE }))
     .finally(() => getTraceRequests.delete(traceId))
   getTraceRequests.set(traceId, request)
   return request

@@ -842,6 +842,7 @@ enabled = false
             .list_traces(Request::new(ListTracesRequest {
                 page_size: 10,
                 page_token: String::new(),
+                workspace: None,
             }))
             .await
             .expect_err("trace service should be disabled");
@@ -942,6 +943,7 @@ backend = "unsupported"
             .list_traces(Request::new(ListTracesRequest {
                 page_size: 10,
                 page_token: String::new(),
+                workspace: None,
             }))
             .await
             .expect("list traces")

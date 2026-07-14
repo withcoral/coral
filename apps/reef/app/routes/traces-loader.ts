@@ -3,6 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import type { Route } from './+types/traces'
 
 import { ListTracesRequestSchema } from '@/generated/coral/v1/traces_pb'
+import { WORKSPACE } from '@/lib/constants'
 import { traceClientForRequest } from '@/lib/coral-request.server'
 import { errorMessage } from '@/lib/utils'
 import { formatTraceError, isQueryTrace, type TraceSummaryData } from '@/views/traces/trace-utils'
@@ -85,6 +86,6 @@ async function listTracePageForRequest(
   pageToken: string,
 ): Promise<{ nextPageToken: string; traces: TraceSummaryData[] }> {
   return traceClientForRequest(request).listTraces(
-    create(ListTracesRequestSchema, { pageSize, pageToken }),
+    create(ListTracesRequestSchema, { pageSize, pageToken, workspace: WORKSPACE }),
   )
 }

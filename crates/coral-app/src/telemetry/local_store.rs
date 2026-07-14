@@ -546,6 +546,7 @@ struct TraceListAggregate {
     span_count: u32,
     error_count: u32,
     found_root_span: bool,
+    matches_workspace: bool,
     primary: Option<TracePrimaryCandidate>,
 }
 
@@ -597,6 +598,20 @@ impl TraceStore {
             .map_err(|source| TraceStoreError::Worker { source })?
     }
 
+    pub(crate) async fn list_traces_for_workspace(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: String,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || {
+            traces.list_traces_for_workspace_sync(limit, offset, &workspace_name)
+        })
+        .await
+        .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
     pub(crate) async fn get_trace(
         &self,
         trace_id: String,
@@ -605,6 +620,19 @@ impl TraceStore {
         task::spawn_blocking(move || traces.get_trace_sync(&trace_id))
             .await
             .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
+    pub(crate) async fn get_trace_for_workspace(
+        &self,
+        trace_id: String,
+        workspace_name: String,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || {
+            traces.get_trace_for_workspace_sync(&trace_id, &workspace_name)
+        })
+        .await
+        .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn delete_traces_for_workspace(
@@ -622,6 +650,24 @@ impl TraceStore {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        self.list_traces_filtered_sync(limit, offset, None)
+    }
+
+    fn list_traces_for_workspace_sync(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: &str,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        self.list_traces_filtered_sync(limit, offset, Some(workspace_name))
+    }
+
+    fn list_traces_filtered_sync(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: Option<&str>,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -636,7 +682,7 @@ impl TraceStore {
         for (file_index, file) in files.iter().enumerate().rev() {
             oldest_scanned_file_index = Some(file_index);
             for span in read_list_spans_file(&file.path)? {
-                record_list_span(span, &mut spans_by_id, &mut traces);
+                record_list_span(span, workspace_name, &mut spans_by_id, &mut traces);
             }
 
             let Some(newest_unscanned_file) =
@@ -648,16 +694,18 @@ impl TraceStore {
                 &traces,
                 required_trace_count,
                 newest_unscanned_file.span_end_upper_bound_unix_nanos,
+                workspace_name,
             ) {
                 break;
             }
         }
 
-        let page_trace_ids = trace_page_ids(&traces, offset, limit);
+        let page_trace_ids = trace_page_ids(&traces, offset, limit, workspace_name);
         complete_list_aggregates_for_page(
             &files,
             oldest_scanned_file_index,
             &page_trace_ids,
+            workspace_name,
             &mut spans_by_id,
             &mut traces,
         )?;
@@ -709,6 +757,23 @@ impl TraceStore {
 
         let summary = summary_from_spans(trace_id, &spans);
         Ok(TraceDetailRecord { summary, spans })
+    }
+
+    fn get_trace_for_workspace_sync(
+        &self,
+        trace_id: &str,
+        workspace_name: &str,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        let detail = self.get_trace_sync(trace_id)?;
+        if detail
+            .spans
+            .iter()
+            .any(|span| attributes_match_workspace(&span.attributes_json, workspace_name))
+        {
+            Ok(detail)
+        } else {
+            Err(TraceStoreError::NotFound(trace_id.to_string()))
+        }
     }
 
     pub(crate) fn list_query_history_sync(
@@ -894,7 +959,7 @@ impl TracePrimaryCandidate {
 }
 
 impl TraceListAggregate {
-    fn new(span: &TraceListSpanRecord) -> Self {
+    fn new(span: &TraceListSpanRecord, workspace_name: Option<&str>) -> Self {
         let mut aggregate = Self {
             trace_id: span.trace_id.clone(),
             start_time_unix_nanos: span.start_time_unix_nanos,
@@ -902,13 +967,14 @@ impl TraceListAggregate {
             span_count: 0,
             error_count: 0,
             found_root_span: false,
+            matches_workspace: false,
             primary: None,
         };
-        aggregate.record_span(span);
+        aggregate.record_span(span, workspace_name);
         aggregate
     }
 
-    fn record_span(&mut self, span: &TraceListSpanRecord) {
+    fn record_span(&mut self, span: &TraceListSpanRecord, workspace_name: Option<&str>) {
         self.start_time_unix_nanos = self.start_time_unix_nanos.min(span.start_time_unix_nanos);
         self.end_time_unix_nanos = self.end_time_unix_nanos.max(span.end_time_unix_nanos);
         self.span_count = self.span_count.saturating_add(1);
@@ -916,6 +982,9 @@ impl TraceListAggregate {
             self.error_count = self.error_count.saturating_add(1);
         }
         self.found_root_span |= is_root_span_parent(span.parent_span_id.as_deref());
+        self.matches_workspace |= workspace_name.is_some_and(|workspace_name| {
+            attributes_match_workspace(&span.attributes_json, workspace_name)
+        });
 
         let primary = TracePrimaryCandidate::from_span(span);
         if self
@@ -941,6 +1010,7 @@ impl TraceListAggregate {
 
 fn record_list_span(
     span: TraceListSpanRecord,
+    workspace_name: Option<&str>,
     spans_by_id: &mut HashMap<(String, String), TraceListSpanRecord>,
     traces: &mut HashMap<String, TraceListAggregate>,
 ) {
@@ -950,8 +1020,8 @@ fn record_list_span(
         Entry::Vacant(entry) => {
             traces
                 .entry(span.trace_id.clone())
-                .and_modify(|aggregate| aggregate.record_span(&span))
-                .or_insert_with(|| TraceListAggregate::new(&span));
+                .and_modify(|aggregate| aggregate.record_span(&span, workspace_name))
+                .or_insert_with(|| TraceListAggregate::new(&span, workspace_name));
             entry.insert(span);
         }
     }
@@ -961,8 +1031,12 @@ fn trace_page_ids(
     traces: &HashMap<String, TraceListAggregate>,
     offset: usize,
     limit: usize,
+    workspace_name: Option<&str>,
 ) -> HashSet<String> {
-    let mut aggregates = traces.values().collect::<Vec<_>>();
+    let mut aggregates = traces
+        .values()
+        .filter(|aggregate| trace_matches_workspace_filter(aggregate, workspace_name))
+        .collect::<Vec<_>>();
     sort_trace_aggregates(&mut aggregates);
     aggregates
         .into_iter()
@@ -976,6 +1050,7 @@ fn complete_list_aggregates_for_page(
     files: &[TraceStoreFile],
     oldest_scanned_file_index: Option<usize>,
     page_trace_ids: &HashSet<String>,
+    workspace_name: Option<&str>,
     spans_by_id: &mut HashMap<(String, String), TraceListSpanRecord>,
     traces: &mut HashMap<String, TraceListAggregate>,
 ) -> Result<(), TraceStoreError> {
@@ -995,7 +1070,7 @@ fn complete_list_aggregates_for_page(
             break;
         }
         for span in read_list_spans_file_for_trace_ids(&file.path, page_trace_ids)? {
-            record_list_span(span, spans_by_id, traces);
+            record_list_span(span, workspace_name, spans_by_id, traces);
         }
     }
 
@@ -1021,18 +1096,73 @@ fn list_page_is_newer_than_unscanned_files(
     traces: &HashMap<String, TraceListAggregate>,
     required_trace_count: usize,
     newest_unscanned_span_end_upper_bound_unix_nanos: i64,
+    workspace_name: Option<&str>,
 ) -> bool {
-    if required_trace_count == 0 || traces.len() < required_trace_count {
+    if required_trace_count == 0 {
         return false;
     }
 
-    let mut aggregates = traces.values().collect::<Vec<_>>();
+    let mut aggregates = traces
+        .values()
+        .filter(|aggregate| trace_matches_workspace_filter(aggregate, workspace_name))
+        .collect::<Vec<_>>();
+    if aggregates.len() < required_trace_count {
+        return false;
+    }
     sort_trace_aggregates(&mut aggregates);
-    aggregates
-        .get(required_trace_count - 1)
-        .is_some_and(|aggregate| {
-            aggregate.end_time_unix_nanos > newest_unscanned_span_end_upper_bound_unix_nanos
-        })
+    let Some(boundary) = aggregates.get(required_trace_count - 1) else {
+        return false;
+    };
+    if boundary.end_time_unix_nanos <= newest_unscanned_span_end_upper_bound_unix_nanos {
+        return false;
+    }
+
+    workspace_name.is_none_or(|_| {
+        workspace_filter_is_settled_for_page_boundary(
+            traces,
+            boundary,
+            newest_unscanned_span_end_upper_bound_unix_nanos,
+        )
+    })
+}
+
+fn trace_matches_workspace_filter(
+    aggregate: &TraceListAggregate,
+    workspace_name: Option<&str>,
+) -> bool {
+    workspace_name.is_none_or(|_| aggregate.matches_workspace)
+}
+
+fn workspace_filter_is_settled_for_page_boundary(
+    traces: &HashMap<String, TraceListAggregate>,
+    boundary: &TraceListAggregate,
+    newest_unscanned_span_end_upper_bound_unix_nanos: i64,
+) -> bool {
+    traces.values().all(|aggregate| {
+        aggregate.matches_workspace
+            || !could_sort_before_or_at_boundary(aggregate, boundary)
+            || trace_is_complete_before_unscanned_files(
+                aggregate,
+                newest_unscanned_span_end_upper_bound_unix_nanos,
+            )
+    })
+}
+
+fn could_sort_before_or_at_boundary(
+    aggregate: &TraceListAggregate,
+    boundary: &TraceListAggregate,
+) -> bool {
+    aggregate.end_time_unix_nanos > boundary.end_time_unix_nanos
+        || (aggregate.end_time_unix_nanos == boundary.end_time_unix_nanos
+            && aggregate.trace_id <= boundary.trace_id)
+}
+
+fn trace_is_complete_before_unscanned_files(
+    aggregate: &TraceListAggregate,
+    newest_unscanned_span_end_upper_bound_unix_nanos: i64,
+) -> bool {
+    aggregate.found_root_span
+        && newest_unscanned_span_end_upper_bound_unix_nanos < aggregate.start_time_unix_nanos
 }
 
 fn sort_trace_aggregates(aggregates: &mut [&TraceListAggregate]) {
@@ -2438,6 +2568,94 @@ mod tests {
                 .attributes_json,
             r#"{"sql":"SELECT 'new'"}"#
         );
+    }
+
+    #[test]
+    fn workspace_filtered_traces_include_complete_matching_traces() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+
+        let mut alpha_query = trace_record("alpha-new", "alpha-query");
+        alpha_query.attributes_json =
+            r#"{"workspace":"alpha","sql":"SELECT alpha_new"}"#.to_string();
+        alpha_query.start_time_unix_nanos = 10;
+        alpha_query.end_time_unix_nanos = 15;
+
+        let mut alpha_child = trace_record("alpha-new", "alpha-child");
+        alpha_child.parent_span_id = Some("alpha-query".to_string());
+        alpha_child.name = "http.request".to_string();
+        alpha_child.start_time_unix_nanos = 15;
+        alpha_child.end_time_unix_nanos = 20;
+
+        let mut beta_query = trace_record("beta-trace", "beta-query");
+        beta_query.attributes_json = r#"{"workspace":"beta","sql":"SELECT beta"}"#.to_string();
+        beta_query.start_time_unix_nanos = 30;
+        beta_query.end_time_unix_nanos = 40;
+
+        let mut alpha_old = trace_record("alpha-old", "alpha-old-query");
+        alpha_old.attributes_json = r#"{"workspace":"alpha","sql":"SELECT alpha_old"}"#.to_string();
+        alpha_old.start_time_unix_nanos = 1;
+        alpha_old.end_time_unix_nanos = 2;
+
+        let mut older_duplicate = trace_record("duplicate-workspace", "duplicate-span");
+        older_duplicate.attributes_json =
+            r#"{"workspace":"alpha","sql":"SELECT duplicate_old"}"#.to_string();
+        older_duplicate.start_time_unix_nanos = 50;
+        older_duplicate.end_time_unix_nanos = 60;
+
+        let mut newer_duplicate = trace_record("duplicate-workspace", "duplicate-span");
+        newer_duplicate.attributes_json =
+            r#"{"workspace":"beta","sql":"SELECT duplicate_new"}"#.to_string();
+        newer_duplicate.start_time_unix_nanos = 50;
+        newer_duplicate.end_time_unix_nanos = 70;
+
+        let path = dir.join(timestamped_jsonl_path(SystemTime::now()));
+        write_record_file_lines(
+            &path,
+            &[
+                alpha_query,
+                alpha_child,
+                beta_query,
+                alpha_old,
+                older_duplicate,
+                newer_duplicate,
+            ],
+        );
+
+        let store = TraceStore::new(dir);
+        let summaries = store
+            .list_traces_for_workspace_sync(10, 0, "alpha")
+            .expect("list alpha traces");
+
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.trace_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha-new", "alpha-old"]
+        );
+        assert_eq!(summaries.first().expect("alpha-new").span_count, 2);
+        assert_eq!(
+            summaries.first().expect("alpha-new").end_time_unix_nanos,
+            20
+        );
+
+        let paged = store
+            .list_traces_for_workspace_sync(1, 1, "alpha")
+            .expect("list second alpha trace");
+        assert_eq!(paged.first().expect("paged alpha").trace_id, "alpha-old");
+
+        let detail = store
+            .get_trace_for_workspace_sync("alpha-new", "alpha")
+            .expect("alpha trace detail");
+        assert_eq!(detail.spans.len(), 2);
+        store
+            .get_trace_for_workspace_sync("beta-trace", "alpha")
+            .expect_err("beta trace must not be visible through alpha filter");
+        store
+            .get_trace_for_workspace_sync("duplicate-workspace", "alpha")
+            .expect_err("newer beta duplicate must not be visible through alpha filter");
     }
 
     #[test]
