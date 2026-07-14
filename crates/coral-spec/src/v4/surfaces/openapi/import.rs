@@ -68,13 +68,19 @@ impl<'a> OpenApiImporter<'a> {
                 let Some(operation_value) = path_item.get(method_name) else {
                     continue;
                 };
-                let Some(operation_value) =
-                    self.resolve_operation_ref(path, method_name, operation_value)
-                else {
-                    continue;
+                let operation_value = if operation_value.get("$ref").is_some() {
+                    match resolve_local_ref(self.document, operation_value) {
+                        Ok(operation_value) => operation_value,
+                        Err(error) => {
+                            self.report_operation_ref_error(path, method_name, error);
+                            continue;
+                        }
+                    }
+                } else {
+                    operation_value
                 };
                 let operation =
-                    self.import_operation(path, path_item, method_name, &operation_value)?;
+                    self.import_operation(path, path_item, method_name, operation_value)?;
                 if !operation_ids.insert(operation.id.clone()) {
                     return Err(ManifestError::validation(format!(
                         "source '{}' surface '{}' imports duplicate operation id '{}'",
@@ -96,18 +102,9 @@ impl<'a> OpenApiImporter<'a> {
         })
     }
 
-    fn resolve_operation_ref(
-        &mut self,
-        path: &str,
-        method_name: &str,
-        operation: &Value,
-    ) -> Option<Value> {
-        let Some(reference) = operation.get("$ref").and_then(Value::as_str) else {
-            return Some(operation.clone());
-        };
-        match resolve_local_ref(self.document, operation) {
-            Ok(resolved) => Some(resolved.clone()),
-            Err(RefError::External(_)) => {
+    fn report_operation_ref_error(&mut self, path: &str, method_name: &str, error: RefError<'_>) {
+        match error {
+            RefError::External(reference) => {
                 self.diagnostics.push(Diagnostic::warning(
                     "OPENAPI_OPERATION_REF_UNSUPPORTED",
                     format!(
@@ -116,16 +113,14 @@ impl<'a> OpenApiImporter<'a> {
                     self.surface.id.clone(),
                     None,
                 ));
-                None
             }
-            Err(RefError::NotFound(_)) => {
+            RefError::NotFound(reference) => {
                 self.diagnostics.push(Diagnostic::warning(
                     "OPENAPI_OPERATION_REF_UNRESOLVED",
                     format!("OpenAPI operation {method_name} {path} reference '{reference}' was not found"),
                     self.surface.id.clone(),
                     None,
                 ));
-                None
             }
         }
     }
