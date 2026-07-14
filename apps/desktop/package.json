@@ -15,6 +15,7 @@
     "type-check": "tsc --noEmit",
     "check": "npm run type-check && npm run test:config",
     "test:config": "node --test scripts/electron-builder-config.test.mjs",
+    "test": "vitest run",
     "prepackage": "npm run build",
     "package": "electron-builder --publish never --config electron-builder.config.ts",
     "prepackage:dir": "npm run build",
@@ -55,6 +56,7 @@
     "electron-builder": "^26.15.2",
     "electron-vite": "^5.0.0",
     "typescript": "^6.0.3",
-    "vite": "^7.2.7"
+    "vite": "^7.2.7",
+    "vitest": "^4.1.9"
   }
 }

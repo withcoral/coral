@@ -520,6 +520,9 @@ jobs:
       - name: Type-check desktop
         run: npm run check --prefix apps/desktop
 
+      - name: Test desktop
+        run: npm test --prefix apps/desktop
+
   desktop-package-macos:
     name: Desktop macOS package
     needs: changes
