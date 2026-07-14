@@ -296,11 +296,15 @@ mod tests {
                 Field::new("name", DataType::Utf8, false),
                 Field::new("api_token", DataType::Utf8, false),
                 Field::new("note", DataType::Utf8, false),
+                Field::new("metadata", DataType::Utf8, false),
             ])),
             vec![
                 Arc::new(StringArray::from(vec!["Grace"])),
                 Arc::new(StringArray::from(vec!["ghp_supersecret"])),
                 Arc::new(StringArray::from(vec!["hello"])),
+                Arc::new(StringArray::from(vec![
+                    r#"{"project":"coral","api_key":"literal-secret"}"#,
+                ])),
             ],
         )
         .expect("batch");
@@ -315,6 +319,8 @@ mod tests {
         let payloads = wait_for_payloads(&layout, &workspace).join("\n");
         assert!(payloads.contains("Grace"));
         assert!(payloads.contains("hello"));
+        assert!(payloads.contains("project"));
+        assert!(payloads.contains("coral"));
         assert!(!payloads.contains("literal-secret"));
         assert!(!payloads.contains("ghp_supersecret"));
     }

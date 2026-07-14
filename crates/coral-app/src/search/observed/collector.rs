@@ -16,9 +16,7 @@ use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
 
 use crate::hash::sha256_hex;
-use crate::search::observed::sensitive::{
-    exclude_sensitive_json_fields, is_sensitive_column, is_sensitive_value,
-};
+use crate::search::observed::sensitive::{is_sensitive_column, sanitize_observed_value};
 use crate::search::observed::sqlite_queue::{ObservedValueCandidate, ObservedValuesQueuePayload};
 
 #[derive(Debug, Clone, Default)]
@@ -54,12 +52,11 @@ impl ObservedValuesCollector {
                 ) else {
                     continue;
                 };
-                let Some(display_value) = exclude_sensitive_json_fields(display_value) else {
+                let Some(display_value) =
+                    sanitize_observed_value(display_value, self.budget.value_bytes_limit)
+                else {
                     continue;
                 };
-                if is_sensitive_value(&display_value) {
-                    continue;
-                }
                 let search_text = normalize_search_text(&display_value);
                 if search_text.is_empty() {
                     continue;
@@ -251,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn suppresses_embedded_sensitive_values() {
+    fn suppresses_embedded_sensitive_values_and_preserves_safe_url_content() {
         let batch = batch(
             ["note"],
             [vec![
@@ -267,7 +264,10 @@ mod tests {
             .map(|candidate| candidate.display_value.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(values, ["Ticket SK-101 is public"]);
+        assert_eq!(
+            values,
+            ["https://example.test/callback", "Ticket SK-101 is public"]
+        );
     }
 
     #[test]
