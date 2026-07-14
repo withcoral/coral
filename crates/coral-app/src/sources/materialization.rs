@@ -42,6 +42,7 @@ pub(crate) const PARAMETER_METADATA_OVERRIDE_FILENAME: &str = "parameter_metadat
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
     pub(crate) temp_dir: PathBuf,
+    pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -66,7 +67,10 @@ pub(crate) fn build_v4_materialization_tmp(
     fs::ensure_private_dir(&temp_dir)?;
 
     match write_materialization(&temp_dir, manifest_yaml, manifest, inputs) {
-        Ok(()) => Ok(MaterializationBuild { temp_dir }),
+        Ok(diagnostics) => Ok(MaterializationBuild {
+            temp_dir,
+            diagnostics,
+        }),
         Err(error) => {
             if temp_dir.exists() {
                 drop(std::fs::remove_dir_all(&temp_dir));
@@ -654,7 +658,7 @@ fn write_materialization(
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
     inputs: &MaterializationInputs,
-) -> Result<(), AppError> {
+) -> Result<Vec<Diagnostic>, AppError> {
     let manifest_sha256 = sha256_hex(manifest_yaml.as_bytes());
     let mut materialized_surfaces = Vec::new();
     let mut semantic_irs = Vec::new();
@@ -742,7 +746,7 @@ fn write_materialization(
     write_yaml(&temp_dir.join(FINGERPRINT_FILENAME), &fingerprint)?;
     write_yaml(&temp_dir.join(PROJECTIONS_FILENAME), &projections)?;
     write_yaml(&temp_dir.join(DIAGNOSTICS_FILENAME), &diagnostics)?;
-    Ok(())
+    Ok(diagnostics)
 }
 
 struct MaterializedSurfaceBuild {

@@ -65,6 +65,34 @@ message Source {
   SourceCredentialStorage credential_storage = 7;
 }
 
+// One diagnostic associated with a source.
+message SourceDiagnostic {
+  // Stable diagnostic identifier.
+  string code = 1;
+  // Diagnostic severity.
+  SourceDiagnosticSeverity severity = 2;
+  // User-facing explanation and remediation guidance.
+  string message = 3;
+  // Optional authored surface identifier.
+  string surface_id = 4;
+  // Optional imported operation identifier.
+  string operation_id = 5;
+  // Optional generated projection name.
+  string projection_name = 6;
+}
+
+// Severity of a source diagnostic.
+enum SourceDiagnosticSeverity {
+  // Severity was not supplied.
+  SOURCE_DIAGNOSTIC_SEVERITY_UNSPECIFIED = 0;
+  // Informational diagnostic.
+  SOURCE_DIAGNOSTIC_SEVERITY_INFO = 1;
+  // Warning diagnostic.
+  SOURCE_DIAGNOSTIC_SEVERITY_WARNING = 2;
+  // Error diagnostic.
+  SOURCE_DIAGNOSTIC_SEVERITY_ERROR = 3;
+}
+
 // One manifest-declared source input prompt.
 message SourceInputSpec {
   // Logical variable or secret key.
@@ -320,6 +348,8 @@ message CreateBundledSourceRequest {
 message CreateBundledSourceResponse {
   // The installed source resource.
   Source source = 1;
+  // Diagnostics emitted while materializing the source.
+  repeated SourceDiagnostic diagnostics = 2;
 }
 
 // Installs one bundled source with app-owned OAuth credential retrieval.
@@ -349,6 +379,9 @@ message CreateBundledSourceWithOAuthResponse {
     // Authorization-code callback was received and token exchange is starting.
     OAuthCredentialCallbackReceived oauth_callback_received = 4;
   }
+  // Diagnostics emitted while materializing the source. Populated only on the
+  // final source event.
+  repeated SourceDiagnostic diagnostics = 5;
 }
 
 // Imports one user-supplied source manifest into Coral ownership.
@@ -378,6 +411,9 @@ message ImportSourceResponse {
     // Authorization-code callback was received and token exchange is starting.
     OAuthCredentialCallbackReceived oauth_callback_received = 4;
   }
+  // Diagnostics emitted while materializing the source. Populated only on the
+  // final source event.
+  repeated SourceDiagnostic diagnostics = 5;
 }
 
 // Safe metadata returned after OAuth retrieval completes.

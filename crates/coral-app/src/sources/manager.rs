@@ -25,7 +25,7 @@ use crate::sources::materialization::{
     canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
     new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{CandidateSource, InstalledSource, SourceInstallation, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
@@ -279,7 +279,7 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         command: &CreateBundledSourceCommand,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<SourceInstallation, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_validated_source(
@@ -297,7 +297,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         command: CreateBundledSourceWithOAuthCommand,
         events: ImportSourceEventSender,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<SourceInstallation, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_source_with_oauth(
@@ -317,7 +317,7 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         command: &ImportSourceCommand,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<SourceInstallation, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
@@ -338,7 +338,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         command: ImportSourceWithCredentialsCommand,
         events: ImportSourceEventSender,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<SourceInstallation, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
@@ -369,7 +369,7 @@ impl SourceManager {
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<SourceInstallation, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         self.validate_runtime_schema_names_available(
             workspace_name,
@@ -385,25 +385,32 @@ impl SourceManager {
         let bindings = validate_bindings(candidate, bindings, &stored_material)?;
         let materialization_inputs =
             materialization_inputs_from_bindings(&bindings, &stored_material);
-        self.persist_source(
+        let materialization = self.prepare_v4_materialization(
+            workspace_name,
+            candidate,
+            materialization_manifest_yaml,
+            &materialization_inputs,
+            origin,
+            "tmp",
+        )?;
+        let diagnostics = materialization
+            .as_ref()
+            .map(|build| build.diagnostics.clone())
+            .unwrap_or_default();
+        let source = self.persist_source(
             workspace_name,
             PersistSourceRequest {
                 candidate,
                 manifest_yaml,
                 bindings,
                 origin,
-                materialization_tmp: self
-                    .prepare_v4_materialization(
-                        workspace_name,
-                        candidate,
-                        materialization_manifest_yaml,
-                        &materialization_inputs,
-                        origin,
-                        "tmp",
-                    )?
-                    .map(|build| build.temp_dir),
+                materialization_tmp: materialization.map(|build| build.temp_dir),
             },
-        )
+        )?;
+        Ok(SourceInstallation {
+            source,
+            diagnostics,
+        })
     }
 
     /// Resolves OAuth credential material (driving the authorization flow over
@@ -424,7 +431,7 @@ impl SourceManager {
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<SourceInstallation, AppError> {
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -474,25 +481,32 @@ impl SourceManager {
         merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
         let materialization_inputs =
             materialization_inputs_from_bindings(&bindings, &stored_material);
-        self.persist_source(
+        let materialization = self.prepare_v4_materialization(
+            workspace_name,
+            candidate,
+            materialization_manifest_yaml,
+            &materialization_inputs,
+            origin,
+            "tmp",
+        )?;
+        let diagnostics = materialization
+            .as_ref()
+            .map(|build| build.diagnostics.clone())
+            .unwrap_or_default();
+        let source = self.persist_source(
             workspace_name,
             PersistSourceRequest {
                 candidate,
                 manifest_yaml,
                 bindings,
                 origin,
-                materialization_tmp: self
-                    .prepare_v4_materialization(
-                        workspace_name,
-                        candidate,
-                        materialization_manifest_yaml,
-                        &materialization_inputs,
-                        origin,
-                        "tmp",
-                    )?
-                    .map(|build| build.temp_dir),
+                materialization_tmp: materialization.map(|build| build.temp_dir),
             },
-        )
+        )?;
+        Ok(SourceInstallation {
+            source,
+            diagnostics,
+        })
     }
 
     pub(crate) fn delete_source(

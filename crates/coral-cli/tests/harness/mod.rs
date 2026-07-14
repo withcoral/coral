@@ -33,8 +33,8 @@ use coral_api::v1::{
     SearchFieldRole, SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest,
     SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind,
     SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    SourceDiagnostic, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response, search_result,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -584,6 +584,7 @@ pub(crate) struct MockServerConfig {
     list_workspaces: MockResult<ListWorkspacesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
     delete_source: MockResult<()>,
+    source_installation_diagnostics: Vec<SourceDiagnostic>,
 }
 
 impl Default for MockServerConfig {
@@ -619,6 +620,7 @@ impl Default for MockServerConfig {
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
+            source_installation_diagnostics: Vec::new(),
         }
     }
 }
@@ -663,6 +665,14 @@ impl MockServerConfig {
         response: ValidateSourceResponse,
     ) -> Self {
         self.validate_source = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_source_installation_diagnostics(
+        mut self,
+        diagnostics: Vec<SourceDiagnostic>,
+    ) -> Self {
+        self.source_installation_diagnostics = diagnostics;
         self
     }
 
@@ -1009,22 +1019,24 @@ type MockBundledSourceStream =
 type MockImportSourceStream =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
-fn mock_bundled_source_stream() -> MockBundledSourceStream {
+fn mock_bundled_source_stream(diagnostics: Vec<SourceDiagnostic>) -> MockBundledSourceStream {
     let (tx, rx) =
         tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
     tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
         event: Some(create_bundled_source_with_o_auth_response::Event::Source(
             mock_source(),
         )),
+        diagnostics,
     }))
     .expect("send mock bundled source credential event");
     Box::pin(ReceiverStream::new(rx))
 }
 
-fn mock_import_source_stream() -> MockImportSourceStream {
+fn mock_import_source_stream(diagnostics: Vec<SourceDiagnostic>) -> MockImportSourceStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportSourceResponse, Status>>(1);
     tx.try_send(Ok(ImportSourceResponse {
         event: Some(import_source_response::Event::Source(mock_source())),
+        diagnostics,
     }))
     .expect("send mock import source credential event");
     Box::pin(ReceiverStream::new(rx))
@@ -1103,6 +1115,7 @@ impl SourceService for MockSourceService {
             .push(request.into_inner());
         Ok(Response::new(CreateBundledSourceResponse {
             source: Some(mock_source()),
+            diagnostics: self.config.source_installation_diagnostics.clone(),
         }))
     }
 
@@ -1115,7 +1128,9 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("create_bundled_source_with_oauth capture")
             .push(request.into_inner());
-        Ok(Response::new(mock_bundled_source_stream()))
+        Ok(Response::new(mock_bundled_source_stream(
+            self.config.source_installation_diagnostics.clone(),
+        )))
     }
 
     async fn import_source(
@@ -1127,7 +1142,9 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("import_source capture")
             .push(request.into_inner());
-        Ok(Response::new(mock_import_source_stream()))
+        Ok(Response::new(mock_import_source_stream(
+            self.config.source_installation_diagnostics.clone(),
+        )))
     }
 
     async fn delete_source(

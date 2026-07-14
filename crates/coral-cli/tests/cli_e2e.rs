@@ -18,7 +18,8 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::{
     DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    Source, SourceCredentialStorage, SourceDiagnostic, SourceDiagnosticSeverity, SourceInfo,
+    SourceOrigin, Workspace,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -1033,6 +1034,73 @@ surfaces:
     assert!(
         !manifest_yaml.contains("file: openapi.yaml"),
         "expected relative descriptor to be replaced before import: {manifest_yaml}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_reports_materialization_diagnostics() {
+    let diagnostics = (1..=4)
+        .map(|index| SourceDiagnostic {
+            code: "OPENAPI_OPERATION_REF_UNSUPPORTED".to_string(),
+            severity: SourceDiagnosticSeverity::Warning as i32,
+            message: format!("unsupported operation reference {index}"),
+            surface_id: "rest".to_string(),
+            operation_id: format!("get /operation-{index}"),
+            projection_name: String::new(),
+        })
+        .collect();
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_source_installation_diagnostics(diagnostics),
+    )
+    .await;
+    let source_dir = tempdir().expect("source directory");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+    )
+    .expect("write manifest");
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("source 'github' was added with 4 materialization diagnostic(s)"),
+        "expected materialization diagnostic summary: {stderr}"
+    );
+    assert!(
+        stderr.contains("warning OPENAPI_OPERATION_REF_UNSUPPORTED (4):"),
+        "expected diagnostic group: {stderr}"
+    );
+    assert!(
+        stderr.contains("unsupported operation reference 3"),
+        "expected sample diagnostic: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unsupported operation reference 4"),
+        "expected diagnostic samples to be bounded: {stderr}"
+    );
+    assert!(
+        stderr.contains("- 1 more"),
+        "expected omitted diagnostic count: {stderr}"
     );
 
     server.shutdown().await;

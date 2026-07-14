@@ -1062,13 +1062,14 @@ async fn run_source_add(
     };
     println!(
         "Added source {} (secrets: {})",
-        response.name,
-        source_ops::source_credential_storage_label(response.credential_storage)
+        response.source.name,
+        source_ops::source_credential_storage_label(response.source.credential_storage)
     );
+    source_ops::print_source_installation_diagnostics(&response.source.name, &response.diagnostics);
     source_ops::validate_and_warn(
         app,
         workspace,
-        &response.name,
+        &response.source.name,
         source_ops::TableDisplayLimit::DEFAULT,
     )
     .await

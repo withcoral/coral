@@ -72,6 +72,75 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
+async fn import_source_returns_materialization_diagnostics() {
+    let harness = GrpcHarness::new().await;
+    let descriptor = harness.temp_path().join("unsupported-external-ref.yaml");
+    fs::write(
+        &descriptor,
+        r"
+openapi: 3.0.3
+paths:
+  /account:
+    get:
+      operationId: account/get
+      responses:
+        '200':
+          $ref: resources/account/account_get.yml
+",
+    )
+    .expect("write descriptor");
+    let manifest_yaml = format!(
+        r"
+name: unsupported_external_ref
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        descriptor.display()
+    );
+
+    let mut stream = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect("import source")
+        .into_inner();
+    let response = stream
+        .message()
+        .await
+        .expect("read import response")
+        .expect("source import response");
+
+    assert!(matches!(
+        response.event,
+        Some(import_source_response::Event::Source(_))
+    ));
+    let diagnostic = response
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
+        .expect("unsupported reference diagnostic");
+    assert_eq!(diagnostic.surface_id, "rest");
+    assert_eq!(diagnostic.operation_id, "account_get");
+    assert!(
+        diagnostic
+            .message
+            .contains("resources/account/account_get.yml")
+    );
+    assert!(diagnostic.message.contains("external reference"));
+    assert!(diagnostic.message.contains("is unsupported"));
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 

@@ -15,8 +15,8 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    SourceCredentialStorage, SourceDiagnostic, SourceDiagnosticSeverity, SourceInfo, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse, Workspace,
     create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -36,6 +36,21 @@ use tonic::Request;
 use url::{Host, Url};
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
+const MAX_DIAGNOSTIC_SAMPLES_PER_GROUP: usize = 3;
+
+#[derive(Debug)]
+pub(crate) struct SourceInstallationResult {
+    pub(crate) source: Source,
+    pub(crate) diagnostics: Vec<SourceDiagnostic>,
+}
+
+impl std::ops::Deref for SourceInstallationResult {
+    type Target = Source;
+
+    fn deref(&self) -> &Self::Target {
+        &self.source
+    }
+}
 
 /// How many tables to show per schema when pretty-printing validation results.
 #[derive(Debug, Clone, Copy)]
@@ -105,7 +120,7 @@ pub(crate) async fn add_bundled_source(
     name: &str,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
-) -> Result<Source, anyhow::Error> {
+) -> Result<SourceInstallationResult, anyhow::Error> {
     let response = app
         .source_client()
         .create_bundled_source(Request::new(CreateBundledSourceRequest {
@@ -116,9 +131,13 @@ pub(crate) async fn add_bundled_source(
         }))
         .await?
         .into_inner();
-    response
+    let source = response
         .source
-        .ok_or_else(|| anyhow::anyhow!("create bundled source response missing source"))
+        .ok_or_else(|| anyhow::anyhow!("create bundled source response missing source"))?;
+    Ok(SourceInstallationResult {
+        source,
+        diagnostics: response.diagnostics,
+    })
 }
 
 pub(crate) async fn import_source(
@@ -127,7 +146,7 @@ pub(crate) async fn import_source(
     manifest_yaml: String,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
-) -> Result<Source, anyhow::Error> {
+) -> Result<SourceInstallationResult, anyhow::Error> {
     let mut responses = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
@@ -140,8 +159,12 @@ pub(crate) async fn import_source(
         .await?
         .into_inner();
     while let Some(response) = responses.message().await? {
+        let diagnostics = response.diagnostics;
         if let Some(import_source_response::Event::Source(source)) = response.event {
-            return Ok(source);
+            return Ok(SourceInstallationResult {
+                source,
+                diagnostics,
+            });
         }
     }
     Err(anyhow::anyhow!("import source stream ended without source"))
@@ -187,7 +210,7 @@ pub(crate) async fn add_bundled_source_with_credentials(
     workspace: &Workspace,
     name: &str,
     inputs: CollectedSourceInputs,
-) -> Result<Source, anyhow::Error> {
+) -> Result<SourceInstallationResult, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
         return add_bundled_source(app, workspace, name, inputs.variables, inputs.secrets).await;
     }
@@ -209,7 +232,7 @@ pub(crate) async fn import_source_with_credentials(
     workspace: &Workspace,
     manifest_yaml: String,
     inputs: CollectedSourceInputs,
-) -> Result<Source, anyhow::Error> {
+) -> Result<SourceInstallationResult, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
         return import_source(
             app,
@@ -236,7 +259,7 @@ pub(crate) async fn import_source_with_credentials(
 async fn source_from_bundled_credential_stream(
     mut stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
     oauth_labels: &BTreeMap<String, String>,
-) -> Result<Source, anyhow::Error> {
+) -> Result<SourceInstallationResult, anyhow::Error> {
     let mut redirect_prompt = OAuthRedirectPastePrompt::default();
     loop {
         let response = match stream.message().await {
@@ -252,12 +275,16 @@ async fn source_from_bundled_credential_stream(
                 return Err(oauth_error("retrieve", &error));
             }
         };
+        let diagnostics = response.diagnostics;
         let event = response.event.map(CredentialStreamEvent::from);
         if let Some(source) =
             handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
         {
             redirect_prompt.cancel_and_join();
-            return Ok(source);
+            return Ok(SourceInstallationResult {
+                source,
+                diagnostics,
+            });
         }
     }
 }
@@ -265,7 +292,7 @@ async fn source_from_bundled_credential_stream(
 async fn source_from_import_credential_stream(
     mut stream: tonic::Streaming<ImportSourceResponse>,
     oauth_labels: &BTreeMap<String, String>,
-) -> Result<Source, anyhow::Error> {
+) -> Result<SourceInstallationResult, anyhow::Error> {
     let mut redirect_prompt = OAuthRedirectPastePrompt::default();
     loop {
         let response = match stream.message().await {
@@ -281,12 +308,16 @@ async fn source_from_import_credential_stream(
                 return Err(oauth_error("retrieve", &error));
             }
         };
+        let diagnostics = response.diagnostics;
         let event = response.event.map(CredentialStreamEvent::from);
         if let Some(source) =
             handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
         {
             redirect_prompt.cancel_and_join();
-            return Ok(source);
+            return Ok(SourceInstallationResult {
+                source,
+                diagnostics,
+            });
         }
     }
 }
@@ -875,6 +906,63 @@ pub(crate) async fn validate_and_warn(
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
+}
+
+pub(crate) fn print_source_installation_diagnostics(
+    source_name: &str,
+    diagnostics: &[SourceDiagnostic],
+) {
+    let report = format_source_installation_diagnostics(source_name, diagnostics);
+    if !report.is_empty() {
+        eprintln!("{report}");
+    }
+}
+
+fn format_source_installation_diagnostics(
+    source_name: &str,
+    diagnostics: &[SourceDiagnostic],
+) -> String {
+    if diagnostics.is_empty() {
+        return String::new();
+    }
+
+    let mut groups: BTreeMap<(&str, &str), Vec<&SourceDiagnostic>> = BTreeMap::new();
+    for diagnostic in diagnostics {
+        groups
+            .entry((
+                diagnostic_severity_label(diagnostic.severity),
+                &diagnostic.code,
+            ))
+            .or_default()
+            .push(diagnostic);
+    }
+
+    let mut lines = vec![format!(
+        "Warning: source '{source_name}' was added with {} materialization diagnostic(s):",
+        diagnostics.len()
+    )];
+    for ((severity, code), diagnostics) in groups {
+        lines.push(format!("  {severity} {code} ({}):", diagnostics.len()));
+        for diagnostic in diagnostics.iter().take(MAX_DIAGNOSTIC_SAMPLES_PER_GROUP) {
+            lines.push(format!("    - {}", diagnostic.message));
+        }
+        let omitted = diagnostics
+            .len()
+            .saturating_sub(MAX_DIAGNOSTIC_SAMPLES_PER_GROUP);
+        if omitted > 0 {
+            lines.push(format!("    - {omitted} more"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn diagnostic_severity_label(severity: i32) -> &'static str {
+    match SourceDiagnosticSeverity::try_from(severity) {
+        Ok(SourceDiagnosticSeverity::Info) => "info",
+        Ok(SourceDiagnosticSeverity::Warning) => "warning",
+        Ok(SourceDiagnosticSeverity::Error) => "error",
+        Ok(SourceDiagnosticSeverity::Unspecified) | Err(_) => "unknown",
+    }
 }
 
 pub(crate) async fn test_and_print(
@@ -1777,7 +1865,7 @@ mod tests {
         reason = "collected input order assertions intentionally fail loudly in tests"
     )]
 
-    use coral_api::v1::ValidateSourceResponse;
+    use coral_api::v1::{SourceDiagnostic, SourceDiagnosticSeverity, ValidateSourceResponse};
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec,
@@ -1797,7 +1885,7 @@ mod tests {
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, oauth_client_id_allows_empty,
+        finalize_input_value, format_source_installation_diagnostics, oauth_client_id_allows_empty,
         oauth_client_secret_required_after_client_id_prompt, render_redirect_prompt_key_echo,
         resolve_oauth_client_id_prompt_value, resolve_prompt_hint, shell_quote_arg,
         source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
@@ -1854,6 +1942,29 @@ mod tests {
         assert_eq!(secrets.len(), 1);
         assert_eq!(secrets[0].key, "LINEAR_API_KEY");
         assert_eq!(secrets[0].value, "lin_token");
+    }
+
+    #[test]
+    fn installation_diagnostic_report_groups_and_bounds_samples() {
+        let diagnostics = (1..=4)
+            .map(|index| SourceDiagnostic {
+                code: "OPENAPI_OPERATION_REF_UNSUPPORTED".to_string(),
+                severity: SourceDiagnosticSeverity::Warning as i32,
+                message: format!("unsupported operation reference {index}"),
+                surface_id: "rest".to_string(),
+                operation_id: format!("get /operation-{index}"),
+                projection_name: String::new(),
+            })
+            .collect::<Vec<_>>();
+
+        let report = format_source_installation_diagnostics("digitalocean", &diagnostics);
+
+        assert!(report.contains("source 'digitalocean' was added with 4"));
+        assert!(report.contains("warning OPENAPI_OPERATION_REF_UNSUPPORTED (4):"));
+        assert!(report.contains("unsupported operation reference 1"));
+        assert!(report.contains("unsupported operation reference 3"));
+        assert!(!report.contains("unsupported operation reference 4"));
+        assert!(report.contains("- 1 more"));
     }
 
     #[test]

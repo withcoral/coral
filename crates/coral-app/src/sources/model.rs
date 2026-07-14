@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use coral_spec::ManifestInputSpec;
+use coral_spec::v4::Diagnostic;
 use serde::{Deserialize, Serialize};
 
 use crate::credentials::CredentialStorageKind;
@@ -45,6 +46,24 @@ pub(crate) struct InstalledSource {
     pub(crate) credential_storage: Option<CredentialStorageKind>,
     /// Where this installed source came from.
     pub(crate) origin: SourceOrigin,
+}
+
+/// Transient outcome of a successful source installation.
+///
+/// Diagnostics describe the materialization that just ran; they deliberately
+/// do not become persisted source state.
+#[derive(Debug, Clone)]
+pub(crate) struct SourceInstallation {
+    pub(crate) source: InstalledSource,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+}
+
+impl std::ops::Deref for SourceInstallation {
+    type Target = InstalledSource;
+
+    fn deref(&self) -> &Self::Target {
+        &self.source
+    }
 }
 
 impl InstalledSource {

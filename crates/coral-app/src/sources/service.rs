@@ -18,13 +18,16 @@ use coral_api::v1::{
     OauthCredentialFlowType, OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode,
     OauthCredentialScopeDelimiter, OauthDynamicClientRegistrationAuthMethod, Source,
     SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
-    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceCredentialStorage as ProtoSourceCredentialStorage,
+    SourceDiagnostic as ProtoSourceDiagnostic,
+    SourceDiagnosticSeverity as ProtoSourceDiagnosticSeverity, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
     SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
+use coral_spec::v4::{Diagnostic, DiagnosticSeverity};
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec,
@@ -43,7 +46,7 @@ use crate::sources::manager::{
     PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
     SourceOAuthCredentialRetrieval,
 };
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{CandidateSource, InstalledSource, SourceInstallation, SourceOrigin};
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
@@ -192,8 +195,9 @@ impl SourceServiceApi for SourceService {
             Ok(Response::new(CreateBundledSourceResponse {
                 source: Some(installed_source_to_proto(
                     &response_workspace_name,
-                    installed,
+                    installed.source,
                 )),
+                diagnostics: source_diagnostics_to_proto(installed.diagnostics),
             }))
         })
         .await
@@ -265,8 +269,9 @@ impl SourceServiceApi for SourceService {
                 .await?;
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
-                        installed_source_to_proto(&response_workspace_name, installed),
+                        installed_source_to_proto(&response_workspace_name, installed.source),
                     )),
+                    diagnostics: source_diagnostics_to_proto(installed.diagnostics),
                 };
                 return Ok(Response::new(
                     Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
@@ -359,7 +364,7 @@ type CreateBundledSourceWithOAuthResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
-type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
+type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<SourceInstallation, Status>> + Send>>;
 
 async fn run_blocking_source_operation<T, F>(operation: F) -> Result<T, Status>
 where
@@ -379,7 +384,7 @@ fn import_source_response_stream<F, Fut>(
 ) -> ImportSourceResponseStreamBox
 where
     F: FnOnce(ImportSourceEventSender) -> Fut,
-    Fut: Future<Output = Result<InstalledSource, Status>> + Send + 'static,
+    Fut: Future<Output = Result<SourceInstallation, Status>> + Send + 'static,
 {
     let (event_tx, event_rx) = mpsc::channel(8);
     Box::pin(ImportSourceResponseStream::new(
@@ -437,8 +442,12 @@ impl Stream for ImportSourceResponseStream {
                     this.import = None;
                     this.completion = Some(result.map(|installed| ImportSourceResponse {
                         event: Some(import_source_response::Event::Source(
-                            installed_source_to_proto(&this.response_workspace_name, installed),
+                            installed_source_to_proto(
+                                &this.response_workspace_name,
+                                installed.source,
+                            ),
                         )),
+                        diagnostics: source_diagnostics_to_proto(installed.diagnostics),
                     }));
                 }
                 Poll::Pending => {
@@ -539,7 +548,10 @@ fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> Impo
                 .collect(),
         }),
     };
-    ImportSourceResponse { event: Some(event) }
+    ImportSourceResponse {
+        event: Some(event),
+        diagnostics: Vec::new(),
+    }
 }
 
 fn create_bundled_source_with_o_auth_response_from_import_response(
@@ -559,7 +571,28 @@ fn create_bundled_source_with_o_auth_response_from_import_response(
             create_bundled_source_with_o_auth_response::Event::OauthCompleted(completed)
         }
     });
-    CreateBundledSourceWithOAuthResponse { event }
+    CreateBundledSourceWithOAuthResponse {
+        event,
+        diagnostics: response.diagnostics,
+    }
+}
+
+fn source_diagnostics_to_proto(diagnostics: Vec<Diagnostic>) -> Vec<ProtoSourceDiagnostic> {
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| ProtoSourceDiagnostic {
+            code: diagnostic.code,
+            severity: match diagnostic.severity {
+                DiagnosticSeverity::Info => ProtoSourceDiagnosticSeverity::Info,
+                DiagnosticSeverity::Warning => ProtoSourceDiagnosticSeverity::Warning,
+                DiagnosticSeverity::Error => ProtoSourceDiagnosticSeverity::Error,
+            } as i32,
+            message: diagnostic.message,
+            surface_id: diagnostic.surface_id.unwrap_or_default(),
+            operation_id: diagnostic.operation_id.unwrap_or_default(),
+            projection_name: diagnostic.projection_name.unwrap_or_default(),
+        })
+        .collect()
 }
 
 fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {
@@ -890,6 +923,27 @@ mod tests {
         };
 
         assert!(secret.credential.is_none());
+    }
+
+    #[test]
+    fn maps_source_diagnostics_to_proto() {
+        let diagnostics = source_diagnostics_to_proto(vec![Diagnostic {
+            code: "OPENAPI_OPERATION_REF_UNSUPPORTED".to_string(),
+            severity: DiagnosticSeverity::Warning,
+            message: "bundle the OpenAPI document before importing".to_string(),
+            surface_id: Some("rest".to_string()),
+            operation_id: Some("get /account".to_string()),
+            projection_name: None,
+        }]);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].severity,
+            ProtoSourceDiagnosticSeverity::Warning as i32
+        );
+        assert_eq!(diagnostics[0].surface_id, "rest");
+        assert_eq!(diagnostics[0].operation_id, "get /account");
+        assert!(diagnostics[0].projection_name.is_empty());
     }
 
     #[test]
