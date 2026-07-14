@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use coral_engine::RuntimeSourceComponent;
+use coral_engine::{QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
@@ -17,8 +17,157 @@ use coral_spec::{
     PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon,
     SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
 };
+use serde::Serialize;
 
 use crate::bootstrap::AppError;
+use crate::hash::sha256_hex;
+use crate::sources::catalog::InstalledSourceManifest;
+use crate::sources::materialization::{
+    incompatible_materialization_error, load_v4_materialization,
+};
+use crate::sources::model::InstalledSource;
+use crate::state::AppStateLayout;
+use crate::workspaces::WorkspaceName;
+
+const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 1;
+
+/// Versioned, non-secret identity for the installed runtime contract used by
+/// query execution and derived local state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeContractFingerprint(String);
+
+impl RuntimeContractFingerprint {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedRuntimeSource {
+    pub(crate) query_source: QuerySource,
+    pub(crate) runtime_contract_fingerprint: RuntimeContractFingerprint,
+}
+
+#[derive(Serialize)]
+struct RuntimeContractFingerprintInput<'a> {
+    version: u32,
+    manifest_sha256: String,
+    variables: &'a BTreeMap<String, String>,
+    v4_runtime: Option<V4RuntimeFingerprintInput<'a>>,
+}
+
+#[derive(Serialize)]
+struct V4RuntimeFingerprintInput<'a> {
+    fingerprint: &'a coral_spec::v4::Fingerprint,
+    surfaces: Vec<V4SurfaceFingerprintInput<'a>>,
+    projections: &'a coral_spec::v4::ProjectionCatalog,
+}
+
+#[derive(Serialize)]
+struct V4SurfaceFingerprintInput<'a> {
+    surface_id: &'a str,
+    semantic_ir: &'a coral_spec::v4::SemanticIr,
+    source_document_sha256: &'a str,
+}
+
+/// Fingerprints authored manifest content, deterministic non-secret variable
+/// bindings, and the materialised v4 runtime contract. Filesystem paths and
+/// resolved credential material are deliberately excluded.
+pub(crate) fn runtime_contract_fingerprint(
+    manifest_yaml: &str,
+    variables: &BTreeMap<String, String>,
+    v4_materialized: Option<&V4MaterializedSource>,
+) -> Result<RuntimeContractFingerprint, AppError> {
+    let input = RuntimeContractFingerprintInput {
+        version: RUNTIME_CONTRACT_FINGERPRINT_VERSION,
+        manifest_sha256: sha256_hex(manifest_yaml.as_bytes()),
+        variables,
+        v4_runtime: v4_materialized.map(|materialized| V4RuntimeFingerprintInput {
+            fingerprint: &materialized.fingerprint,
+            surfaces: materialized
+                .surfaces
+                .iter()
+                .map(|surface| V4SurfaceFingerprintInput {
+                    surface_id: &surface.surface_id,
+                    semantic_ir: &surface.semantic_ir,
+                    source_document_sha256: &surface.source_document_sha256,
+                })
+                .collect(),
+            projections: &materialized.projections,
+        }),
+    };
+    let bytes = serde_json::to_vec(&input).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to fingerprint installed source runtime contract: {error}"
+        ))
+    })?;
+    Ok(RuntimeContractFingerprint(format!(
+        "v{RUNTIME_CONTRACT_FINGERPRINT_VERSION}:{}",
+        sha256_hex(&bytes)
+    )))
+}
+
+/// Loads exactly the runtime package used for query execution and returns its
+/// non-secret contract fingerprint alongside it. Observation and retrieval
+/// scope code must consume this result instead of independently rebuilding the
+/// runtime contract.
+pub(crate) fn query_source_from_installed_manifest(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source: &InstalledSource,
+    installed: &InstalledSourceManifest,
+    resolved_secrets: BTreeMap<String, String>,
+) -> Result<LoadedRuntimeSource, AppError> {
+    let source_spec = &installed.source_spec;
+    let (query_source, v4_materialized) = if let Some(v4) = source_spec.as_v4() {
+        let materialized = load_v4_materialization(
+            layout,
+            workspace_name,
+            &source.name,
+            &installed.manifest_yaml,
+            v4,
+        )?;
+        let components = runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
+            incompatible_materialization_error(
+                &source.name,
+                format!("failed to assemble runtime package: {error}"),
+            )
+        })?;
+        let query_source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: source_spec.schema_name().to_string(),
+                authored_version: source_spec.source_version().map(ToString::to_string),
+                description: source_spec.description().to_string(),
+                declared_inputs: source_spec.declared_inputs().to_vec(),
+                test_queries: source_spec.test_queries().to_vec(),
+                components,
+            },
+            source.variables.clone(),
+            resolved_secrets,
+        )
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        (query_source, Some(materialized))
+    } else {
+        (
+            QuerySource::from_manifest(source_spec, source.variables.clone(), resolved_secrets),
+            None,
+        )
+    };
+    let runtime_contract_fingerprint = runtime_contract_fingerprint(
+        &installed.manifest_yaml,
+        &source.variables,
+        v4_materialized.as_ref(),
+    )?;
+    Ok(LoadedRuntimeSource {
+        query_source,
+        runtime_contract_fingerprint,
+    })
+}
 
 pub(crate) fn runtime_components_for_v4_source(
     manifest: &V4SourceManifest,
@@ -395,6 +544,7 @@ fn validate_surface_base_url_template(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
@@ -410,7 +560,7 @@ mod tests {
     };
     use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
 
-    use super::{runtime_components_for_v4_source, surface_base_url};
+    use super::{runtime_components_for_v4_source, runtime_contract_fingerprint, surface_base_url};
 
     fn surface_without_authored_base_url() -> V4Surface {
         openapi_surface_with_base_url("rest", "demo", "")
@@ -620,6 +770,78 @@ mod tests {
             detail_hints: Vec::new(),
             diagnostics: Vec::new(),
         }
+    }
+
+    #[test]
+    fn runtime_contract_fingerprint_tracks_manifest_and_non_secret_variables() {
+        let first = runtime_contract_fingerprint(
+            "name: demo\nliteral: one\n",
+            &BTreeMap::from([("REGION".to_string(), "eu".to_string())]),
+            None,
+        )
+        .expect("first fingerprint");
+        let different_literal = runtime_contract_fingerprint(
+            "name: demo\nliteral: two\n",
+            &BTreeMap::from([("REGION".to_string(), "eu".to_string())]),
+            None,
+        )
+        .expect("literal fingerprint");
+        let different_variable = runtime_contract_fingerprint(
+            "name: demo\nliteral: one\n",
+            &BTreeMap::from([("REGION".to_string(), "us".to_string())]),
+            None,
+        )
+        .expect("variable fingerprint");
+
+        assert!(first.as_str().starts_with("v1:"));
+        assert_ne!(first, different_literal);
+        assert_ne!(first, different_variable);
+    }
+
+    #[test]
+    fn runtime_contract_fingerprint_tracks_v4_runtime_but_not_artifact_paths() {
+        let mut materialized = V4MaterializedSource {
+            fingerprint: Fingerprint {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                manifest_sha256: "manifest".to_string(),
+                surfaces: Vec::new(),
+                importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            },
+            surfaces: vec![materialized_surface(PathBuf::from("/first/raw.json"))],
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                projections: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+        let surface = materialized.surfaces.first_mut().expect("surface");
+        surface.source_document_sha256 = "document-one".to_string();
+        let first =
+            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
+                .expect("first fingerprint");
+
+        let surface = materialized.surfaces.first_mut().expect("surface");
+        surface.raw_source_document_path = PathBuf::from("/second/raw.json");
+        surface.normalized_source_document_path = PathBuf::from("/second/normalized.json");
+        let moved =
+            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
+                .expect("moved fingerprint");
+        assert_eq!(first, moved);
+
+        materialized
+            .surfaces
+            .first_mut()
+            .expect("surface")
+            .source_document_sha256 = "document-two".to_string();
+        let changed =
+            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
+                .expect("changed fingerprint");
+        assert_ne!(first, changed);
     }
 
     #[test]

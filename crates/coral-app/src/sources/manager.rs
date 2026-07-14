@@ -34,6 +34,7 @@ use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthC
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -626,6 +627,11 @@ impl SourceManager {
         };
         let previous =
             self.load_source_rollback_state(workspace_name, &source_name, &credential_guard)?;
+        let previous_credential_revision = previous
+            .as_ref()
+            .map(|state| state.source.credential_revision)
+            .unwrap_or_default();
+        let is_new_install = previous.is_none();
         if let Err(error) =
             self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
         {
@@ -726,6 +732,13 @@ impl SourceManager {
             variables,
             secrets: visible_secret_keys,
             credential_storage,
+            credential_revision: if credential_storage.is_none() {
+                Uuid::nil()
+            } else if is_new_install || !replaced_oauth_inputs.is_empty() {
+                Uuid::new_v4()
+            } else {
+                previous_credential_revision
+            },
             origin: request.origin,
         };
         if let Err(error) = self
@@ -2404,6 +2417,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["OTHER_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    credential_revision: Default::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -3035,6 +3049,64 @@ surfaces:
             std::fs::read_to_string(&secret_path).expect("read replaced credential material"),
             "API_TOKEN=new-token\n"
         );
+    }
+
+    #[test]
+    fn credential_revision_rotates_only_when_credential_material_is_replaced() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let workspace = default_workspace();
+
+        let first = manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "first-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+        assert!(!first.credential_revision.is_nil());
+
+        let unchanged = manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("reimport with stored credential material");
+        assert_eq!(unchanged.credential_revision, first.credential_revision);
+
+        let replaced = manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "second-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("credential replacement");
+        assert_ne!(replaced.credential_revision, first.credential_revision);
     }
 
     #[test]

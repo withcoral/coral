@@ -8,8 +8,7 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
-    UdfRuntimeDefinition,
+    SourceInputResolver, SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -28,11 +27,10 @@ use crate::query::input_resolver::{
 use crate::search::observed::SearchObservationHandle;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
-};
 use crate::sources::model::InstalledSource;
-use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::sources::runtime_package::{
+    RuntimeContractFingerprint, query_source_from_installed_manifest,
+};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
@@ -59,6 +57,7 @@ enum CredentialResolutionMode {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
+    runtime_contract_fingerprint: RuntimeContractFingerprint,
     credential_material: BTreeMap<String, String>,
 }
 
@@ -436,26 +435,7 @@ impl QueryManager {
         source: &InstalledSource,
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
-        let source_spec = installed.source_spec;
-        let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
-            let materialized = load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
-                &installed.manifest_yaml,
-                v4,
-            )?;
-            Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                    incompatible_materialization_error(
-                        &source.name,
-                        format!("failed to assemble runtime package: {error}"),
-                    )
-                })?,
-            )
-        } else {
-            None
-        };
+        let source_spec = &installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
@@ -490,27 +470,18 @@ impl QueryManager {
                 resolved_secrets.insert(secret_name, value.clone());
             }
         }
-        let query_source = if let Some(components) = v4_runtime_components {
-            QuerySource::from_runtime_components(
-                RuntimeSourcePackage {
-                    source_name: source_spec.schema_name().to_string(),
-                    authored_version: source_spec.source_version().map(ToString::to_string),
-                    description: source_spec.description().to_string(),
-                    declared_inputs: source_spec.declared_inputs().to_vec(),
-                    test_queries: source_spec.test_queries().to_vec(),
-                    components,
-                },
-                source.variables.clone(),
-                resolved_secrets,
-            )
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-        } else {
-            QuerySource::from_manifest(&source_spec, source.variables.clone(), resolved_secrets)
-        };
+        let loaded_runtime = query_source_from_installed_manifest(
+            &self.layout,
+            workspace_name,
+            source,
+            &installed,
+            resolved_secrets,
+        )?;
         Ok((
             LoadedQuerySource {
                 source: source.clone(),
-                query_source,
+                query_source: loaded_runtime.query_source,
+                runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
                 credential_material: stored_secrets,
             },
             installed.candidate.version,
@@ -1104,6 +1075,7 @@ mod tests {
                     variables: BTreeMap::new(),
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    credential_revision: Default::default(),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -1577,6 +1549,7 @@ tables:
             variables: BTreeMap::new(),
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
+            credential_revision: Default::default(),
             origin: SourceOrigin::Imported,
         };
         fixture
@@ -2026,6 +1999,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
+                    credential_revision: Default::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -2249,6 +2223,7 @@ select 1 as value
             variables: BTreeMap::new(),
             secrets: vec!["API_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
+            credential_revision: Default::default(),
             origin: SourceOrigin::Bundled,
         };
         fixture
@@ -2292,6 +2267,7 @@ tables:
         let loaded_source = LoadedQuerySource {
             source: installed_source,
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
                 "snapshot-token".to_string(),
@@ -2330,6 +2306,92 @@ tables:
         assert_eq!(
             resolved_inputs.get("API_TOKEN").map(String::as_str),
             Some("snapshot-token")
+        );
+    }
+
+    #[test]
+    fn runtime_contract_fingerprint_ignores_refreshed_credential_material() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let installed_source = InstalledSource {
+            name: source_name.clone(),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::new(),
+            secrets: vec!["API_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            credential_revision: uuid::Uuid::new_v4(),
+            origin: SourceOrigin::Imported,
+        };
+        std::fs::create_dir_all(fixture.manager.layout.source_dir(&workspace, &source_name))
+            .expect("source directory");
+        std::fs::write(
+            fixture
+                .manager
+                .layout
+                .manifest_file(&workspace, &source_name),
+            r"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace, installed_source.clone())
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "first-token".to_string())]),
+            )
+            .expect("first credential material");
+        let first = fixture
+            .manager
+            .load_query_source(&workspace, &installed_source)
+            .expect("first runtime")
+            .0;
+
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "refreshed-token".to_string())]),
+            )
+            .expect("refreshed credential material");
+        let refreshed = fixture
+            .manager
+            .load_query_source(&workspace, &installed_source)
+            .expect("refreshed runtime")
+            .0;
+
+        assert_eq!(
+            first.runtime_contract_fingerprint,
+            refreshed.runtime_contract_fingerprint
         );
     }
 
@@ -2378,9 +2440,11 @@ tables:
                 variables: BTreeMap::new(),
                 secrets: vec!["API_TOKEN".to_string()],
                 credential_storage: None,
+                credential_revision: Default::default(),
                 origin: SourceOrigin::Bundled,
             },
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
                 "stored-token".to_string(),
@@ -2454,9 +2518,11 @@ tables:
                 variables: BTreeMap::new(),
                 secrets: Vec::new(),
                 credential_storage: None,
+                credential_revision: Default::default(),
                 origin: SourceOrigin::Bundled,
             },
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::new(),
         }
     }
