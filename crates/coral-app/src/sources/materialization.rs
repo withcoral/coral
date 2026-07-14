@@ -312,7 +312,7 @@ fn load_projection_catalog(
     projections_file: &V4ProjectionCatalogFile,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<ProjectionCatalog, AppError> {
-    let projections = match projections_file.origin {
+    let mut projections = match projections_file.origin {
         V4ProjectionCatalogOrigin::Materialized => {
             let file: ProjectionCatalogDto =
                 read_artifact_yaml(source_name, "projection catalog", &projections_file.path)?;
@@ -327,6 +327,13 @@ fn load_projection_catalog(
             read_projection_override_yaml(source_name, &projections_file.path)?
         }
     };
+    for projection in &mut projections.projections {
+        if projection.namespace.is_empty()
+            && let Some(surface) = manifest.surface(&projection.surface_id)
+        {
+            projection.namespace = surface.relation_namespace.clone();
+        }
+    }
     if let Err(error) = validate_projection_catalog_header(manifest, &projections, projections_file)
     {
         diagnostics.push(materialization_warning(
@@ -1933,6 +1940,55 @@ surfaces:
         .expect("generated catalog provenance should not block loading");
 
         assert_load_diagnostic(&materialized, "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH");
+    }
+
+    #[test]
+    fn load_v4_materialization_defaults_missing_projection_namespace() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projection_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog = installed_projection_catalog_value(&layout);
+        let first_projection = catalog
+            .get_mut("projections")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .and_then(|projections| projections.first_mut())
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .expect("first projection mapping");
+        first_projection.remove(serde_yaml::Value::String("namespace".to_string()));
+        std::fs::write(
+            &projection_path,
+            serde_yaml::to_string(&catalog).expect("encode projections"),
+        )
+        .expect("write projections without namespace");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("legacy projection namespace should be migrated");
+
+        let projection = materialized
+            .projections
+            .projections
+            .first()
+            .expect("first projection");
+        assert_eq!(
+            projection.namespace,
+            manifest
+                .surface("rest")
+                .expect("REST surface")
+                .relation_namespace
+        );
+        assert!(
+            !materialized
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "V4_PROJECTION_NAMESPACE_MISMATCH" })
+        );
     }
 
     #[test]
