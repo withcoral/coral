@@ -32,11 +32,11 @@ impl SqliteObservedValuesStore {
     pub(crate) fn current_generations(
         &self,
         workspace_name: &WorkspaceName,
-        source_name: &str,
+        owner_source_name: &str,
     ) -> Result<ObservedValuesGeneration, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
-        observed_generations(&connection, workspace_name, source_name)
+        observed_generations(&connection, workspace_name, owner_source_name)
     }
 
     pub(crate) fn enqueue_source_scan(
@@ -49,7 +49,7 @@ impl SqliteObservedValuesStore {
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current_generation =
-            observed_generations(&transaction, workspace_name, &job.source_name)?;
+            observed_generations(&transaction, workspace_name, &job.owner_source_name)?;
         if current_generation != expected_generation {
             transaction.commit()?;
             return Ok(ObservedValuesEnqueueResult::StaleGeneration);
@@ -66,6 +66,7 @@ impl SqliteObservedValuesStore {
             "
             INSERT INTO observed_queue_jobs (
                 workspace,
+                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -85,11 +86,13 @@ impl SqliteObservedValuesStore {
                 ?6,
                 ?7,
                 ?8,
+                ?9,
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
             )
             ON CONFLICT(
                 workspace,
+                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -104,6 +107,7 @@ impl SqliteObservedValuesStore {
             ",
             params![
                 workspace_name.as_str(),
+                &job.owner_source_name,
                 &job.source_name,
                 &job.source_scope_id,
                 job.surface_kind.as_str(),
@@ -146,24 +150,24 @@ impl SqliteObservedValuesStore {
     pub(crate) fn clear_source(
         &self,
         workspace_name: &WorkspaceName,
-        source_name: &str,
+        owner_source_name: &str,
     ) -> Result<(), SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
-            "DELETE FROM observed_values_fts WHERE workspace = ?1 AND source_name = ?2",
-            params![workspace_name.as_str(), source_name],
+            "DELETE FROM observed_values_fts WHERE workspace = ?1 AND owner_source_name = ?2",
+            params![workspace_name.as_str(), owner_source_name],
         )?;
         transaction.execute(
-            "DELETE FROM observed_values WHERE workspace = ?1 AND source_name = ?2",
-            params![workspace_name.as_str(), source_name],
+            "DELETE FROM observed_values WHERE workspace = ?1 AND owner_source_name = ?2",
+            params![workspace_name.as_str(), owner_source_name],
         )?;
         transaction.execute(
-            "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND source_name = ?2",
-            params![workspace_name.as_str(), source_name],
+            "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND owner_source_name = ?2",
+            params![workspace_name.as_str(), owner_source_name],
         )?;
-        increment_source_generation(&transaction, workspace_name, source_name)?;
+        increment_source_generation(&transaction, workspace_name, owner_source_name)?;
         transaction.commit()?;
         Ok(())
     }
@@ -202,6 +206,28 @@ impl SqliteObservedValuesStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(SqliteSearchError::from)
     }
+
+    #[cfg(test)]
+    pub(crate) fn queue_source_identities(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<(String, String, String)>, SqliteSearchError> {
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
+        let connection = store.connect()?;
+        let mut statement = connection.prepare(
+            "
+            SELECT owner_source_name, source_name, surface_name
+            FROM observed_queue_jobs
+            WHERE workspace = ?1
+            ORDER BY id
+            ",
+        )?;
+        let rows = statement.query_map(params![workspace_name.as_str()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(SqliteSearchError::from)
+    }
 }
 
 fn pending_queue_job_count(
@@ -229,15 +255,17 @@ fn pending_queue_job_id(
             SELECT id
             FROM observed_queue_jobs
             WHERE workspace = ?1
-              AND source_name = ?2
-              AND source_scope_id = ?3
-              AND surface_kind = ?4
-              AND surface_name = ?5
-              AND workspace_generation = ?6
-              AND source_generation = ?7
+              AND owner_source_name = ?2
+              AND source_name = ?3
+              AND source_scope_id = ?4
+              AND surface_kind = ?5
+              AND surface_name = ?6
+              AND workspace_generation = ?7
+              AND source_generation = ?8
             ",
             params![
                 workspace_name.as_str(),
+                &job.owner_source_name,
                 &job.source_name,
                 &job.source_scope_id,
                 job.surface_kind.as_str(),
@@ -254,7 +282,7 @@ fn pending_queue_job_id(
 fn observed_generations(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    source_name: &str,
+    owner_source_name: &str,
 ) -> Result<ObservedValuesGeneration, SqliteSearchError> {
     let workspace_generation = connection
         .query_row(
@@ -275,7 +303,7 @@ fn observed_generations(
             FROM observed_source_generations
             WHERE workspace = ?1 AND source_name = ?2
             ",
-            params![workspace_name.as_str(), source_name],
+            params![workspace_name.as_str(), owner_source_name],
             |row| row.get(0),
         )
         .optional()?
@@ -306,7 +334,7 @@ fn increment_workspace_generation(
 fn increment_source_generation(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    source_name: &str,
+    owner_source_name: &str,
 ) -> Result<(), SqliteSearchError> {
     connection.execute(
         "
@@ -321,7 +349,7 @@ fn increment_source_generation(
             generation = generation + 1,
             updated_at = excluded.updated_at
         ",
-        params![workspace_name.as_str(), source_name],
+        params![workspace_name.as_str(), owner_source_name],
     )?;
     Ok(())
 }
@@ -509,6 +537,7 @@ mod tests {
         display_value: &str,
     ) -> ObservedValuesQueueJob {
         ObservedValuesQueueJob {
+            owner_source_name: "github".to_string(),
             source_name: "github".to_string(),
             source_scope_id: source_scope_id.to_string(),
             surface_kind: ObservedValuesSurfaceKind::Table,

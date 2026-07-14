@@ -29,7 +29,10 @@ pub(super) struct SurfaceKey {
 
 #[derive(Debug, Clone)]
 pub(super) struct ObservedSourceSurfaceScope {
-    pub(super) observed_source_name: String,
+    /// Canonical installed source that owns lifecycle clears and generations.
+    pub(super) owner_source_name: String,
+    /// Runtime component schema used in SQL and search results.
+    pub(super) source_name: String,
     surface_key: SurfaceKey,
     pub(super) source_scope_id: String,
     pub(super) generation: ObservedValuesGeneration,
@@ -182,7 +185,8 @@ fn surface_scope(
     let scope_bytes =
         serde_json::to_vec(&scope).expect("observed-values source scope must serialize");
     ObservedSourceSurfaceScope {
-        observed_source_name: source.source_name().to_string(),
+        owner_source_name: source.source_name().to_string(),
+        source_name: component_source_name.to_string(),
         surface_key: SurfaceKey {
             source_name: component_source_name.to_string(),
             surface_kind,
