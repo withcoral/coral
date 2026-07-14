@@ -454,7 +454,11 @@ fn schema_rebuild_can_recover(error: &SqliteSearchError) -> bool {
         SqliteSearchError::Sqlite(error)
             if matches!(
                 sqlite_error_code(error),
-                Some(ErrorCode::Unknown | ErrorCode::SchemaChanged)
+                Some(
+                    ErrorCode::Unknown
+                        | ErrorCode::SchemaChanged
+                        | ErrorCode::ConstraintViolation
+                )
             )
     )
 }
@@ -1056,12 +1060,17 @@ mod tests {
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
             None,
         ));
+        let constraint = SqliteSearchError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+            None,
+        ));
         let disk_full = SqliteSearchError::Sqlite(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
             None,
         ));
 
         assert!(super::schema_rebuild_can_recover(&schema_error));
+        assert!(super::schema_rebuild_can_recover(&constraint));
         assert!(!super::schema_rebuild_can_recover(&locked));
         assert!(!super::schema_rebuild_can_recover(&disk_full));
     }
@@ -1215,6 +1224,40 @@ mod tests {
                 ",
             )
             .expect("replace queue table with incompatible shape");
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+        let sentinel = connection
+            .query_row(
+                "SELECT value FROM search_meta WHERE key = 'sentinel'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("preserved search metadata");
+
+        assert_eq!(catalog_document_count(&connection), 1);
+        assert_eq!(observed_queue_job_count(&connection), 0);
+        assert_eq!(sentinel, "preserved");
+    }
+
+    #[test]
+    fn opening_current_version_resets_duplicate_observed_rows_after_repair_fails() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let connection = open_current_search_connection(&path);
+        seed_catalog_document(&connection);
+        connection
+            .execute(
+                "INSERT INTO search_meta (key, value) VALUES ('sentinel', 'preserved')",
+                [],
+            )
+            .expect("seed preserved search metadata");
+        connection
+            .execute_batch("DROP INDEX idx_observed_queue_jobs_pending_scope")
+            .expect("remove observed queue uniqueness guard");
+        seed_observed_queue_job(&connection);
+        seed_observed_queue_job(&connection);
+        assert_eq!(observed_queue_job_count(&connection), 2);
         drop(connection);
 
         let connection = open_current_search_connection(&path);
