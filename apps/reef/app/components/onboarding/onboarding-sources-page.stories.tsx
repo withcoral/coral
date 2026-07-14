@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { MemoryRouter } from 'react-router'
 
 import { fn } from 'storybook/test'
 
@@ -70,7 +71,6 @@ const meta = {
   args: {
     entries,
     loadState: 'idle',
-    onContinue: fn(),
     onRetry: fn(),
     onSearchChange: fn(),
     onSourceSelect: fn(),
@@ -80,7 +80,11 @@ const meta = {
   parameters: {
     layout: 'fullscreen',
   },
-  render: (args) => <StatefulPage {...args} />,
+  render: (args) => (
+    <MemoryRouter>
+      <StatefulPage {...args} />
+    </MemoryRouter>
+  ),
   tags: ['autodocs'],
   title: 'Components/Onboarding/SourcesPage',
 } satisfies Meta<typeof OnboardingSourcesPage>
@@ -88,7 +92,7 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-export const FirstStep: Story = {}
+export const Default: Story = {}
 
 function StatefulPage(args: React.ComponentProps<typeof OnboardingSourcesPage>) {
   const [search, setSearch] = useState(args.search)

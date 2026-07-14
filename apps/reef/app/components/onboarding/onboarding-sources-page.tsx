@@ -1,3 +1,5 @@
+import { Link } from 'react-router'
+
 import { Button, Typography } from '@/wax/components'
 import { Pill } from '@/wax/components/pill'
 
@@ -12,7 +14,6 @@ export interface OnboardingSourcesPageProps {
   entries: SourceCatalogEntry[]
   errorMessage?: string | null
   loadState?: SourceCatalogLoadState
-  onContinue?: () => void
   onRetry?: () => void
   onSearchChange: (search: string) => void
   onSourceSelect: (entry: SourceCatalogEntry) => void
@@ -26,7 +27,6 @@ export function OnboardingSourcesPage({
   entries,
   errorMessage = null,
   loadState = 'idle',
-  onContinue,
   onRetry,
   onSearchChange,
   onSourceSelect,
@@ -89,7 +89,13 @@ export function OnboardingSourcesPage({
               </Typography.BodyLarge>
             </div>
 
-            <Button.Container disabled={!canContinue} onClick={onContinue} variant="secondary">
+            <Button.Container
+              as={Link}
+              disabled={!canContinue}
+              onClick={canContinue ? undefined : (event) => event.preventDefault()}
+              to="?step=query"
+              variant="secondary"
+            >
               <Button.Text>{continueLabel}</Button.Text>
             </Button.Container>
           </div>
