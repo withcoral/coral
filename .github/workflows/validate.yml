@@ -556,26 +556,7 @@ jobs:
         run: npm run package:mac --prefix apps/desktop
 
       - name: Verify desktop package artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -s apps/desktop/dist/latest-mac.yml
-
-          shopt -s nullglob
-          dmg_artifacts=(apps/desktop/dist/coral-desktop-*.dmg)
-          zip_artifacts=(apps/desktop/dist/coral-desktop-*.zip)
-          blockmap_artifacts=(apps/desktop/dist/coral-desktop-*.blockmap)
-          if [ "${#dmg_artifacts[@]}" -ne 1 ] || [ "${#zip_artifacts[@]}" -ne 1 ]; then
-            echo "Expected exactly one desktop DMG and one desktop ZIP artifact." >&2
-            printf 'DMGs: %s\n' "${dmg_artifacts[*]:-<none>}" >&2
-            printf 'ZIPs: %s\n' "${zip_artifacts[*]:-<none>}" >&2
-            exit 1
-          fi
-          if [ "${#blockmap_artifacts[@]}" -eq 0 ]; then
-            echo "Expected at least one desktop blockmap artifact." >&2
-            exit 1
-          fi
-          grep -q "$(basename "${zip_artifacts[0]}")" apps/desktop/dist/latest-mac.yml
+        run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist
 
       # Unsigned build for manual inspection; the run page serves it for a week.
       - name: Upload desktop package artifact
