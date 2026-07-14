@@ -1151,7 +1151,7 @@ mod tests {
                     variables: BTreeMap::new(),
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
-                    credential_revision: Default::default(),
+                    credential_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -1625,7 +1625,7 @@ tables:
             variables: BTreeMap::new(),
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
-            credential_revision: Default::default(),
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         };
         fixture
@@ -2140,7 +2140,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
-                    credential_revision: Default::default(),
+                    credential_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -2351,7 +2351,7 @@ select 1 as value
             variables: BTreeMap::new(),
             secrets: vec!["API_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
-            credential_revision: Default::default(),
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Bundled,
         };
         fixture
@@ -2568,7 +2568,7 @@ tables:
                 variables: BTreeMap::new(),
                 secrets: vec!["API_TOKEN".to_string()],
                 credential_storage: None,
-                credential_revision: Default::default(),
+                credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
@@ -2646,7 +2646,7 @@ tables:
                 variables: BTreeMap::new(),
                 secrets: Vec::new(),
                 credential_storage: None,
-                credential_revision: Default::default(),
+                credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),

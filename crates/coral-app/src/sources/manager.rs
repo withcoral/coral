@@ -2439,7 +2439,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["OTHER_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
-                    credential_revision: Default::default(),
+                    credential_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
