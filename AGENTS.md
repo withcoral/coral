@@ -44,6 +44,12 @@
 - Reef changes must pass `npm run check --prefix apps/reef`,
   `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, and
   `npm run build --prefix apps/reef` before submitting.
+- Adopting someone else's PR (splitting, restacking, rebasing, or otherwise
+  shipping code you did not write) requires the verification harness in
+  `.claude/skills/verify-adopted-pr/SKILL.md`: audit the PR's claims against
+  the code, read pinned-dependency sources for any behavior the code relies
+  on, and attack each stated guarantee before pushing. Reproducing the diff
+  faithfully is not a review.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
