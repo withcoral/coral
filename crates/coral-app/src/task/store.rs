@@ -6,6 +6,7 @@ use coral_api::CORAL_TASK_INTENT_MAX_CHARS;
 
 use super::id::TaskId;
 use crate::state::db::{CoralDb, DbError, DbRepos, TaskRecord, now_unix_nanos_i64};
+use crate::trajectory_memory::SuggestedPath;
 use crate::workspaces::WorkspaceName;
 
 /// Final task status.
@@ -32,6 +33,7 @@ pub(crate) struct TaskStart {
     pub(crate) id: TaskId,
     pub(crate) workspace: WorkspaceName,
     pub(crate) intent: String,
+    pub(crate) suggested_paths: Vec<SuggestedPath>,
 }
 
 /// A task end event.
@@ -161,6 +163,7 @@ mod tests {
             id: TaskId::parse(TASK_ID).expect("valid task id"),
             workspace: workspace.clone(),
             intent: intent.to_string(),
+            suggested_paths: Vec::new(),
         }
     }
 

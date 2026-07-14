@@ -2,8 +2,9 @@
 
 use coral_api::v1::task_service_server::TaskService as TaskServiceApi;
 use coral_api::v1::{
-    EndTaskRequest, EndTaskResponse, StartTaskRequest, StartTaskResponse, Task as ProtoTask,
-    TaskEnd as ProtoTaskEnd, TaskStatus as ProtoTaskStatus,
+    EndTaskRequest, EndTaskResponse, StartTaskRequest, StartTaskResponse,
+    SuggestedPath as ProtoSuggestedPath, SuggestedPathStep as ProtoSuggestedPathStep,
+    Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus as ProtoTaskStatus,
 };
 use tonic::{Request, Response, Status};
 use tracing::warn;
@@ -73,6 +74,23 @@ impl TaskServiceApi for TaskService {
 pub(crate) fn task_start_to_proto(start: &TaskStart) -> ProtoTask {
     ProtoTask {
         task_id: start.id.to_string(),
+        suggested_paths: start
+            .suggested_paths
+            .iter()
+            .map(|path| ProtoSuggestedPath {
+                path_id: path.path_id.clone(),
+                support_count: path.support_count,
+                relations: path.relations.clone(),
+                steps: path
+                    .steps
+                    .iter()
+                    .map(|step| ProtoSuggestedPathStep {
+                        sql_template: step.sql_template.clone(),
+                        relations: step.relations.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -114,8 +132,8 @@ fn task_manager_status(error: &TaskManagerError) -> Status {
             Status::internal("failed to persist task lifecycle event")
         }
         TaskManagerError::TrajectoryMemory(_) => {
-            warn!(%error, "failed to distill trajectory memory");
-            Status::internal("failed to distill trajectory memory")
+            warn!(%error, "failed to process trajectory memory");
+            Status::internal("failed to process trajectory memory")
         }
     }
 }

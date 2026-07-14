@@ -26,10 +26,15 @@ impl TaskManager {
         workspace: WorkspaceName,
         intent: String,
     ) -> Result<TaskStart, TaskManagerError> {
+        let suggested_paths = self
+            .trajectory_memory
+            .suggested_paths(&workspace, &intent)
+            .await?;
         let start = TaskStart {
             id: TaskId::new(),
             workspace,
             intent,
+            suggested_paths,
         };
         self.store.start_task(&start).await?;
         Ok(start)
@@ -54,7 +59,7 @@ impl TaskManager {
         self.store.end_task(&end).await?;
         if status == TaskStatus::Success {
             self.trajectory_memory
-                .distill_task(&end.workspace, &end.id)
+                .distill_and_index(&end.workspace, &end.id)
                 .await?;
         }
         Ok(end)
