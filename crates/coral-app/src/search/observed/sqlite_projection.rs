@@ -3,10 +3,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use rusqlite::types::{Type, Value};
-use rusqlite::{
-    Connection, OptionalExtension as _, Transaction, TransactionBehavior, params, params_from_iter,
-};
+use rusqlite::types::Type;
+use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::sqlite_queue::{
@@ -231,6 +229,7 @@ pub(crate) fn search_observed_values(
     limit: usize,
     policy: &ObservedValuesRetrievalPolicy,
 ) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
+    prepare_live_scope_table(connection, policy)?;
     let value_count = eligible_observed_value_count(connection, workspace_name, policy)?;
     if terms.is_empty() || limit == 0 {
         return Ok(ObservedValuesSearchHits {
@@ -291,12 +290,8 @@ fn search_observed_values_fts(
     policy: &ObservedValuesRetrievalPolicy,
 ) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
     let match_query = fts_match_query(terms);
-    let Some((scope_cte, mut query_params)) = live_scope_values_cte(policy) else {
-        return Ok(Vec::new());
-    };
-    let sql = format!(
+    let mut statement = connection.prepare(
         "
-        {scope_cte}
         SELECT
             v.source_name,
             v.source_scope_id,
@@ -333,17 +328,15 @@ fn search_observed_values_fts(
             v.column_name ASC,
             v.value_key ASC
         LIMIT ?
-        "
-    );
-    query_params.extend([
-        Value::from(workspace_name.as_str().to_string()),
-        Value::from(match_query),
-        Value::from(sqlite_retention_modifier(policy)),
-        Value::from(i64::try_from(limit).unwrap_or(i64::MAX)),
-    ]);
-    let mut statement = connection.prepare(&sql)?;
+        ",
+    )?;
     let rows = statement.query_map(
-        params_from_iter(query_params.iter()),
+        params![
+            workspace_name.as_str(),
+            match_query,
+            sqlite_retention_modifier(policy),
+            i64::try_from(limit).unwrap_or(i64::MAX),
+        ],
         observed_search_hit_from_row,
     )?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -357,69 +350,64 @@ fn search_observed_values_short_terms(
     limit: usize,
     policy: &ObservedValuesRetrievalPolicy,
 ) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
-    let Some((scope_cte, base_query_params)) = live_scope_values_cte(policy) else {
-        return Ok(Vec::new());
-    };
     let mut hits = Vec::new();
+    let retention_modifier = sqlite_retention_modifier(policy);
+    let sqlite_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut statement = connection.prepare(
+        "
+        SELECT
+            v.source_name,
+            v.source_scope_id,
+            v.surface_kind,
+            v.surface_name,
+            v.column_name,
+            v.value_key,
+            v.display_value,
+            v.last_observed_at,
+            v.observation_count
+        FROM observed_values v
+        JOIN observed_live_source_scopes s
+            ON s.owner_source_name = v.owner_source_name
+            AND s.source_name = v.source_name
+            AND s.source_scope_id = v.source_scope_id
+            AND s.surface_kind = v.surface_kind
+            AND s.surface_name = v.surface_name
+        WHERE v.workspace = ?
+            AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+            AND (
+                v.search_text = ?
+                OR v.value_key = ?
+                OR lower(v.display_value) = ?
+                OR v.source_name = ?
+                OR v.source_scope_id = ?
+                OR v.surface_name = ?
+                OR v.column_name = ?
+                OR instr(v.search_text, ?) > 0
+            )
+        ORDER BY v.last_observed_at DESC,
+            v.observation_count DESC,
+            v.source_name ASC,
+            v.surface_name ASC,
+            v.column_name ASC,
+            v.value_key ASC
+        LIMIT ?
+        ",
+    )?;
     for term in terms {
-        let sql = format!(
-            "
-            {scope_cte}
-            SELECT
-                v.source_name,
-                v.source_scope_id,
-                v.surface_kind,
-                v.surface_name,
-                v.column_name,
-                v.value_key,
-                v.display_value,
-                v.last_observed_at,
-                v.observation_count
-            FROM observed_values v
-            JOIN observed_live_source_scopes s
-                ON s.owner_source_name = v.owner_source_name
-                AND s.source_name = v.source_name
-                AND s.source_scope_id = v.source_scope_id
-                AND s.surface_kind = v.surface_kind
-                AND s.surface_name = v.surface_name
-            WHERE v.workspace = ?
-                AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
-                AND (
-                    v.search_text = ?
-                    OR v.value_key = ?
-                    OR lower(v.display_value) = ?
-                    OR v.source_name = ?
-                    OR v.source_scope_id = ?
-                    OR v.surface_name = ?
-                    OR v.column_name = ?
-                    OR instr(v.search_text, ?) > 0
-                )
-            ORDER BY v.last_observed_at DESC,
-                v.observation_count DESC,
-                v.source_name ASC,
-                v.surface_name ASC,
-                v.column_name ASC,
-                v.value_key ASC
-            LIMIT ?
-            "
-        );
-        let mut query_params = base_query_params.clone();
-        query_params.extend([
-            Value::from(workspace_name.as_str().to_string()),
-            Value::from(sqlite_retention_modifier(policy)),
-            Value::from((*term).to_string()),
-            Value::from((*term).to_string()),
-            Value::from((*term).to_string()),
-            Value::from((*term).to_string()),
-            Value::from((*term).to_string()),
-            Value::from((*term).to_string()),
-            Value::from((*term).to_string()),
-            Value::from((*term).to_string()),
-            Value::from(i64::try_from(limit).unwrap_or(i64::MAX)),
-        ]);
-        let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map(
-            params_from_iter(query_params.iter()),
+            params![
+                workspace_name.as_str(),
+                &retention_modifier,
+                term,
+                term,
+                term,
+                term,
+                term,
+                term,
+                term,
+                term,
+                sqlite_limit,
+            ],
             observed_search_hit_from_row,
         )?;
         hits.extend(rows.collect::<Result<Vec<_>, _>>()?);
@@ -816,6 +804,14 @@ fn prepare_policy_tables(
     connection: &Connection,
     policy: &ObservedValuesRetrievalPolicy,
 ) -> Result<(), SqliteSearchError> {
+    prepare_live_scope_table(connection, policy)?;
+    prepare_failed_source_table(connection, policy)
+}
+
+fn prepare_live_scope_table(
+    connection: &Connection,
+    policy: &ObservedValuesRetrievalPolicy,
+) -> Result<(), SqliteSearchError> {
     connection.execute_batch(
         "
         CREATE TEMP TABLE IF NOT EXISTS observed_live_source_scopes (
@@ -833,45 +829,52 @@ fn prepare_policy_tables(
             )
         ) WITHOUT ROWID;
         DELETE FROM observed_live_source_scopes;
+        ",
+    )?;
+    let mut statement = connection.prepare(
+        "
+        INSERT OR IGNORE INTO observed_live_source_scopes (
+            owner_source_name,
+            source_name,
+            source_scope_id,
+            surface_kind,
+            surface_name
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ",
+    )?;
+    for scope in policy.live_scopes() {
+        statement.execute(params![
+            &scope.owner_source_name,
+            &scope.source_name,
+            &scope.source_scope_id,
+            scope.surface_kind.as_str(),
+            &scope.surface_name,
+        ])?;
+    }
+    Ok(())
+}
+
+fn prepare_failed_source_table(
+    connection: &Connection,
+    policy: &ObservedValuesRetrievalPolicy,
+) -> Result<(), SqliteSearchError> {
+    connection.execute_batch(
+        "
         CREATE TEMP TABLE IF NOT EXISTS observed_policy_failed_sources (
             owner_source_name TEXT NOT NULL PRIMARY KEY
         ) WITHOUT ROWID;
         DELETE FROM observed_policy_failed_sources;
         ",
     )?;
-    {
-        let mut statement = connection.prepare(
-            "
-            INSERT OR IGNORE INTO observed_live_source_scopes (
-                owner_source_name,
-                source_name,
-                source_scope_id,
-                surface_kind,
-                surface_name
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ",
-        )?;
-        for scope in policy.live_scopes() {
-            statement.execute(params![
-                &scope.owner_source_name,
-                &scope.source_name,
-                &scope.source_scope_id,
-                scope.surface_kind.as_str(),
-                &scope.surface_name,
-            ])?;
-        }
-    }
-    {
-        let mut statement = connection.prepare(
-            "
-            INSERT OR IGNORE INTO observed_policy_failed_sources (owner_source_name)
-            VALUES (?1)
-            ",
-        )?;
-        for failure in policy.failed_sources() {
-            statement.execute(params![&failure.owner_source_name])?;
-        }
+    let mut statement = connection.prepare(
+        "
+        INSERT OR IGNORE INTO observed_policy_failed_sources (owner_source_name)
+        VALUES (?1)
+        ",
+    )?;
+    for failure in policy.failed_sources() {
+        statement.execute(params![&failure.owner_source_name])?;
     }
     Ok(())
 }
@@ -992,12 +995,8 @@ fn eligible_observed_value_count(
     workspace_name: &WorkspaceName,
     policy: &ObservedValuesRetrievalPolicy,
 ) -> Result<u32, SqliteSearchError> {
-    let Some((scope_cte, mut query_params)) = live_scope_values_cte(policy) else {
-        return Ok(0);
-    };
-    let sql = format!(
+    let count: i64 = connection.query_row(
         "
-        {scope_cte}
         SELECT COUNT(*)
         FROM observed_values v
         JOIN observed_live_source_scopes s
@@ -1008,41 +1007,11 @@ fn eligible_observed_value_count(
             AND s.surface_name = v.surface_name
         WHERE v.workspace = ?
             AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
-        "
-    );
-    query_params.extend([
-        Value::from(workspace_name.as_str().to_string()),
-        Value::from(sqlite_retention_modifier(policy)),
-    ]);
-    let count: i64 = connection.query_row(&sql, params_from_iter(query_params.iter()), |row| {
-        row.get(0)
-    })?;
+        ",
+        params![workspace_name.as_str(), sqlite_retention_modifier(policy)],
+        |row| row.get(0),
+    )?;
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
-}
-
-fn live_scope_values_cte(policy: &ObservedValuesRetrievalPolicy) -> Option<(String, Vec<Value>)> {
-    if policy.live_scopes().is_empty() {
-        return None;
-    }
-    let mut rows = Vec::with_capacity(policy.live_scopes().len());
-    let mut values = Vec::with_capacity(policy.live_scopes().len().saturating_mul(5));
-    for scope in policy.live_scopes() {
-        rows.push("(?, ?, ?, ?, ?)");
-        values.extend([
-            Value::from(scope.owner_source_name.clone()),
-            Value::from(scope.source_name.clone()),
-            Value::from(scope.source_scope_id.clone()),
-            Value::from(scope.surface_kind.as_str().to_string()),
-            Value::from(scope.surface_name.clone()),
-        ]);
-    }
-    Some((
-        format!(
-            "WITH observed_live_source_scopes(owner_source_name, source_name, source_scope_id, surface_kind, surface_name) AS (VALUES {})",
-            rows.join(", ")
-        ),
-        values,
-    ))
 }
 
 fn fts_match_query(terms: &[String]) -> String {

@@ -15,6 +15,10 @@ use tonic::{Code, Request};
 
 use super::harness::{GrpcHarness, manifest_yaml};
 
+// The old live-scope VALUES CTE bound five fields per surface. At 6,553 surfaces, the
+// count query's two additional fields exceeded bundled SQLite's 32,766-variable limit.
+const SQLITE_VARIABLE_LIMIT_REGRESSION_SURFACE_COUNT: usize = 6_553;
+
 #[tokio::test]
 async fn search_service_returns_structured_shell_response() {
     let harness = GrpcHarness::new().await;
@@ -468,6 +472,41 @@ async fn search_truncation_reflects_provider_retrieval_limit() {
     );
 }
 
+#[tokio::test]
+async fn observed_search_handles_live_scopes_beyond_sqlite_variable_limit() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            many_table_surfaces_manifest_yaml(SQLITE_VARIABLE_LIMIT_REGRESSION_SURFACE_COUNT),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "nonexistent".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    let status = assert_provider_state(
+        &response,
+        SearchProvider::ObservedValues,
+        SearchProviderState::Empty,
+    );
+    assert_empty_provider_coverage(status);
+    assert!(
+        !status.note.contains("too many SQL variables"),
+        "unexpected observed-values provider note: {}",
+        status.note
+    );
+}
+
 fn assert_provider_state(
     response: &coral_api::v1::SearchResponse,
     provider: SearchProvider,
@@ -683,5 +722,35 @@ fn many_retrieved_columns_manifest_yaml() -> String {
             "pagination": { "mode": "none" },
             "columns": columns
         }]
+    }))
+}
+
+fn many_table_surfaces_manifest_yaml(table_count: usize) -> String {
+    let tables = (0..table_count)
+        .map(|index| {
+            json!({
+                "name": format!("table_{index:04}"),
+                "description": "Synthetic table",
+                "request": { "method": "GET", "path": "/records" },
+                "response": {},
+                "pagination": { "mode": "none" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8",
+                    "nullable": false,
+                    "description": "Record id",
+                    "expr": { "kind": "path", "path": ["id"] }
+                }]
+            })
+        })
+        .collect::<Vec<_>>();
+
+    manifest_yaml(&json!({
+        "name": "many_table_surfaces",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.test",
+        "tables": tables
     }))
 }
