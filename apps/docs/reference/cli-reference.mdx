@@ -13,6 +13,7 @@ coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
 coral --enable-feedback mcp-stdio
 coral --disable-feedback mcp-stdio
+coral --enable-observed-values-search search urgent
 ```
 
 These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
@@ -63,16 +64,31 @@ coral sql "DESCRIBE datadog.hosts"
 
 ## `coral search`
 
-Find relevant Coral tables, table functions, columns, and filters.
+Find relevant Coral tables, table functions, columns, filters, and values Coral
+has observed during earlier queries.
 
 ```shellscript
 coral search github issues assigned to me
 coral search --limit 5 --json slack messages text
 ```
 
-Search returns metadata and provider statuses. It does not fetch source rows or
-answer the question by itself; use the returned `sql_reference` or
-`sql_call_example` with `coral sql`.
+Search always reads Coral's local catalog and does not query connected sources.
+Catalog results provide a `sql_reference` or `sql_call_example`. When the
+`observed_values_search` feature is enabled, search also reads observed-value
+memory; those results identify the value and the surface and column where Coral
+saw it. Use those clues with `coral sql` to fetch current rows.
+
+Observed-value collection, retrieval, and maintenance are disabled by default.
+Enable them persistently, or for one command only:
+
+```shellscript
+coral features enable observed_values_search
+coral --enable-observed-values-search search urgent
+```
+
+Observed values are not a complete source index. See [Search with
+Coral](/guides/search-with-coral#find-values-coral-has-seen) for coverage, local
+storage, and removal details.
 
 ### Options
 
@@ -83,9 +99,23 @@ answer the question by itself; use the returned `sql_reference` or
 
 ### JSON response
 
-With `--json`, the response separates `results`, `provider_statuses`, and `truncation`. Table results include `sql_reference`. Table-function results include `sql_reference` and `sql_call_example`. Field-level results include `surface_sql_reference`, identifying the table or table function that owns the matching column, filter, argument, or result column.
+With `--json`, the response separates `results`, `provider_statuses`, and
+`truncation`. Each result identifies its provider and typed result kind.
+Catalog table results include `sql_reference`; table-function results include
+`sql_reference` and `sql_call_example`. Catalog field-level results include
+`surface_sql_reference`, identifying the table or table function that owns the
+matching column, filter, argument, or result column.
 
-For catalog search, the `catalog_metadata` provider status reports whether search found matches, completed with no matches, returned partial coverage, or failed. `truncation` reports when more matches were available than returned.
+Observed-value results include the value, its `schema_name`, surface, column,
+field path, observation count, and when it was last observed. `schema_name` is
+the runtime, query-visible SQL schema to use in a query; it can differ from the
+installed source name when one source exposes multiple runtime components.
+
+The `catalog_metadata` and `observed_values` provider statuses report whether
+each local search found matches, completed with no matches, returned partial
+coverage, or failed. An empty observed-value result only describes Coral's
+local observations; it does not prove that the value is absent from a connected
+source. `truncation` reports when more matches were available than returned.
 
 ## `coral search-index`
 
@@ -96,6 +126,9 @@ Manage Coral's local search indexes.
 Rebuild one or all local search indexes. Coral skips a catalog rebuild when its
 projection is already current unless you pass `--force`. The observed-value
 projection is always rebuilt when selected.
+
+Rebuild operates only on Coral's local search state. It does not query connected
+sources or discover new values.
 
 ```shellscript
 coral search-index rebuild
@@ -117,6 +150,9 @@ coral search-index rebuild --force
 Drain pending observed-value writes into the local search projection so those
 values can be returned by search.
 
+Drain operates only on values Coral has already observed. It does not query
+connected sources.
+
 ```shellscript
 coral search-index drain
 coral search-index drain --budget-ms 2500
@@ -135,6 +171,10 @@ Clear Coral's local search data for one workspace.
 Clear deletes local search data, so Coral requires both `--yes` and an explicit
 `--workspace NAME`.
 
+`--source` accepts the canonical installed source name, not a runtime SQL
+schema. It clears the selected scope for every runtime schema and surface owned
+by that source.
+
 ```shellscript
 coral search-index clear --scope all --workspace work --yes
 coral search-index clear --scope observed-values --workspace work --yes
@@ -147,7 +187,7 @@ coral search-index clear --scope all --source github --workspace work --yes
 | Option                    | Type   | Default  | Description                                               |
 | ------------------------- | ------ | -------- | --------------------------------------------------------- |
 | `--scope`                 | enum   | required | Search data scope to clear: `all` or `observed-values`    |
-| `--source`                | string | unset    | Clear the selected local search-data scope for one source |
+| `--source`                | string | unset    | Installed source owner whose runtime schemas and surfaces are cleared |
 | global `--workspace NAME` | string | required | Workspace whose search data will be cleared               |
 | `--yes`                   | flag   | required | Confirm destructive search-data deletion                  |
 
@@ -408,6 +448,7 @@ feature is listed in [Configuration](/reference/configuration#runtime-features).
 
 ```shellscript
 coral features enable feedback
+coral features enable observed_values_search
 ```
 
 ### `coral features disable <FEATURE>`
@@ -463,7 +504,7 @@ By default, this server exposes:
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
-| Tool     | `search`         | Find relevant tables, functions, columns, and filters   |
+| Tool     | `search`         | Find relevant catalog entries and, when enabled, locally observed values |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
@@ -471,6 +512,11 @@ By default, this server exposes:
 | Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
+
+When `observed_values_search` is disabled, the `search` tool and
+`coral://guide` advertise catalog discovery only. Enable observed-value search
+for one MCP server process with
+`coral --enable-observed-values-search mcp-stdio`.
 
 Discovery helpers include the `coral` system schema, so `search`,
 `list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
