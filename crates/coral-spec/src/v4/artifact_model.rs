@@ -20,6 +20,8 @@ use crate::{
     SourceTableFunctionKind,
 };
 
+/// Reserved for future DTO migrations that cannot produce a valid runtime model.
+/// The current field-for-field migrations are infallible but deliberately use `TryFrom`.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to migrate {artifact} at {path}: {detail}")]
 pub struct ArtifactMigrationError {
