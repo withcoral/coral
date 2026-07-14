@@ -54,14 +54,14 @@ impl CatalogSnapshotLoader {
     ) -> Result<CatalogInfo, AppError> {
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        Ok(self.load_catalog_from_config(workspace_name, &config))
+        self.load_catalog_from_config(workspace_name, &config)
     }
 
     fn load_catalog_from_config(
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> CatalogInfo {
+    ) -> Result<CatalogInfo, AppError> {
         let mut catalog = CatalogInfo {
             tables: Vec::new(),
             table_functions: Vec::new(),
@@ -76,17 +76,23 @@ impl CatalogSnapshotLoader {
                         .table_functions
                         .extend(source_catalog.table_functions);
                 }
-                Err(error) => report_source_load_failure(
-                    workspace_name,
-                    &source.name,
-                    "SOURCE_LOAD_FAILED",
-                    &error.to_string(),
-                ),
+                Err(
+                    error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
+                    | AppError::InvalidV4ProjectionOverride { .. }),
+                ) => {
+                    report_source_load_failure(
+                        workspace_name,
+                        &source.name,
+                        "SOURCE_LOAD_FAILED",
+                        &error.to_string(),
+                    );
+                }
+                Err(error) => return Err(error),
             }
         }
 
         sort_catalog(&mut catalog);
-        catalog
+        Ok(catalog)
     }
 
     fn load_source_catalog(

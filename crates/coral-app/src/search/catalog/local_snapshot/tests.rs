@@ -6,6 +6,7 @@ use tempfile::tempdir;
 use super::{
     CatalogSnapshotLoader, catalog_info_from_components, runtime_components_from_manifest,
 };
+use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -191,7 +192,7 @@ tables:
 }
 
 #[test]
-fn loader_skips_installed_source_whose_manifest_cannot_be_read() {
+fn loader_fails_closed_when_installed_manifest_cannot_be_read() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let config_store = ConfigStore::new(layout.clone());
@@ -215,12 +216,14 @@ fn loader_skips_installed_source_whose_manifest_cannot_be_read() {
         )
         .expect("upsert source");
 
-    let catalog = CatalogSnapshotLoader::new(config_store, layout)
+    let error = CatalogSnapshotLoader::new(config_store, layout)
         .load_catalog(&workspace_name)
-        .expect("missing installed manifest should be isolated");
+        .expect_err("missing installed manifest should fail closed");
 
-    assert!(catalog.tables.is_empty());
-    assert!(catalog.table_functions.is_empty());
+    assert!(
+        matches!(error, AppError::Io(_)),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

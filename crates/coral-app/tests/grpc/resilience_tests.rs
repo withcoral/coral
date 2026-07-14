@@ -6,14 +6,16 @@
 
 use std::fs;
 
-use coral_api::v1::{ExecuteSqlRequest, SourceSecret, SourceVariable};
-use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
+use coral_api::v1::{
+    ExecuteSqlRequest, ListCatalogRequest, PaginationRequest, SourceSecret, SourceVariable,
+};
+use coral_client::default_workspace;
 use tonic::Request;
 
 use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
 
 #[tokio::test]
-async fn broken_source_does_not_block_healthy_sources() {
+async fn missing_credential_file_fails_query_and_catalog_loading() {
     let harness = GrpcHarness::new().await;
 
     harness
@@ -48,44 +50,28 @@ async fn broken_source_does_not_block_healthy_sources() {
     )
     .expect("remove broken source secret file");
 
-    let tables = harness.list_tables().await;
-    assert!(
-        tables
-            .iter()
-            .any(|table| table.schema_name == "local_messages"),
-        "healthy source should remain queryable"
-    );
-    assert!(
-        !tables
-            .iter()
-            .any(|table| table.schema_name == "secured_messages"),
-        "broken source should be omitted from registered tables"
-    );
+    let catalog_error = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: String::new(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 0,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect_err("missing credential file should fail catalog loading");
+    assert_eq!(catalog_error.code(), tonic::Code::FailedPrecondition);
 
-    let healthy = harness
+    let query_error = harness
         .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
         }))
         .await
-        .expect("healthy source query should succeed")
-        .into_inner();
-    let healthy_rows = batches_to_json_rows(
-        decode_execute_sql_response(&healthy)
-            .expect("decode healthy query")
-            .batches(),
-    )
-    .expect("healthy rows");
-    assert_eq!(healthy_rows[0]["n"], 2);
-
-    let broken = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: "SELECT * FROM secured_messages.messages".to_string(),
-        }))
-        .await
-        .expect_err("broken source query should fail");
-    assert_eq!(broken.code(), tonic::Code::NotFound);
+        .expect_err("missing credential file should fail query-source loading");
+    assert_eq!(query_error.code(), tonic::Code::FailedPrecondition);
 }

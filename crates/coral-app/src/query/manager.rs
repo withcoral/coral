@@ -311,7 +311,7 @@ impl QueryManager {
         self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources_from_config(workspace_name, &config);
+        let sources = self.load_query_sources_from_config(workspace_name, &config)?;
         Ok((sources, config))
     }
 
@@ -325,7 +325,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Vec<LoadedQuerySource> {
+    ) -> Result<Vec<LoadedQuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = tracing::field::Empty,
@@ -340,7 +340,10 @@ impl QueryManager {
                     clear_source_load_failure(workspace_name, &source.name);
                     loaded_sources.push(loaded_source);
                 }
-                Err(error) => {
+                Err(
+                    error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
+                    | AppError::InvalidV4ProjectionOverride { .. }),
+                ) => {
                     report_source_load_failure(
                         workspace_name,
                         &source.name,
@@ -348,10 +351,11 @@ impl QueryManager {
                         &error.to_string(),
                     );
                 }
+                Err(error) => return Err(error),
             }
         }
         span.record("source.count", loaded_sources.len());
-        loaded_sources
+        Ok(loaded_sources)
     }
 
     fn load_query_source(
@@ -787,7 +791,9 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::credentials::{
+        CredentialStorageKind, CredentialStoragePreference, CredentialStore, CredentialsError,
+    };
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
@@ -1376,7 +1382,7 @@ surfaces:
     }
 
     #[tokio::test]
-    async fn load_query_sources_skips_unavailable_keychain_source() {
+    async fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1418,12 +1424,24 @@ surfaces:
             layout,
             Vec::new(),
         );
-        let (sources, _) = manager
+        let error = manager
             .load_query_sources(&workspace_name)
             .await
-            .expect("unavailable keychain source should be isolated");
+            .expect_err("unavailable keychain should fail closed");
 
-        assert!(sources.is_empty());
+        assert!(
+            matches!(
+                error,
+                AppError::Credentials(CredentialsError::Unavailable(_))
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("configured for keychain storage"),
+            "keychain-routed query failure should name the routed backend: {error}"
+        );
     }
 
     #[derive(Debug)]
