@@ -15,7 +15,8 @@ use coral_spec::v4::{
     generate_projection_catalog, import_mcp_surface, import_openapi_surface,
     normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
     parse_parameter_metadata_overrides_yaml, sync_projection_pagination_inputs,
-    validate_materialized_source, validate_openapi_base_url_template,
+    validate_materialized_source, validate_materialized_source_structure,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -244,12 +245,25 @@ pub(crate) fn load_v4_materialization(
         load_diagnostics.iter(),
     );
     diagnostics.append(&mut load_diagnostics);
-    Ok(V4MaterializedSource {
+    let materialized = V4MaterializedSource {
         fingerprint,
         surfaces,
         projections,
         diagnostics,
-    })
+    };
+    if let Err(error) = validate_materialized_source_structure(manifest, &materialized) {
+        return Err(match projections_file.origin {
+            V4ProjectionCatalogOrigin::Materialized => {
+                incompatible_materialization_error(source_name, error.to_string())
+            }
+            V4ProjectionCatalogOrigin::Override => invalid_projection_override_error(
+                source_name,
+                &projections_file.path,
+                error.to_string(),
+            ),
+        });
+    }
+    Ok(materialized)
 }
 
 fn load_optional_fingerprint(
@@ -2075,6 +2089,42 @@ surfaces:
         assert!(
             !message.contains("Re-add the source"),
             "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_duplicate_projection_override_names() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut catalog = installed_projection_catalog_value(&layout);
+        let projections = catalog
+            .get_mut("projections")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("projection sequence");
+        projections.push(projections.first().expect("first projection").clone());
+        let override_path = write_projection_override(&layout, &catalog);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("duplicate projection names should fail at load time");
+
+        assert!(
+            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("projection") && error.to_string().contains("is repeated"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&override_path.display().to_string()),
+            "unexpected error: {error}"
         );
     }
 

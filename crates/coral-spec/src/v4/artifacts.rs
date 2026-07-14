@@ -54,6 +54,7 @@ pub fn validate_materialized_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
 ) -> Result<()> {
+    validate_materialized_source_structure(manifest, materialized)?;
     let fingerprint = materialized.fingerprint.as_ref().ok_or_else(|| {
         ManifestError::validation("new DSL v4 materialization is missing its fingerprint")
     })?;
@@ -75,26 +76,11 @@ pub fn validate_materialized_source(
             "DSL v4 materialized importer or generator version mismatch",
         ));
     }
-    if materialized.surfaces.is_empty() {
-        return Err(ManifestError::validation(
-            "DSL v4 materialized source has no surfaces",
-        ));
-    }
-    let mut materialized_surface_ids = BTreeSet::new();
-    for materialized_surface in &materialized.surfaces {
-        if !materialized_surface_ids.insert(materialized_surface.surface_id.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "DSL v4 materialized surface '{}' is repeated",
-                materialized_surface.surface_id
-            )));
-        }
-        if manifest.surface(&materialized_surface.surface_id).is_none() {
-            return Err(ManifestError::validation(format!(
-                "DSL v4 materialized surface '{}' is not declared",
-                materialized_surface.surface_id
-            )));
-        }
-    }
+    let materialized_surface_ids = materialized
+        .surfaces
+        .iter()
+        .map(|surface| surface.surface_id.as_str())
+        .collect::<BTreeSet<_>>();
     let mut fingerprint_surface_ids = BTreeSet::new();
     for fingerprint_surface in &fingerprint.surfaces {
         if !fingerprint_surface_ids.insert(fingerprint_surface.surface_id.as_str()) {
@@ -129,6 +115,43 @@ pub fn validate_materialized_source(
     Ok(())
 }
 
+/// Validates runtime invariants independently of optional artifact provenance.
+pub fn validate_materialized_source_structure(
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+) -> Result<()> {
+    if materialized.surfaces.is_empty() {
+        return Err(ManifestError::validation(
+            "DSL v4 materialized source has no surfaces",
+        ));
+    }
+    let mut materialized_surface_ids = BTreeSet::new();
+    for materialized_surface in &materialized.surfaces {
+        if !materialized_surface_ids.insert(materialized_surface.surface_id.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 materialized surface '{}' is repeated",
+                materialized_surface.surface_id
+            )));
+        }
+        if manifest.surface(&materialized_surface.surface_id).is_none() {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 materialized surface '{}' is not declared",
+                materialized_surface.surface_id
+            )));
+        }
+    }
+    let mut projection_names = BTreeSet::new();
+    for projection in &materialized.projections.projections {
+        if !projection_names.insert((projection.namespace.as_str(), projection.name.as_str())) {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 projection '{}.{}' is repeated",
+                projection.namespace, projection.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -143,7 +166,7 @@ mod tests {
 
     use super::{
         Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
-        validate_materialized_source,
+        validate_materialized_source, validate_materialized_source_structure,
     };
 
     fn manifest() -> V4SourceManifest {
@@ -275,6 +298,30 @@ surfaces:
             error
                 .to_string()
                 .contains("fingerprint surface 'mcp' is not materialized"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn structural_validation_rejects_duplicate_projection_names() {
+        let manifest = manifest();
+        let mut materialized = materialized_source();
+        let dto: crate::v4::ProjectionCatalogDto =
+            serde_yaml::from_str(include_str!("fixtures/v3/projections.yaml"))
+                .expect("decode projection fixture");
+        materialized.projections = ProjectionCatalog::try_from(dto).expect("migrate projections");
+        materialized
+            .projections
+            .projections
+            .push(materialized.projections.projections[0].clone());
+
+        let error = validate_materialized_source_structure(&manifest, &materialized)
+            .expect_err("duplicate projection should fail structural validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("projection '.items' is repeated"),
             "unexpected error: {error}"
         );
     }

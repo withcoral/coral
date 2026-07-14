@@ -33,7 +33,7 @@ mod test_support;
 pub use artifact_model::{ArtifactMigrationError, ProjectionCatalogDto, SemanticIrDto};
 pub use artifacts::{
     Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
-    validate_materialized_source,
+    validate_materialized_source, validate_materialized_source_structure,
 };
 pub use diagnostics::{Diagnostic, DiagnosticSeverity};
 pub use ir::{
