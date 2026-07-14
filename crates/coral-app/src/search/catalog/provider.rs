@@ -795,6 +795,13 @@ mod tests {
             AppError::ResourceExhausted(_)
         ));
         assert!(matches!(
+            search_sqlite_app_error(&SqliteSearchError::Io(std::io::Error::new(
+                std::io::ErrorKind::StorageFull,
+                "fixture disk full",
+            ))),
+            AppError::ResourceExhausted(_)
+        ));
+        assert!(matches!(
             search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT)),
             AppError::Internal(_)
         ));

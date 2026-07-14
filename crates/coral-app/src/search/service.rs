@@ -12,7 +12,6 @@ use coral_api::v1::{
     RebuildSearchIndexRequest as ProtoRebuildSearchIndexRequest,
     RebuildSearchIndexResponse as ProtoRebuildSearchIndexResponse,
     SearchDataScope as ProtoSearchDataScope, SearchFieldRole as ProtoSearchFieldRole,
-    SearchIndexProvider as ProtoSearchIndexProvider,
     SearchMaintenanceResult as ProtoSearchMaintenanceResult,
     SearchMaintenanceState as ProtoSearchMaintenanceState, SearchProvider as ProtoSearchProvider,
     SearchProviderCoverage, SearchProviderState, SearchProviderStatus,
@@ -32,8 +31,8 @@ use crate::search::maintenance::{
     ClearSearchDataResponse as DomainClearSearchDataResponse,
     RebuildSearchIndexRequest as DomainRebuildSearchIndexRequest,
     RebuildSearchIndexResponse as DomainRebuildSearchIndexResponse, SearchClearTarget,
-    SearchDataScope, SearchIndexProvider, SearchMaintenanceDetail, SearchMaintenanceResult,
-    SearchMaintenanceState, SearchStorageCleanupResult,
+    SearchDataScope, SearchMaintenanceDetail, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchStorageCleanupResult,
 };
 use crate::search::manager::SearchManager;
 use crate::search::result::{
@@ -93,7 +92,6 @@ impl SearchServiceApi for SearchService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let request = DomainRebuildSearchIndexRequest {
                 workspace_name,
-                provider: index_provider_from_proto(proto_index_provider(request.provider)?)?,
                 force: request.force,
             };
             let response = search
@@ -232,25 +230,6 @@ fn maintenance_state_to_proto(state: SearchMaintenanceState) -> ProtoSearchMaint
         SearchMaintenanceState::Noop => ProtoSearchMaintenanceState::Noop,
         SearchMaintenanceState::Partial => ProtoSearchMaintenanceState::Partial,
         SearchMaintenanceState::Failed => ProtoSearchMaintenanceState::Failed,
-    }
-}
-
-fn proto_index_provider(value: i32) -> Result<ProtoSearchIndexProvider, Status> {
-    ProtoSearchIndexProvider::try_from(value).map_err(|_error| {
-        app_status(AppError::InvalidInput(format!(
-            "invalid search index provider value {value}"
-        )))
-    })
-}
-
-fn index_provider_from_proto(
-    provider: ProtoSearchIndexProvider,
-) -> Result<SearchIndexProvider, Status> {
-    match provider {
-        ProtoSearchIndexProvider::Catalog => Ok(SearchIndexProvider::Catalog),
-        ProtoSearchIndexProvider::Unspecified => Err(app_status(AppError::InvalidInput(
-            "search index provider is required".to_string(),
-        ))),
     }
 }
 

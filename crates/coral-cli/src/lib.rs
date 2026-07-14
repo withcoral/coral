@@ -32,8 +32,8 @@ use coral_api::v1::{
     AddFunctionRequest, ClearSearchDataRequest, CreateWorkspaceRequest, DeleteFunctionRequest,
     DeleteWorkspaceRequest, ExecuteSqlRequest, Function, FunctionRuntimeReady,
     ListFunctionsRequest, ListWorkspacesRequest, RebuildSearchIndexRequest, SearchClearTarget,
-    SearchDataScope, SearchIndexProvider, SearchProvider, SearchRequest, Workspace, function,
-    search_clear_target, search_maintenance_result,
+    SearchDataScope, SearchProvider, SearchRequest, Workspace, function, search_clear_target,
+    search_maintenance_result,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -164,7 +164,7 @@ struct SearchIndexArgs {
 
 #[derive(Debug, Subcommand)]
 enum SearchIndexCommand {
-    /// Rebuild a local search index.
+    /// Rebuild all local search indexes.
     ///
     /// Coral skips the rebuild when the index is already up to date unless you pass `--force`.
     Rebuild(SearchRebuildArgs),
@@ -1195,7 +1195,6 @@ async fn run_search_index(
                 .search_client()
                 .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
                     workspace: Some(workspace.clone()),
-                    provider: SearchIndexProvider::Catalog as i32,
                     force: args.force,
                 }))
                 .await

@@ -6,7 +6,6 @@ use crate::workspaces::WorkspaceName;
 #[derive(Debug, Clone)]
 pub(crate) struct RebuildSearchIndexRequest {
     pub(crate) workspace_name: WorkspaceName,
-    pub(crate) provider: SearchIndexProvider,
     pub(crate) force: bool,
 }
 
@@ -57,11 +56,6 @@ pub(crate) struct SearchProviderClearRequest<'a> {
 pub(crate) struct SearchProviderClearOutcome {
     pub(crate) result: SearchMaintenanceResult,
     pub(crate) storage_cleanup: SearchStorageCleanupResult,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SearchIndexProvider {
-    Catalog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
