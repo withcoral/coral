@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::hash::sha256_hex;
-use crate::search::observed::sqlite_queue::{ObservedValuesGeneration, ObservedValuesSurfaceKind};
+use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct SurfaceKey {
@@ -29,13 +29,12 @@ pub(super) struct SurfaceKey {
 
 #[derive(Debug, Clone)]
 pub(super) struct ObservedSourceSurfaceScope {
-    /// Canonical installed source that owns lifecycle clears and generations.
+    /// Canonical installed source that owns lifecycle clears and invalidation epochs.
     pub(super) owner_source_name: String,
     /// Runtime component schema used in SQL and search results.
     pub(super) source_name: String,
     surface_key: SurfaceKey,
     pub(super) source_scope_id: String,
-    pub(super) generation: ObservedValuesGeneration,
 }
 
 impl ObservedSourceSurfaceScope {
@@ -44,21 +43,18 @@ impl ObservedSourceSurfaceScope {
     }
 }
 
-pub(super) fn source_surface_scopes(
-    source: &QuerySource,
-    generation: ObservedValuesGeneration,
-) -> Vec<ObservedSourceSurfaceScope> {
+pub(super) fn source_surface_scopes(source: &QuerySource) -> Vec<ObservedSourceSurfaceScope> {
     let mut scopes = Vec::new();
     for component in source.components() {
         match component {
             RuntimeSourceComponent::Http(manifest) => {
-                scopes.extend(http_surface_scopes(source, manifest, generation));
+                scopes.extend(http_surface_scopes(source, manifest));
             }
             RuntimeSourceComponent::File(manifest) => {
-                scopes.extend(file_surface_scopes(source, manifest, generation));
+                scopes.extend(file_surface_scopes(source, manifest));
             }
             RuntimeSourceComponent::Mcp(manifest) => {
-                scopes.extend(mcp_surface_scopes(source, manifest, generation));
+                scopes.extend(mcp_surface_scopes(source, manifest));
             }
         }
     }
@@ -68,7 +64,6 @@ pub(super) fn source_surface_scopes(
 fn http_surface_scopes(
     source: &QuerySource,
     manifest: &HttpSourceManifest,
-    generation: ObservedValuesGeneration,
 ) -> Vec<ObservedSourceSurfaceScope> {
     let component_shape = json!({
         "backend": "http",
@@ -86,7 +81,6 @@ fn http_surface_scopes(
             table.name(),
             &component_shape,
             &http_table_shape(table),
-            generation,
         ));
     }
     for function in &manifest.functions {
@@ -97,7 +91,6 @@ fn http_surface_scopes(
             function.name.as_str(),
             &component_shape,
             &source_function_shape(function),
-            generation,
         ));
     }
     scopes
@@ -106,7 +99,6 @@ fn http_surface_scopes(
 fn file_surface_scopes(
     source: &QuerySource,
     manifest: &FileSourceManifest,
-    generation: ObservedValuesGeneration,
 ) -> Vec<ObservedSourceSurfaceScope> {
     let component_shape = json!({
         "backend": "file",
@@ -123,7 +115,6 @@ fn file_surface_scopes(
                 table.name(),
                 &component_shape,
                 &file_table_shape(table),
-                generation,
             )
         })
         .collect()
@@ -132,7 +123,6 @@ fn file_surface_scopes(
 fn mcp_surface_scopes(
     source: &QuerySource,
     manifest: &McpSourceManifest,
-    generation: ObservedValuesGeneration,
 ) -> Vec<ObservedSourceSurfaceScope> {
     let component_shape = json!({
         "backend": "mcp",
@@ -148,7 +138,6 @@ fn mcp_surface_scopes(
             table.name(),
             &component_shape,
             &mcp_table_shape(table),
-            generation,
         ));
     }
     for function in &manifest.functions {
@@ -159,7 +148,6 @@ fn mcp_surface_scopes(
             function.name(),
             &component_shape,
             &mcp_function_shape(function),
-            generation,
         ));
     }
     scopes
@@ -172,7 +160,6 @@ fn surface_scope(
     surface_name: &str,
     component_shape: &Value,
     surface_shape: &Value,
-    generation: ObservedValuesGeneration,
 ) -> ObservedSourceSurfaceScope {
     let scope = json!({
         "logical_source_name": source.source_name(),
@@ -193,7 +180,6 @@ fn surface_scope(
             surface_name: surface_name.to_string(),
         },
         source_scope_id: sha256_hex(&scope_bytes),
-        generation,
     }
 }
 

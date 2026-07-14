@@ -7,13 +7,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Snapshot of the workspace-wide and source-local invalidation counters.
+///
+/// A queued observation is accepted only while both counters still match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ObservedValuesGeneration {
+pub(crate) struct ObservedValuesEpoch {
     pub(crate) workspace_generation: i64,
     pub(crate) source_generation: i64,
 }
 
-impl ObservedValuesGeneration {
+impl ObservedValuesEpoch {
     pub(crate) const ZERO: Self = Self {
         workspace_generation: 0,
         source_generation: 0,
@@ -69,6 +72,6 @@ pub(crate) struct ObservedValuesQueueJob {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ObservedValuesEnqueueResult {
     Enqueued { job_id: i64 },
-    StaleGeneration,
+    StaleEpoch,
     QueueFull,
 }

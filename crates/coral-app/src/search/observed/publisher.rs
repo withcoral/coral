@@ -18,10 +18,11 @@ use crate::search::observed::collector::ObservedValuesCollector;
 use crate::search::observed::source_scope::{
     ObservedSourceSurfaceScope, SurfaceKey, source_surface_scopes,
 };
-use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
+use crate::search::observed::sqlite_queue::{ObservedValuesEpoch, ObservedValuesSurfaceKind};
 use crate::search::observed::sqlite_store::SqliteObservedValuesStore;
 use crate::search::observed::writer::{
-    ObservedValuesTryEnqueueError, ObservedValuesWrite, ObservedValuesWriter,
+    ObservedValuesTryReserveError, ObservedValuesWrite, ObservedValuesWriter,
+    payload_json_with_budget,
 };
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::state::AppStateLayout;
@@ -52,11 +53,11 @@ impl SearchObservationHandle {
     ) -> EngineExtensions {
         let mut scopes = HashMap::new();
         for source in selected_sources {
-            let generation = match self
+            let epoch = match self
                 .store
-                .current_generations(workspace_name, source.source_name())
+                .capture_epoch(workspace_name, source.source_name())
             {
-                Ok(generation) => generation,
+                Ok(epoch) => epoch,
                 Err(error) => {
                     tracing::debug!(
                         workspace = %workspace_name.as_str(),
@@ -67,8 +68,8 @@ impl SearchObservationHandle {
                     continue;
                 }
             };
-            for scope in source_surface_scopes(source, generation) {
-                scopes.insert(scope.key(), scope);
+            for scope in source_surface_scopes(source) {
+                scopes.insert(scope.key(), RegisteredSurface { scope, epoch });
             }
         }
         if scopes.is_empty() {
@@ -93,7 +94,7 @@ impl SearchObservationHandle {
     )]
     pub(crate) fn clear_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
         self.store
-            .clear_workspace(workspace_name)
+            .clear_workspace_and_advance_epoch(workspace_name)
             .map_err(|error| observed_values_store_error(&error))
     }
 
@@ -103,7 +104,7 @@ impl SearchObservationHandle {
         source_name: &str,
     ) -> Result<(), AppError> {
         self.store
-            .clear_source(workspace_name, source_name)
+            .clear_source_and_advance_epoch(workspace_name, source_name)
             .map_err(|error| observed_values_store_error(&error))
     }
 }
@@ -121,7 +122,12 @@ struct SourceScanObservedValuesPublisher {
     workspace_name: WorkspaceName,
     writer: ObservedValuesWriter,
     collector: ObservedValuesCollector,
-    scopes: HashMap<SurfaceKey, ObservedSourceSurfaceScope>,
+    scopes: HashMap<SurfaceKey, RegisteredSurface>,
+}
+
+struct RegisteredSurface {
+    scope: ObservedSourceSurfaceScope,
+    epoch: ObservedValuesEpoch,
 }
 
 impl SourceObservationPublisher for SourceScanObservedValuesPublisher {
@@ -138,7 +144,7 @@ impl SourceScanObservedValuesPublisher {
             surface_kind,
             surface_name: observation.surface_name.to_string(),
         };
-        let Some(scope) = self.scopes.get(&key) else {
+        let Some(registered) = self.scopes.get(&key) else {
             tracing::debug!(
                 workspace = %self.workspace_name.as_str(),
                 source = %observation.source_name,
@@ -147,24 +153,11 @@ impl SourceScanObservedValuesPublisher {
             );
             return;
         };
+        let scope = &registered.scope;
 
-        let payload = self.collector.collect_batch(observation.batch);
-        if payload.is_empty() {
-            return;
-        }
-        match self.writer.try_enqueue(ObservedValuesWrite {
-            workspace_name: self.workspace_name.clone(),
-            owner_source_name: scope.owner_source_name.clone(),
-            source_name: scope.source_name.clone(),
-            source_scope_id: scope.source_scope_id.clone(),
-            surface_kind,
-            surface_name: observation.surface_name.to_string(),
-            payload,
-            max_job_bytes: self.collector.budget().job_bytes_limit,
-            generation: scope.generation,
-        }) {
-            Ok(()) => {}
-            Err(ObservedValuesTryEnqueueError::Full) => {
+        let permit = match self.writer.try_reserve() {
+            Ok(permit) => permit,
+            Err(ObservedValuesTryReserveError::Full) => {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
                     source = %scope.source_name,
@@ -172,8 +165,9 @@ impl SourceScanObservedValuesPublisher {
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer queue is full"
                 );
+                return;
             }
-            Err(ObservedValuesTryEnqueueError::Disconnected) => {
+            Err(ObservedValuesTryReserveError::Disconnected) => {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
                     source = %scope.source_name,
@@ -181,8 +175,49 @@ impl SourceScanObservedValuesPublisher {
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer is stopped"
                 );
+                return;
             }
+        };
+
+        let payload = self.collector.collect_batch(observation.batch);
+        if payload.is_empty() {
+            return;
         }
+        let payload_json = match payload_json_with_budget(
+            payload,
+            self.collector.budget().job_bytes_limit,
+        ) {
+            Ok(Some(payload_json)) => payload_json,
+            Ok(None) => {
+                tracing::debug!(
+                    workspace = %self.workspace_name.as_str(),
+                    source = %scope.source_name,
+                    surface = %observation.surface_name,
+                    "dropping observed-values source-scan observation because no candidate fits the serialized job budget"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::debug!(
+                    workspace = %self.workspace_name.as_str(),
+                    source = %scope.source_name,
+                    surface = %observation.surface_name,
+                    error = %error,
+                    "failed to serialize observed-values source-scan observation"
+                );
+                return;
+            }
+        };
+        permit.send(ObservedValuesWrite {
+            workspace_name: self.workspace_name.clone(),
+            owner_source_name: scope.owner_source_name.clone(),
+            source_name: scope.source_name.clone(),
+            source_scope_id: scope.source_scope_id.clone(),
+            surface_kind,
+            surface_name: observation.surface_name.to_string(),
+            payload_json,
+            epoch: registered.epoch,
+        });
     }
 }
 
@@ -214,7 +249,7 @@ mod tests {
     use super::SearchObservationHandle;
     use crate::search::observed::source_scope::source_surface_scopes;
     use crate::search::observed::sqlite_queue::{
-        ObservedValueCandidate, ObservedValuesGeneration, ObservedValuesQueuePayload,
+        ObservedValueCandidate, ObservedValuesQueuePayload,
     };
     use crate::search::observed::sqlite_store::SqliteObservedValuesStore;
     use crate::search::observed::writer::payload_json_with_budget;
@@ -226,12 +261,8 @@ mod tests {
         let first = http_query_source("/issues");
         let second = http_query_source("/search/issues");
 
-        let first_scope = source_surface_scopes(&first, ObservedValuesGeneration::ZERO)
-            .pop()
-            .expect("first scope");
-        let second_scope = source_surface_scopes(&second, ObservedValuesGeneration::ZERO)
-            .pop()
-            .expect("second scope");
+        let first_scope = source_surface_scopes(&first).pop().expect("first scope");
+        let second_scope = source_surface_scopes(&second).pop().expect("second scope");
 
         assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
     }
@@ -241,12 +272,8 @@ mod tests {
         let first = basic_auth_query_source("{{ input.user }}", "{{ input.password }}");
         let second = basic_auth_query_source("{{ input.user }}", "{{ input.alt_password }}");
 
-        let first_scope = source_surface_scopes(&first, ObservedValuesGeneration::ZERO)
-            .pop()
-            .expect("first scope");
-        let second_scope = source_surface_scopes(&second, ObservedValuesGeneration::ZERO)
-            .pop()
-            .expect("second scope");
+        let first_scope = source_surface_scopes(&first).pop().expect("first scope");
+        let second_scope = source_surface_scopes(&second).pop().expect("second scope");
 
         assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
     }
@@ -343,7 +370,7 @@ mod tests {
 
         let store = SqliteObservedValuesStore::new(layout);
         store
-            .clear_source(&workspace, "github_v4")
+            .clear_source_and_advance_epoch(&workspace, "github_v4")
             .expect("clear logical source owner");
         assert_eq!(
             store

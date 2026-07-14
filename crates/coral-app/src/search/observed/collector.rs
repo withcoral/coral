@@ -7,7 +7,11 @@
 
 use std::collections::HashSet;
 
-use arrow::array::Array;
+use arrow::array::{
+    Array, BinaryArray, BinaryViewArray, LargeBinaryArray, LargeStringArray, StringArray,
+    StringViewArray,
+};
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
 
@@ -26,6 +30,7 @@ impl ObservedValuesCollector {
     pub(crate) fn collect_batch(&self, batch: &RecordBatch) -> ObservedValuesQueuePayload {
         let mut values = Vec::new();
         let mut observed_bytes = 0_usize;
+        let mut inspected_cells = 0_usize;
         let mut seen = HashSet::new();
         let schema = batch.schema();
         let eligible_column_indices = (0..batch.num_columns())
@@ -33,9 +38,12 @@ impl ObservedValuesCollector {
             .collect::<Vec<_>>();
         for row_index in 0..batch.num_rows() {
             for &column_index in &eligible_column_indices {
-                if values.len() >= self.budget.candidate_limit {
+                if values.len() >= self.budget.candidate_limit
+                    || inspected_cells >= self.budget.inspected_cell_limit
+                {
                     return ObservedValuesQueuePayload { values };
                 }
+                inspected_cells += 1;
                 let field = schema.field(column_index);
                 let column_name = field.name();
                 let column = batch.column(column_index);
@@ -92,12 +100,14 @@ impl ObservedValuesCollector {
 )]
 pub(crate) struct ObservedValuesCollectionBudget {
     pub(crate) candidate_limit: usize,
+    pub(crate) inspected_cell_limit: usize,
     pub(crate) candidate_bytes_limit: usize,
     pub(crate) value_bytes_limit: usize,
     pub(crate) job_bytes_limit: usize,
 }
 
 const DEFAULT_CANDIDATE_LIMIT: usize = 10_000;
+const DEFAULT_INSPECTED_CELL_LIMIT: usize = 10_000;
 const DEFAULT_CANDIDATE_BYTES_LIMIT: usize = 8 * 1024 * 1024;
 const DEFAULT_VALUE_BYTES_LIMIT: usize = 4 * 1024;
 const DEFAULT_JOB_BYTES_LIMIT: usize = 1024 * 1024;
@@ -106,6 +116,7 @@ impl Default for ObservedValuesCollectionBudget {
     fn default() -> Self {
         Self {
             candidate_limit: DEFAULT_CANDIDATE_LIMIT,
+            inspected_cell_limit: DEFAULT_INSPECTED_CELL_LIMIT,
             candidate_bytes_limit: DEFAULT_CANDIDATE_BYTES_LIMIT,
             value_bytes_limit: DEFAULT_VALUE_BYTES_LIMIT,
             job_bytes_limit: DEFAULT_JOB_BYTES_LIMIT,
@@ -128,12 +139,46 @@ fn observed_display_value(
     if column.is_null(row_index) {
         return None;
     }
+    if raw_value_len(column, row_index).is_some_and(|length| length > max_value_bytes) {
+        return None;
+    }
     let value = array_value_to_string(column, row_index).ok()?;
     let trimmed = value.trim();
     if trimmed.is_empty() || trimmed.len() > max_value_bytes {
         return None;
     }
     Some(trimmed.to_string())
+}
+
+fn raw_value_len(column: &dyn Array, row_index: usize) -> Option<usize> {
+    match column.data_type() {
+        DataType::Utf8 => column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|array| array.value(row_index).len()),
+        DataType::LargeUtf8 => column
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .map(|array| array.value(row_index).len()),
+        DataType::Utf8View => column
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .map(|array| array.value(row_index).len()),
+        DataType::Binary => column
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .map(|array| array.value(row_index).len()),
+        DataType::LargeBinary => column
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .map(|array| array.value(row_index).len()),
+        DataType::BinaryView => column
+            .as_any()
+            .downcast_ref::<BinaryViewArray>()
+            .map(|array| array.value(row_index).len()),
+        DataType::FixedSizeBinary(width) => Some(usize::try_from(*width).unwrap_or(usize::MAX)),
+        _ => None,
+    }
 }
 
 fn normalize_search_text(value: &str) -> String {
@@ -148,11 +193,11 @@ fn normalize_search_text(value: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use arrow::array::StringArray;
+    use arrow::array::{BinaryArray, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
 
-    use super::{ObservedValuesCollectionBudget, ObservedValuesCollector};
+    use super::{ObservedValuesCollectionBudget, ObservedValuesCollector, raw_value_len};
     use crate::search::observed::sqlite_queue::ObservedValuesQueuePayload;
     use crate::search::observed::writer::payload_json_with_budget;
 
@@ -246,6 +291,7 @@ mod tests {
     fn collection_budget_caps_candidates() {
         let collector = ObservedValuesCollector::with_budget(ObservedValuesCollectionBudget {
             candidate_limit: 1,
+            inspected_cell_limit: usize::MAX,
             candidate_bytes_limit: usize::MAX,
             value_bytes_limit: usize::MAX,
             job_bytes_limit: usize::MAX,
@@ -267,6 +313,7 @@ mod tests {
     fn deduplicates_batch_values_before_budgeting() {
         let collector = ObservedValuesCollector::with_budget(ObservedValuesCollectionBudget {
             candidate_limit: 2,
+            inspected_cell_limit: usize::MAX,
             candidate_bytes_limit: usize::MAX,
             value_bytes_limit: usize::MAX,
             job_bytes_limit: usize::MAX,
@@ -296,6 +343,7 @@ mod tests {
     fn candidate_budget_uses_row_major_order() {
         let collector = ObservedValuesCollector::with_budget(ObservedValuesCollectionBudget {
             candidate_limit: 4,
+            inspected_cell_limit: usize::MAX,
             candidate_bytes_limit: usize::MAX,
             value_bytes_limit: usize::MAX,
             job_bytes_limit: usize::MAX,
@@ -328,6 +376,46 @@ mod tests {
                 ("first", "first-2"),
             ]
         );
+    }
+
+    #[test]
+    fn inspected_cell_budget_counts_null_and_duplicate_cells() {
+        let collector = ObservedValuesCollector::with_budget(ObservedValuesCollectionBudget {
+            candidate_limit: usize::MAX,
+            inspected_cell_limit: 3,
+            candidate_bytes_limit: usize::MAX,
+            value_bytes_limit: usize::MAX,
+            job_bytes_limit: usize::MAX,
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![
+                None,
+                Some("Repeat"),
+                Some("Repeat"),
+                Some("Late"),
+            ]))],
+        )
+        .expect("record batch");
+
+        let payload = collector.collect_batch(&batch);
+        let values = payload
+            .values
+            .iter()
+            .map(|candidate| candidate.display_value.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, ["Repeat"]);
+    }
+
+    #[test]
+    fn raw_length_precheck_covers_string_and_binary_cells() {
+        let strings = StringArray::from(vec!["oversized"]);
+        let binaries = BinaryArray::from(vec![b"oversized".as_slice()]);
+
+        assert_eq!(raw_value_len(&strings, 0), Some(9));
+        assert_eq!(raw_value_len(&binaries, 0), Some(9));
     }
 
     #[test]
