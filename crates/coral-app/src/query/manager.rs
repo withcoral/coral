@@ -35,7 +35,7 @@ use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
-use crate::workspaces::{WorkspaceManager, WorkspaceName};
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceName};
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
@@ -73,7 +73,8 @@ pub(crate) struct QueryManager {
 }
 
 impl QueryManager {
-    pub(crate) fn new(
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
         config_store: ConfigStore,
         workspace_manager: WorkspaceManager,
         credential_manager: CredentialManager,
@@ -81,7 +82,27 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
-        let function_manager = FunctionManager::new(config_store.clone(), &layout);
+        Self::new(
+            config_store,
+            workspace_manager,
+            credential_manager,
+            runtime_context,
+            layout,
+            WorkspaceLifecycleLock::default(),
+            engine_extensions_providers,
+        )
+    }
+
+    pub(crate) fn new(
+        config_store: ConfigStore,
+        workspace_manager: WorkspaceManager,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> Self {
+        let function_manager = FunctionManager::new(config_store.clone(), &layout, lifecycle_lock);
         Self::with_function_manager(
             config_store,
             workspace_manager,
@@ -974,7 +995,7 @@ mod tests {
             None,
             Arc::clone(&db),
         );
-        let manager = QueryManager::new(
+        let manager = QueryManager::new_for_tests(
             config_store,
             workspace_manager,
             credential_manager,
@@ -1903,7 +1924,7 @@ surfaces:
             None,
             Arc::clone(&db),
         );
-        let manager = QueryManager::new(
+        let manager = QueryManager::new_for_tests(
             config_store,
             workspace_manager,
             credential_manager,

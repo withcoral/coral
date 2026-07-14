@@ -311,7 +311,7 @@ impl ServerBuilder {
             credential_manager.clone(),
             layout.clone(),
             active_trace_store_dir.clone(),
-            workspace_lifecycle_lock,
+            workspace_lifecycle_lock.clone(),
             Arc::clone(&coral_db),
         );
         let feedback_manager =
@@ -330,6 +330,7 @@ impl ServerBuilder {
             credential_manager,
             query_runtime_context,
             layout.clone(),
+            workspace_lifecycle_lock,
             self.config.engine_extensions_providers,
         );
         let search_manager = SearchManager::new(layout, &config_store, workspace_manager.clone());
@@ -977,7 +978,7 @@ backend = "unsupported"
             None,
             Arc::clone(&db),
         );
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
             credential_manager,
@@ -1416,7 +1417,7 @@ tables:
             None,
             Arc::clone(&db),
         );
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
             credential_manager,
@@ -1536,7 +1537,7 @@ tables:
             None,
             Arc::clone(&db),
         );
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
             credential_manager,
@@ -1653,7 +1654,7 @@ tables:
             None,
             Arc::clone(&db),
         );
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
             credential_manager,
