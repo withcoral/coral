@@ -654,15 +654,17 @@ async fn published_udf_table_function_coerces_arguments_in_the_expanded_body() {
         publish: udf_publish("format_id"),
         result_columns: vec![udf_result_column("formatted_id", DataType::Utf8View)],
     };
-    let runtime = test_runtime().with_udfs(vec![udf]);
+    let runtime = CoralQuery::prepare(&[], test_runtime())
+        .await
+        .expect("prepare source runtime")
+        .with_udfs(vec![udf])
+        .await
+        .expect("install UDF after source preparation");
 
-    let execution = CoralQuery::execute_sql(
-        &[],
-        runtime,
-        "select formatted_id from udfs.format_id(id => 42)",
-    )
-    .await
-    .expect("expanded UDF body should receive normal DataFusion type coercion");
+    let execution = runtime
+        .execute_sql("select formatted_id from udfs.format_id(id => 42)")
+        .await
+        .expect("expanded UDF body should receive normal DataFusion type coercion");
 
     let batch = execution
         .batches()
@@ -909,31 +911,35 @@ async fn udf_can_share_source_schema_and_call_source_function_with_params() {
         3.0,
     )
     .await;
-    let runtime = test_runtime().with_udfs(vec![review_queue_udf_published_as(
-        "shared_udf_schema",
-        "shared_udf_schema",
-    )]);
+    let runtime = CoralQuery::prepare(&[source], test_runtime())
+        .await
+        .expect("prepare source runtime")
+        .with_udfs(vec![review_queue_udf_published_as(
+            "shared_udf_schema",
+            "shared_udf_schema",
+        )])
+        .await
+        .expect("install shared-schema UDF");
 
-    let execution = CoralQuery::execute_sql_with_params(
-        &[source],
-        runtime,
-        "select title, score from shared_udf_schema.review_queue(\
+    let execution = runtime
+        .execute_sql_with_params(
+            "select title, score from shared_udf_schema.review_queue(\
              query => $query, \
              mode => $mode, \
              min_score => 1, \
              payload => NULL, \
              since => TIMESTAMP '2024-01-01T00:00:00Z'\
          )",
-        QueryParameters::from([
-            (
-                "query".to_string(),
-                QueryParameterValue::string(REVIEW_QUERY),
-            ),
-            ("mode".to_string(), QueryParameterValue::string("semantic")),
-        ]),
-    )
-    .await
-    .expect("schema-shared udf should call source function with params");
+            QueryParameters::from([
+                (
+                    "query".to_string(),
+                    QueryParameterValue::string(REVIEW_QUERY),
+                ),
+                ("mode".to_string(), QueryParameterValue::string("semantic")),
+            ]),
+        )
+        .await
+        .expect("schema-shared udf should call source function with params");
 
     assert_eq!(
         execution_to_rows(&execution),

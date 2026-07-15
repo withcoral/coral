@@ -1,15 +1,17 @@
 //! Owns user-installed function files and workspace inventory.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::Arc;
 
-use coral_engine::{QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
+use coral_engine::{PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
 use coral_spec::{FunctionSpec, parse_function_sql};
 
 use crate::bootstrap::AppError;
 use crate::functions::model::{FunctionName, InstalledFunction};
 use crate::functions::runtime::{
-    infer_runtime_function, infer_runtime_functions, runtime_function_without_signature,
+    infer_runtime_function, infer_runtime_functions, infer_runtime_functions_in_prepared_runtime,
+    runtime_function_without_signature,
 };
 use crate::functions::store::{FsFunctionArtifactStore, FunctionArtifactStore};
 use crate::functions::validation::{
@@ -155,10 +157,12 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
-        runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
+        mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
     ) -> Result<Vec<FunctionListing>, AppError> {
-        self.evaluate_function_listings(workspace_name, selected_sources, runtime_config)
-            .await
+        self.evaluate_function_listings(workspace_name, selected_sources, |pending| async move {
+            infer_runtime_functions(selected_sources, runtime_config()?, pending).await
+        })
+        .await
     }
 
     pub(crate) fn list_functions_with_preparation_failure(
@@ -183,10 +187,12 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
-        runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
+        runtime: &PreparedQueryRuntime,
     ) -> Result<Vec<UdfRuntimeDefinition>, AppError> {
         let listings = self
-            .evaluate_function_listings(workspace_name, selected_sources, runtime_config)
+            .evaluate_function_listings(workspace_name, selected_sources, |pending| {
+                infer_runtime_functions_in_prepared_runtime(runtime, pending)
+            })
             .await?;
         let mut definitions = Vec::new();
         for listing in listings {
@@ -202,12 +208,16 @@ impl FunctionManager {
         Ok(definitions)
     }
 
-    async fn evaluate_function_listings(
+    async fn evaluate_function_listings<Infer, InferFuture>(
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
-        mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
-    ) -> Result<Vec<FunctionListing>, AppError> {
+        infer: Infer,
+    ) -> Result<Vec<FunctionListing>, AppError>
+    where
+        Infer: FnOnce(Vec<UdfRuntimeDefinition>) -> InferFuture,
+        InferFuture: Future<Output = Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError>>,
+    {
         let artifacts = self.load_function_artifacts(workspace_name)?;
         if artifacts.is_empty() {
             return Ok(Vec::new());
@@ -253,7 +263,7 @@ impl FunctionManager {
         let inferred = if pending.is_empty() {
             Vec::new()
         } else {
-            infer_runtime_functions(selected_sources, runtime_config()?, pending).await?
+            infer(pending).await?
         };
         let mut inferred = inferred.into_iter();
 
@@ -657,9 +667,12 @@ select 1 as id
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
         install_fixture_function(&manager, &workspace, &raw_sql);
+        let runtime = coral_engine::CoralQuery::prepare(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("prepare runtime");
 
         let runtime_functions = manager
-            .load_runtime_udfs(&workspace, &[], || Ok(QueryRuntimeConfig::default()))
+            .load_runtime_udfs(&workspace, &[], &runtime)
             .await
             .expect("load runtime functions");
 

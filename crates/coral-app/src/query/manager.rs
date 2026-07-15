@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
     UdfRuntimeDefinition,
@@ -153,17 +153,14 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_with_udfs(
+                    .prepared_runtime_with_udfs(
                         workspace_name,
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
                     )
                     .await?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
-                    .await
-                    .map_err(QueryManagerError::Core)
+                Ok(runtime.list_tables(schema_filter, table_filter))
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
             |_, _| {},
@@ -189,17 +186,14 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_with_udfs(
+                    .prepared_runtime_with_udfs(
                         workspace_name,
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::StoredOnly,
                     )
                     .await?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::list_catalog(&sources, runtime, schema_filter)
-                    .await
-                    .map_err(QueryManagerError::Core)
+                Ok(runtime.list_catalog(schema_filter))
             },
             |catalog| {
                 Some(
@@ -236,17 +230,14 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_with_udfs(
+                    .prepared_runtime_with_udfs(
                         workspace_name,
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::Refreshing,
                     )
                     .await?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
-                    .await
-                    .map_err(QueryManagerError::Core)
+                Ok(runtime.describe_table(schema_name, table_name))
             },
             |_| None,
             |_, _| {},
@@ -271,15 +262,15 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_with_udfs(
+                    .prepared_runtime_with_udfs(
                         workspace_name,
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::Refreshing,
                     )
                     .await?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::execute_sql(&sources, runtime, sql)
+                runtime
+                    .execute_sql(sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -306,15 +297,15 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_with_udfs(
+                    .prepared_runtime_with_udfs(
                         workspace_name,
                         &loaded_sources,
                         &config,
                         CredentialResolutionMode::Refreshing,
                     )
                     .await?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::explain_sql(&sources, runtime, sql)
+                runtime
+                    .explain_sql(sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -658,14 +649,14 @@ impl QueryManager {
             .map_err(QueryManagerError::App)
     }
 
-    async fn runtime_config_with_udfs(
+    async fn prepared_runtime_with_udfs(
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
         credential_resolution_mode: CredentialResolutionMode,
-    ) -> Result<QueryRuntimeConfig, QueryManagerError> {
-        let runtime = self
+    ) -> Result<PreparedQueryRuntime, QueryManagerError> {
+        let runtime_config = self
             .runtime_config_with_credential_mode(
                 workspace_name,
                 selected_sources,
@@ -674,19 +665,18 @@ impl QueryManager {
             )
             .map_err(QueryManagerError::App)?;
         let query_sources = query_sources_from_loaded(selected_sources);
+        let runtime = CoralQuery::prepare(&query_sources, runtime_config)
+            .await
+            .map_err(QueryManagerError::Core)?;
         let functions = self
             .function_manager
-            .load_runtime_udfs(workspace_name, &query_sources, || {
-                self.runtime_config_with_credential_mode(
-                    workspace_name,
-                    selected_sources,
-                    config,
-                    credential_resolution_mode,
-                )
-            })
+            .load_runtime_udfs(workspace_name, &query_sources, &runtime)
             .await
             .map_err(QueryManagerError::App)?;
-        Ok(runtime.with_udfs(functions))
+        runtime
+            .with_udfs(functions)
+            .await
+            .map_err(QueryManagerError::Core)
     }
 }
 
@@ -967,8 +957,8 @@ mod tests {
 
     use coral_engine::{
         EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
-        QueryTableUsage, SourceInputResolutionContext, SourceInputResolver,
-        SourceInputResolverError,
+        QueryTableUsage, SourceDecorator, SourceDecoratorError, SourceInputResolutionContext,
+        SourceInputResolver, SourceInputResolverError, SourceTables,
     };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::{Value, json};
@@ -2014,6 +2004,89 @@ select 1 as value
             panic!("function should be invalid while source preparation is unavailable");
         };
         assert!(error.contains("configured for keychain storage"));
+    }
+
+    struct PrepareCountingDecorator {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SourceDecorator for PrepareCountingDecorator {
+        fn name(&self) -> &'static str {
+            "prepare-counter"
+        }
+
+        fn prepare(
+            &mut self,
+            _selected_sources: &[QuerySource],
+        ) -> Result<(), SourceDecoratorError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn decorate_source(
+            &mut self,
+            _source: &QuerySource,
+            tables: SourceTables,
+        ) -> Result<SourceTables, SourceDecoratorError> {
+            Ok(tables)
+        }
+    }
+
+    struct PrepareCountingExtensionsProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl EngineExtensionsProvider for PrepareCountingExtensionsProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            let mut extensions = EngineExtensions::default();
+            extensions
+                .source_decorators
+                .push(Box::new(PrepareCountingDecorator {
+                    calls: Arc::clone(&self.calls),
+                }));
+            extensions
+        }
+    }
+
+    #[tokio::test]
+    async fn function_enabled_query_prepares_source_decorators_once() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(PrepareCountingExtensionsProvider {
+            calls: Arc::clone(&calls),
+        });
+        let fixture = query_manager_with(QueryRuntimeContext::default(), vec![provider]).await;
+        let workspace_name = WorkspaceName::default();
+        let function_sql = r"/*
+name: constant_value
+schema: functions
+description: Returns a constant value
+*/
+
+select 1 as value
+";
+        let validated = fixture
+            .manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate constant function");
+        fixture
+            .manager
+            .function_manager
+            .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .expect("install constant function");
+        calls.store(0, Ordering::SeqCst);
+
+        fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "select value from functions.constant_value()",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("execute constant function");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[derive(Debug)]

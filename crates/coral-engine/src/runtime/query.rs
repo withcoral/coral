@@ -19,8 +19,8 @@ use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
-use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::{RegisteredSource, compile_query_source};
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
@@ -55,6 +55,9 @@ pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     fallback_runtime: Option<FallbackRuntime>,
     memory: QueryMemoryConfig,
+    active_sources: Vec<RegisteredSource>,
+    source_function_names: HashSet<ScopedTableFunctionName>,
+    udfs_installed: bool,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
@@ -86,6 +89,8 @@ struct FallbackRuntimeConfig {
 
 struct RegisteredRuntime {
     ctx: Arc<SessionContext>,
+    active_sources: Vec<RegisteredSource>,
+    source_function_names: HashSet<ScopedTableFunctionName>,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
@@ -129,6 +134,7 @@ async fn build_runtime_inner(
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
     let source_input_resolver = extensions.source_input_resolver.clone();
+    let udfs_installed = !udfs.is_empty();
     // Resolver-row overflow can retry without the dependent-join optimizer only
     // when runtime registration is replayable. Source decorators are mutable
     // one-shot registration hooks today, so decorated runtimes keep resolver-row
@@ -164,6 +170,9 @@ async fn build_runtime_inner(
         ctx: primary.ctx,
         fallback_runtime,
         memory,
+        active_sources: primary.active_sources,
+        source_function_names: primary.source_function_names,
+        udfs_installed,
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
@@ -202,7 +211,7 @@ async fn build_registered_runtime(
     install_table_function_call_planners(
         &ctx,
         source_functions,
-        source_function_names,
+        source_function_names.clone(),
         config.udfs,
         &tables,
     )
@@ -217,6 +226,8 @@ async fn build_registered_runtime(
 
     Ok(RegisteredRuntime {
         ctx,
+        active_sources: registration.active_sources,
+        source_function_names,
         tables,
         table_functions,
         failures: registration.failures,
@@ -350,6 +361,53 @@ async fn register_runtime_sources(
 }
 
 impl QueryRuntimeAdapter {
+    pub(crate) async fn install_udfs(
+        &mut self,
+        udfs: Vec<UdfRuntimeDefinition>,
+    ) -> Result<(), CoreError> {
+        if udfs.is_empty() {
+            return Ok(());
+        }
+        if self.udfs_installed {
+            return Err(CoreError::FailedPrecondition(
+                "query runtime already has installed UDFs".to_string(),
+            ));
+        }
+        if self
+            .fallback_runtime
+            .as_ref()
+            .is_some_and(FallbackRuntime::is_built)
+        {
+            return Err(CoreError::FailedPrecondition(
+                "cannot install UDFs after query execution has initialized the fallback runtime"
+                    .to_string(),
+            ));
+        }
+
+        let udf_table_functions = published_table_functions(&udfs, &self.source_function_names)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let udf_calls = Box::pin(UdfCallRegistry::new(
+            &self.ctx,
+            &udfs,
+            self.source_function_names.clone(),
+        ))
+        .await
+        .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        catalog::register(&self.ctx, &self.active_sources, &udf_table_functions)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        udf_calls
+            .install(&self.ctx)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+
+        self.table_functions =
+            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+        if let Some(fallback_runtime) = &mut self.fallback_runtime {
+            fallback_runtime.config.udfs = udfs;
+        }
+        self.udfs_installed = true;
+        Ok(())
+    }
+
     pub(crate) fn list_tables(
         &self,
         source_filter: Option<&str>,
@@ -1080,6 +1138,10 @@ impl FallbackRuntime {
             .get_or_try_init(|| async { self.config.build_without_dependent_join().await })
             .await
     }
+
+    fn is_built(&self) -> bool {
+        self.runtime.get().is_some()
+    }
 }
 
 pub(crate) fn read_only_sql_options() -> SQLOptions {
@@ -1140,6 +1202,8 @@ mod tests {
     use super::*;
     use crate::{
         ColumnInfo, DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
+        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
+        UdfRuntimeTableFunctionPublish,
     };
 
     fn adapter_with_table() -> QueryRuntimeAdapter {
@@ -1147,6 +1211,9 @@ mod tests {
             ctx: Arc::new(SessionContext::new()),
             fallback_runtime: None,
             memory: QueryMemoryConfig::default(),
+            active_sources: Vec::new(),
+            source_function_names: HashSet::new(),
+            udfs_installed: false,
             tables: vec![TableInfo {
                 schema_name: "demo".to_string(),
                 table_name: "events".to_string(),
@@ -1249,6 +1316,60 @@ mod tests {
         assert!(
             error.to_string().contains("Resources exhausted"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_udf_install_is_retained_by_fallback_runtime() {
+        let mut runtime = build_runtime(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("primary runtime");
+        runtime
+            .install_udfs(vec![UdfRuntimeDefinition {
+                name: "constant_value".to_string(),
+                description: "Returns one value".to_string(),
+                arguments: Vec::new(),
+                implementation: UdfRuntimeImplementation::CoralSql {
+                    query: "select 1 as value".to_string(),
+                },
+                publish: UdfRuntimePublish {
+                    table_function: UdfRuntimeTableFunctionPublish {
+                        schema: "functions".to_string(),
+                        name: "constant_value".to_string(),
+                        description: "Returns one value".to_string(),
+                    },
+                },
+                result_columns: vec![UdfRuntimeResultColumn {
+                    name: "value".to_string(),
+                    data_type: DataType::Int64,
+                    nullable: false,
+                }],
+            }])
+            .await
+            .expect("late UDF install");
+
+        let fallback = runtime
+            .fallback_runtime
+            .as_ref()
+            .expect("dependent join fallback")
+            .get_or_build_without_dependent_join()
+            .await
+            .expect("fallback runtime");
+        let batches = fallback
+            .ctx
+            .sql("select value from functions.constant_value()")
+            .await
+            .expect("plan fallback UDF query")
+            .collect()
+            .await
+            .expect("execute fallback UDF query");
+
+        assert_eq!(
+            batches
+                .iter()
+                .map(arrow::array::RecordBatch::num_rows)
+                .sum::<usize>(),
+            1
         );
     }
 }

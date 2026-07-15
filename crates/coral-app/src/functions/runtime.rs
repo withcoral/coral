@@ -1,6 +1,7 @@
 use coral_engine::{
-    CoralQuery, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition, UdfRuntimeImplementation,
-    UdfRuntimePublish, UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    CoralQuery, PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition,
+    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeTableFunctionPublish,
 };
 use coral_spec::{FunctionImplementationSpec, FunctionSpec};
 
@@ -33,7 +34,30 @@ pub(crate) async fn infer_runtime_functions(
             .await
             .map_err(|error| runtime_validation_error(&error))?;
 
-    Ok(runtime_functions
+    Ok(apply_signatures(runtime_functions, signatures))
+}
+
+pub(crate) async fn infer_runtime_functions_in_prepared_runtime(
+    runtime: &PreparedQueryRuntime,
+    runtime_functions: Vec<UdfRuntimeDefinition>,
+) -> Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError> {
+    let sql_definitions = runtime_functions
+        .iter()
+        .map(runtime_sql_definition)
+        .collect();
+    let signatures = runtime
+        .infer_udf_signatures(sql_definitions)
+        .await
+        .map_err(|error| runtime_validation_error(&error))?;
+
+    Ok(apply_signatures(runtime_functions, signatures))
+}
+
+fn apply_signatures(
+    runtime_functions: Vec<UdfRuntimeDefinition>,
+    signatures: Vec<Result<UdfRuntimeSignature, coral_engine::CoreError>>,
+) -> Vec<Result<UdfRuntimeDefinition, AppError>> {
+    runtime_functions
         .into_iter()
         .zip(signatures)
         .map(|(mut function, signature)| {
@@ -42,7 +66,7 @@ pub(crate) async fn infer_runtime_functions(
             function.result_columns = signature.result_columns;
             Ok(function)
         })
-        .collect())
+        .collect()
 }
 
 fn runtime_validation_error(error: &coral_engine::CoreError) -> AppError {
