@@ -230,6 +230,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
+          if-no-files-found: error
           path: |
             coral-${{ matrix.target }}.tar.gz
             coral-${{ matrix.target }}.zip
@@ -314,6 +315,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
+          if-no-files-found: error
           path: |
             coral-${{ matrix.target }}.zip
             coral-${{ matrix.target }}.tar.gz
@@ -392,12 +394,15 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           cd artifacts
-          artifacts=(coral-*.tar.gz coral-*.zip coral-*.dmg coral-*.blockmap latest-mac.yml)
-          if [ "${#artifacts[@]}" -eq 0 ]; then
+          # Only the globs decide "did any archive arrive?"; latest-mac.yml is a
+          # literal that would always survive nullglob and mask an empty set.
+          archives=(coral-*.tar.gz coral-*.zip coral-*.dmg coral-*.blockmap)
+          if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2
             exit 1
           fi
-          sha256sum "${artifacts[@]}" > checksums.sha256
+          test -s latest-mac.yml
+          sha256sum "${archives[@]}" latest-mac.yml > checksums.sha256
           test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -440,20 +445,25 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          artifacts=(
+          # Count only the globbed archives; the literals (latest-mac.yml,
+          # checksums.sha256) would always survive nullglob and defeat the
+          # emptiness guard.
+          archives=(
             artifacts/coral-*.tar.gz
             artifacts/coral-*.zip
             artifacts/coral-*.dmg
             artifacts/coral-*.blockmap
-            artifacts/latest-mac.yml
-            artifacts/checksums.sha256
           )
-          if [ "${#artifacts[@]}" -lt 2 ]; then
+          if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2
             exit 1
           fi
+          test -s artifacts/latest-mac.yml
+          test -s artifacts/checksums.sha256
           gh release upload "$TAG_NAME" \
-            "${artifacts[@]}" \
+            "${archives[@]}" \
+            artifacts/latest-mac.yml \
+            artifacts/checksums.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
