@@ -44,13 +44,9 @@ impl FunctionServiceApi for FunctionService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let runtime_function = queries
-                .validate_udf_sql(&workspace_name, &inner.sql)
+                .add_user_function(&workspace_name, &inner.sql)
                 .await
                 .map_err(query_status)?;
-            queries
-                .function_manager()
-                .install_validated_user_function(&workspace_name, &inner.sql, &runtime_function)
-                .map_err(app_status)?;
             Ok(Response::new(AddFunctionResponse {
                 function: Some(runtime_function_to_proto(&workspace_name, runtime_function)),
             }))

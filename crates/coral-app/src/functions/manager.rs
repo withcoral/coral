@@ -19,7 +19,7 @@ use crate::functions::validation::{
     source_sql_publish_targets_for_schemas, unchecked_source_publish_schemas,
 };
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct FunctionManager {
@@ -51,6 +51,11 @@ pub(crate) enum FunctionRuntimeStatus {
     Invalid(String),
 }
 
+pub(crate) enum ValidatedFunctionInstall {
+    Installed,
+    WorkspaceChanged,
+}
+
 enum FunctionCandidate {
     Listing(FunctionListing),
     Pending {
@@ -77,25 +82,37 @@ impl FunctionManager {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn install_validated_user_function(
         &self,
         workspace_name: &WorkspaceName,
         raw_sql: &str,
         runtime_function: &UdfRuntimeDefinition,
     ) -> Result<InstalledFunction, AppError> {
-        let function = parse_function_sql(raw_sql).map_err(|error| {
-            AppError::InvalidInput(format!("function validation failed: {error}"))
-        })?;
-        let function_name = FunctionName::parse(function.name())?;
-        if function_name.as_str() != runtime_function.name {
-            return Err(AppError::FailedPrecondition(format!(
-                "validated function '{}' does not match installed function '{}'",
-                runtime_function.name, function_name
-            )));
-        }
+        let function_name = validated_function_name(raw_sql, runtime_function)?;
         self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
     }
 
+    pub(crate) fn install_validated_user_function_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
+        raw_sql: &str,
+        runtime_function: &UdfRuntimeDefinition,
+        revision: WorkspaceLifecycleRevision,
+    ) -> Result<ValidatedFunctionInstall, AppError> {
+        let function_name = validated_function_name(raw_sql, runtime_function)?;
+        let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged(revision) else {
+            return Ok(ValidatedFunctionInstall::WorkspaceChanged);
+        };
+        self.install_user_function_artifact_with_lifecycle_lock(
+            workspace_name,
+            &function_name,
+            raw_sql,
+        )?;
+        Ok(ValidatedFunctionInstall::Installed)
+    }
+
+    #[cfg(test)]
     fn install_user_function_artifact(
         &self,
         workspace_name: &WorkspaceName,
@@ -103,6 +120,19 @@ impl FunctionManager {
         raw_sql: &str,
     ) -> Result<InstalledFunction, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
+        self.install_user_function_artifact_with_lifecycle_lock(
+            workspace_name,
+            function_name,
+            raw_sql,
+        )
+    }
+
+    fn install_user_function_artifact_with_lifecycle_lock(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+        raw_sql: &str,
+    ) -> Result<InstalledFunction, AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
         let installed = InstalledFunction {
             name: function_name.clone(),
@@ -137,10 +167,10 @@ impl FunctionManager {
         mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
         raw_sql: &str,
     ) -> Result<UdfRuntimeDefinition, AppError> {
-        let spec = parse_function_sql(raw_sql).map_err(|error| {
+        let function = parse_function_sql(raw_sql).map_err(|error| {
             AppError::InvalidInput(format!("function validation failed: {error}"))
         })?;
-        let function_name = FunctionName::parse(spec.name())?;
+        let function_name = FunctionName::parse(function.name())?;
         let mut sql_publish_targets = initial_sql_publish_targets(selected_sources);
         self.record_installed_function_sql_publish_targets(
             workspace_name,
@@ -148,7 +178,7 @@ impl FunctionManager {
             &mut sql_publish_targets,
         )?;
         let runtime_function =
-            infer_runtime_function(selected_sources, runtime_config()?, &spec).await?;
+            infer_runtime_function(selected_sources, runtime_config()?, &function).await?;
         record_sql_publish_target(&runtime_function, &mut sql_publish_targets)?;
         Ok(runtime_function)
     }
@@ -376,6 +406,22 @@ impl FunctionManager {
         }
         Ok(())
     }
+}
+
+fn validated_function_name(
+    raw_sql: &str,
+    runtime_function: &UdfRuntimeDefinition,
+) -> Result<FunctionName, AppError> {
+    let function = parse_function_sql(raw_sql)
+        .map_err(|error| AppError::InvalidInput(format!("function validation failed: {error}")))?;
+    let function_name = FunctionName::parse(function.name())?;
+    if function_name.as_str() != runtime_function.name {
+        return Err(AppError::FailedPrecondition(format!(
+            "validated function '{}' does not match installed function '{}'",
+            runtime_function.name, function_name
+        )));
+    }
+    Ok(function_name)
 }
 
 fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, String> {

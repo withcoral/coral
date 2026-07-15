@@ -19,7 +19,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
-use crate::functions::manager::{FunctionListing, FunctionManager};
+use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::query::input_resolver::{
@@ -35,7 +35,9 @@ use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceName};
+use crate::workspaces::{
+    WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
+};
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
@@ -67,6 +69,7 @@ pub(crate) struct QueryManager {
     workspace_manager: Arc<WorkspaceManager>,
     credential_manager: CredentialManager,
     function_manager: FunctionManager,
+    lifecycle_lock: WorkspaceLifecycleLock,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -102,32 +105,14 @@ impl QueryManager {
         lifecycle_lock: WorkspaceLifecycleLock,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
-        let function_manager = FunctionManager::new(config_store.clone(), &layout, lifecycle_lock);
-        Self::with_function_manager(
-            config_store,
-            workspace_manager,
-            credential_manager,
-            function_manager,
-            runtime_context,
-            layout,
-            engine_extensions_providers,
-        )
-    }
-
-    pub(crate) fn with_function_manager(
-        config_store: ConfigStore,
-        workspace_manager: WorkspaceManager,
-        credential_manager: CredentialManager,
-        function_manager: FunctionManager,
-        runtime_context: QueryRuntimeContext,
-        layout: AppStateLayout,
-        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    ) -> Self {
+        let function_manager =
+            FunctionManager::new(config_store.clone(), &layout, lifecycle_lock.clone());
         Self {
             config_store,
             workspace_manager: Arc::new(workspace_manager),
             credential_manager,
             function_manager,
+            lifecycle_lock,
             runtime_context,
             layout,
             engine_extensions_providers,
@@ -597,6 +582,7 @@ impl QueryManager {
         self.function_manager.clone()
     }
 
+    #[cfg(test)]
     pub(crate) async fn validate_udf_sql(
         &self,
         workspace_name: &WorkspaceName,
@@ -605,6 +591,72 @@ impl QueryManager {
         self.require_workspace(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
+        let _lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        self.validate_udf_sql_against_snapshot(workspace_name, raw_sql, &loaded_sources, &config)
+            .await
+    }
+
+    pub(crate) async fn add_user_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        raw_sql: &str,
+    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+        for _ in 0..2 {
+            let revision = self.lifecycle_lock.snapshot().revision();
+            self.require_workspace(workspace_name)
+                .await
+                .map_err(QueryManagerError::App)?;
+            let Some((loaded_sources, config)) =
+                self.function_validation_snapshot_if_unchanged(workspace_name, revision)?
+            else {
+                continue;
+            };
+            let runtime_function = self
+                .validate_udf_sql_against_snapshot(
+                    workspace_name,
+                    raw_sql,
+                    &loaded_sources,
+                    &config,
+                )
+                .await?;
+            match self
+                .function_manager
+                .install_validated_user_function_if_unchanged(
+                    workspace_name,
+                    raw_sql,
+                    &runtime_function,
+                    revision,
+                )
+                .map_err(QueryManagerError::App)?
+            {
+                ValidatedFunctionInstall::Installed => return Ok(runtime_function),
+                ValidatedFunctionInstall::WorkspaceChanged => {}
+            }
+        }
+        Err(QueryManagerError::App(AppError::FailedPrecondition(
+            "workspace changed repeatedly while the function was being validated; retry the add"
+                .to_string(),
+        )))
+    }
+
+    fn function_validation_snapshot_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
+    ) -> Result<Option<(Vec<LoadedQuerySource>, AppConfig)>, QueryManagerError> {
+        let lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        if lifecycle_snapshot.revision() != revision {
+            return Ok(None);
+        }
+        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        Ok(Some((loaded_sources, config)))
+    }
+
+    fn load_function_validation_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(Vec<LoadedQuerySource>, AppConfig), QueryManagerError> {
         let (loaded_sources, config) = {
             let _state_lock = self
                 .config_store
@@ -619,12 +671,22 @@ impl QueryManager {
                 .map_err(QueryManagerError::App)?;
             (loaded_sources, config)
         };
-        let sources = query_sources_from_loaded(&loaded_sources);
+        Ok((loaded_sources, config))
+    }
+
+    async fn validate_udf_sql_against_snapshot(
+        &self,
+        workspace_name: &WorkspaceName,
+        raw_sql: &str,
+        loaded_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+        let sources = query_sources_from_loaded(loaded_sources);
         self.function_manager
             .validate_user_function_sql(
                 workspace_name,
                 &sources,
-                || self.runtime_config(workspace_name, &loaded_sources, &config),
+                || self.runtime_config(workspace_name, loaded_sources, config),
                 raw_sql,
             )
             .await
@@ -1733,22 +1795,72 @@ pagination:
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "covers function validation, catalog publication, listing, and execution together"
-    )]
+    async fn add_user_function_revalidates_when_source_changes_before_commit() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let mut fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let workspace_name = WorkspaceName::default();
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config_store = fixture.manager.config_store.clone();
+        let lifecycle_lock = fixture.manager.lifecycle_lock.clone();
+        let workspace = workspace_name.clone();
+        let source_name = SourceName::parse("function_demo").expect("source name");
+        fixture.manager.engine_extensions_providers.push(Arc::new(
+            PrepareCountingExtensionsProvider {
+                calls: Arc::clone(&calls),
+                on_first_prepare: Some(Arc::new(move || {
+                    let _lifecycle_guard = lifecycle_lock.lock();
+                    config_store
+                        .remove_source(&workspace, &source_name)
+                        .expect("remove source during function validation");
+                })),
+            },
+        ));
+        let function_sql = r"/*
+name: demo_items
+schema: functions
+description: Returns demo messages
+*/
+
+select text from function_demo.messages
+";
+
+        let error = fixture
+            .manager
+            .add_user_function(&workspace_name, function_sql)
+            .await
+            .expect_err("source change should invalidate the original validation snapshot");
+
+        let detail = match error {
+            QueryManagerError::App(error) => error.to_string(),
+            QueryManagerError::Core(error) => error.to_string(),
+        };
+        assert!(
+            detail.contains("function_demo.messages"),
+            "unexpected error: {detail}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(
+            fixture
+                .manager
+                .list_functions(&workspace_name)
+                .await
+                .expect("list functions")
+                .is_empty(),
+            "stale validation must not install the function"
+        );
+    }
+
+    #[tokio::test]
     async fn user_function_publishes_table_function_and_executes_against_installed_source() {
         let fake_home = tempfile::tempdir().expect("fake home");
-        let data_dir = fake_home.path().join("fixture-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        std::fs::write(
-            data_dir.join("messages.jsonl"),
-            r#"{"type":"user","text":"hello"}
-{"type":"assistant","text":"world"}
-"#,
-        )
-        .expect("write fixture");
-
         let fixture = query_manager_with(
             QueryRuntimeContext {
                 home_dir: Some(fake_home.path().to_path_buf()),
@@ -1757,41 +1869,8 @@ pagination:
             Vec::new(),
         )
         .await;
-        fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
-        let source_manager = SourceManager::new_for_tests(
-            fixture.manager.config_store.clone(),
-            fixture.manager.credential_manager.clone(),
-            fixture.manager.layout.clone(),
-        );
-        source_manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: r#"
-name: function_demo
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: messages
-    description: Fixture messages
-    format: jsonl
-    source:
-      location: file://~/fixture-data/
-      glob: "**/*.jsonl"
-    columns:
-      - name: type
-        type: Utf8
-      - name: text
-        type: Utf8
-"#
-                    .to_string(),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import source");
-
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let function_sql = r"/*
 name: messages_by_type
 schema: functions
@@ -1863,6 +1942,54 @@ where type = $kind
             execution_to_rows(&execution),
             vec![json!({"text": "hello"})]
         );
+    }
+
+    fn install_function_demo_source(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        fake_home: &std::path::Path,
+    ) {
+        let data_dir = fake_home.join("fixture-data");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(
+            data_dir.join("messages.jsonl"),
+            r#"{"type":"user","text":"hello"}
+{"type":"assistant","text":"world"}
+"#,
+        )
+        .expect("write fixture");
+        let source_manager = SourceManager::new_for_tests(
+            manager.config_store.clone(),
+            manager.credential_manager.clone(),
+            manager.layout.clone(),
+        );
+        source_manager
+            .import_source(
+                workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: r#"
+name: function_demo
+version: 0.1.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Fixture messages
+    format: jsonl
+    source:
+      location: file://~/fixture-data/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: text
+        type: Utf8
+"#
+                    .to_string(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import source");
     }
 
     #[tokio::test]
@@ -1990,6 +2117,7 @@ select 1 as value
 
     struct PrepareCountingDecorator {
         calls: Arc<AtomicUsize>,
+        on_first_prepare: Option<Arc<dyn Fn() + Send + Sync>>,
     }
 
     impl SourceDecorator for PrepareCountingDecorator {
@@ -2001,7 +2129,11 @@ select 1 as value
             &mut self,
             _selected_sources: &[QuerySource],
         ) -> Result<(), SourceDecoratorError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0
+                && let Some(on_first_prepare) = &self.on_first_prepare
+            {
+                on_first_prepare();
+            }
             Ok(())
         }
 
@@ -2016,6 +2148,7 @@ select 1 as value
 
     struct PrepareCountingExtensionsProvider {
         calls: Arc<AtomicUsize>,
+        on_first_prepare: Option<Arc<dyn Fn() + Send + Sync>>,
     }
 
     impl EngineExtensionsProvider for PrepareCountingExtensionsProvider {
@@ -2025,6 +2158,7 @@ select 1 as value
                 .source_decorators
                 .push(Box::new(PrepareCountingDecorator {
                     calls: Arc::clone(&self.calls),
+                    on_first_prepare: self.on_first_prepare.clone(),
                 }));
             extensions
         }
@@ -2035,6 +2169,7 @@ select 1 as value
         let calls = Arc::new(AtomicUsize::new(0));
         let provider = Arc::new(PrepareCountingExtensionsProvider {
             calls: Arc::clone(&calls),
+            on_first_prepare: None,
         });
         let fixture = query_manager_with(QueryRuntimeContext::default(), vec![provider]).await;
         let workspace_name = WorkspaceName::default();
