@@ -897,6 +897,25 @@ enabled = false
         .expect("write telemetry config");
     }
 
+    fn configure_observed_values_search(config_dir: &Path, enabled: bool) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!(
+                r"
+version = 1
+
+[features]
+observed_values_search = {enabled}
+
+[trace_history]
+enabled = false
+"
+            ),
+        )
+        .expect("write feature config");
+    }
+
     #[derive(Debug)]
     struct RejectingUserPrincipalProvider;
 
@@ -1049,7 +1068,7 @@ backend = "unsupported"
     async fn shutdown_drains_observed_values_queue() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
+        configure_observed_values_search(&config_dir, true);
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         layout.ensure().expect("layout dirs");
         let workspace = WorkspaceName::default();
@@ -1091,6 +1110,55 @@ backend = "unsupported"
                 .pending_queue_job_count(&workspace)
                 .expect("pending queue depth"),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_leaves_observed_values_queue_untouched_when_feature_is_disabled() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &ObservedValuesQueueJob {
+                    owner_source_name: "github".to_string(),
+                    source_name: "github".to_string(),
+                    source_scope_id: "scope".to_string(),
+                    surface_kind: ObservedValuesSurfaceKind::Table,
+                    surface_name: "issues".to_string(),
+                    payload_json: r#"{"values":[{"column_name":"title","display_value":"Payment outage","search_text":"payment outage","value_key":"payment-outage"}]}"#
+                        .to_string(),
+                },
+                generation,
+            )
+            .expect("enqueue observed value");
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start server");
+        server.shutdown().await.expect("shutdown");
+
+        assert_eq!(
+            store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            0
+        );
+        assert_eq!(
+            store
+                .pending_queue_job_count(&workspace)
+                .expect("pending queue depth"),
+            1
         );
     }
 
