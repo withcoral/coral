@@ -166,6 +166,29 @@ describe('interactive checks', () => {
     ])
   })
 
+  it('reports the update as ready (not downloading) once it has been staged', async () => {
+    const updater = createFakeUpdater()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue({
+      isUpdateAvailable: true,
+      updateInfo: { version: '1.2.4' },
+    })
+    const deps = createDeps(updater)
+    const desktopUpdater = createDesktopUpdater(deps)
+    desktopUpdater.install()
+    // Background download completes, then the user manually checks again.
+    updater.emit('update-downloaded', { version: '1.2.4' })
+    await desktopUpdater.check({ interactive: true })
+
+    expect(deps.infoDialogs).toEqual([
+      {
+        message: 'Coral 1.2.4 is ready',
+        detail: 'The update will install when you quit Coral.',
+      },
+    ])
+    // The staged-version notification must not fire a second time.
+    expect(deps.notifications).toHaveLength(1)
+  })
+
   it('explains when update checks are unavailable', async () => {
     const updater = createFakeUpdater()
     vi.mocked(updater.checkForUpdates).mockResolvedValue(null)

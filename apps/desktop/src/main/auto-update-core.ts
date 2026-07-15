@@ -55,7 +55,10 @@ function errorMessage(error: unknown): string {
 export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   const { updater } = deps
   let installed = false
-  let notifiedVersion: string | null = null
+  // The version already downloaded and staged for install-on-quit. Drives both
+  // once-per-version notification dedupe and the manual-check dialog, which
+  // must not promise a fresh notification for an update that is already staged.
+  let downloadedVersion: string | null = null
 
   function installListeners(): void {
     updater.on('checking-for-update', () => {
@@ -75,8 +78,8 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     // overlapping or repeated checks notify more than once for one update.
     updater.on('update-downloaded', (info) => {
       console.info(`[coral-updater] update downloaded: ${info.version}`)
-      if (notifiedVersion === info.version) return
-      notifiedVersion = info.version
+      if (downloadedVersion === info.version) return
+      downloadedVersion = info.version
       deps.showNotification(
         'Coral update ready',
         `Coral ${info.version} will install when you quit the app.`,
@@ -100,6 +103,17 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
       await deps.showInfoDialog(
         'Coral is up to date',
         `You are running Coral ${deps.appVersion()}.`,
+      )
+      return
+    }
+
+    // If this version already finished downloading in a prior check, the
+    // update-downloaded notification has already fired and will not fire
+    // again (dedupe), so promising a future notification here would be a lie.
+    if (downloadedVersion === result.updateInfo.version) {
+      await deps.showInfoDialog(
+        `Coral ${result.updateInfo.version} is ready`,
+        'The update will install when you quit Coral.',
       )
       return
     }

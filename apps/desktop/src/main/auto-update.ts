@@ -6,10 +6,19 @@ import { createDesktopUpdater, type DesktopUpdater } from './auto-update-core'
 
 const require = createRequire(import.meta.url)
 
-// Only macOS release builds publish update metadata (latest-mac.yml); a
-// packaged Windows/Linux app would poll for feeds that do not exist.
+// Baked in at build time by electron.vite.config.ts (true only when
+// CORAL_DESKTOP_RELEASE=1). `typeof` guard keeps it safe if the define is ever
+// absent (e.g. a non-electron-vite build path).
+declare const __CORAL_DESKTOP_RELEASE__: boolean
+const isReleaseBuild =
+  typeof __CORAL_DESKTOP_RELEASE__ !== 'undefined' && __CORAL_DESKTOP_RELEASE__
+
+// Updates only work in a signed macOS release build: only those publish an
+// update feed (latest-mac.yml), and Squirrel.Mac refuses to install an update
+// into an unsigned app. Unsigned QA/local builds and Windows/Linux packages
+// therefore get no polling and no menu item.
 export function desktopUpdatesSupported(): boolean {
-  return app.isPackaged && process.platform === 'darwin'
+  return isReleaseBuild && app.isPackaged && process.platform === 'darwin'
 }
 
 let updater: DesktopUpdater | null = null
