@@ -207,7 +207,7 @@ struct SearchClearArgs {
     /// Search data scope to clear
     #[arg(long, value_enum)]
     scope: SearchClearScope,
-    /// Clear search data for a single source instead of the entire workspace
+    /// Installed source owner whose runtime schemas and surfaces should be cleared
     #[arg(long, value_name = "SOURCE")]
     source: Option<String>,
     /// Set when an explicit global `--workspace NAME` selector is present.
