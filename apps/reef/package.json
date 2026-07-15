@@ -16,7 +16,7 @@
     "format:check": "oxfmt --check",
     "check": "oxfmt --check && oxlint --deny-warnings",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build",
+    "build-storybook": "npm run proto:gen && storybook build",
     "storybook:doctor": "storybook doctor"
   },
   "dependencies": {
