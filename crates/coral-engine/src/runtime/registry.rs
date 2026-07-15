@@ -12,6 +12,9 @@ use crate::backends::{
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
+use crate::runtime::registration_cache::{
+    CacheLookup, RegistrationCache, RegistrationRefreshClaim,
+};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
@@ -86,12 +89,13 @@ pub(crate) async fn register_sources(
     ctx: &SessionContext,
     sources: Vec<SourceRegistrationCandidate>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
+    registration_cache: Option<&RegistrationCache>,
 ) -> std::result::Result<SourceRegistrationResult, CoreError> {
     let span = info_span!(
         "coral.engine.sources.register",
         source.count = sources.len(),
     );
-    register_sources_inner(ctx, sources, source_decorators)
+    register_sources_inner(ctx, sources, source_decorators, registration_cache)
         .instrument(span)
         .await
 }
@@ -100,6 +104,7 @@ async fn register_sources_inner(
     ctx: &SessionContext,
     sources: Vec<SourceRegistrationCandidate>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
+    registration_cache: Option<&RegistrationCache>,
 ) -> std::result::Result<SourceRegistrationResult, CoreError> {
     let catalog = ctx.catalog("datafusion").ok_or_else(|| {
         let plan_err = DataFusionError::Plan("catalog 'datafusion' not found".to_string());
@@ -125,25 +130,61 @@ async fn register_sources_inner(
                 let compiled_source = selected_source.compiled;
                 let source_name = compiled_source.source_name().to_string();
 
-                match register_source(
+                let registration = match register_source(
                     ctx,
                     &registration_context,
                     &mut seen_schemas,
                     &mut seen_catalogs,
                     compiled_source.as_ref(),
+                    registration_cache,
                 )
                 .await
                 {
-                    Ok(registration) => {
-                        register_backend_registration(
-                            ctx,
-                            catalog.as_ref(),
+                    Ok(SourceRegistrationAttempt::Ready(registration)) => registration,
+                    Ok(SourceRegistrationAttempt::StaleRefreshFailed {
+                        registration,
+                        error,
+                        claim,
+                    }) => {
+                        let core_error = datafusion_to_core(&error, &[]);
+                        let failure_policy = handle_source_registration_failure(
                             source_decorators,
                             query_source,
-                            &source_name,
-                            registration,
-                            &mut result,
-                        )?;
+                            &core_error,
+                        );
+                        if let Some(cache) = registration_cache {
+                            cache.refresh_failed(&claim, matches!(&failure_policy, Ok(false)));
+                        }
+                        if failure_policy? {
+                            return Err(core_error);
+                        }
+                        tracing::warn!(
+                            source = %source_name,
+                            detail = %error,
+                            "source registration refresh failed; keeping stale cached registration"
+                        );
+                        if let Err(error) =
+                            claim_registration_schemas(&registration, &mut seen_schemas).and_then(
+                                |()| claim_registration_catalogs(&registration, &mut seen_catalogs),
+                            )
+                        {
+                            let core_error = datafusion_to_core(&error, &[]);
+                            if handle_source_registration_failure(
+                                source_decorators,
+                                query_source,
+                                &core_error,
+                            )? {
+                                return Err(core_error);
+                            }
+                            push_source_failure(
+                                &mut result,
+                                &source_name,
+                                compiled_source.schema_name(),
+                                core_error.to_string(),
+                            );
+                            continue;
+                        }
+                        registration
                     }
                     Err(error) => {
                         let core_error = datafusion_to_core(&error, &[]);
@@ -160,8 +201,18 @@ async fn register_sources_inner(
                             compiled_source.schema_name(),
                             core_error.to_string(),
                         );
+                        continue;
                     }
-                }
+                };
+                register_backend_registration(
+                    ctx,
+                    catalog.as_ref(),
+                    source_decorators,
+                    query_source,
+                    &source_name,
+                    registration,
+                    &mut result,
+                )?;
             }
             SourceRegistrationCandidate::CompileFailed { source, error } => {
                 if handle_source_registration_failure(source_decorators, &source, &error)? {
@@ -217,7 +268,17 @@ pub(crate) fn register_sources_blocking(
             .map(SourceRegistrationCandidate::Compiled)
             .collect(),
         source_decorators.as_mut_slice(),
+        None,
     ))
+}
+
+enum SourceRegistrationAttempt {
+    Ready(BackendRegistration),
+    StaleRefreshFailed {
+        registration: BackendRegistration,
+        error: DataFusionError,
+        claim: RegistrationRefreshClaim,
+    },
 }
 
 async fn register_source(
@@ -226,14 +287,79 @@ async fn register_source(
     seen_schemas: &mut std::collections::HashSet<String>,
     seen_catalogs: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
-) -> DataFusionResult<BackendRegistration> {
+    registration_cache: Option<&RegistrationCache>,
+) -> DataFusionResult<SourceRegistrationAttempt> {
     source.validate_runtime_capabilities()?;
 
-    let registration = source.register(ctx, registration_context).await?;
-    claim_registration_schemas(&registration, seen_schemas)?;
-    claim_registration_catalogs(&registration, seen_catalogs)?;
+    let fingerprint = source.registration_fingerprint();
+    let cached = match (registration_cache, fingerprint.as_deref()) {
+        (Some(cache), Some(fingerprint)) => cache.lookup(source.source_name(), fingerprint),
+        _ => None,
+    };
+    let stale = match cached {
+        Some(CacheLookup::Fresh(registration)) => {
+            tracing::debug!(
+                source = %source.source_name(),
+                "reusing cached source registration"
+            );
+            claim_registration_schemas(&registration, seen_schemas)?;
+            claim_registration_catalogs(&registration, seen_catalogs)?;
+            return Ok(SourceRegistrationAttempt::Ready(registration));
+        }
+        Some(CacheLookup::Refreshing(registration)) => {
+            tracing::debug!(
+                source = %source.source_name(),
+                "reusing stale cached source registration while refresh is in progress"
+            );
+            claim_registration_schemas(&registration, seen_schemas)?;
+            claim_registration_catalogs(&registration, seen_catalogs)?;
+            return Ok(SourceRegistrationAttempt::Ready(registration));
+        }
+        Some(CacheLookup::Stale {
+            registration,
+            claim,
+        }) => Some((registration, claim)),
+        None => None,
+    };
 
-    Ok(registration)
+    match source.register(ctx, registration_context).await {
+        Ok(registration) => {
+            let refresh_claim = stale.map(|(_registration, claim)| claim);
+            if let Err(error) = claim_registration_schemas(&registration, seen_schemas)
+                .and_then(|()| claim_registration_catalogs(&registration, seen_catalogs))
+            {
+                if let (Some(cache), Some(claim)) = (registration_cache, refresh_claim.as_ref()) {
+                    cache.refresh_failed(claim, false);
+                }
+                return Err(error);
+            }
+
+            if let (Some(cache), Some(fingerprint)) = (registration_cache, fingerprint.as_deref()) {
+                if let Some(claim) = refresh_claim {
+                    cache.refresh_succeeded(&claim, &registration);
+                } else {
+                    cache.store(source.source_name(), fingerprint, &registration);
+                }
+            }
+
+            Ok(SourceRegistrationAttempt::Ready(registration))
+        }
+        Err(error) => {
+            // Availability over freshness: a source that registered before
+            // keeps serving its last known catalog when a claimed refresh
+            // fails. The cache claim defers the next refresh attempt by one
+            // time-to-live so an unreachable source costs one attempt per
+            // window, not one per query.
+            let Some((registration, claim)) = stale else {
+                return Err(error);
+            };
+            Ok(SourceRegistrationAttempt::StaleRefreshFailed {
+                registration,
+                error,
+                claim,
+            })
+        }
+    }
 }
 
 fn claim_registration_schemas(
@@ -459,11 +585,437 @@ fn source_decorator_error(name: &str, error: &crate::SourceDecoratorError) -> Co
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use crate::{CoreError, QuerySource, RuntimeSourcePackage};
+    use async_trait::async_trait;
+    use datafusion::error::Result as DataFusionResult;
+    use datafusion::prelude::SessionContext;
 
-    use super::{check_reserved_schema, validate_selected_source_schema_names};
+    use crate::backends::{
+        BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
+        CompiledBackendSource, RegisteredSource,
+    };
+    use crate::runtime::registration_cache::RegistrationCache;
+    use crate::{
+        CoreError, QuerySource, RuntimeSourcePackage, SourceDecorator, SourceFailurePolicy,
+        SourceTables,
+    };
+
+    use super::{
+        CompiledQuerySource, SourceRegistrationCandidate, check_reserved_schema, register_sources,
+        validate_selected_source_schema_names,
+    };
+
+    struct CountingSource {
+        name: String,
+        fingerprint: Option<String>,
+        registrations: Arc<AtomicUsize>,
+        fail: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl CompiledBackendSource for CountingSource {
+        fn schema_name(&self) -> &str {
+            &self.name
+        }
+
+        fn source_name(&self) -> &str {
+            &self.name
+        }
+
+        fn validate_runtime_capabilities(&self) -> DataFusionResult<()> {
+            Ok(())
+        }
+
+        fn registration_fingerprint(&self) -> Option<String> {
+            self.fingerprint.clone()
+        }
+
+        async fn register(
+            &self,
+            _ctx: &SessionContext,
+            _registration: &BackendRegistrationContext,
+        ) -> DataFusionResult<BackendRegistration> {
+            self.registrations.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "simulated registration failure".to_string(),
+                ));
+            }
+            Ok(BackendRegistration {
+                schemas: vec![BackendSchemaRegistration {
+                    tables: HashMap::new(),
+                    source: RegisteredSource {
+                        schema_name: self.name.clone(),
+                        tables: Vec::new(),
+                        table_functions: Vec::new(),
+                        inputs: Vec::new(),
+                    },
+                }],
+                catalogs: Vec::new(),
+            })
+        }
+    }
+
+    struct AbortOnFailureDecorator {
+        failures: Arc<AtomicUsize>,
+    }
+
+    impl SourceDecorator for AbortOnFailureDecorator {
+        fn name(&self) -> &'static str {
+            "abort_on_failure"
+        }
+
+        fn decorate_source(
+            &mut self,
+            _source: &QuerySource,
+            tables: SourceTables,
+        ) -> Result<SourceTables, crate::SourceDecoratorError> {
+            Ok(tables)
+        }
+
+        fn source_failed(
+            &mut self,
+            _source: &QuerySource,
+            _error: &CoreError,
+        ) -> Result<SourceFailurePolicy, crate::SourceDecoratorError> {
+            self.failures.fetch_add(1, Ordering::SeqCst);
+            Ok(SourceFailurePolicy::Abort)
+        }
+    }
+
+    fn empty_query_source(name: &str) -> QuerySource {
+        QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: name.to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: Vec::new(),
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("runtime package")
+    }
+
+    fn counting_candidate(
+        name: &str,
+        fingerprint: Option<&str>,
+        registrations: &Arc<AtomicUsize>,
+    ) -> SourceRegistrationCandidate {
+        failable_candidate(
+            name,
+            fingerprint,
+            registrations,
+            &Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    fn failable_candidate(
+        name: &str,
+        fingerprint: Option<&str>,
+        registrations: &Arc<AtomicUsize>,
+        fail: &Arc<AtomicBool>,
+    ) -> SourceRegistrationCandidate {
+        SourceRegistrationCandidate::Compiled(CompiledQuerySource {
+            source: empty_query_source(name),
+            compiled: Box::new(CountingSource {
+                name: name.to_string(),
+                fingerprint: fingerprint.map(ToString::to_string),
+                registrations: Arc::clone(registrations),
+                fail: Arc::clone(fail),
+            }),
+        })
+    }
+
+    async fn register_once(
+        candidates: Vec<SourceRegistrationCandidate>,
+        cache: Option<&RegistrationCache>,
+    ) -> super::SourceRegistrationResult {
+        let mut source_decorators: Vec<Box<dyn SourceDecorator>> = Vec::new();
+        register_sources(
+            &SessionContext::new(),
+            candidates,
+            source_decorators.as_mut_slice(),
+            cache,
+        )
+        .await
+        .expect("register sources")
+    }
+
+    #[tokio::test]
+    async fn cached_registration_skips_backend_register_when_fingerprint_matches() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let cache = RegistrationCache::new();
+
+        for _ in 0..2 {
+            let result = register_once(
+                vec![counting_candidate("fake", Some("v1"), &registrations)],
+                Some(&cache),
+            )
+            .await;
+            assert_eq!(result.active_sources.len(), 1);
+            assert!(result.failures.is_empty());
+        }
+
+        assert_eq!(registrations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn fingerprint_change_invalidates_cached_registration() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let cache = RegistrationCache::new();
+
+        register_once(
+            vec![counting_candidate("fake", Some("v1"), &registrations)],
+            Some(&cache),
+        )
+        .await;
+        register_once(
+            vec![counting_candidate("fake", Some("v2"), &registrations)],
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn sources_without_fingerprint_register_every_time() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let cache = RegistrationCache::new();
+
+        for _ in 0..2 {
+            register_once(
+                vec![counting_candidate("fake", None, &registrations)],
+                Some(&cache),
+            )
+            .await;
+        }
+
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn expired_cached_registration_refreshes_via_backend() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let cache = RegistrationCache::with_ttl(std::time::Duration::ZERO);
+
+        for _ in 0..2 {
+            let result = register_once(
+                vec![counting_candidate("fake", Some("v1"), &registrations)],
+                Some(&cache),
+            )
+            .await;
+            assert_eq!(result.active_sources.len(), 1);
+            assert!(result.failures.is_empty());
+        }
+
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_serves_stale_cached_registration() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let cache = RegistrationCache::with_ttl(std::time::Duration::ZERO);
+
+        register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+
+        fail.store(true, Ordering::SeqCst);
+        let result = register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(result.active_sources.len(), 1);
+        assert!(result.failures.is_empty());
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_defers_next_attempt_by_one_ttl() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let cache = RegistrationCache::with_ttl(std::time::Duration::from_hours(1));
+
+        register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+
+        cache.force_stale("fake");
+        fail.store(true, Ordering::SeqCst);
+        register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+
+        // The failed refresh restarted the entry's time-to-live, so the next
+        // build serves the cached registration without another attempt.
+        let result = register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+        assert_eq!(result.active_sources.len(), 1);
+        assert!(result.failures.is_empty());
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_honors_abort_source_failure_policy() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let cache = RegistrationCache::with_ttl(std::time::Duration::from_hours(1));
+
+        register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+
+        cache.force_stale("fake");
+        fail.store(true, Ordering::SeqCst);
+        let failures = Arc::new(AtomicUsize::new(0));
+        let mut source_decorators: Vec<Box<dyn SourceDecorator>> =
+            vec![Box::new(AbortOnFailureDecorator {
+                failures: Arc::clone(&failures),
+            })];
+
+        let error = register_sources(
+            &SessionContext::new(),
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            source_decorators.as_mut_slice(),
+            Some(&cache),
+        )
+        .await
+        .expect_err("aborting source failure policy should fail runtime registration");
+
+        assert!(
+            error.to_string().contains("simulated registration failure"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+
+        let result = register_once(
+            vec![failable_candidate(
+                "fake",
+                Some("v1"),
+                &registrations,
+                &fail,
+            )],
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(result.active_sources.len(), 1);
+        assert!(result.failures.is_empty());
+        assert_eq!(
+            registrations.load(Ordering::SeqCst),
+            3,
+            "abort should clear the refresh claim without deferring the next retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_survives_builds_that_select_other_sources() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let other_registrations = Arc::new(AtomicUsize::new(0));
+        let cache = RegistrationCache::new();
+
+        register_once(
+            vec![counting_candidate("fake", Some("v1"), &registrations)],
+            Some(&cache),
+        )
+        .await;
+        register_once(
+            vec![counting_candidate(
+                "other",
+                Some("v1"),
+                &other_registrations,
+            )],
+            Some(&cache),
+        )
+        .await;
+        register_once(
+            vec![counting_candidate("fake", Some("v1"), &registrations)],
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(registrations.load(Ordering::SeqCst), 1);
+        assert_eq!(other_registrations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retain_sources_evicts_uninstalled_entries() {
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let cache = RegistrationCache::new();
+
+        register_once(
+            vec![counting_candidate("fake", Some("v1"), &registrations)],
+            Some(&cache),
+        )
+        .await;
+
+        cache.retain_sources(&std::collections::HashSet::from(["other"]));
+        register_once(
+            vec![counting_candidate("fake", Some("v1"), &registrations)],
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(registrations.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn reserved_schema_coral_is_rejected() {

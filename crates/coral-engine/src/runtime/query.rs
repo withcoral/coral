@@ -29,6 +29,7 @@ use crate::runtime::error::{
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
+use crate::runtime::registration_cache::RegistrationCache;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -67,6 +68,7 @@ struct FallbackRuntimeConfig {
     memory: QueryMemoryConfig,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    registration_cache: Option<Arc<RegistrationCache>>,
 }
 
 struct RegisteredRuntime {
@@ -102,6 +104,7 @@ async fn build_runtime_inner(
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
     let source_input_resolver = extensions.source_input_resolver.clone();
+    let registration_cache = extensions.registration_cache.clone();
     // Resolver-row overflow can retry without the dependent-join optimizer only
     // when runtime registration is replayable. Source decorators are mutable
     // one-shot registration hooks today, so decorated runtimes keep resolver-row
@@ -117,6 +120,7 @@ async fn build_runtime_inner(
             memory: memory.clone(),
             request_authenticators: request_authenticators.clone(),
             source_input_resolver: source_input_resolver.clone(),
+            registration_cache: registration_cache.clone(),
         })
     });
 
@@ -128,6 +132,7 @@ async fn build_runtime_inner(
         extensions.source_decorators.as_mut_slice(),
         &dependent_join,
         &memory,
+        registration_cache.as_deref(),
     )
     .await?;
 
@@ -143,6 +148,10 @@ async fn build_runtime_inner(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "runtime build inputs are assembled once per query from already-destructured config"
+)]
 async fn build_registered_runtime(
     sources: &[QuerySource],
     runtime_context: &QueryRuntimeContext,
@@ -151,6 +160,7 @@ async fn build_registered_runtime(
     source_decorators: &mut [Box<dyn SourceDecorator>],
     dependent_join: &DependentJoinConfig,
     memory: &QueryMemoryConfig,
+    registration_cache: Option<&RegistrationCache>,
 ) -> Result<RegisteredRuntime, CoreError> {
     let ctx = build_session_context(dependent_join, memory)?;
     let registration = register_runtime_sources(
@@ -160,6 +170,7 @@ async fn build_registered_runtime(
         request_authenticators,
         source_input_resolver,
         source_decorators,
+        registration_cache,
     )
     .await?;
     catalog::register(&ctx, &registration.active_sources)
@@ -248,6 +259,7 @@ async fn register_runtime_sources(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
+    registration_cache: Option<&RegistrationCache>,
 ) -> Result<crate::runtime::registry::SourceRegistrationResult, CoreError> {
     let mut source_candidates = Vec::new();
     for source in sources {
@@ -271,7 +283,13 @@ async fn register_runtime_sources(
             }),
         }
     }
-    register_sources(ctx, source_candidates, source_decorators).await
+    register_sources(
+        ctx,
+        source_candidates,
+        source_decorators,
+        registration_cache,
+    )
+    .await
 }
 
 fn table_qualifier_matches(
@@ -819,6 +837,7 @@ impl FallbackRuntimeConfig {
             source_decorators.as_mut_slice(),
             &self.dependent_join.without_rewrites(),
             &self.memory,
+            self.registration_cache.as_deref(),
         )
         .await
     }
@@ -988,6 +1007,7 @@ mod tests {
             },
             request_authenticators: HashMap::new(),
             source_input_resolver: None,
+            registration_cache: None,
         };
 
         let runtime = fallback

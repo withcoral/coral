@@ -273,12 +273,16 @@ pub(crate) fn engine_extensions_for_providers(
             query_result_observers,
             request_authenticators,
             source_input_resolver,
+            registration_cache,
         } = extra;
         merged.source_decorators.extend(source_decorators);
         merged.query_result_observers.extend(query_result_observers);
         merged.request_authenticators.extend(request_authenticators);
         if source_input_resolver.is_some() {
             merged.source_input_resolver = source_input_resolver;
+        }
+        if registration_cache.is_some() {
+            merged.registration_cache = registration_cache;
         }
     }
     merged

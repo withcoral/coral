@@ -1,6 +1,7 @@
 //! Relational database backend registration through `datafusion-table-providers`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -58,6 +59,18 @@ impl CompiledBackendSource for CompiledDatabaseSource {
 
     fn validate_runtime_capabilities(&self) -> DataFusionResult<()> {
         Ok(())
+    }
+
+    fn registration_fingerprint(&self) -> Option<String> {
+        // Registration reads only the manifest and the resolved source
+        // inputs; the Debug rendering covers every manifest field, including
+        // the raw connection templates. DefaultHasher output is only stable
+        // within one process, which is all the in-memory cache needs.
+        let mut hasher = DefaultHasher::new();
+        format!("{:?}", self.manifest).hash(&mut hasher);
+        self.source_secrets.hash(&mut hasher);
+        self.source_variables.hash(&mut hasher);
+        Some(format!("{:016x}", hasher.finish()))
     }
 
     async fn register(
@@ -274,6 +287,8 @@ fn boxed_provider_error(error: Box<dyn std::error::Error + Send + Sync>) -> Data
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::path::Path;
+    use std::sync::Arc;
 
     use coral_spec::{
         DatabaseConnectionSpec, DatabaseProvider, DatabaseSourceManifest, MySqlConnectionSpec,
@@ -282,7 +297,8 @@ mod tests {
 
     use crate::backends::shared::template::RenderContext;
     use crate::{
-        CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
+        CoralQuery, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+        RegistrationCache, RuntimeSourceComponent, RuntimeSourcePackage,
     };
 
     fn template(value: &str) -> ParsedTemplate {
@@ -327,6 +343,99 @@ mod tests {
                 "unexpected error: {message}"
             );
         }
+    }
+
+    fn sqlite_query_source(db_path: &Path) -> QuerySource {
+        let database = DatabaseSourceManifest {
+            common: SourceManifestCommon {
+                dsl_version: 4,
+                name: "cache_db".to_string(),
+                version: String::new(),
+                description: "Cache test database".to_string(),
+                test_queries: Vec::new(),
+            },
+            provider: DatabaseProvider::Sqlite,
+            connection: DatabaseConnectionSpec::Sqlite(SqliteConnectionSpec {
+                path: ParsedTemplate::parse(db_path.to_string_lossy().to_string())
+                    .expect("sqlite path template"),
+            }),
+            declared_inputs: Vec::new(),
+        };
+        QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "cache_db".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: vec![RuntimeSourceComponent::Database(database)],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("database runtime source")
+    }
+
+    fn runtime_with_cache(cache: &Arc<RegistrationCache>) -> QueryRuntimeConfig {
+        let extensions = EngineExtensions {
+            registration_cache: Some(Arc::clone(cache)),
+            ..EngineExtensions::default()
+        };
+        QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
+    }
+
+    fn sqlite_fixture(db_path: &Path) {
+        let conn = rusqlite::Connection::open(db_path).expect("sqlite db");
+        conn.execute_batch(
+            "
+            CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+            INSERT INTO users (id, name) VALUES (1, 'Ada'), (2, 'Lin');
+            ",
+        )
+        .expect("sqlite fixture");
+    }
+
+    #[tokio::test]
+    async fn cached_registration_survives_losing_the_database_catalog() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let db_path = temp.path().join("cache.sqlite");
+        sqlite_fixture(&db_path);
+        let sources = vec![sqlite_query_source(&db_path)];
+        let cache = Arc::new(RegistrationCache::new());
+
+        let tables = CoralQuery::list_tables(
+            &sources,
+            runtime_with_cache(&cache),
+            Some("cache_db"),
+            Some("users"),
+        )
+        .await
+        .expect("list tables with live database");
+        assert_eq!(tables.len(), 1);
+
+        std::fs::remove_file(&db_path).expect("remove sqlite database");
+
+        // Without the cache the source can no longer register at all.
+        let tables = CoralQuery::list_tables(
+            &sources,
+            QueryRuntimeConfig::default(),
+            Some("cache_db"),
+            None,
+        )
+        .await
+        .expect("list tables skips failed source");
+        assert!(tables.is_empty());
+
+        // With the cache the catalog metadata replays without rediscovery.
+        let tables = CoralQuery::list_tables(
+            &sources,
+            runtime_with_cache(&cache),
+            Some("cache_db"),
+            Some("users"),
+        )
+        .await
+        .expect("list tables from cached registration");
+        assert_eq!(tables.len(), 1);
     }
 
     #[tokio::test]

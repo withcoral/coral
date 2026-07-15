@@ -118,16 +118,19 @@ pub(crate) struct RegisteredSource {
     pub(crate) inputs: Vec<RegisteredInput>,
 }
 
+#[derive(Clone)]
 pub(crate) struct BackendRegistration {
     pub(crate) schemas: Vec<BackendSchemaRegistration>,
     pub(crate) catalogs: Vec<BackendCatalogRegistration>,
 }
 
+#[derive(Clone)]
 pub(crate) struct BackendSchemaRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
     pub(crate) source: RegisteredSource,
 }
 
+#[derive(Clone)]
 pub(crate) struct BackendCatalogRegistration {
     pub(crate) catalog_name: String,
     pub(crate) catalog: Arc<dyn CatalogProvider>,
@@ -173,6 +176,19 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
     fn source_name(&self) -> &str;
 
     fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()>;
+
+    /// Stable fingerprint covering everything [`Self::register`] depends on.
+    ///
+    /// `None` (the default) opts this source out of registration caching.
+    /// Backends that return `Some` promise two things: the fingerprint changes
+    /// whenever the manifest content or resolved inputs that shape
+    /// registration change, and [`Self::register`] returns all of its effects
+    /// through [`BackendRegistration`] without mutating the passed
+    /// [`SessionContext`], so a cached registration can be replayed into a
+    /// fresh session.
+    fn registration_fingerprint(&self) -> Option<String> {
+        None
+    }
 
     /// Register this compiled source into a `DataFusion` session.
     ///

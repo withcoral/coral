@@ -1,14 +1,14 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, TableInfo,
+    RegistrationCache, RuntimeSourcePackage, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -62,6 +62,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    registration_caches: Arc<Mutex<HashMap<WorkspaceName, Arc<RegistrationCache>>>>,
 }
 
 impl QueryManager {
@@ -78,7 +79,34 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            registration_caches: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Returns the workspace's registration cache, evicting entries for
+    /// sources that are no longer installed there.
+    ///
+    /// Caches are scoped per workspace so builds in one workspace never
+    /// evict another workspace's entries, and eviction follows the installed
+    /// source set from config rather than any per-build selection.
+    fn workspace_registration_cache(
+        &self,
+        workspace_name: &WorkspaceName,
+        config: &AppConfig,
+    ) -> Arc<RegistrationCache> {
+        let mut caches = self
+            .registration_caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        caches.retain(|name, _| config.has_workspace(name));
+        let cache = caches.entry(workspace_name.clone()).or_default();
+        let installed_sources = config.workspace_sources(workspace_name);
+        let installed_names = installed_sources
+            .iter()
+            .map(|source| source.name.as_str())
+            .collect();
+        cache.retain_sources(&installed_names);
+        Arc::clone(cache)
     }
 
     pub(crate) async fn list_tables(
@@ -471,6 +499,8 @@ impl QueryManager {
                 .collect(),
             provider_input_resolver,
         )));
+        extensions.registration_cache =
+            Some(self.workspace_registration_cache(workspace_name, config));
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
         let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
@@ -823,6 +853,41 @@ mod tests {
             AppError::WorkspaceNotFound(actual) => assert_eq!(actual, workspace_name.as_str()),
             error => panic!("expected WorkspaceNotFound for '{workspace_name}', got {error}"),
         }
+    }
+
+    #[test]
+    fn workspace_registration_caches_are_scoped_and_pruned() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let config = AppConfig::default();
+        let default_workspace = WorkspaceName::default();
+        let removed_workspace = WorkspaceName::parse("removed").expect("workspace");
+
+        let first = fixture
+            .manager
+            .workspace_registration_cache(&default_workspace, &config);
+        let second = fixture
+            .manager
+            .workspace_registration_cache(&default_workspace, &config);
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "builds in the same workspace share one cache"
+        );
+
+        // A workspace absent from config keeps its cache only until another
+        // build observes the config without it.
+        let orphan = fixture
+            .manager
+            .workspace_registration_cache(&removed_workspace, &config);
+        fixture
+            .manager
+            .workspace_registration_cache(&default_workspace, &config);
+        let recreated = fixture
+            .manager
+            .workspace_registration_cache(&removed_workspace, &config);
+        assert!(
+            !Arc::ptr_eq(&orphan, &recreated),
+            "caches for removed workspaces are pruned"
+        );
     }
 
     #[test]
