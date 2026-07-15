@@ -286,26 +286,15 @@ mod tests {
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
-    async fn materialization_repository_round_trips_against_sqlite() {
+    async fn materialization_repository_round_trips_across_configured_backends() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
 
         assert_materialization_repository_round_trip(&db).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn materialization_repository_round_trips_against_postgres() {
-        let Some(url) = postgres_test_url() else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
-
-        assert_materialization_repository_round_trip(&db).await;
+        if let Some(db) = open_configured_postgres().await {
+            assert_materialization_repository_round_trip(&db).await;
+        }
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
@@ -318,6 +307,15 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         db
+    }
+
+    async fn open_configured_postgres() -> Option<CoralDb> {
+        let url = postgres_test_url()?;
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        Some(db)
     }
 
     #[expect(clippy::too_many_lines, reason = "repository contract fixture")]
@@ -546,7 +544,7 @@ mod tests {
 
     #[expect(
         clippy::disallowed_methods,
-        reason = "The ignored Postgres repository harness is explicitly gated by this CI/test-only variable."
+        reason = "The Postgres repository harness is explicitly gated by this CI/test-only variable."
     )]
     fn postgres_test_url() -> Option<String> {
         std::env::var("CORAL_TEST_POSTGRES_URL")
