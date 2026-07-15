@@ -49,9 +49,25 @@ pub(crate) struct SourceDiagnosticReporter {
     reported: Arc<Mutex<ReportedDiagnostics>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SourceLoadDiagnosticStage {
+    Query,
+    Catalog,
+}
+
+impl SourceLoadDiagnosticStage {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Query => "query-source",
+            Self::Catalog => "catalog-source",
+        }
+    }
+}
+
 impl SourceDiagnosticReporter {
     pub(crate) fn report_source_load_failure(
         &self,
+        stage: SourceLoadDiagnosticStage,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
         code: &str,
@@ -68,20 +84,21 @@ impl SourceDiagnosticReporter {
         self.report_source_diagnostics(
             workspace_name,
             source_name,
-            "source",
+            stage.as_str(),
             std::iter::once(&diagnostic),
         );
     }
 
     pub(crate) fn clear_source_load_failure(
         &self,
+        stage: SourceLoadDiagnosticStage,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) {
         self.report_source_diagnostics(
             workspace_name,
             source_name,
-            "source",
+            stage.as_str(),
             std::iter::empty::<&Diagnostic>(),
         );
     }
@@ -157,6 +174,29 @@ impl SourceDiagnosticReporter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
+    }
+
+    #[cfg(test)]
+    fn tracks_diagnostic(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        stage: &str,
+        code: &str,
+    ) -> bool {
+        self.reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(
+                workspace_name.to_string(),
+                source_name.to_string(),
+                stage.to_string(),
+            ))
+            .is_some_and(|diagnostics| {
+                diagnostics
+                    .iter()
+                    .any(|(diagnostic_code, _message)| diagnostic_code == code)
+            })
     }
 }
 
@@ -343,6 +383,12 @@ pub(crate) fn load_v4_materialization(
         &mut projections,
         projection_sync_mode,
     );
+    diagnostic_reporter.report_source_diagnostics(
+        workspace_name,
+        source_name,
+        "materialization",
+        load_diagnostics.iter(),
+    );
     if originally_published > 0
         && !projections.projections.iter().any(|projection| {
             projection.visibility == coral_spec::v4::ProjectionVisibility::Published
@@ -353,12 +399,6 @@ pub(crate) fn load_v4_materialization(
             "no published projection surfaces could be loaded",
         ));
     }
-    diagnostic_reporter.report_source_diagnostics(
-        workspace_name,
-        source_name,
-        "materialization",
-        load_diagnostics.iter(),
-    );
     diagnostics.append(&mut load_diagnostics);
     let materialized = V4MaterializedSource {
         fingerprint,
@@ -1636,10 +1676,18 @@ paths:
         let workspace_name = workspace_name();
         let source_name = source_name();
         reporter.report_source_load_failure(
+            SourceLoadDiagnosticStage::Query,
             &workspace_name,
             &source_name,
             "SOURCE_LOAD_FAILED",
             "test failure",
+        );
+        reporter.report_source_load_failure(
+            SourceLoadDiagnosticStage::Catalog,
+            &workspace_name,
+            &source_name,
+            "SOURCE_LOAD_FAILED",
+            "catalog failure",
         );
         reporter.report_runtime_surface_diagnostics(
             &workspace_name,
@@ -1651,9 +1699,23 @@ paths:
             )],
         );
 
-        assert_eq!(reporter.tracked_stage_count(), 2);
-        assert_eq!(reporter.clone().tracked_stage_count(), 2);
+        assert_eq!(reporter.tracked_stage_count(), 3);
+        assert_eq!(reporter.clone().tracked_stage_count(), 3);
         assert_eq!(independent_reporter.tracked_stage_count(), 0);
+
+        reporter.clear_source_load_failure(
+            SourceLoadDiagnosticStage::Catalog,
+            &workspace_name,
+            &source_name,
+        );
+
+        assert_eq!(reporter.tracked_stage_count(), 2);
+        assert!(reporter.tracks_diagnostic(
+            &workspace_name,
+            &source_name,
+            SourceLoadDiagnosticStage::Query.as_str(),
+            "SOURCE_LOAD_FAILED",
+        ));
 
         reporter.clear_source(&workspace_name, &source_name);
 
@@ -2149,6 +2211,39 @@ surfaces:
         .expect("semantic IR producer provenance should not block loading");
 
         assert_load_diagnostic(&materialized, "V4_SEMANTIC_IR_PROVENANCE_MISMATCH");
+    }
+
+    #[test]
+    fn load_v4_materialization_reports_surface_diagnostics_before_fatal_degradation() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let semantic_ir_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("semantic-ir.yaml");
+        std::fs::write(semantic_ir_path, b": not yaml").expect("corrupt semantic IR");
+        let reporter = SourceDiagnosticReporter::default();
+
+        let error = super::load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+            &reporter,
+        )
+        .expect_err("losing every published surface should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no published projection surfaces could be loaded"),
+            "unexpected error: {error}"
+        );
+        assert!(reporter.tracks_diagnostic(
+            &workspace_name(),
+            &source_name(),
+            "materialization",
+            "V4_SEMANTIC_IR_UNAVAILABLE",
+        ));
     }
 
     #[test]

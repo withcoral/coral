@@ -28,7 +28,8 @@ use crate::query::input_resolver::{
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
-    SourceDiagnosticReporter, incompatible_materialization_error, load_v4_materialization,
+    SourceDiagnosticReporter, SourceLoadDiagnosticStage, incompatible_materialization_error,
+    load_v4_materialization,
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
@@ -438,12 +439,16 @@ impl QueryManager {
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((loaded_source, _version)) => {
-                    self.diagnostic_reporter
-                        .clear_source_load_failure(workspace_name, &source.name);
+                    self.diagnostic_reporter.clear_source_load_failure(
+                        SourceLoadDiagnosticStage::Query,
+                        workspace_name,
+                        &source.name,
+                    );
                     loaded_sources.push(loaded_source);
                 }
                 Err(error) if is_source_scoped_load_failure(&error) => {
                     self.diagnostic_reporter.report_source_load_failure(
+                        SourceLoadDiagnosticStage::Query,
                         workspace_name,
                         &source.name,
                         "SOURCE_LOAD_FAILED",

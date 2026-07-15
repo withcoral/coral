@@ -19,7 +19,8 @@ use coral_spec::{
 use crate::bootstrap::AppError;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
-    SourceDiagnosticReporter, incompatible_materialization_error, load_v4_materialization,
+    SourceDiagnosticReporter, SourceLoadDiagnosticStage, incompatible_materialization_error,
+    load_v4_materialization,
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
@@ -79,8 +80,11 @@ impl CatalogSnapshotLoader {
         for source in config.workspace_sources(workspace_name) {
             match self.load_source_catalog(workspace_name, &source) {
                 Ok(source_catalog) => {
-                    self.diagnostic_reporter
-                        .clear_source_load_failure(workspace_name, &source.name);
+                    self.diagnostic_reporter.clear_source_load_failure(
+                        SourceLoadDiagnosticStage::Catalog,
+                        workspace_name,
+                        &source.name,
+                    );
                     catalog.tables.extend(source_catalog.tables);
                     catalog
                         .table_functions
@@ -91,6 +95,7 @@ impl CatalogSnapshotLoader {
                     | AppError::InvalidV4ProjectionOverride { .. }),
                 ) => {
                     self.diagnostic_reporter.report_source_load_failure(
+                        SourceLoadDiagnosticStage::Catalog,
                         workspace_name,
                         &source.name,
                         "SOURCE_LOAD_FAILED",
