@@ -253,7 +253,7 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        let env = AppEnvironment::discover();
+        let env = AppEnvironment::discover()?;
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
@@ -309,7 +309,7 @@ impl ServerBuilder {
             self.config.engine_extensions_providers,
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager = SearchManager::new(layout, config_store);
+        let search_manager = SearchManager::new(layout, config_store, env.search_provider_mode());
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {
@@ -970,7 +970,11 @@ enabled = false
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            config_store,
+            crate::search::engine::SearchProviderMode::default(),
+        );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
@@ -1369,7 +1373,11 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            config_store,
+            crate::search::engine::SearchProviderMode::default(),
+        );
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1483,7 +1491,11 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            config_store,
+            crate::search::engine::SearchProviderMode::default(),
+        );
         let running = start_server(
             ServerManagers {
                 source: source_manager,
@@ -1597,7 +1609,11 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager = SearchManager::new(layout.clone(), config_store);
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            config_store,
+            crate::search::engine::SearchProviderMode::default(),
+        );
         let running = start_server(
             ServerManagers {
                 source: source_manager,

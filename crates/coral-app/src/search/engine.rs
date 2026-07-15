@@ -5,27 +5,46 @@ use crate::query::QueryAttribution;
 use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::provider::ObservedValuesProvider;
+use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
     ProviderStatus, SearchProviderKind, SearchProviderState, SearchRequest, SearchResponse,
     SearchResult, SearchTruncation,
 };
 
+const CATALOG_ONLY_OBSERVED_NOTE: &str = "observed-value provider disabled by CORAL_SEARCH_PROVIDER_MODE=catalog_only for benchmark ablation";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SearchProviderMode {
+    #[default]
+    CatalogAndObserved,
+    CatalogOnly,
+}
+
 #[derive(Clone)]
 pub(crate) struct UniversalSearchEngine {
     catalog: CatalogMetadataProvider,
     observed: ObservedValuesProvider,
+    provider_mode: SearchProviderMode,
 }
 
 impl UniversalSearchEngine {
-    pub(crate) fn new(catalog: CatalogMetadataProvider, observed: ObservedValuesProvider) -> Self {
-        Self { catalog, observed }
+    pub(crate) fn new(
+        catalog: CatalogMetadataProvider,
+        observed: ObservedValuesProvider,
+        provider_mode: SearchProviderMode,
+    ) -> Self {
+        Self {
+            catalog,
+            observed,
+            provider_mode,
+        }
     }
 
     pub(crate) fn search(
         &self,
         request: &SearchRequest,
         attribution: &QueryAttribution,
-        observed_policy: Result<&ObservedValuesRetrievalPolicy, &AppError>,
+        observed_policy: Option<Result<&ObservedValuesRetrievalPolicy, &AppError>>,
     ) -> SearchResponse {
         tracing::debug!(
             workspace = %request.workspace_name,
@@ -34,7 +53,14 @@ impl UniversalSearchEngine {
             "running Universal Search"
         );
         let catalog = self.catalog.search(request, attribution);
-        let observed = self.observed.search(request, observed_policy);
+        let observed = search_observed_provider(self.provider_mode, || {
+            let missing_policy = AppError::Internal(
+                "observed-value retrieval policy was not loaded in default provider mode"
+                    .to_string(),
+            );
+            let observed_policy = observed_policy.unwrap_or(Err(&missing_policy));
+            self.observed.search(request, observed_policy)
+        });
         let provider_has_more = providers_have_more(&[&catalog.status, &observed.status]);
         let mut candidates = catalog.candidates;
         candidates.extend(observed.candidates);
@@ -76,6 +102,24 @@ impl UniversalSearchEngine {
     }
 }
 
+fn search_observed_provider(
+    mode: SearchProviderMode,
+    search: impl FnOnce() -> ProviderSearchOutcome,
+) -> ProviderSearchOutcome {
+    match mode {
+        SearchProviderMode::CatalogAndObserved => search(),
+        SearchProviderMode::CatalogOnly => ProviderSearchOutcome {
+            candidates: Vec::new(),
+            status: ProviderStatus {
+                provider: SearchProviderKind::ObservedValues,
+                state: SearchProviderState::NotEnabled,
+                note: CATALOG_ONLY_OBSERVED_NOTE.to_string(),
+                coverage: None,
+            },
+        },
+    }
+}
+
 fn providers_have_more(statuses: &[&ProviderStatus]) -> bool {
     statuses.iter().any(|status| {
         status
@@ -104,10 +148,50 @@ fn truncation_note(
 
 #[cfg(test)]
 mod tests {
-    use super::{providers_have_more, truncation_note};
+    use super::{
+        CATALOG_ONLY_OBSERVED_NOTE, SearchProviderMode, providers_have_more,
+        search_observed_provider, truncation_note,
+    };
+    use crate::search::provider::ProviderSearchOutcome;
     use crate::search::result::{
         ProviderCoverage, ProviderStatus, SearchProviderKind, SearchProviderState,
     };
+
+    fn observed_outcome() -> ProviderSearchOutcome {
+        ProviderSearchOutcome {
+            candidates: Vec::new(),
+            status: ProviderStatus {
+                provider: SearchProviderKind::ObservedValues,
+                state: SearchProviderState::Empty,
+                note: "observed provider ran".to_string(),
+                coverage: Some(ProviderCoverage::default()),
+            },
+        }
+    }
+
+    #[test]
+    fn default_mode_calls_observed_values_provider() {
+        let outcome = search_observed_provider(SearchProviderMode::CatalogAndObserved, || {
+            observed_outcome()
+        });
+
+        assert_eq!(outcome.status.state, SearchProviderState::Empty);
+        assert_eq!(outcome.status.note, "observed provider ran");
+        assert!(outcome.status.coverage.is_some());
+    }
+
+    #[test]
+    fn catalog_only_mode_never_calls_observed_values_provider() {
+        let outcome = search_observed_provider(SearchProviderMode::CatalogOnly, || {
+            panic!("observed-value provider must not run in catalog-only mode")
+        });
+
+        assert!(outcome.candidates.is_empty());
+        assert_eq!(outcome.status.provider, SearchProviderKind::ObservedValues);
+        assert_eq!(outcome.status.state, SearchProviderState::NotEnabled);
+        assert_eq!(outcome.status.note, CATALOG_ONLY_OBSERVED_NOTE);
+        assert!(outcome.status.coverage.is_none());
+    }
 
     #[test]
     fn truncation_note_does_not_report_retrieved_count_as_total_when_provider_has_more() {

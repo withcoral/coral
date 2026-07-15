@@ -23,7 +23,7 @@ pub use server::{RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAs
 pub(crate) fn discover_app_state_layout(
     config_dir_override: Option<PathBuf>,
 ) -> Result<AppStateLayout, AppError> {
-    env::AppEnvironment::discover().app_state_layout(config_dir_override)
+    env::AppEnvironment::discover()?.app_state_layout(config_dir_override)
 }
 
 /// Startup context for one workspace's MCP session.

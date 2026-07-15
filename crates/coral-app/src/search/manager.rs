@@ -6,7 +6,7 @@ use crate::bootstrap::AppError;
 use crate::query::QueryAttribution;
 use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::provider::{CatalogMetadataProvider, catalog_clear_provider_result};
-use crate::search::engine::UniversalSearchEngine;
+use crate::search::engine::{SearchProviderMode, UniversalSearchEngine};
 use crate::search::maintenance::{
     ClearSearchDataRequest, ClearSearchDataResponse, DrainSearchQueueRequest,
     DrainSearchQueueResponse, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
@@ -34,6 +34,7 @@ pub(crate) struct SearchManager {
     observed: ObservedValuesProvider,
     observed_scope_loader: ObservedValuesLiveScopeLoader,
     engine: UniversalSearchEngine,
+    provider_mode: SearchProviderMode,
     config_store: ConfigStore,
     layout: AppStateLayout,
 }
@@ -45,7 +46,11 @@ const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(1);
 const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
 
 impl SearchManager {
-    pub(crate) fn new(layout: AppStateLayout, config_store: ConfigStore) -> Self {
+    pub(crate) fn new(
+        layout: AppStateLayout,
+        config_store: ConfigStore,
+        provider_mode: SearchProviderMode,
+    ) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
         let observed = ObservedValuesProvider::new(layout.clone());
@@ -55,7 +60,8 @@ impl SearchManager {
             catalog: catalog.clone(),
             observed: observed.clone(),
             observed_scope_loader,
-            engine: UniversalSearchEngine::new(catalog, observed),
+            engine: UniversalSearchEngine::new(catalog, observed, provider_mode),
+            provider_mode,
             config_store,
             layout,
         }
@@ -67,10 +73,17 @@ impl SearchManager {
         attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
         self.require_workspace(&request.workspace_name)?;
-        let observed_policy = self.observed_retrieval_policy(&request.workspace_name);
-        Ok(self
-            .engine
-            .search(request, attribution, observed_policy.as_ref()))
+        let observed_policy = match self.provider_mode {
+            SearchProviderMode::CatalogAndObserved => {
+                Some(self.observed_retrieval_policy(&request.workspace_name))
+            }
+            SearchProviderMode::CatalogOnly => None,
+        };
+        Ok(self.engine.search(
+            request,
+            attribution,
+            observed_policy.as_ref().map(Result::as_ref),
+        ))
     }
 
     pub(crate) fn rebuild_index(
