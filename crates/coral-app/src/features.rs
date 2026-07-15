@@ -84,7 +84,7 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         feature: Feature::ObservedValuesSearch,
         key: "observed_values_search",
         default_enabled: false,
-        description: "Enables observed-value collection, storage, retrieval, and maintenance for Universal Search. Off by default.",
+        description: "Enables collecting, indexing, retrieving, and maintaining values observed during earlier queries. Off by default.",
         enable_flag: "enable-observed-values-search",
         disable_flag: "disable-observed-values-search",
     },
@@ -223,6 +223,12 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
+    /// Creates a feature store for an already-discovered Coral app state layout.
+    #[must_use]
+    pub(crate) fn from_layout(layout: AppStateLayout) -> Self {
+        Self { layout }
+    }
+
     /// Discovers the Coral app state layout used for runtime feature config.
     ///
     /// # Errors

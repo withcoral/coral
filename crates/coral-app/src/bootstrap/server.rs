@@ -44,6 +44,7 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
+use crate::features::{Feature, FeatureOverrides, FeatureStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -94,6 +95,7 @@ pub(crate) struct ServerConfig {
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
+    feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
 }
 
@@ -111,6 +113,7 @@ impl ServerConfig {
             engine_extensions_providers: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
+            feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
         }
     }
@@ -137,6 +140,11 @@ impl ServerConfig {
     #[must_use]
     pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.enable_stderr_logs = enable_stderr_logs;
+        self
+    }
+
+    pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.feature_overrides = feature_overrides;
         self
     }
 }
@@ -254,6 +262,13 @@ impl ServerBuilder {
         self
     }
 
+    #[must_use]
+    /// Applies process-local runtime feature overrides to this server instance.
+    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.config = self.config.with_feature_overrides(feature_overrides);
+        self
+    }
+
     /// Disables hosted feedback upload for tests and controlled local harnesses.
     #[doc(hidden)]
     #[must_use]
@@ -276,6 +291,8 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
+        let features = FeatureStore::from_layout(layout.clone())
+            .load_with_overrides(&self.config.feature_overrides)?;
         let coral_db = init_database(&layout).await?;
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store).await?;
@@ -334,7 +351,9 @@ impl ServerBuilder {
             workspace_lifecycle_lock,
             self.config.engine_extensions_providers,
         );
-        let search_observations = SearchObservationHandle::new(layout.clone());
+        let search_observations = features
+            .enabled(Feature::ObservedValuesSearch)
+            .then(|| SearchObservationHandle::new(layout.clone()));
         let search_manager = SearchManager::new(layout, &config_store, workspace_manager.clone());
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
@@ -498,7 +517,7 @@ struct ServerDependencies {
     workspace: WorkspaceManager,
     query: QueryManager,
     search: SearchManager,
-    search_observations: SearchObservationHandle,
+    search_observations: Option<SearchObservationHandle>,
     feedback: FeedbackManager,
     task: TaskManager,
 }
@@ -522,8 +541,13 @@ async fn start_server(
         feedback,
         task,
     } = dependencies;
-    let source = source.with_search_observation_handle(search_observations.clone());
-    let query = query.with_search_observation_handle(search_observations.clone());
+    let (source, query) = match &search_observations {
+        Some(search_observations) => (
+            source.with_search_observation_handle(search_observations.clone()),
+            query.with_search_observation_handle(search_observations.clone()),
+        ),
+        None => (source, query),
+    };
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
@@ -576,7 +600,7 @@ async fn start_server(
     Ok(RunningServer {
         endpoint_uri,
         local_trace_store_dir,
-        search_observations: Mutex::new(Some(search_observations)),
+        search_observations: Mutex::new(search_observations),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })
@@ -803,6 +827,7 @@ mod tests {
     };
     use crate::bootstrap::AppError;
     use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
@@ -836,6 +861,33 @@ enabled = false
 ",
         )
         .expect("write telemetry config");
+    }
+
+    fn configure_observed_values_search(config_dir: &Path, enabled: bool) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!(
+                r"
+version = 1
+
+[features]
+observed_values_search = {enabled}
+
+[trace_history]
+enabled = false
+"
+            ),
+        )
+        .expect("write feature config");
+    }
+
+    fn has_search_observation_handle(server: &RunningServer) -> bool {
+        server
+            .search_observations
+            .lock()
+            .expect("search observation mutex")
+            .is_some()
     }
 
     #[derive(Debug)]
@@ -897,6 +949,72 @@ enabled = false
                 .expect("search observation mutex")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn server_builder_leaves_observation_handle_detached_by_default() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start server");
+
+        assert!(!has_search_observation_handle(&server));
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_attaches_observation_handle_when_config_enabled() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_observed_values_search(&config_dir, true);
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start server");
+
+        assert!(has_search_observation_handle(&server));
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_process_overrides_control_observation_handle() {
+        let temp = TempDir::new().expect("temp dir");
+        let disabled_config_dir = temp.path().join("disabled-config");
+        configure_observed_values_search(&disabled_config_dir, false);
+        let mut enable_override = FeatureOverrides::default();
+        enable_override.set(Feature::ObservedValuesSearch, true);
+
+        let enabled_server = ServerBuilder::new()
+            .with_config_dir(disabled_config_dir)
+            .with_feature_overrides(enable_override)
+            .start()
+            .await
+            .expect("start process-enabled server");
+
+        assert!(has_search_observation_handle(&enabled_server));
+        enabled_server.shutdown().await.expect("shutdown");
+
+        let enabled_config_dir = temp.path().join("enabled-config");
+        configure_observed_values_search(&enabled_config_dir, true);
+        let mut disable_override = FeatureOverrides::default();
+        disable_override.set(Feature::ObservedValuesSearch, false);
+
+        let disabled_server = ServerBuilder::new()
+            .with_config_dir(enabled_config_dir)
+            .with_feature_overrides(disable_override)
+            .start()
+            .await
+            .expect("start process-disabled server");
+
+        assert!(!has_search_observation_handle(&disabled_server));
+        disabled_server.shutdown().await.expect("shutdown");
     }
 
     #[tokio::test]
@@ -1060,7 +1178,7 @@ backend = "unsupported"
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
-                search_observations,
+                search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
             },
@@ -1502,7 +1620,7 @@ tables:
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
-                search_observations,
+                search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
             },
@@ -1621,7 +1739,7 @@ tables:
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
-                search_observations,
+                search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
             },
@@ -1740,7 +1858,7 @@ tables:
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
-                search_observations,
+                search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
             },
