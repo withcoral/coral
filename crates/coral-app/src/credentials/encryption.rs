@@ -1,4 +1,15 @@
-//! Application-level envelope encryption for DB-backed credential material.
+//! Envelope encryption uses one key for credential data and another for that key.
+//!
+//! # Terminology
+//! - AEAD means authenticated encryption with associated data; the AEAD used here,
+//!   AES-256-GCM, is Advanced Encryption Standard with a 256-bit key in Galois/Counter Mode.
+//! - A DEK (data-encryption key) encrypts one document; a longer-lived KEK
+//!   (key-encryption key) wraps it. Rewrapping encrypts it with a replacement KEK.
+//! - AAD (additional authenticated data) is unencrypted but authenticated context,
+//!   binding documents to workspace/source and wrapped DEKs to KEK identifiers.
+//! - A nonce ("number used once") is a public, per-key unique encryption input.
+//! - SHA-256 (Secure Hash Algorithm, 256-bit) derives non-secret KEK identifiers;
+//!   it does not encrypt data.
 
 #![expect(
     dead_code,
