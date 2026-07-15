@@ -367,7 +367,6 @@ async fn postgres_database_credentials_survive_restart_and_query() {
     )
     .expect("write postgres credential config");
     let source_name = format!("secured_messages_{}", uuid::Uuid::new_v4().simple());
-    cleanup_postgres_source(&database_url, &source_name).await;
     let server = issues_http_fixture(&["Bearer secret-token"]).await;
 
     {
@@ -399,7 +398,7 @@ async fn postgres_database_credentials_survive_restart_and_query() {
     let rows = harness
         .execute_sql_rows(&format!("SELECT id FROM {source_name}.messages"))
         .await;
-    assert_eq!(rows[0]["id"], 1);
+    assert_eq!(rows[0]["id"], "1");
     harness.shutdown().await;
     cleanup_postgres_source(&database_url, &source_name).await;
 }
@@ -2292,7 +2291,7 @@ async fn cleanup_postgres_source(database_url: &str, source_name: &str) {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "The ignored Postgres integration test is explicitly gated by this CI/test-only variable."
+    reason = "The Postgres integration test is explicitly gated by this CI/test-only variable."
 )]
 fn postgres_test_url() -> Option<String> {
     std::env::var("CORAL_TEST_POSTGRES_URL")

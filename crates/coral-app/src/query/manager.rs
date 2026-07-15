@@ -791,11 +791,9 @@ impl QueryManager {
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
                 let credential_set_id = CredentialSetId::for_source(&source.name);
-                self.credential_manager.read_material(
-                    workspace_name,
-                    &credential_set_id,
-                    credential_storage,
-                )?
+                self.credential_manager
+                    .read_material_async(workspace_name, &credential_set_id, credential_storage)
+                    .await?
             } else {
                 BTreeMap::new()
             };
