@@ -816,12 +816,20 @@ async fn import_legacy_credential_material_with_store(
                 );
                 continue;
             }
-            match database_store.replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::Database,
-                &material,
-            ) {
+            let write_store = database_store.clone();
+            let write_workspace = workspace_name.clone();
+            let write_credential_set = credential_set_id.clone();
+            let write_material = material.clone();
+            match run_blocking_credential_import_operation(move || {
+                write_store.replace_material(
+                    &write_workspace,
+                    &write_credential_set,
+                    CredentialStorageKind::Database,
+                    &write_material,
+                )
+            })
+            .await
+            {
                 Ok(()) => {}
                 Err(error @ AppError::Database(_)) => return Err(error),
                 Err(_error) => {
@@ -834,11 +842,18 @@ async fn import_legacy_credential_material_with_store(
                     continue;
                 }
             }
-            match database_store.read_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::Database,
-            ) {
+            let read_store = database_store.clone();
+            let read_workspace = workspace_name.clone();
+            let read_credential_set = credential_set_id.clone();
+            match run_blocking_credential_import_operation(move || {
+                read_store.read_material(
+                    &read_workspace,
+                    &read_credential_set,
+                    CredentialStorageKind::Database,
+                )
+            })
+            .await
+            {
                 Ok(imported_material) if imported_material == material => {}
                 Ok(_) => {
                     tracing::warn!(
@@ -851,7 +866,8 @@ async fn import_legacy_credential_material_with_store(
                         database_store,
                         &workspace_name,
                         &credential_set_id,
-                    )?;
+                    )
+                    .await?;
                     continue;
                 }
                 Err(error @ AppError::Database(_)) => return Err(error),
@@ -866,7 +882,8 @@ async fn import_legacy_credential_material_with_store(
                         database_store,
                         &workspace_name,
                         &credential_set_id,
-                    )?;
+                    )
+                    .await?;
                     continue;
                 }
             }
@@ -889,16 +906,34 @@ async fn import_legacy_credential_material_with_store(
     Ok(imported)
 }
 
-fn remove_unverified_database_credential(
+async fn run_blocking_credential_import_operation<T>(
+    operation: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+{
+    // CredentialStore's database API is synchronous; keep its SQLx bridge off
+    // Tokio workers so concurrent imports can continue through commit.
+    tokio::task::spawn_blocking(operation).await?
+}
+
+async fn remove_unverified_database_credential(
     database_store: &CredentialStore,
     workspace_name: &WorkspaceName,
     credential_set_id: &CredentialSetId,
 ) -> Result<(), AppError> {
-    match database_store.remove_material(
-        workspace_name,
-        credential_set_id,
-        CredentialStorageKind::Database,
-    ) {
+    let remove_store = database_store.clone();
+    let remove_workspace = workspace_name.clone();
+    let remove_credential_set = credential_set_id.clone();
+    match run_blocking_credential_import_operation(move || {
+        remove_store.remove_material(
+            &remove_workspace,
+            &remove_credential_set,
+            CredentialStorageKind::Database,
+        )
+    })
+    .await
+    {
         Ok(()) => Ok(()),
         Err(error @ AppError::Database(_)) => Err(error),
         Err(_error) => {
@@ -1039,7 +1074,7 @@ mod tests {
         cutover_legacy_workspace_catalog, cutover_legacy_workspace_catalog_at,
         import_config_source_catalog, import_filesystem_feedback_reports,
         import_legacy_credential_material, import_legacy_credential_material_with_store,
-        run_state_migrations, source_catalog_import_id,
+        run_blocking_credential_import_operation, run_state_migrations, source_catalog_import_id,
     };
     use crate::credentials::config::CredentialEncryptionKeySource;
     use crate::credentials::encryption::{
@@ -2910,16 +2945,19 @@ mod tests {
 
         first_import.expect("first import");
         second_import.expect("second import");
-        assert_eq!(
-            first
-                .read_material(
-                    &workspace,
-                    &credential_set_id,
-                    CredentialStorageKind::Database
-                )
-                .expect("read database material"),
-            material
-        );
+        let read_store = first.clone();
+        let read_workspace = workspace.clone();
+        let read_credential_set = credential_set_id.clone();
+        let stored_material = run_blocking_credential_import_operation(move || {
+            read_store.read_material(
+                &read_workspace,
+                &read_credential_set,
+                CredentialStorageKind::Database,
+            )
+        })
+        .await
+        .expect("read database material");
+        assert_eq!(stored_material, material);
         assert_eq!(
             db_source(&db, &workspace, &source_name)
                 .await
