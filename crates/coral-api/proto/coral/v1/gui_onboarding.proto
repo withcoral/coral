@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package coral.v1;
+
+// Requests the current principal's persistent completion state for Coral GUI onboarding.
+message GetGuiOnboardingStateRequest {}
+
+// Returns the current principal's persistent completion state for Coral GUI onboarding.
+message GetGuiOnboardingStateResponse {
+  // Whether the current principal has completed Coral GUI onboarding.
+  bool completed = 1;
+}
+
+// Requests one-way completion of Coral GUI onboarding for the current principal.
+message CompleteGuiOnboardingRequest {}
+
+// Confirms that Coral GUI onboarding was completed successfully.
+message CompleteGuiOnboardingResponse {}
+
+// Persistent first-run onboarding APIs for Coral's graphical interfaces.
+service GuiOnboardingService {
+  // Gets the current principal's persistent Coral GUI onboarding completion state.
+  rpc GetGuiOnboardingState(GetGuiOnboardingStateRequest) returns (GetGuiOnboardingStateResponse);
+  // Idempotently marks Coral GUI onboarding as complete for the current principal.
+  rpc CompleteGuiOnboarding(CompleteGuiOnboardingRequest) returns (CompleteGuiOnboardingResponse);
+}

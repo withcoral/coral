@@ -17,6 +17,7 @@ use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::feature_service_server::FeatureServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::function_service_server::FunctionServiceServer;
+use coral_api::v1::gui_onboarding_service_server::GuiOnboardingServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -56,6 +57,8 @@ use crate::feedback::publisher::{
 };
 use crate::feedback::service::FeedbackService;
 use crate::functions::service::FunctionService;
+use crate::gui_onboarding::manager::GuiOnboardingManager;
+use crate::gui_onboarding::service::GuiOnboardingService;
 use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
@@ -468,6 +471,7 @@ impl ServerBuilder {
         let trace_components = trace_components_for_store(active_trace_store);
         start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -682,6 +686,7 @@ struct TraceServerComponents {
 }
 
 struct ServerDependencies {
+    gui_onboarding: GuiOnboardingManager,
     source: SourceManager,
     workspace: WorkspaceManager,
     query: QueryManager,
@@ -702,6 +707,7 @@ fn application_routes(
     trace_service: Option<TraceService>,
 ) -> (Routes, QueryManager) {
     let ServerDependencies {
+        gui_onboarding,
         source,
         workspace,
         query,
@@ -729,7 +735,9 @@ fn application_routes(
     let feedback_service = FeedbackService::new(feedback, task.clone());
     let feature_service = FeatureService::new(feature_store, active_features);
     let task_service = TaskService::new(task);
+    let gui_onboarding_service = GuiOnboardingService::new(gui_onboarding);
     let mut routes = Routes::default()
+        .add_service(GuiOnboardingServiceServer::new(gui_onboarding_service))
         .add_service(
             SourceServiceServer::new(source_service)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -1038,14 +1046,15 @@ mod tests {
     use std::task::Poll;
     use std::time::Duration;
 
+    use coral_api::v1::gui_onboarding_service_client::GuiOnboardingServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::task_service_client::TaskServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        EndTaskRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, TraceView, Workspace,
-        import_source_response,
+        EndTaskRequest, ExecuteSqlRequest, GetGuiOnboardingStateRequest, ImportSourceRequest,
+        ImportSourceResponse, ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus,
+        TraceView, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -1064,6 +1073,7 @@ mod tests {
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
     use crate::feedback::manager::FeedbackManager;
+    use crate::gui_onboarding::manager::GuiOnboardingManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::search::observed::{
@@ -1792,6 +1802,7 @@ backend = "unsupported"
         ));
         let server = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -1892,13 +1903,19 @@ backend = "unsupported"
             .await
             .expect("connect");
 
-        let status = SourceServiceClient::new(channel)
+        let status = SourceServiceClient::new(channel.clone())
             .list_sources(Request::new(ListSourcesRequest {
                 workspace: Some(default_workspace()),
             }))
             .await
             .expect_err("request should be rejected");
 
+        assert_eq!(status.code(), Code::Unauthenticated);
+
+        let status = GuiOnboardingServiceClient::new(channel)
+            .get_gui_onboarding_state(Request::new(GetGuiOnboardingStateRequest {}))
+            .await
+            .expect_err("onboarding request should be rejected");
         assert_eq!(status.code(), Code::Unauthenticated);
         server.shutdown().await.expect("shutdown");
     }
@@ -2246,6 +2263,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2377,6 +2395,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2508,6 +2527,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,

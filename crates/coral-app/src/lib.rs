@@ -50,6 +50,7 @@ mod encrypted_document;
 pub mod features;
 mod feedback;
 mod functions;
+mod gui_onboarding;
 mod hash;
 mod identity;
 mod oauth_resource;

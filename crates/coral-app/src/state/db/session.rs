@@ -6,6 +6,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
+use crate::state::db::repositories::gui_onboarding::GuiOnboardingRepo;
 use crate::state::db::repositories::identity_specs::{
     IdentitySpecDocumentsRepo, IdentitySpecsRepo,
 };
@@ -37,6 +38,10 @@ pub(crate) trait DbSession {
 }
 
 pub(crate) trait DbRepos: DbSession + Sized {
+    fn gui_onboarding(&mut self) -> GuiOnboardingRepo<'_, Self> {
+        GuiOnboardingRepo::new(self)
+    }
+
     fn state_migrations(&mut self) -> StateMigrationsRepo<'_, Self> {
         StateMigrationsRepo::new(self)
     }
