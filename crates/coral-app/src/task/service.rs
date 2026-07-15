@@ -113,6 +113,10 @@ fn task_manager_status(error: &TaskManagerError) -> Status {
             warn!(%error, "failed to persist task lifecycle event");
             Status::internal("failed to persist task lifecycle event")
         }
+        TaskManagerError::TrajectoryMemory(_) => {
+            warn!(%error, "failed to distill trajectory memory");
+            Status::internal("failed to distill trajectory memory")
+        }
     }
 }
 
@@ -130,6 +134,7 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
+    use crate::trajectory_memory::TrajectoryMemoryManager;
 
     const UNKNOWN_TASK_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -147,7 +152,10 @@ mod tests {
                 .expect("open sqlite"),
         );
         db.migrate().await.expect("migrate sqlite");
-        let task = TaskManager::new(TaskStore::new(Arc::clone(&db)));
+        let task = TaskManager::new(
+            TaskStore::new(Arc::clone(&db)),
+            TrajectoryMemoryManager::new(Arc::clone(&db)),
+        );
         let service = TaskService::new(task);
         (dir, db, service)
     }

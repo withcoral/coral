@@ -2,17 +2,23 @@
 
 use super::id::TaskId;
 use super::store::{TaskEnd, TaskStart, TaskStatus, TaskStore, TaskStoreError};
+use crate::bootstrap::AppError;
+use crate::trajectory_memory::TrajectoryMemoryManager;
 use crate::workspaces::WorkspaceName;
 
 /// Coordinates task lifecycle persistence and validation.
 #[derive(Clone)]
 pub(crate) struct TaskManager {
     store: TaskStore,
+    trajectory_memory: TrajectoryMemoryManager,
 }
 
 impl TaskManager {
-    pub(crate) fn new(store: TaskStore) -> Self {
-        Self { store }
+    pub(crate) fn new(store: TaskStore, trajectory_memory: TrajectoryMemoryManager) -> Self {
+        Self {
+            store,
+            trajectory_memory,
+        }
     }
 
     pub(crate) async fn start_task(
@@ -46,6 +52,11 @@ impl TaskManager {
             status,
         };
         self.store.end_task(&end).await?;
+        if status == TaskStatus::Success {
+            self.trajectory_memory
+                .distill_task(&end.workspace, &end.id)
+                .await?;
+        }
         Ok(end)
     }
 }
@@ -56,4 +67,6 @@ pub(crate) enum TaskManagerError {
     TaskNotFound { task_id: String },
     #[error(transparent)]
     Store(#[from] TaskStoreError),
+    #[error(transparent)]
+    TrajectoryMemory(#[from] AppError),
 }

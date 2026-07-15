@@ -42,3 +42,33 @@ pub(in crate::state::db) enum TrajectoryRawSteps {
     ErrorType,
     ErrorMessage,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum TrajectoryDistillations {
+    Table,
+    WorkspaceId,
+    Id,
+    TaskId,
+    Strategy,
+    NormalizedIntent,
+    PathKey,
+    InputStepCount,
+    OutputStepCount,
+    CreatedAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum TrajectoryDistilledSteps {
+    Table,
+    WorkspaceId,
+    Id,
+    DistillationId,
+    SourceRawStepId,
+    Ordinal,
+    SqlTemplate,
+    RelationsJson,
+    ResultRowCount,
+    ResultColumnCount,
+    ExactKey,
+    CreatedAtUnixNanos,
+}

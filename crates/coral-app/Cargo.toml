@@ -30,6 +30,7 @@ serde_yaml.workspace = true
 sea-query.workspace = true
 sea-query-sqlx.workspace = true
 sha2.workspace = true
+sqlparser.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

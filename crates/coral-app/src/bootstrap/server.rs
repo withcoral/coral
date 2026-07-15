@@ -317,8 +317,11 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
         let trajectory_memory = TrajectoryMemoryManager::new(Arc::clone(&coral_db));
+        let task_manager = TaskManager::new(
+            TaskStore::new(Arc::clone(&coral_db)),
+            trajectory_memory.clone(),
+        );
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -785,6 +788,7 @@ mod tests {
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
     use crate::telemetry::service::TraceService;
+    use crate::trajectory_memory::TrajectoryMemoryManager;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
@@ -979,7 +983,10 @@ backend = "unsupported"
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
+        let task_manager = TaskManager::new(
+            TaskStore::new(Arc::clone(&db)),
+            TrajectoryMemoryManager::new(Arc::clone(&db)),
+        );
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1418,7 +1425,10 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
+        let task_manager = TaskManager::new(
+            TaskStore::new(Arc::clone(&db)),
+            TrajectoryMemoryManager::new(Arc::clone(&db)),
+        );
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1538,7 +1548,10 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
+        let task_manager = TaskManager::new(
+            TaskStore::new(Arc::clone(&db)),
+            TrajectoryMemoryManager::new(Arc::clone(&db)),
+        );
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1655,7 +1668,10 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
+        let task_manager = TaskManager::new(
+            TaskStore::new(Arc::clone(&db)),
+            TrajectoryMemoryManager::new(Arc::clone(&db)),
+        );
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
