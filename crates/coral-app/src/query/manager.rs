@@ -586,10 +586,20 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<FunctionListing>, QueryManagerError> {
-        let (loaded_sources, config) = self
-            .load_query_sources(workspace_name)
-            .await
-            .map_err(QueryManagerError::App)?;
+        let (loaded_sources, config) = match self.load_query_sources(workspace_name).await {
+            Ok(loaded) => loaded,
+            Err(
+                error @ (AppError::Credentials(CredentialsError::Unavailable(_))
+                | AppError::MissingOrIncompatibleV4Materialization { .. }
+                | AppError::InvalidV4ProjectionOverride { .. }),
+            ) => {
+                return self
+                    .function_manager
+                    .list_functions_with_preparation_failure(workspace_name, &error)
+                    .map_err(QueryManagerError::App);
+            }
+            Err(error) => return Err(QueryManagerError::App(error)),
+        };
         let sources = query_sources_from_loaded(&loaded_sources);
         self.function_manager
             .list_functions(workspace_name, &sources, || {
@@ -1007,6 +1017,55 @@ mod tests {
             _temp: temp,
             manager,
         }
+    }
+
+    async fn query_manager_with_unavailable_keychain() -> QueryManagerFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout, &config_store).await;
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let manager = QueryManager::new_for_tests(
+            config_store,
+            workspace_manager,
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+        QueryManagerFixture {
+            _temp: temp,
+            manager,
+        }
+    }
+
+    fn install_keychain_github_source(config_store: &ConfigStore, workspace_name: &WorkspaceName) {
+        config_store
+            .upsert_source(
+                workspace_name,
+                InstalledSource {
+                    name: SourceName::parse("github").expect("source name"),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["GITHUB_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist source");
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
@@ -1891,48 +1950,12 @@ surfaces:
 
     #[tokio::test]
     async fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let db = test_db(&layout, &config_store).await;
+        let fixture = query_manager_with_unavailable_keychain().await;
         let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("github").expect("source name");
-        config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name,
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["GITHUB_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::Keychain),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
-            .expect("persist source");
-        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
-            layout.clone(),
-            CredentialStoragePreference::Keychain,
-        );
-        let credential_manager = CredentialManager::new(credential_store);
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
-        let manager = QueryManager::new_for_tests(
-            config_store,
-            workspace_manager,
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout,
-            Vec::new(),
-        );
-        let error = manager
+        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+
+        let error = fixture
+            .manager
             .load_query_sources(&workspace_name)
             .await
             .expect_err("unavailable keychain should fail closed");
@@ -1950,6 +1973,47 @@ surfaces:
                 .contains("configured for keychain storage"),
             "keychain-routed query failure should name the routed backend: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn list_functions_keeps_inventory_visible_when_source_preparation_fails() {
+        let fixture = query_manager_with_unavailable_keychain().await;
+        let workspace_name = WorkspaceName::default();
+        let function_sql = r"/*
+name: constant_value
+schema: functions
+description: Returns a constant value
+*/
+
+select 1 as value
+";
+        let validated = fixture
+            .manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate constant function before source failure");
+        fixture
+            .manager
+            .function_manager
+            .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .expect("install constant function");
+        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+
+        let functions = fixture
+            .manager
+            .list_functions(&workspace_name)
+            .await
+            .expect("source preparation failure should not hide function inventory");
+
+        let function = functions
+            .first()
+            .expect("installed function remains visible");
+        assert_eq!(function.name.as_str(), "constant_value");
+        let crate::functions::manager::FunctionRuntimeStatus::Invalid(error) = &function.runtime
+        else {
+            panic!("function should be invalid while source preparation is unavailable");
+        };
+        assert!(error.contains("configured for keychain storage"));
     }
 
     #[derive(Debug)]
