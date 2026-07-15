@@ -77,7 +77,7 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
-    /// Find relevant Coral tables, functions, columns, and filters
+    /// Search Coral's catalog and, when enabled, locally observed values
     Search(SearchArgs),
     /// Manage Coral's local search indexes
     SearchIndex(SearchIndexArgs),
@@ -138,7 +138,7 @@ struct SqlArgs {
 }
 
 #[derive(Debug, Args)]
-/// Find relevant Coral tables, functions, columns, and filters
+/// Search Coral's catalog and, when enabled, locally observed values
 struct SearchArgs {
     /// Render the shared machine-readable JSON response
     #[arg(long)]
@@ -150,7 +150,7 @@ struct SearchArgs {
         value_parser = clap::value_parser!(u32).range(MIN_SEARCH_LIMIT as i64..=MAX_SEARCH_LIMIT as i64)
     )]
     limit: u32,
-    /// Plain-language metadata search text
+    /// Natural language search text
     #[arg(value_name = "QUERY", num_args = 1.., required = true)]
     query: Vec<String>,
 }
@@ -819,6 +819,8 @@ async fn run_app_command(
                 app,
                 coral_mcp::McpOptions {
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    observed_values_search_enabled: features
+                        .enabled(coral_app::features::Feature::ObservedValuesSearch),
                     tasks_enabled: features.enabled(coral_app::features::Feature::Tasks),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,

@@ -12,6 +12,7 @@ use super::task::{end_task_tool, start_task_tool, with_task_context_arguments};
 pub(crate) struct ToolAvailability {
     pub(crate) tasks_enabled: bool,
     pub(crate) feedback_enabled: bool,
+    pub(crate) observed_values_search_enabled: bool,
 }
 
 pub(crate) fn available_tools(
@@ -20,7 +21,7 @@ pub(crate) fn available_tools(
 ) -> Vec<Tool> {
     let mut tools = vec![
         sql_tool(context),
-        search_tool(context),
+        search_tool(context, availability.observed_values_search_enabled),
         list_catalog_tool(context),
         describe_table_tool(),
         list_columns_tool(),
@@ -58,18 +59,27 @@ mod tests {
     const BASE_TOOLS: ToolAvailability = ToolAvailability {
         tasks_enabled: false,
         feedback_enabled: false,
+        observed_values_search_enabled: false,
+    };
+    const OBSERVED_VALUES_TOOLS: ToolAvailability = ToolAvailability {
+        tasks_enabled: false,
+        feedback_enabled: false,
+        observed_values_search_enabled: true,
     };
     const TASK_TOOLS: ToolAvailability = ToolAvailability {
         tasks_enabled: true,
         feedback_enabled: false,
+        observed_values_search_enabled: false,
     };
     const FEEDBACK_TOOLS: ToolAvailability = ToolAvailability {
         tasks_enabled: false,
         feedback_enabled: true,
+        observed_values_search_enabled: false,
     };
     const TASK_AND_FEEDBACK_TOOLS: ToolAvailability = ToolAvailability {
         tasks_enabled: true,
         feedback_enabled: true,
+        observed_values_search_enabled: false,
     };
 
     #[test]
@@ -101,7 +111,7 @@ mod tests {
         let context =
             ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
 
-        let tools = available_tools(&context, BASE_TOOLS);
+        let tools = available_tools(&context, OBSERVED_VALUES_TOOLS);
         let sql_tool = tool_by_name(&tools, "sql");
         let sql_description = sql_tool.description.as_deref().expect("sql description");
         assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
@@ -132,6 +142,35 @@ mod tests {
             .expect("search description");
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
         assert!(search_description.contains("42 table(s) and 3 table function(s)"));
+        assert!(search_description.contains("locally observed values"));
+        assert!(search_description.contains("does not query connected sources"));
+    }
+
+    #[test]
+    fn search_tool_advertises_observed_values_only_when_enabled() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let disabled_tools = available_tools(&context, BASE_TOOLS);
+        let enabled_tools = available_tools(&context, OBSERVED_VALUES_TOOLS);
+        let disabled_search = tool_by_name(&disabled_tools, "search");
+        let enabled_search = tool_by_name(&enabled_tools, "search");
+
+        let disabled_description = disabled_search
+            .description
+            .as_deref()
+            .expect("disabled search description");
+        let enabled_description = enabled_search
+            .description
+            .as_deref()
+            .expect("enabled search description");
+        assert!(disabled_description.contains("Coral's local catalog"));
+        assert!(!disabled_description.contains("observed"));
+        assert!(enabled_description.contains("locally observed values"));
+
+        let disabled_query_description = query_input_description(disabled_search);
+        let enabled_query_description = query_input_description(enabled_search);
+        assert!(disabled_query_description.contains("Coral catalog entries"));
+        assert!(!disabled_query_description.contains("observed"));
+        assert!(enabled_query_description.contains("values observed during earlier queries"));
     }
 
     #[test]
@@ -321,5 +360,16 @@ mod tests {
             .iter()
             .find(|tool| tool.name == name)
             .unwrap_or_else(|| panic!("tool '{name}' should be advertised"))
+    }
+
+    fn query_input_description(tool: &Tool) -> &str {
+        tool.input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("query"))
+            .and_then(Value::as_object)
+            .and_then(|query| query.get("description"))
+            .and_then(Value::as_str)
+            .expect("query input description")
     }
 }

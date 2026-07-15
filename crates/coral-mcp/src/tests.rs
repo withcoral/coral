@@ -279,6 +279,83 @@ async fn initialize_instructions_keep_workspace_name_to_a_single_line() {
     session.shutdown().await;
 }
 
+#[tokio::test]
+async fn observed_value_feature_controls_mcp_discovery_surfaces() {
+    let disabled = mcp_search_discovery_text(false).await;
+    assert!(disabled.0.contains("filters in Coral's local catalog"));
+    assert!(!disabled.0.contains("observed"));
+    assert!(disabled.1.contains("Coral's local catalog"));
+    assert!(!disabled.1.contains("observed"));
+    assert!(disabled.2.contains("Coral catalog entries"));
+    assert!(!disabled.2.contains("observed"));
+    assert!(
+        disabled
+            .3
+            .contains("Search catalog metadata, inspect tables")
+    );
+    assert!(!disabled.3.contains("observed"));
+
+    let enabled = mcp_search_discovery_text(true).await;
+    assert!(
+        enabled
+            .0
+            .contains("values Coral observed during earlier queries")
+    );
+    assert!(enabled.1.contains("locally observed values"));
+    assert!(enabled.2.contains("values observed during earlier queries"));
+    assert!(
+        enabled
+            .3
+            .contains("Search catalog metadata and local observations")
+    );
+}
+
+async fn mcp_search_discovery_text(
+    observed_values_search_enabled: bool,
+) -> (String, String, String, String) {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            observed_values_search_enabled,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let peer_info = session.client.peer_info().expect("initialize result");
+    let instructions = peer_info
+        .instructions
+        .as_deref()
+        .expect("initialize instructions")
+        .to_string();
+    let tools = session.client.list_all_tools().await.expect("tools");
+    let search_tool = tool_by_name(&tools, "search");
+    let search_description = search_tool
+        .description
+        .as_deref()
+        .expect("search description")
+        .to_string();
+    let query_description = search_tool
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("query"))
+        .and_then(Value::as_object)
+        .and_then(|query| query.get("description"))
+        .and_then(Value::as_str)
+        .expect("query input description")
+        .to_string();
+    let guide = session
+        .client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect("guide");
+    let guide = text_content(&guide).to_string();
+    session.shutdown().await;
+
+    (instructions, search_description, query_description, guide)
+}
+
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     match &result.contents[0] {
         rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
