@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useState } from 'react'
-import { Await, useNavigate, useNavigation, useRevalidator } from 'react-router'
+import { Await, useNavigate, useNavigation, useRevalidator, useSubmit } from 'react-router'
 
 import type { SourcesActionData } from '@/routes/sources-action'
 
@@ -9,9 +9,9 @@ import { OnboardingSampleQueryPage } from '@/components/onboarding/onboarding-sa
 import type { SampleQueryLoadState } from '@/components/onboarding/onboarding-sample-query-page'
 import { OnboardingSourcesPage } from '@/components/onboarding/onboarding-sources-page'
 import type { OnboardingStepState } from '@/components/onboarding/onboarding-steps'
+import type { CompleteGuiOnboardingError } from '@/lib/gui-onboarding'
 import type { OnboardingSampleQueryResult } from '@/lib/onboarding-query'
 import type { CatalogEntry } from '@/lib/sources'
-import { routePath } from '@/routing/routemap'
 import { SourceDetailDialog } from '@/views/sources/source-detail'
 import { SourceInstallDialog } from '@/views/sources/source-install'
 import { ToastContainer } from '@/wax/components/toast'
@@ -21,7 +21,7 @@ export function OnboardingView({
   loaderData,
   mcpClients,
 }: {
-  actionData: SourcesActionData
+  actionData: CompleteGuiOnboardingError | SourcesActionData
   loaderData: {
     entries: CatalogEntry[]
     loadError: string | null
@@ -34,13 +34,20 @@ export function OnboardingView({
   mcpClients: McpClientsConnectionState
 }) {
   const navigate = useNavigate()
+  const navigation = useNavigation()
+  const submit = useSubmit()
   const { step } = loaderData
+  const completing =
+    navigation.state !== 'idle' && navigation.formData?.get('_intent') === 'complete-onboarding'
+  const completionError =
+    !completing && actionData?.intent === 'complete-onboarding' ? actionData.message : null
+  const sourcesActionData = actionData?.intent === 'complete-onboarding' ? undefined : actionData
 
   switch (step.step) {
     case 'sources':
       return (
         <SourcesStep
-          actionData={actionData}
+          actionData={sourcesActionData}
           entries={loaderData.entries}
           loadError={loaderData.loadError}
           step={step}
@@ -86,9 +93,11 @@ export function OnboardingView({
     case 'next-steps':
       return (
         <OnboardingNextStepsStep
+          completionError={completionError}
+          completing={completing}
           mcpClients={mcpClients}
           onContinue={() =>
-            navigate(routePath('workspaceSources', { workspaceId: loaderData.workspaceId }))
+            submit({ _intent: 'complete-onboarding' }, { method: 'post', replace: true })
           }
           runtime={loaderData.runtime}
           step={step}
@@ -103,12 +112,16 @@ export function OnboardingView({
 }
 
 function OnboardingNextStepsStep({
+  completionError,
+  completing,
   mcpClients,
   onContinue,
   runtime,
   step,
   workspaces,
 }: {
+  completionError: string | null
+  completing: boolean
   mcpClients: McpClientsConnectionState
   onContinue: () => void
   runtime: 'desktop' | 'web'
@@ -119,6 +132,8 @@ function OnboardingNextStepsStep({
     <>
       {runtime === 'desktop' ? (
         <OnboardingNextStepsPage
+          completionError={completionError}
+          completing={completing}
           mcpClients={mcpClients}
           onContinue={onContinue}
           runtime="desktop"
@@ -126,7 +141,13 @@ function OnboardingNextStepsStep({
           workspaces={workspaces}
         />
       ) : (
-        <OnboardingNextStepsPage onContinue={onContinue} runtime="web" step={step} />
+        <OnboardingNextStepsPage
+          completionError={completionError}
+          completing={completing}
+          onContinue={onContinue}
+          runtime="web"
+          step={step}
+        />
       )}
       {/*
         Onboarding renders outside the app shell, which is where the rest of the app

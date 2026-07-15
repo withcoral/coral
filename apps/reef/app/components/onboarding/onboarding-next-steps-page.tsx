@@ -1,3 +1,4 @@
+import { ErrorBanner } from '@/components/error-banner'
 import { McpClientsList, type McpClientsConnectionState } from '@/components/mcp-clients-list'
 import { Inputs, ScrollArea, Tabs, Typography } from '@/wax/components'
 import { CopyButton } from '@/wax/components/button'
@@ -59,6 +60,8 @@ interface ConnectClientsProps {
 
 /** Only Desktop can write a client's config, so only Desktop carries the clients. */
 export type OnboardingNextStepsPageProps = {
+  completionError?: string | null
+  completing?: boolean
   onContinue?: () => void
   step: OnboardingStepState
 } & (
@@ -67,6 +70,8 @@ export type OnboardingNextStepsPageProps = {
 )
 
 export function OnboardingNextStepsPage({
+  completionError = null,
+  completing = false,
   mcpClients,
   onContinue,
   runtime,
@@ -77,7 +82,11 @@ export function OnboardingNextStepsPage({
 
   return (
     <OnboardingPage
-      action={{ label: "Take me to Coral's dashboard", onClick: onContinue }}
+      action={{
+        disabled: completing,
+        label: completing ? 'Finishing setup…' : "Take me to Coral's dashboard",
+        onClick: onContinue,
+      }}
       ariaLabel="Set up Coral with an agent"
       step={step}
       sideContent={
@@ -100,6 +109,11 @@ export function OnboardingNextStepsPage({
       sideTitle="Teach your agents how to use Coral"
     >
       <div className={styles.panel}>
+        {completionError ? (
+          <div className={styles.actionError}>
+            <ErrorBanner message={completionError} title="Couldn't finish setup" />
+          </div>
+        ) : null}
         <Tabs.Root className={styles.tabs} defaultValue="ai-assisted">
           <Tabs.List aria-label="Coral setup method" className={styles.tabList}>
             <Tabs.Tab value="ai-assisted">AI-assisted</Tabs.Tab>

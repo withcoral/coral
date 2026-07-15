@@ -2,12 +2,14 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
+  completeGuiOnboarding,
   firstWorkspaceForRequest,
   listWorkspacesForRequest,
   loadOnboardingSampleQuery,
   loadSourcesRouteData,
   runSourcesAction,
 } = vi.hoisted(() => ({
+  completeGuiOnboarding: vi.fn(),
   firstWorkspaceForRequest: vi.fn(),
   listWorkspacesForRequest: vi.fn(),
   loadOnboardingSampleQuery: vi.fn(),
@@ -21,6 +23,7 @@ vi.mock('@/lib/workspaces.server', () => ({
   firstWorkspaceForRequest,
   listWorkspacesForRequest,
 }))
+vi.mock('@/lib/gui-onboarding.server', () => ({ completeGuiOnboarding }))
 vi.mock('@/lib/onboarding-query.server', () => ({ loadOnboardingSampleQuery }))
 vi.mock('./sources-loader', () => ({ loadSourcesRouteData }))
 vi.mock('./sources-action', () => ({ runSourcesAction }))
@@ -32,22 +35,23 @@ import { action, loader } from './onboarding'
 
 const workspace = create(WorkspaceSchema, { name: 'analytics' })
 
-describe('onboarding route authentication', () => {
-  beforeEach(() => {
-    firstWorkspaceForRequest.mockReset()
-    listWorkspacesForRequest.mockReset()
-    loadOnboardingSampleQuery.mockReset()
-    loadSourcesRouteData.mockReset()
-    runSourcesAction.mockReset()
-    firstWorkspaceForRequest.mockResolvedValue(workspace)
-    listWorkspacesForRequest.mockResolvedValue([workspace])
-    loadSourcesRouteData.mockResolvedValue({
-      entries: [{ installed: true, name: 'github' }],
-      loadError: null,
-    })
-    loadOnboardingSampleQuery.mockResolvedValue({ rows: [], status: 'success' })
+beforeEach(() => {
+  completeGuiOnboarding.mockReset()
+  firstWorkspaceForRequest.mockReset()
+  listWorkspacesForRequest.mockReset()
+  loadOnboardingSampleQuery.mockReset()
+  loadSourcesRouteData.mockReset()
+  runSourcesAction.mockReset()
+  firstWorkspaceForRequest.mockResolvedValue(workspace)
+  listWorkspacesForRequest.mockResolvedValue([workspace])
+  loadSourcesRouteData.mockResolvedValue({
+    entries: [{ installed: true, name: 'github' }],
+    loadError: null,
   })
+  loadOnboardingSampleQuery.mockResolvedValue({ rows: [], status: 'success' })
+})
 
+describe('onboarding route authentication', () => {
   it('passes the hosted token through workspace, source, and query loading', async () => {
     const request = new Request('http://reef.test/onboarding?step=query')
 
@@ -84,7 +88,7 @@ describe('onboarding route authentication', () => {
   })
 
   it('passes the hosted token through source actions', async () => {
-    const request = new Request('http://reef.test/onboarding', { method: 'POST' })
+    const request = formRequest({ _intent: 'install', name: 'github' })
     runSourcesAction.mockResolvedValue({ ok: true })
 
     await action(authRouteTestArgs(request, {}, 'coral-access-token'))
@@ -92,4 +96,63 @@ describe('onboarding route authentication', () => {
     expect(firstWorkspaceForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
     expect(runSourcesAction).toHaveBeenCalledWith(request, workspace, 'coral-access-token')
   })
+
+  it('passes the hosted token through onboarding completion', async () => {
+    completeGuiOnboarding.mockResolvedValue(undefined)
+
+    await action(authRouteTestArgs(completionRequest(), {}, 'coral-access-token'))
+
+    expect(completeGuiOnboarding).toHaveBeenCalledWith(expect.any(Request), 'coral-access-token')
+  })
 })
+
+describe('onboarding server route', () => {
+  it('persists completion before redirecting to the normal app', async () => {
+    completeGuiOnboarding.mockResolvedValue(undefined)
+    const request = completionRequest()
+
+    const response = await action(authRouteTestArgs(request, {}, null))
+
+    expect(completeGuiOnboarding).toHaveBeenCalledWith(request, null)
+    expect(response).toBeInstanceOf(Response)
+    expect((response as Response).headers.get('Location')).toBe('/workspaces/analytics/sources')
+    expect(runSourcesAction).not.toHaveBeenCalled()
+  })
+
+  it('returns typed non-2xx action data when finishing setup fails', async () => {
+    firstWorkspaceForRequest.mockRejectedValueOnce(new Error('workspace lookup failed'))
+
+    const result = await action(authRouteTestArgs(completionRequest(), {}, null))
+
+    expect(result).toMatchObject({
+      data: {
+        intent: 'complete-onboarding',
+        message: 'workspace lookup failed',
+        status: 'error',
+      },
+      init: { status: 503 },
+    })
+    expect(completeGuiOnboarding).not.toHaveBeenCalled()
+  })
+
+  it('keeps source intents on the existing source-action path', async () => {
+    const result = { intent: 'install', name: 'github', status: 'success' }
+    runSourcesAction.mockResolvedValue(result)
+    const request = formRequest({ _intent: 'install', name: 'github' })
+
+    await expect(action(authRouteTestArgs(request, {}, null))).resolves.toBe(result)
+    expect(runSourcesAction).toHaveBeenCalledWith(request, workspace, null)
+    expect(completeGuiOnboarding).not.toHaveBeenCalled()
+  })
+})
+
+function completionRequest() {
+  return formRequest({ _intent: 'complete-onboarding' })
+}
+
+function formRequest(fields: Record<string, string>) {
+  return new Request('http://reef.test/onboarding?step=next-steps', {
+    body: new URLSearchParams(fields),
+    method: 'POST',
+  })
+}

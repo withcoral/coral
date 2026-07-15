@@ -1,12 +1,16 @@
 import type { Route } from './+types/onboarding'
-import { useFetcher } from 'react-router'
-import type { SourcesActionData } from './sources-action'
+
+import { data, redirect, useFetcher } from 'react-router'
 
 import { requestAuthContext } from '@/auth/server-context'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
+import { completeGuiOnboarding } from '@/lib/gui-onboarding.server'
+import { CORAL_UNAVAILABLE_STATUS, type CompleteGuiOnboardingError } from '@/lib/gui-onboarding'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
+import { errorMessage } from '@/lib/utils'
 import { firstWorkspaceForRequest, listWorkspacesForRequest } from '@/lib/workspaces.server'
+import { routePath } from '@/routing/routemap'
 import { OnboardingView } from '@/views/onboarding/onboarding'
 
 import { runSourcesAction } from './sources-action'
@@ -47,8 +51,27 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   }
 }
 
-export async function action({ context, request }: Route.ActionArgs): Promise<SourcesActionData> {
+export async function action({ context, request }: Route.ActionArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
+  const intent = (await request.clone().formData()).get('_intent')
+
+  if (intent === 'complete-onboarding') {
+    try {
+      const workspace = await firstWorkspaceForRequest(request, accessToken)
+      await completeGuiOnboarding(request, accessToken)
+      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+    } catch (error) {
+      return data(
+        {
+          intent: 'complete-onboarding',
+          message: errorMessage(error),
+          status: 'error',
+        } satisfies CompleteGuiOnboardingError,
+        { status: CORAL_UNAVAILABLE_STATUS },
+      )
+    }
+  }
+
   return runSourcesAction(
     request,
     await firstWorkspaceForRequest(request, accessToken),

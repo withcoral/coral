@@ -12,6 +12,7 @@ inputs:
       - ../../crates/coral-api/proto/coral/v1/catalog.proto
       - ../../crates/coral-api/proto/coral/v1/features.proto
       - ../../crates/coral-api/proto/coral/v1/functions.proto
+      - ../../crates/coral-api/proto/coral/v1/gui_onboarding.proto
       - ../../crates/coral-api/proto/coral/v1/query.proto
       - ../../crates/coral-api/proto/coral/v1/sources.proto
       - ../../crates/coral-api/proto/coral/v1/task.proto
