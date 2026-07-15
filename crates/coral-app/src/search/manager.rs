@@ -28,6 +28,7 @@ pub(crate) struct SearchManager {
     catalog: CatalogMetadataProvider,
     observed: ObservedValuesProvider,
     observed_scope_loader: ObservedValuesLiveScopeLoader,
+    observed_values_search_enabled: bool,
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
 }
@@ -41,6 +42,7 @@ impl SearchManager {
         layout: AppStateLayout,
         config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
+        observed_values_search_enabled: bool,
     ) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
@@ -51,6 +53,7 @@ impl SearchManager {
             catalog: catalog.clone(),
             observed: observed.clone(),
             observed_scope_loader,
+            observed_values_search_enabled,
             engine: UniversalSearchEngine::new(catalog, observed),
             workspaces: workspace_manager,
         }
@@ -68,10 +71,14 @@ impl SearchManager {
         let request = request.clone();
         let attribution = attribution.clone();
         run_blocking_search_operation(move || {
-            let observed_policy = search.observed_retrieval_policy(&request.workspace_name);
-            Ok(search
-                .engine
-                .search(&request, &attribution, observed_policy.as_ref()))
+            let observed_policy = search
+                .observed_values_search_enabled
+                .then(|| search.observed_retrieval_policy(&request.workspace_name));
+            Ok(search.engine.search(
+                &request,
+                &attribution,
+                observed_policy.as_ref().map(Result::as_ref),
+            ))
         })
         .await
     }
@@ -126,6 +133,9 @@ impl SearchManager {
     }
 
     pub(crate) async fn drain_before_shutdown(&self) -> Result<(), SearchManagerError> {
+        if !self.observed_values_search_enabled {
+            return Ok(());
+        }
         let workspaces = self.workspaces.list_workspaces().await?;
         let observed = self.observed.clone();
         run_blocking_search_operation(move || {

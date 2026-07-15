@@ -49,9 +49,10 @@ async fn search_service_returns_structured_shell_response() {
     let observed_status = assert_provider_state(
         &response,
         SearchProvider::ObservedValues,
-        SearchProviderState::Empty,
+        SearchProviderState::NotEnabled,
     );
-    assert_empty_provider_coverage(observed_status);
+    assert_no_coverage(observed_status);
+    assert!(observed_status.note.contains("`observed_values_search`"));
     let native_status = assert_provider_state(
         &response,
         SearchProvider::NativeFanout,
@@ -158,11 +159,12 @@ async fn search_returns_catalog_metadata_for_search_functions_and_column_hints()
         SearchProvider::CatalogMetadata,
         SearchProviderState::ResultsFound,
     );
-    assert_provider_state(
+    let observed_status = assert_provider_state(
         &response,
         SearchProvider::ObservedValues,
-        SearchProviderState::Empty,
+        SearchProviderState::NotEnabled,
     );
+    assert_no_coverage(observed_status);
     assert_provider_state(
         &response,
         SearchProvider::NativeFanout,
@@ -474,7 +476,7 @@ async fn search_truncation_reflects_provider_retrieval_limit() {
 
 #[tokio::test]
 async fn observed_search_handles_live_scopes_beyond_sqlite_variable_limit() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::new_with_observed_values_search().await;
     harness
         .import_source(
             many_table_surfaces_manifest_yaml(SQLITE_VARIABLE_LIMIT_REGRESSION_SURFACE_COUNT),
