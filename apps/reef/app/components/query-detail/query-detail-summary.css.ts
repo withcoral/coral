@@ -7,6 +7,7 @@ import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
   display: 'flex',
+  flex: 1,
   flexDirection: 'column',
   height: '100%',
   minHeight: 0,
