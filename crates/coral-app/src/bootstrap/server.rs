@@ -288,7 +288,7 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        let env = AppEnvironment::discover();
+        let env = AppEnvironment::discover()?;
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
@@ -359,6 +359,7 @@ impl ServerBuilder {
             &config_store,
             workspace_manager.clone(),
             observed_values_search_enabled,
+            env.search_provider_mode(),
         );
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
@@ -1205,6 +1206,7 @@ backend = "unsupported"
             &config_store,
             workspace_manager.clone(),
             true,
+            crate::search::engine::SearchProviderMode::default(),
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
@@ -1653,6 +1655,7 @@ tables:
             &config_store,
             workspace_manager.clone(),
             true,
+            crate::search::engine::SearchProviderMode::default(),
         );
         let running = start_server(
             ServerDependencies {
@@ -1776,6 +1779,7 @@ tables:
             &config_store,
             workspace_manager.clone(),
             true,
+            crate::search::engine::SearchProviderMode::default(),
         );
         let running = start_server(
             ServerDependencies {
@@ -1899,6 +1903,7 @@ tables:
             &config_store,
             workspace_manager.clone(),
             true,
+            crate::search::engine::SearchProviderMode::default(),
         );
         let running = start_server(
             ServerDependencies {

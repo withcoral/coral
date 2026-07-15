@@ -1,26 +1,30 @@
 //! App-owned environment accessors for local runtime setup.
 
 use std::env::VarError;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use coral_engine::QueryRuntimeContext;
 
-use super::consts::CORAL_CONFIG_DIR;
+use super::consts::{CORAL_CONFIG_DIR, CORAL_SEARCH_PROVIDER_MODE};
 use super::error::AppError;
+use crate::search::engine::SearchProviderMode;
 use crate::state::AppStateLayout;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AppEnvironment {
     coral_config_dir_override: Option<PathBuf>,
+    search_provider_mode: SearchProviderMode,
     user_home_dir: Option<PathBuf>,
 }
 
 impl AppEnvironment {
-    pub(crate) fn discover() -> Self {
-        Self {
+    pub(crate) fn discover() -> Result<Self, AppError> {
+        Ok(Self {
             coral_config_dir_override: coral_config_dir_override(),
+            search_provider_mode: search_provider_mode()?,
             user_home_dir: etcetera::home_dir().ok(),
-        }
+        })
     }
 
     pub(crate) fn coral_config_dir_override(&self) -> Option<PathBuf> {
@@ -44,6 +48,10 @@ impl AppEnvironment {
     pub(crate) fn env_var(name: &str) -> Result<Option<String>, VarError> {
         env_var(name)
     }
+
+    pub(crate) fn search_provider_mode(&self) -> SearchProviderMode {
+        self.search_provider_mode
+    }
 }
 
 #[expect(
@@ -66,10 +74,87 @@ fn env_var(name: &str) -> Result<Option<String>, VarError> {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coral-app is the single owner of process environment access."
+)]
+fn search_provider_mode() -> Result<SearchProviderMode, AppError> {
+    parse_search_provider_mode(std::env::var_os(CORAL_SEARCH_PROVIDER_MODE).as_deref())
+}
+
+fn parse_search_provider_mode(value: Option<&OsStr>) -> Result<SearchProviderMode, AppError> {
+    let Some(value) = value else {
+        return Ok(SearchProviderMode::CatalogAndObserved);
+    };
+    let Some(value) = value.to_str() else {
+        return Err(AppError::FailedPrecondition(format!(
+            "{CORAL_SEARCH_PROVIDER_MODE} must be valid Unicode and exactly one of: default, catalog_only"
+        )));
+    };
+    match value {
+        "default" => Ok(SearchProviderMode::CatalogAndObserved),
+        "catalog_only" => Ok(SearchProviderMode::CatalogOnly),
+        _ => Err(AppError::FailedPrecondition(format!(
+            "invalid {CORAL_SEARCH_PROVIDER_MODE} value '{value}'; expected exactly one of: default, catalog_only"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AppEnvironment, CORAL_CONFIG_DIR, coral_config_dir_override};
+    use super::{
+        AppEnvironment, CORAL_CONFIG_DIR, CORAL_SEARCH_PROVIDER_MODE, coral_config_dir_override,
+        parse_search_provider_mode,
+    };
+    use crate::search::engine::SearchProviderMode;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
+
+    #[test]
+    fn search_provider_mode_defaults_when_unset_or_explicitly_default() {
+        assert_eq!(
+            parse_search_provider_mode(None).expect("unset mode should use default providers"),
+            SearchProviderMode::CatalogAndObserved
+        );
+        assert_eq!(
+            parse_search_provider_mode(Some(OsStr::new("default")))
+                .expect("explicit default mode should use default providers"),
+            SearchProviderMode::CatalogAndObserved
+        );
+    }
+
+    #[test]
+    fn search_provider_mode_accepts_catalog_only() {
+        assert_eq!(
+            parse_search_provider_mode(Some(OsStr::new("catalog_only")))
+                .expect("catalog-only mode should parse"),
+            SearchProviderMode::CatalogOnly
+        );
+    }
+
+    #[test]
+    fn search_provider_mode_rejects_other_literals_without_normalizing() {
+        for value in ["", "DEFAULT", " catalog_only", "catalog_only "] {
+            let error = parse_search_provider_mode(Some(OsStr::new(value)))
+                .expect_err("unknown mode should fail closed");
+            let message = error.to_string();
+            assert!(message.contains(CORAL_SEARCH_PROVIDER_MODE));
+            assert!(message.contains("default, catalog_only"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_provider_mode_rejects_non_unicode_values() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let value = OsStr::from_bytes(b"catalog_only\xFF");
+        let error = parse_search_provider_mode(Some(value))
+            .expect_err("non-Unicode mode should fail closed");
+        let message = error.to_string();
+        assert!(message.contains(CORAL_SEARCH_PROVIDER_MODE));
+        assert!(message.contains("valid Unicode"));
+    }
 
     #[test]
     #[expect(
@@ -85,7 +170,7 @@ mod tests {
                 coral_config_dir_override().as_deref(),
                 Some(expected.as_path())
             );
-            let env = AppEnvironment::discover();
+            let env = AppEnvironment::discover().expect("discover app environment");
             assert_eq!(
                 env.coral_config_dir_override().as_deref(),
                 Some(expected.as_path())

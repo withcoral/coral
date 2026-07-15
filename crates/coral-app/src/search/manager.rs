@@ -8,7 +8,7 @@ use crate::bootstrap::AppError;
 use crate::query::QueryAttribution;
 use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
 use crate::search::catalog::provider::{CatalogMetadataProvider, catalog_clear_provider_result};
-use crate::search::engine::UniversalSearchEngine;
+use crate::search::engine::{SearchProviderMode, UniversalSearchEngine};
 use crate::search::maintenance::{
     ClearSearchDataRequest, ClearSearchDataResponse, DrainSearchQueueRequest,
     DrainSearchQueueResponse, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
@@ -38,6 +38,7 @@ pub(crate) struct SearchManager {
     observed_values_search_enabled: bool,
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
+    provider_mode: SearchProviderMode,
     layout: AppStateLayout,
 }
 
@@ -54,6 +55,7 @@ impl SearchManager {
         config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
         observed_values_search_enabled: bool,
+        provider_mode: SearchProviderMode,
     ) -> Self {
         let catalog_loader = CatalogSnapshotLoader::new(config_store.clone(), layout.clone());
         let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
@@ -65,8 +67,9 @@ impl SearchManager {
             observed: observed.clone(),
             observed_scope_loader,
             observed_values_search_enabled,
-            engine: UniversalSearchEngine::new(catalog, observed),
+            engine: UniversalSearchEngine::new(catalog, observed, provider_mode),
             workspaces: workspace_manager,
+            provider_mode,
             layout,
         }
     }
@@ -83,8 +86,8 @@ impl SearchManager {
         let request = request.clone();
         let attribution = attribution.clone();
         run_blocking_search_operation(move || {
-            let observed_policy = search
-                .observed_values_search_enabled
+            let observed_policy = (search.observed_values_search_enabled
+                && search.provider_mode == SearchProviderMode::CatalogAndObserved)
                 .then(|| search.observed_retrieval_policy(&request.workspace_name));
             Ok(search.engine.search(
                 &request,
