@@ -130,6 +130,10 @@ impl QueryManager {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the composition root passes shared lifecycle and diagnostic state explicitly"
+    )]
     pub(crate) fn with_diagnostic_reporter(
         config_store: ConfigStore,
         workspace_manager: WorkspaceManager,
@@ -142,30 +146,6 @@ impl QueryManager {
     ) -> Self {
         let function_manager =
             FunctionManager::new(config_store.clone(), &layout, lifecycle_lock.clone());
-        Self::with_function_manager_and_diagnostic_reporter(
-            config_store,
-            workspace_manager,
-            credential_manager,
-            function_manager,
-            runtime_context,
-            layout,
-            lifecycle_lock,
-            engine_extensions_providers,
-            diagnostic_reporter,
-        )
-    }
-
-    fn with_function_manager_and_diagnostic_reporter(
-        config_store: ConfigStore,
-        workspace_manager: WorkspaceManager,
-        credential_manager: CredentialManager,
-        function_manager: FunctionManager,
-        runtime_context: QueryRuntimeContext,
-        layout: AppStateLayout,
-        lifecycle_lock: WorkspaceLifecycleLock,
-        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-        diagnostic_reporter: SourceDiagnosticReporter,
-    ) -> Self {
         Self {
             config_store,
             workspace_manager: Arc::new(workspace_manager),
