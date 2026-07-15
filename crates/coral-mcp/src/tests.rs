@@ -444,7 +444,7 @@ fn assert_tool_error_text_contains(result: &CallToolResult, expected: &str) {
     );
 }
 
-async fn sqlite_task_count(temp: &TempDir) -> i64 {
+async fn sqlite_task_counts(temp: &TempDir) -> (i64, i64) {
     let options = SqliteConnectOptions::new()
         .filename(temp.path().join("coral-config/coral.db"))
         .create_if_missing(false);
@@ -456,7 +456,11 @@ async fn sqlite_task_count(temp: &TempDir) -> i64 {
         .fetch_one(&pool)
         .await
         .expect("count tasks");
-    task_count.0
+    let raw_step_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM trajectory_raw_steps")
+        .fetch_one(&pool)
+        .await
+        .expect("count raw trajectory steps");
+    (task_count.0, raw_step_count.0)
 }
 
 #[tokio::test]
@@ -651,7 +655,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .expect("root task row");
     assert_eq!(root_record.0, "Investigate customer renewal risk");
     assert_eq!(root_record.1.as_deref(), Some("success"));
-    assert_eq!(sqlite_task_count(&temp).await, 1);
+    assert_eq!(sqlite_task_counts(&temp).await, (1, 1));
 
     let blank_intent = client
         .call_tool(
@@ -666,7 +670,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .to_string()
             .contains("missing string argument 'intent'")
     );
-    assert_eq!(sqlite_task_count(&temp).await, 1);
+    assert_eq!(sqlite_task_counts(&temp).await, (1, 1));
 
     session.shutdown().await;
 }
@@ -715,7 +719,7 @@ async fn mcp_task_tools_are_disabled_by_default() {
             .to_string()
             .contains("tool 'open_episode' not found")
     );
-    assert_eq!(sqlite_task_count(&temp).await, 0);
+    assert_eq!(sqlite_task_counts(&temp).await, (0, 0));
 
     session.shutdown().await;
 }

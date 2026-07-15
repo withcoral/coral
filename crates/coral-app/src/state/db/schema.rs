@@ -24,3 +24,21 @@ pub(in crate::state::db) enum Tasks {
     StartedAtUnixNanos,
     EndedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum TrajectoryRawSteps {
+    Table,
+    WorkspaceId,
+    Id,
+    TaskId,
+    StartedAtUnixNanos,
+    CompletedAtUnixNanos,
+    Operation,
+    Input,
+    Status,
+    RowCount,
+    OutputSummaryJson,
+    ErrorKind,
+    ErrorType,
+    ErrorMessage,
+}

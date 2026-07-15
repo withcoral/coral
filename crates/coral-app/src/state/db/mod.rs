@@ -18,5 +18,6 @@ pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
 pub(crate) use repositories::tasks::TaskRecord;
+pub(crate) use repositories::trajectory_memory::RawTrajectoryStepRecord;
 pub(crate) use session::{DbRepos, DbSession};
 pub(crate) use transaction::CoralTx;
