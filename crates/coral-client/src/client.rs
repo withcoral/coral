@@ -15,7 +15,7 @@ use coral_api::{
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
-use url::{Host, Url};
+use url::Url;
 
 use crate::error::ClientError;
 use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
@@ -96,9 +96,8 @@ impl AppClient {
     /// Connects to a Coral endpoint and attaches static metadata to every
     /// outgoing request.
     ///
-    /// Trace-context, task-attribution, and gRPC transport keys are reserved. Authorization
-    /// metadata is sent only over HTTPS, except that plaintext HTTP is allowed
-    /// for loopback endpoints used during local development.
+    /// Trace-context, task-attribution, and gRPC transport keys are reserved.
+    /// Authorization metadata is sent only over HTTPS.
     ///
     /// # Errors
     ///
@@ -117,11 +116,10 @@ impl AppClient {
         Self::connect_with_static_metadata(endpoint_uri, static_metadata).await
     }
 
-    /// Connects to a Coral endpoint and attaches bearer authorization metadata
-    /// to every outgoing request.
+    /// Connects to an HTTPS Coral endpoint and attaches bearer authorization
+    /// metadata to every outgoing request.
     ///
-    /// Bearer credentials are sent only over HTTPS, except that plaintext HTTP
-    /// is allowed for loopback endpoints used during local development.
+    /// Bearer credentials are sent only over HTTPS.
     ///
     /// # Errors
     ///
@@ -269,23 +267,11 @@ fn endpoint_allows_authorization(endpoint_uri: &str) -> bool {
     if endpoint_has_credentials(&endpoint) {
         return false;
     }
-    match endpoint.scheme() {
-        "https" => endpoint.host().is_some(),
-        "http" => endpoint.host().as_ref().is_some_and(host_is_loopback),
-        _ => false,
-    }
+    endpoint.scheme() == "https" && endpoint.host().is_some()
 }
 
 fn endpoint_has_credentials(endpoint: &Url) -> bool {
     !endpoint.username().is_empty() || endpoint.password().is_some()
-}
-
-fn host_is_loopback(host: &Host<&str>) -> bool {
-    match host {
-        Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(address) => address.is_loopback(),
-        Host::Ipv6(address) => address.is_loopback(),
-    }
 }
 
 fn grpc_service(
@@ -328,9 +314,9 @@ mod tests {
             &self,
             request: tonic::Request<SubmitFeedbackRequest>,
         ) -> Result<tonic::Response<SubmitFeedbackResponse>, tonic::Status> {
-            let authorization = request
+            let route = request
                 .metadata()
-                .get("authorization")
+                .get("x-coral-route")
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_string();
@@ -340,14 +326,14 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_string();
-            *self.capture.0.lock().expect("capture lock") = Some((authorization, traceparent));
+            *self.capture.0.lock().expect("capture lock") = Some((route, traceparent));
 
             Ok(tonic::Response::new(SubmitFeedbackResponse::default()))
         }
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn static_authorization_and_active_traceparent_reach_generated_rpc() {
+    async fn static_metadata_and_active_traceparent_reach_generated_rpc() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind capture server");
@@ -367,12 +353,9 @@ mod tests {
         });
 
         let endpoint = format!("http://{address}");
-        let client = AppClient::connect_with_metadata(
-            &endpoint,
-            [("authorization", "Bearer session-token")],
-        )
-        .await
-        .expect("connect client");
+        let client = AppClient::connect_with_metadata(&endpoint, [("x-coral-route", "primary")])
+            .await
+            .expect("connect client");
         let provider = SdkTracerProvider::builder().build();
         let tracer = provider.tracer("coral-client-metadata-test");
         let subscriber =
@@ -387,13 +370,13 @@ mod tests {
             .await
             .expect("feedback RPC");
 
-        let (authorization, traceparent) = capture
+        let (route, traceparent) = capture
             .0
             .lock()
             .expect("capture lock")
             .clone()
             .expect("captured metadata");
-        assert_eq!(authorization, "Bearer session-token");
+        assert_eq!(route, "primary");
         assert!(traceparent.starts_with("00-"), "{traceparent}");
         assert_eq!(traceparent.len(), 55);
 
@@ -402,19 +385,8 @@ mod tests {
     }
 
     #[test]
-    fn authorization_endpoints_allow_https_and_loopback_http() {
-        for endpoint in [
-            "https://api.example.com",
-            "https://api.example.com:50051",
-            "http://localhost:50051",
-            "http://LOCALHOST",
-            "http://127.0.0.1:50051",
-            "http://127.255.255.254",
-            "http://127.1:50051",
-            "http://2130706433:50051",
-            "http://0x7f000001:50051",
-            "http://[::1]:50051",
-        ] {
+    fn authorization_endpoints_allow_https() {
+        for endpoint in ["https://api.example.com", "https://api.example.com:50051"] {
             assert!(
                 endpoint_allows_authorization(endpoint),
                 "rejected {endpoint}"
@@ -423,10 +395,18 @@ mod tests {
     }
 
     #[test]
-    fn authorization_endpoints_reject_remote_or_ambiguous_plaintext_http() {
+    fn authorization_endpoints_reject_plaintext_http() {
         for endpoint in [
             "http://api.example.com",
             "http://api.example.com:50051",
+            "http://localhost:50051",
+            "http://LOCALHOST",
+            "http://127.0.0.1:50051",
+            "http://127.255.255.254",
+            "http://127.1:50051",
+            "http://2130706433:50051",
+            "http://0x7f000001:50051",
+            "http://[::1]:50051",
             "http://10.0.0.1:50051",
             "http://[2001:db8::1]:50051",
             "http://localhost.example.com:50051",
@@ -457,20 +437,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authenticated_connect_rejects_remote_http_before_dialing() {
+    async fn authenticated_connect_rejects_http_before_dialing() {
         let Err(error) = AppClient::connect_with_metadata(
-            "http://192.0.2.1:1",
+            "http://127.0.0.1:1",
             [("authorization", "Basic secret")],
         )
         .await
         else {
-            panic!("authorization metadata over remote HTTP must be rejected");
+            panic!("authorization metadata over HTTP must be rejected");
         };
         assert!(matches!(error, ClientError::InsecureAuthorizationEndpoint));
 
         let bearer = BearerToken::new("secret").expect("valid bearer");
-        let Err(error) = AppClient::connect_with_bearer("http://192.0.2.1:1", bearer).await else {
-            panic!("remote HTTP must be rejected");
+        let Err(error) = AppClient::connect_with_bearer("http://127.0.0.1:1", bearer).await else {
+            panic!("HTTP must be rejected");
         };
 
         assert!(matches!(error, ClientError::InsecureAuthorizationEndpoint));

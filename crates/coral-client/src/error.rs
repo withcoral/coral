@@ -7,9 +7,7 @@ pub enum ClientError {
     #[error("invalid bearer token: {0}")]
     InvalidBearerToken(String),
     /// Sending authorization metadata to the endpoint would expose it over plaintext.
-    #[error(
-        "authorization metadata requires an HTTPS endpoint, or an HTTP loopback endpoint for local development"
-    )]
+    #[error("authorization metadata requires an HTTPS endpoint")]
     InsecureAuthorizationEndpoint,
     /// Endpoint credentials could leak through logs or authority handling.
     #[error("endpoint URLs must not include credentials")]
