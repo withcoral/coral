@@ -6,6 +6,7 @@ use coral_api::v1::{
     PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, catalog_item, import_source_response,
 };
+use coral_app::features::{Feature, FeatureOverrides};
 use coral_client::{
     AppClient, CatalogClient, FunctionClient, QueryClient, SearchClient, SourceClient,
     WorkspaceClient, batches_to_json_rows, decode_execute_sql_response, default_workspace,
@@ -32,18 +33,31 @@ impl GrpcHarness {
     pub(crate) async fn new() -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path().join("coral-config");
-        Self::start_with_parts(temp_dir, config_dir).await
+        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
+    }
+
+    pub(crate) async fn new_with_observed_values_search() -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        let mut feature_overrides = FeatureOverrides::default();
+        feature_overrides.set(Feature::ObservedValuesSearch, true);
+        Self::start_with_parts(temp_dir, config_dir, feature_overrides).await
     }
 
     pub(crate) async fn start_with_config_dir(config_dir: PathBuf) -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
-        Self::start_with_parts(temp_dir, config_dir).await
+        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
     }
 
-    async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+    async fn start_with_parts(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+        feature_overrides: FeatureOverrides,
+    ) -> Self {
         ensure_file_credentials_config(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
+            .with_feature_overrides(feature_overrides)
             .start()
             .await
             .expect("start server");

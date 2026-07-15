@@ -5,6 +5,7 @@ use crate::query::QueryAttribution;
 use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::provider::ObservedValuesProvider;
+use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
     ProviderStatus, SearchProviderKind, SearchProviderState, SearchRequest, SearchResponse,
     SearchResult, SearchTruncation,
@@ -25,7 +26,7 @@ impl UniversalSearchEngine {
         &self,
         request: &SearchRequest,
         attribution: &QueryAttribution,
-        observed_policy: Result<&ObservedValuesRetrievalPolicy, &AppError>,
+        observed_policy: Option<Result<&ObservedValuesRetrievalPolicy, &AppError>>,
     ) -> SearchResponse {
         tracing::debug!(
             workspace = %request.workspace_name,
@@ -34,7 +35,9 @@ impl UniversalSearchEngine {
             "running Universal Search"
         );
         let catalog = self.catalog.search(request, attribution);
-        let observed = self.observed.search(request, observed_policy);
+        let observed = observed_policy.map_or_else(observed_not_enabled_outcome, |policy| {
+            self.observed.search(request, policy)
+        });
         let provider_has_more = providers_have_more(&[&catalog.status, &observed.status]);
         let mut candidates = catalog.candidates;
         candidates.extend(observed.candidates);
@@ -76,6 +79,18 @@ impl UniversalSearchEngine {
     }
 }
 
+fn observed_not_enabled_outcome() -> ProviderSearchOutcome {
+    ProviderSearchOutcome {
+        candidates: Vec::new(),
+        status: ProviderStatus {
+            provider: SearchProviderKind::ObservedValues,
+            state: SearchProviderState::NotEnabled,
+            note: "observed value search is disabled; enable `observed_values_search` to include values from earlier queries".to_string(),
+            coverage: None,
+        },
+    }
+}
+
 fn providers_have_more(statuses: &[&ProviderStatus]) -> bool {
     statuses.iter().any(|status| {
         status
@@ -104,10 +119,21 @@ fn truncation_note(
 
 #[cfg(test)]
 mod tests {
-    use super::{providers_have_more, truncation_note};
+    use super::{observed_not_enabled_outcome, providers_have_more, truncation_note};
     use crate::search::result::{
         ProviderCoverage, ProviderStatus, SearchProviderKind, SearchProviderState,
     };
+
+    #[test]
+    fn disabled_observed_search_reports_not_enabled_without_candidates_or_coverage() {
+        let outcome = observed_not_enabled_outcome();
+
+        assert!(outcome.candidates.is_empty());
+        assert_eq!(outcome.status.provider, SearchProviderKind::ObservedValues);
+        assert_eq!(outcome.status.state, SearchProviderState::NotEnabled);
+        assert!(outcome.status.coverage.is_none());
+        assert!(outcome.status.note.contains("`observed_values_search`"));
+    }
 
     #[test]
     fn truncation_note_does_not_report_retrieved_count_as_total_when_provider_has_more() {

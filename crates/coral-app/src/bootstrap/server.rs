@@ -358,13 +358,14 @@ impl ServerBuilder {
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
         );
-        let search_observations = features
-            .enabled(Feature::ObservedValuesSearch)
-            .then(|| SearchObservationHandle::new(layout.clone()));
+        let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
+        let search_observations =
+            observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
         let search_manager = SearchManager::with_diagnostic_reporter(
             layout,
             &config_store,
             workspace_manager.clone(),
+            observed_values_search_enabled,
             diagnostic_reporter,
         );
         let trace_components =
@@ -968,7 +969,7 @@ enabled = false
             None,
             db,
         );
-        let search = SearchManager::new(layout.clone(), &config_store, workspace_manager);
+        let search = SearchManager::new(layout.clone(), &config_store, workspace_manager, true);
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
         let generation = store
@@ -1344,8 +1345,12 @@ backend = "unsupported"
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+        );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
@@ -1789,8 +1794,12 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+        );
         let running = start_server(
             ServerDependencies {
                 source: source_manager,
@@ -1908,8 +1917,12 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+        );
         let running = start_server(
             ServerDependencies {
                 source: source_manager,
@@ -2027,8 +2040,12 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+        );
         let running = start_server(
             ServerDependencies {
                 source: source_manager,
