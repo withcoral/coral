@@ -1,5 +1,5 @@
 .PHONY: install docker-build coral-ui-docker-build coral-ui-docker-smoke coral-ui-docker-test coral-docker-stub-build coral-docker-smoke coral-docker-stub-test rust-checks perf-check
-.PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
+.PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-test-suite postgres-tests
 .PHONY: license-check lint-proto lint-sources fix-sources
 .PHONY: docs-generate docs-check schema-generate schema-check
 
@@ -157,22 +157,25 @@ perf-check:
 	cargo run --locked -p xtask --release -- perf-check --coral-bin target/release/coral
 
 # ----------------------------------------------------------------------------
-# Local Postgres-backed tests
+# Postgres-backed tests
 # ----------------------------------------------------------------------------
-# Runs all ignored Postgres coverage through postgres-tests: the coral-app
-# database contracts and the xtask recovery contracts, which need
-# `--features admin` because the recovery module compiles only under it. When
-# CORAL_TEST_POSTGRES_URL is set, the target uses that database. Otherwise it
-# starts a Docker Postgres matching CI's major version and creates a fresh
-# database inside the reusable container. Docker chooses an available localhost
-# port by default; set LOCAL_POSTGRES_PORT=55432 if you need a stable host port.
+# postgres-test-suite runs the DB-owned coral-app unit tests and dedicated
+# Postgres integration target plus xtask recovery contracts against an existing
+# Postgres URL. The xtask checks need `--features admin` because the recovery
+# module compiles only under it. postgres-tests provisions the database first:
+# when CORAL_TEST_POSTGRES_URL is set it uses that database, otherwise it starts
+# a Docker Postgres matching CI's major version and creates a fresh database
+# inside the reusable container for each run. Docker chooses an available
+# localhost port by default; set LOCAL_POSTGRES_PORT=55432 if you need a stable
+# host port.
 #
-#   make postgres-start   # start/wait for local Docker Postgres
-#   make postgres-url     # print the local Postgres connection URL
-#   make postgres-tests   # provision locally, then run all Postgres tests
+#   make postgres-start       # start/wait for local Docker Postgres
+#   make postgres-url         # print the local Postgres connection URL
+#   make postgres-test-suite  # test against CORAL_TEST_POSTGRES_URL
+#   make postgres-tests       # provision locally, then run the suite
 #   CORAL_TEST_POSTGRES_URL=... make postgres-tests  # use an existing database
-#   make postgres-stop    # stop the local Docker Postgres container
-#   make postgres-clean   # remove the local Docker Postgres container
+#   make postgres-stop        # stop the local Docker Postgres container
+#   make postgres-clean       # remove the local Docker Postgres container
 
 postgres-start:
 	@set -eu; \
@@ -226,10 +229,21 @@ postgres-stop:
 postgres-clean:
 	@docker rm -f "$(LOCAL_POSTGRES_CONTAINER)" >/dev/null 2>&1 || true
 
+# The Cargo invocations that make up the Postgres suite, defined once so
+# postgres-test-suite and postgres-tests share a single source of truth without
+# a recursive $(MAKE) call inside a recipe. GNU make runs any recipe line
+# containing $(MAKE) even under -n/-t/-q, and the postgres-tests recipe is a
+# single continued line, so an inline sub-make would make
+# `make -n postgres-tests` execute the real suite.
+POSTGRES_SUITE_CARGO = cargo test --locked -p coral-app --lib 'state::db::' -- --test-threads=1 && cargo test --locked -p coral-app --test postgres_database_tests && cargo test --locked -p xtask --features admin --bin xtask -- --ignored
+
+postgres-test-suite:
+	@test -n "$${CORAL_TEST_POSTGRES_URL:-}" || \
+	  { echo "CORAL_TEST_POSTGRES_URL is required" >&2; exit 1; }
+	$(POSTGRES_SUITE_CARGO)
+
 # Provision the local container through a prerequisite rather than a recursive
-# $(MAKE) call inside the recipe. GNU make runs any recipe line containing
-# $(MAKE) even under -n/-t/-q, and this recipe is a single continued line, so an
-# inline sub-make would make `make -n postgres-tests` execute the real suite.
+# $(MAKE) call inside the recipe, for the reason described above.
 # CORAL_TEST_POSTGRES_URL reaches both this conditional and the recipe's shell
 # whether it is set in the environment or on the command line.
 POSTGRES_TESTS_PREREQS :=
@@ -254,14 +268,8 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	fi; \
 	trap cleanup EXIT INT TERM; \
 	echo "Running Postgres tests against $$url"; \
-	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
-	  contract_on_postgres \
-	  -- --ignored; \
-	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
-	  --test postgres_database_tests; \
-	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p xtask \
-	  --features admin --bin xtask \
-	  -- --ignored
+	export CORAL_TEST_POSTGRES_URL="$$url"; \
+	$(POSTGRES_SUITE_CARGO)
 
 # ----------------------------------------------------------------------------
 # Dependency license scan

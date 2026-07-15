@@ -692,12 +692,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_repository_round_trips_against_sqlite() {
+    async fn source_repository_round_trips_across_configured_backends() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
 
         assert_source_repository_round_trip(&db).await;
+        if let Some(db) = open_configured_postgres().await {
+            assert_source_repository_round_trip(&db).await;
+        }
     }
 
     #[tokio::test]
@@ -807,63 +810,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_repository_rejects_source_without_workspace_against_sqlite() {
+    async fn source_repository_rejects_source_without_workspace_across_configured_backends() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
 
         assert_source_repository_rejects_source_without_workspace(&db).await;
+        if let Some(db) = open_configured_postgres().await {
+            assert_source_repository_rejects_source_without_workspace(&db).await;
+        }
     }
 
     #[tokio::test]
-    async fn source_repository_rejects_invalid_persisted_source_name_against_sqlite() {
+    async fn source_repository_rejects_invalid_persisted_source_name_across_configured_backends() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
 
         assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn source_repository_round_trips_against_postgres() {
-        let Some(url) = postgres_test_url() else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
-
-        assert_source_repository_round_trip(&db).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run source repository invariant coverage against Postgres"]
-    async fn source_repository_rejects_source_without_workspace_against_postgres() {
-        let Some(url) = postgres_test_url() else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
-
-        assert_source_repository_rejects_source_without_workspace(&db).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run source-name validation coverage against Postgres"]
-    async fn source_repository_rejects_invalid_persisted_source_name_against_postgres() {
-        let Some(url) = postgres_test_url() else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
-
-        assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
+        if let Some(db) = open_configured_postgres().await {
+            assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
+        }
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
@@ -876,6 +843,15 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         db
+    }
+
+    async fn open_configured_postgres() -> Option<CoralDb> {
+        let url = postgres_test_url()?;
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        Some(db)
     }
 
     async fn assert_source_repository_round_trip(db: &CoralDb) {
@@ -1242,7 +1218,7 @@ mod tests {
 
     #[expect(
         clippy::disallowed_methods,
-        reason = "The ignored Postgres repository harness is explicitly gated by this CI/test-only variable."
+        reason = "The optional Postgres branch of the shared repository harness is gated by this CI/test-only variable."
     )]
     fn postgres_test_url() -> Option<String> {
         std::env::var("CORAL_TEST_POSTGRES_URL")
