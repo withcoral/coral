@@ -21,9 +21,10 @@ use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
-    MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
-    canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
-    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
+    MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
+    build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
+    cleanup_materialization_tmp, new_materialization_suffix, replace_v4_materialization,
+    restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -41,6 +42,7 @@ pub(crate) struct SourceManager {
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
     lifecycle_lock: WorkspaceLifecycleLock,
+    diagnostic_reporter: SourceDiagnosticReporter,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -186,11 +188,28 @@ impl SourceManager {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
+    ) -> Self {
+        Self::with_diagnostic_reporter(
+            config_store,
+            credential_manager,
+            layout,
+            lifecycle_lock,
+            SourceDiagnosticReporter::default(),
+        )
+    }
+
+    pub(crate) fn with_diagnostic_reporter(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
+        diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
         Self {
             config_store,
@@ -198,6 +217,7 @@ impl SourceManager {
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
             lifecycle_lock,
+            diagnostic_reporter,
         }
     }
 
@@ -573,6 +593,8 @@ impl SourceManager {
             self.layout.workspace_dir(workspace_name).parent(),
         );
         drop(state_lock);
+        self.diagnostic_reporter
+            .clear_source(workspace_name, source_name);
         self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
         Ok(removed)
     }

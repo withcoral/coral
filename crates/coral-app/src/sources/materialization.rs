@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coral_spec::v4::{
@@ -14,7 +15,7 @@ use coral_spec::v4::{
     import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
     openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
     sync_projection_pagination_inputs, validate_materialized_source,
-    validate_openapi_base_url_template,
+    validate_materialized_source_structure, validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -38,6 +39,126 @@ pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
 pub(crate) const PARAMETER_METADATA_OVERRIDE_FILENAME: &str = "parameter_metadata.yaml";
+
+type ReportedDiagnosticKey = (String, String);
+type ReportedDiagnosticStateKey = (String, String, String);
+type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<ReportedDiagnosticKey>>;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceDiagnosticReporter {
+    reported: Arc<Mutex<ReportedDiagnostics>>,
+}
+
+impl SourceDiagnosticReporter {
+    pub(crate) fn report_source_load_failure(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        code: &str,
+        detail: &str,
+    ) {
+        let diagnostic = Diagnostic {
+            code: code.to_string(),
+            severity: DiagnosticSeverity::Warning,
+            message: detail.to_string(),
+            surface_id: None,
+            operation_id: None,
+            projection_name: None,
+        };
+        self.report_source_diagnostics(
+            workspace_name,
+            source_name,
+            "source",
+            std::iter::once(&diagnostic),
+        );
+    }
+
+    pub(crate) fn clear_source_load_failure(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        self.report_source_diagnostics(
+            workspace_name,
+            source_name,
+            "source",
+            std::iter::empty::<&Diagnostic>(),
+        );
+    }
+
+    pub(crate) fn report_runtime_surface_diagnostics(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        diagnostics: &[Diagnostic],
+    ) {
+        self.report_source_diagnostics(workspace_name, source_name, "runtime", diagnostics.iter());
+    }
+
+    pub(crate) fn clear_source(&self, workspace_name: &WorkspaceName, source_name: &SourceName) {
+        let mut reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reported.retain(|(workspace, source, _stage), _diagnostics| {
+            workspace != workspace_name.as_str() || source != source_name.as_str()
+        });
+    }
+
+    fn report_source_diagnostics<'a>(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        stage: &str,
+        diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+    ) {
+        let state_key = (
+            workspace_name.to_string(),
+            source_name.to_string(),
+            stage.to_string(),
+        );
+        let diagnostics = diagnostics.into_iter().collect::<Vec<_>>();
+        let current = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code.clone(), diagnostic.message.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = reported.get(&state_key).cloned().unwrap_or_default();
+        for diagnostic in diagnostics {
+            let key = (diagnostic.code.clone(), diagnostic.message.clone());
+            if previous.contains(&key) {
+                continue;
+            }
+            tracing::warn!(
+                diagnostic.code = %diagnostic.code,
+                diagnostic.stage = stage,
+                workspace = %workspace_name,
+                source = %source_name,
+                surface = diagnostic.surface_id.as_deref().unwrap_or(""),
+                operation = diagnostic.operation_id.as_deref().unwrap_or(""),
+                projection = diagnostic.projection_name.as_deref().unwrap_or(""),
+                detail = %diagnostic.message,
+                "DSL v4 source load diagnostic"
+            );
+        }
+        if current.is_empty() {
+            reported.remove(&state_key);
+        } else {
+            reported.insert(state_key, current);
+        }
+    }
+
+    #[cfg(test)]
+    fn tracked_stage_count(&self) -> usize {
+        self.reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
@@ -155,74 +276,60 @@ pub(crate) fn load_v4_materialization(
     source_name: &SourceName,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
+    diagnostic_reporter: &SourceDiagnosticReporter,
 ) -> Result<V4MaterializedSource, AppError> {
     let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
     let projections_file = layout.v4_projection_catalog_file(workspace_name, source_name);
     let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
-    if !fingerprint_path.exists() || !projections_file.path.exists() || !diagnostics_path.exists() {
+    if !projections_file.path.exists() {
         return Err(incompatible_materialization_error(
             source_name,
-            "required artifact is missing",
+            format!(
+                "required projection catalog '{}' is missing",
+                projections_file.path.display()
+            ),
         ));
     }
-    let fingerprint: Fingerprint =
-        read_artifact_yaml(source_name, "fingerprint", &fingerprint_path)?;
-    validate_fingerprint_header(source_name, manifest, &fingerprint)?;
-    if fingerprint.manifest_sha256 != sha256_hex(manifest_yaml.as_bytes()) {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "manifest fingerprint does not match installed manifest",
-        ));
-    }
-    let fingerprint_surfaces = validate_fingerprint_surfaces(source_name, manifest, &fingerprint)?;
-    let mut projections: ProjectionCatalog = match projections_file.origin {
-        V4ProjectionCatalogOrigin::Materialized => {
-            read_artifact_yaml(source_name, "projection catalog", &projections_file.path)?
-        }
-        V4ProjectionCatalogOrigin::Override => {
-            read_projection_override_yaml(source_name, &projections_file.path)?
-        }
-    };
-    validate_projection_catalog_header(source_name, manifest, &projections, &projections_file)?;
-    let diagnostics: Vec<Diagnostic> =
-        read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
-    let mut surfaces = Vec::new();
-    for fingerprint_surface in &fingerprint.surfaces {
-        let surface = manifest
-            .surface(&fingerprint_surface.surface_id)
-            .ok_or_else(|| {
-                incompatible_materialization_error(
-                    source_name,
-                    format!(
-                        "fingerprint references undeclared surface '{}'",
-                        fingerprint_surface.surface_id
-                    ),
-                )
-            })?;
-        let surface_dir = layout.v4_surface_dir(workspace_name, source_name, &surface.id);
-        let raw_source_document_path = surface_dir.join("source-document.raw");
-        let normalized_source_document_path = surface_dir.join("source-document.yaml");
-        let semantic_ir_path = surface_dir.join("semantic-ir.yaml");
-        require_file(source_name, &raw_source_document_path)?;
-        require_file(source_name, &normalized_source_document_path)?;
-        require_file(source_name, &semantic_ir_path)?;
-        let mut semantic_ir: SemanticIr =
-            read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
-        apply_parameter_metadata_override_file(
-            layout,
-            workspace_name,
-            source_name,
-            &surface.id,
-            &mut semantic_ir,
-        )?;
-        surfaces.push(MaterializedSurface {
-            surface_id: surface.id.clone(),
-            semantic_ir,
-            source_document_sha256: fingerprint_surface.descriptor_sha256.clone(),
-            normalized_source_document_path,
-            raw_source_document_path,
-        });
-    }
+    let mut load_diagnostics = Vec::new();
+    let fingerprint = load_optional_fingerprint(
+        manifest_yaml,
+        manifest,
+        &fingerprint_path,
+        &mut load_diagnostics,
+    );
+    let mut projections = load_projection_catalog(
+        source_name,
+        manifest,
+        &projections_file,
+        &mut load_diagnostics,
+    )?;
+    let mut diagnostics = load_optional_diagnostics(&diagnostics_path, &mut load_diagnostics);
+    let originally_published = projections
+        .projections
+        .iter()
+        .filter(|projection| {
+            projection.visibility == coral_spec::v4::ProjectionVisibility::Published
+        })
+        .count();
+    let (surfaces, mut failed_surfaces) = load_projected_surfaces(
+        layout,
+        workspace_name,
+        source_name,
+        manifest,
+        &projections,
+        fingerprint.as_ref(),
+        &mut load_diagnostics,
+    );
+    collect_projection_coherence_diagnostics(
+        manifest,
+        &projections,
+        &surfaces,
+        &mut failed_surfaces,
+        &mut load_diagnostics,
+    );
+    projections
+        .projections
+        .retain(|projection| !failed_surfaces.contains(&projection.surface_id));
     let projection_sync_mode = match projections_file.origin {
         V4ProjectionCatalogOrigin::Materialized => {
             ProjectionPaginationInputSyncMode::RecomputeRestInputExposure
@@ -236,205 +343,445 @@ pub(crate) fn load_v4_materialization(
         &mut projections,
         projection_sync_mode,
     );
+    if originally_published > 0
+        && !projections.projections.iter().any(|projection| {
+            projection.visibility == coral_spec::v4::ProjectionVisibility::Published
+        })
+    {
+        return Err(incompatible_materialization_error(
+            source_name,
+            "no published projection surfaces could be loaded",
+        ));
+    }
+    diagnostic_reporter.report_source_diagnostics(
+        workspace_name,
+        source_name,
+        "materialization",
+        load_diagnostics.iter(),
+    );
+    diagnostics.append(&mut load_diagnostics);
     let materialized = V4MaterializedSource {
         fingerprint,
         surfaces,
         projections,
         diagnostics,
     };
-    validate_loaded_materialization(source_name, manifest, &materialized, &fingerprint_surfaces)?;
+    validate_loaded_materialized_source(source_name, manifest, &projections_file, &materialized)?;
     Ok(materialized)
 }
 
-fn validate_fingerprint_header(
+fn validate_loaded_materialized_source(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
-    fingerprint: &Fingerprint,
+    projections_file: &V4ProjectionCatalogFile,
+    materialized: &V4MaterializedSource,
 ) -> Result<(), AppError> {
-    if fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "fingerprint artifact schema version mismatch",
+    validate_materialized_source_structure(manifest, materialized).map_err(|error| {
+        match projections_file.origin {
+            V4ProjectionCatalogOrigin::Materialized => {
+                incompatible_materialization_error(source_name, error.to_string())
+            }
+            V4ProjectionCatalogOrigin::Override => invalid_projection_override_error(
+                source_name,
+                &projections_file.path,
+                error.to_string(),
+            ),
+        }
+    })
+}
+
+fn load_optional_fingerprint(
+    manifest_yaml: &str,
+    manifest: &V4SourceManifest,
+    path: &Path,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Fingerprint> {
+    let fingerprint = match read_yaml::<Fingerprint>(path) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            diagnostics.push(materialization_warning(
+                "V4_FINGERPRINT_UNAVAILABLE",
+                format!(
+                    "could not read optional fingerprint '{}': {error}",
+                    path.display()
+                ),
+                None,
+            ));
+            return None;
+        }
+    };
+    if let Err(error) = validate_fingerprint_header(manifest, &fingerprint) {
+        diagnostics.push(materialization_warning(
+            "V4_FINGERPRINT_HEADER_MISMATCH",
+            error,
+            None,
         ));
     }
-    if fingerprint.source_name != manifest.common.name {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "fingerprint source name does not match installed manifest",
+    if fingerprint.manifest_sha256 != sha256_hex(manifest_yaml.as_bytes()) {
+        diagnostics.push(materialization_warning(
+            "V4_MANIFEST_FINGERPRINT_MISMATCH",
+            "manifest fingerprint does not match installed manifest",
+            None,
         ));
+    }
+    if let Err(error) = validate_fingerprint_surfaces(manifest, &fingerprint) {
+        diagnostics.push(materialization_warning(
+            "V4_FINGERPRINT_SURFACE_MISMATCH",
+            error,
+            None,
+        ));
+    }
+    Some(fingerprint)
+}
+
+fn load_projection_catalog(
+    source_name: &SourceName,
+    manifest: &V4SourceManifest,
+    projections_file: &V4ProjectionCatalogFile,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<ProjectionCatalog, AppError> {
+    let mut projections = match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            read_artifact_yaml(source_name, "projection catalog", &projections_file.path)?
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            read_projection_override_yaml(source_name, &projections_file.path)?
+        }
+    };
+    for projection in &mut projections.projections {
+        if projection.namespace.is_empty()
+            && let Some(surface) = manifest.surface(&projection.surface_id)
+        {
+            projection.namespace = surface.relation_namespace.clone();
+        }
+    }
+    if let Err(error) = validate_projection_catalog_header(manifest, &projections, projections_file)
+    {
+        diagnostics.push(materialization_warning(
+            "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH",
+            error,
+            None,
+        ));
+    }
+    Ok(projections)
+}
+
+fn load_optional_diagnostics(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> Vec<Diagnostic> {
+    match read_yaml(path) {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => {
+            diagnostics.push(materialization_warning(
+                "V4_DIAGNOSTICS_UNAVAILABLE",
+                format!(
+                    "could not read optional diagnostics '{}': {error}",
+                    path.display()
+                ),
+                None,
+            ));
+            Vec::new()
+        }
+    }
+}
+
+fn load_projected_surfaces(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    manifest: &V4SourceManifest,
+    projections: &ProjectionCatalog,
+    fingerprint: Option<&Fingerprint>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (Vec<MaterializedSurface>, BTreeSet<String>) {
+    let projected_surface_ids = projections
+        .projections
+        .iter()
+        .map(|projection| projection.surface_id.clone())
+        .collect::<BTreeSet<_>>();
+    let fingerprint_surfaces = fingerprint
+        .map(|fingerprint| {
+            fingerprint
+                .surfaces
+                .iter()
+                .map(|surface| (surface.surface_id.clone(), surface))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut surfaces = Vec::new();
+    let mut failed_surfaces = BTreeSet::new();
+    for surface_id in projected_surface_ids {
+        let Some(surface) = manifest.surface(&surface_id) else {
+            diagnostics.push(materialization_warning(
+                "V4_PROJECTED_SURFACE_NOT_DECLARED",
+                format!("projection catalog references undeclared surface '{surface_id}'"),
+                Some(surface_id.clone()),
+            ));
+            failed_surfaces.insert(surface_id);
+            continue;
+        };
+        match load_projected_surface(
+            layout,
+            workspace_name,
+            source_name,
+            manifest,
+            surface,
+            fingerprint_surfaces.get(&surface.id).copied(),
+        ) {
+            Ok((materialized_surface, mut surface_diagnostics)) => {
+                surfaces.push(materialized_surface);
+                diagnostics.append(&mut surface_diagnostics);
+            }
+            Err(diagnostic) => {
+                diagnostics.push(*diagnostic);
+                failed_surfaces.insert(surface.id.clone());
+            }
+        }
+    }
+    (surfaces, failed_surfaces)
+}
+
+fn load_projected_surface(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    fingerprint: Option<&FingerprintSurface>,
+) -> Result<(MaterializedSurface, Vec<Diagnostic>), Box<Diagnostic>> {
+    let surface_dir = layout.v4_surface_dir(workspace_name, source_name, &surface.id);
+    let raw_source_document_path = surface_dir.join("source-document.raw");
+    let semantic_ir_path = surface_dir.join("semantic-ir.yaml");
+    let mut semantic_ir: SemanticIr =
+        read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path).map_err(|error| {
+            Box::new(materialization_warning(
+                "V4_SEMANTIC_IR_UNAVAILABLE",
+                error.to_string(),
+                Some(surface.id.clone()),
+            ))
+        })?;
+    let mut diagnostics = Vec::new();
+    if let Err(error) = validate_semantic_ir(manifest, surface, &semantic_ir) {
+        diagnostics.push(materialization_warning(
+            "V4_SEMANTIC_IR_PROVENANCE_MISMATCH",
+            error,
+            Some(surface.id.clone()),
+        ));
+    }
+    apply_parameter_metadata_override_file(
+        layout,
+        workspace_name,
+        source_name,
+        &surface.id,
+        &mut semantic_ir,
+    )
+    .map_err(|error| {
+        Box::new(materialization_warning(
+            "V4_PARAMETER_METADATA_OVERRIDE_FAILED",
+            error.to_string(),
+            Some(surface.id.clone()),
+        ))
+    })?;
+    if let Some(fingerprint) = fingerprint {
+        match std::fs::read(&raw_source_document_path) {
+            Ok(raw_bytes) if sha256_hex(&raw_bytes) != fingerprint.descriptor_sha256 => {
+                diagnostics.push(materialization_warning(
+                    "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH",
+                    format!(
+                        "raw source document hash does not match for surface '{}'",
+                        surface.id
+                    ),
+                    Some(surface.id.clone()),
+                ));
+            }
+            Err(error) => diagnostics.push(materialization_warning(
+                "V4_RAW_DOCUMENT_UNAVAILABLE",
+                format!(
+                    "could not read raw source document '{}' for provenance validation: {error}",
+                    raw_source_document_path.display()
+                ),
+                Some(surface.id.clone()),
+            )),
+            _ => {}
+        }
+    }
+    Ok((
+        MaterializedSurface {
+            surface_id: surface.id.clone(),
+            semantic_ir,
+            source_document_sha256: fingerprint
+                .map(|fingerprint| fingerprint.descriptor_sha256.clone()),
+            normalized_source_document_path: surface_dir.join("source-document.yaml"),
+            raw_source_document_path,
+        },
+        diagnostics,
+    ))
+}
+
+fn collect_projection_coherence_diagnostics(
+    manifest: &V4SourceManifest,
+    projections: &ProjectionCatalog,
+    surfaces: &[MaterializedSurface],
+    failed_surfaces: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for projection in &projections.projections {
+        let Some(surface) = manifest.surface(&projection.surface_id) else {
+            continue;
+        };
+        if projection.namespace != surface.relation_namespace {
+            diagnostics.push(materialization_warning(
+                "V4_PROJECTION_NAMESPACE_MISMATCH",
+                format!(
+                    "projection '{}' namespace '{}' does not match surface '{}' relation namespace '{}'",
+                    projection.name,
+                    projection.namespace,
+                    projection.surface_id,
+                    surface.relation_namespace
+                ),
+                Some(surface.id.clone()),
+            ));
+        }
+        if let Some(materialized_surface) = surfaces
+            .iter()
+            .find(|candidate| candidate.surface_id == projection.surface_id)
+            && !materialized_surface
+                .semantic_ir
+                .operations
+                .iter()
+                .any(|operation| operation.id == projection.operation_id)
+        {
+            diagnostics.push(materialization_warning(
+                "V4_PROJECTION_OPERATION_MISSING",
+                format!(
+                    "projection '{}' references missing operation '{}'",
+                    projection.name, projection.operation_id
+                ),
+                Some(surface.id.clone()),
+            ));
+            failed_surfaces.insert(surface.id.clone());
+        }
+    }
+}
+
+fn materialization_warning(
+    code: &str,
+    message: impl Into<String>,
+    surface_id: Option<String>,
+) -> Diagnostic {
+    Diagnostic {
+        code: code.to_string(),
+        severity: DiagnosticSeverity::Warning,
+        message: message.into(),
+        surface_id,
+        operation_id: None,
+        projection_name: None,
+    }
+}
+
+fn validate_fingerprint_header(
+    manifest: &V4SourceManifest,
+    fingerprint: &Fingerprint,
+) -> Result<(), String> {
+    if fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
+        return Err("fingerprint artifact schema version mismatch".to_string());
+    }
+    if fingerprint.source_name != manifest.common.name {
+        return Err("fingerprint source name does not match installed manifest".to_string());
     }
     if fingerprint.importer_version != SURFACE_IMPORTER_VERSION
         || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "fingerprint importer or generator version mismatch",
-        ));
+        return Err("fingerprint importer or generator version mismatch".to_string());
     }
     Ok(())
 }
 
 fn validate_fingerprint_surfaces(
-    source_name: &SourceName,
     manifest: &V4SourceManifest,
     fingerprint: &Fingerprint,
-) -> Result<BTreeMap<String, FingerprintSurface>, AppError> {
+) -> Result<(), String> {
     let declared_ids = manifest
         .surfaces
         .iter()
         .map(|surface| surface.id.as_str())
         .collect::<BTreeSet<_>>();
     let mut seen_ids = BTreeSet::new();
-    let mut by_id = BTreeMap::new();
     for surface in &fingerprint.surfaces {
         if !seen_ids.insert(surface.surface_id.as_str()) {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!("fingerprint repeats surface '{}'", surface.surface_id),
+            return Err(format!(
+                "fingerprint repeats surface '{}'",
+                surface.surface_id
             ));
         }
         if !declared_ids.contains(surface.surface_id.as_str()) {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "fingerprint surface set mismatch; missing [], extra [{}]",
-                    surface.surface_id
-                ),
+            return Err(format!(
+                "fingerprint surface set mismatch; missing [], extra [{}]",
+                surface.surface_id
             ));
         }
-        by_id.insert(surface.surface_id.clone(), surface.clone());
     }
     for fingerprint_surface in &fingerprint.surfaces {
         let surface = manifest
             .surface(&fingerprint_surface.surface_id)
             .ok_or_else(|| {
-                incompatible_materialization_error(
-                    source_name,
-                    format!(
-                        "fingerprint references undeclared surface '{}'",
-                        fingerprint_surface.surface_id
-                    ),
+                format!(
+                    "fingerprint references undeclared surface '{}'",
+                    fingerprint_surface.surface_id
                 )
             })?;
         if fingerprint_surface.surface_type != surface.surface_type {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!("surface '{}' type fingerprint does not match", surface.id),
+            return Err(format!(
+                "surface '{}' type fingerprint does not match",
+                surface.id
             ));
         }
         if fingerprint_surface.descriptor_kind != surface.descriptor.kind()
             || fingerprint_surface.descriptor_location != surface.descriptor.location()
         {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "surface '{}' descriptor fingerprint does not match",
-                    surface.id
-                ),
+            return Err(format!(
+                "surface '{}' descriptor fingerprint does not match",
+                surface.id
             ));
         }
-        let expected = stable_input_declarations_sha256(&surface.inputs)?;
+        let expected =
+            stable_input_declarations_sha256(&surface.inputs).map_err(|error| error.to_string())?;
         if fingerprint_surface.input_declarations_sha256 != expected {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "input declarations fingerprint does not match for surface '{}'",
-                    surface.id
-                ),
+            return Err(format!(
+                "input declarations fingerprint does not match for surface '{}'",
+                surface.id
             ));
         }
     }
-    Ok(by_id)
+    Ok(())
 }
 
 fn validate_projection_catalog_header(
-    source_name: &SourceName,
     manifest: &V4SourceManifest,
     projections: &ProjectionCatalog,
     projections_file: &V4ProjectionCatalogFile,
-) -> Result<(), AppError> {
+) -> Result<(), String> {
     if projections.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(projection_catalog_error(
-            source_name,
-            projections_file,
-            "projection catalog artifact schema version mismatch",
-        ));
+        return Err("projection catalog artifact schema version mismatch".to_string());
     }
     if projections.source_name != manifest.common.name {
-        return Err(projection_catalog_error(
-            source_name,
-            projections_file,
-            "projection catalog source name does not match installed manifest",
-        ));
+        return Err("projection catalog source name does not match installed manifest".to_string());
     }
     match projections_file.origin {
         V4ProjectionCatalogOrigin::Materialized => {
             if projections.generator_version.as_deref() != Some(PROJECTION_GENERATOR_VERSION) {
-                return Err(projection_catalog_error(
-                    source_name,
-                    projections_file,
-                    "projection catalog generator version mismatch",
-                ));
+                return Err("projection catalog generator version mismatch".to_string());
             }
         }
         V4ProjectionCatalogOrigin::Override => {
             if let Some(generator_version) = projections.generator_version.as_deref()
                 && generator_version != PROJECTION_GENERATOR_VERSION
             {
-                return Err(projection_catalog_error(
-                    source_name,
-                    projections_file,
-                    format!(
-                        "projection override was copied from generator version '{generator_version}', but this Coral build expects '{PROJECTION_GENERATOR_VERSION}'; remove generator_version after reviewing the override or recreate it from the current generated catalog"
-                    ),
+                return Err(format!(
+                    "projection override was copied from generator version '{generator_version}', but this Coral build expects '{PROJECTION_GENERATOR_VERSION}'"
                 ));
             }
         }
     }
     Ok(())
-}
-
-fn projection_catalog_error(
-    source_name: &SourceName,
-    projections_file: &V4ProjectionCatalogFile,
-    detail: impl AsRef<str>,
-) -> AppError {
-    match projections_file.origin {
-        V4ProjectionCatalogOrigin::Materialized => {
-            incompatible_materialization_error(source_name, detail)
-        }
-        V4ProjectionCatalogOrigin::Override => {
-            invalid_projection_override_error(source_name, &projections_file.path, detail)
-        }
-    }
-}
-
-fn require_file(source_name: &SourceName, path: &Path) -> Result<(), AppError> {
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(incompatible_materialization_error(
-            source_name,
-            format!("required artifact '{}' is missing", path.display()),
-        ))
-    }
-}
-
-fn read_raw_source_document_artifact(
-    source_name: &SourceName,
-    surface: &coral_spec::v4::V4Surface,
-    path: &Path,
-) -> Result<Vec<u8>, AppError> {
-    std::fs::read(path).map_err(|error| {
-        incompatible_materialization_error(
-            source_name,
-            format!(
-                "failed to read raw source document artifact for surface '{}' '{}': {error}",
-                surface.id,
-                path.display()
-            ),
-        )
-    })
 }
 
 fn apply_parameter_metadata_override_file(
@@ -470,163 +817,30 @@ fn apply_parameter_metadata_override_file(
     Ok(())
 }
 
-fn validate_loaded_materialization(
-    source_name: &SourceName,
-    manifest: &V4SourceManifest,
-    materialized: &V4MaterializedSource,
-    fingerprint_surfaces: &BTreeMap<String, FingerprintSurface>,
-) -> Result<(), AppError> {
-    validate_materialized_source(manifest, materialized).map_err(|error| {
-        incompatible_materialization_error(
-            source_name,
-            format!("artifact validation failed: {error}"),
-        )
-    })?;
-    let mut operations_by_surface: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for materialized_surface in &materialized.surfaces {
-        let surface = manifest
-            .surface(&materialized_surface.surface_id)
-            .ok_or_else(|| {
-                incompatible_materialization_error(
-                    source_name,
-                    format!(
-                        "materialized surface '{}' is not declared",
-                        materialized_surface.surface_id
-                    ),
-                )
-            })?;
-        let Some(fingerprint_surface) = fingerprint_surfaces.get(&materialized_surface.surface_id)
-        else {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "fingerprint is missing surface '{}'",
-                    materialized_surface.surface_id
-                ),
-            ));
-        };
-        let raw_bytes = read_raw_source_document_artifact(
-            source_name,
-            surface,
-            &materialized_surface.raw_source_document_path,
-        )?;
-        let observed_raw_hash = sha256_hex(&raw_bytes);
-        if observed_raw_hash != fingerprint_surface.descriptor_sha256 {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "raw source document hash does not match for surface '{}'",
-                    surface.id
-                ),
-            ));
-        }
-        validate_semantic_ir(
-            source_name,
-            manifest,
-            surface,
-            &materialized_surface.semantic_ir,
-        )?;
-        operations_by_surface.insert(
-            materialized_surface.surface_id.as_str(),
-            materialized_surface
-                .semantic_ir
-                .operations
-                .iter()
-                .map(|operation| operation.id.as_str())
-                .collect(),
-        );
-    }
-    validate_projection_references(source_name, manifest, materialized, &operations_by_surface)
-}
-
-fn validate_projection_references(
-    source_name: &SourceName,
-    manifest: &V4SourceManifest,
-    materialized: &V4MaterializedSource,
-    operations_by_surface: &BTreeMap<&str, BTreeSet<&str>>,
-) -> Result<(), AppError> {
-    let relation_namespace_by_surface = manifest
-        .surfaces
-        .iter()
-        .map(|surface| (surface.id.as_str(), surface.relation_namespace.as_str()))
-        .collect::<BTreeMap<_, _>>();
-    for projection in &materialized.projections.projections {
-        let Some(operations) = operations_by_surface.get(projection.surface_id.as_str()) else {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "projection '{}' references missing surface '{}'",
-                    projection.name, projection.surface_id
-                ),
-            ));
-        };
-        let expected_relation_namespace = relation_namespace_by_surface
-            .get(projection.surface_id.as_str())
-            .ok_or_else(|| {
-                incompatible_materialization_error(
-                    source_name,
-                    format!(
-                        "projection '{}' references missing surface '{}'",
-                        projection.name, projection.surface_id
-                    ),
-                )
-            })?;
-        if projection.namespace != *expected_relation_namespace {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "projection '{}' namespace '{}' does not match surface '{}' relation namespace '{}'",
-                    projection.name,
-                    projection.namespace,
-                    projection.surface_id,
-                    expected_relation_namespace
-                ),
-            ));
-        }
-        if !operations.contains(projection.operation_id.as_str()) {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn validate_semantic_ir(
-    source_name: &SourceName,
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     semantic_ir: &SemanticIr,
-) -> Result<(), AppError> {
+) -> Result<(), String> {
     if semantic_ir.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!(
-                "semantic IR schema version mismatch for surface '{}'",
-                surface.id
-            ),
+        return Err(format!(
+            "semantic IR schema version mismatch for surface '{}'",
+            surface.id
         ));
     }
     if semantic_ir.source_name != manifest.common.name
         || semantic_ir.surface_id != surface.id
         || semantic_ir.surface_type != surface.surface_type
     {
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!("semantic IR identity mismatch for surface '{}'", surface.id),
+        return Err(format!(
+            "semantic IR identity mismatch for surface '{}'",
+            surface.id
         ));
     }
     if semantic_ir.importer_version != expected_importer_version(surface.surface_type) {
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!(
-                "semantic IR importer version mismatch for surface '{}'",
-                surface.id
-            ),
+        return Err(format!(
+            "semantic IR importer version mismatch for surface '{}'",
+            surface.id
         ));
     }
     Ok(())
@@ -688,7 +902,7 @@ fn write_materialization(
         materialized_surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir: materialized_surface.semantic_ir.clone(),
-            source_document_sha256: materialized_surface.observed_sha256.clone(),
+            source_document_sha256: Some(materialized_surface.observed_sha256.clone()),
             normalized_source_document_path: surface_dir.join("source-document.yaml"),
             raw_source_document_path: surface_dir.join("source-document.raw"),
         });
@@ -732,7 +946,7 @@ fn write_materialization(
         projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
     };
     let materialized = V4MaterializedSource {
-        fingerprint: fingerprint.clone(),
+        fingerprint: Some(fingerprint.clone()),
         surfaces: materialized_surfaces,
         projections: projections.clone(),
         diagnostics: diagnostics.clone(),
@@ -1257,6 +1471,34 @@ mod tests {
         SourceName::parse("github_v4_materialization_test").expect("source name")
     }
 
+    fn load_v4_materialization(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        manifest_yaml: &str,
+        manifest: &V4SourceManifest,
+    ) -> Result<V4MaterializedSource, AppError> {
+        super::load_v4_materialization(
+            layout,
+            workspace_name,
+            source_name,
+            manifest_yaml,
+            manifest,
+            &SourceDiagnosticReporter::default(),
+        )
+    }
+
+    fn assert_load_diagnostic(materialized: &V4MaterializedSource, code: &str) {
+        assert!(
+            materialized
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}: {:#?}",
+            materialized.diagnostics
+        );
+    }
+
     fn openapi_fixture() -> &'static str {
         r"
 openapi: 3.0.3
@@ -1387,6 +1629,37 @@ paths:
         assert!(result.is_none(), "request methods must include an id");
     }
 
+    #[test]
+    fn diagnostic_reporter_owns_and_clears_source_state() {
+        let reporter = SourceDiagnosticReporter::default();
+        let independent_reporter = SourceDiagnosticReporter::default();
+        let workspace_name = workspace_name();
+        let source_name = source_name();
+        reporter.report_source_load_failure(
+            &workspace_name,
+            &source_name,
+            "SOURCE_LOAD_FAILED",
+            "test failure",
+        );
+        reporter.report_runtime_surface_diagnostics(
+            &workspace_name,
+            &source_name,
+            &[materialization_warning(
+                "V4_RUNTIME_SURFACE_ASSEMBLY_FAILED",
+                "test runtime failure",
+                Some("rest".to_string()),
+            )],
+        );
+
+        assert_eq!(reporter.tracked_stage_count(), 2);
+        assert_eq!(reporter.clone().tracked_stage_count(), 2);
+        assert_eq!(independent_reporter.tracked_stage_count(), 0);
+
+        reporter.clear_source(&workspace_name, &source_name);
+
+        assert_eq!(reporter.tracked_stage_count(), 0);
+    }
+
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("openapi.yaml");
@@ -1453,6 +1726,21 @@ surfaces:
                 key,
                 serde_yaml::Value::String(generator_version.to_string()),
             );
+    }
+
+    fn set_yaml_string_field(path: &Path, field: &str, value: &str) {
+        let mut artifact: serde_yaml::Value =
+            serde_yaml::from_slice(&std::fs::read(path).expect("read YAML artifact"))
+                .expect("parse YAML artifact");
+        artifact
+            .as_mapping_mut()
+            .expect("artifact mapping")
+            .insert(field.into(), value.into());
+        std::fs::write(
+            path,
+            serde_yaml::to_string(&artifact).expect("encode YAML artifact"),
+        )
+        .expect("write YAML artifact");
     }
 
     fn write_projection_override(layout: &AppStateLayout, catalog: &serde_yaml::Value) -> PathBuf {
@@ -1784,7 +2072,7 @@ surfaces:
     }
 
     #[test]
-    fn load_v4_materialization_rejects_mismatched_manifest_hash() {
+    fn load_v4_materialization_warns_on_mismatched_manifest_hash() {
         let (_state, _descriptor, layout, manifest_yaml, _manifest) = setup_materialization();
         let changed_manifest_yaml = format!("description: changed\n{manifest_yaml}");
         let changed_manifest = parse_source_manifest_yaml(&changed_manifest_yaml)
@@ -1793,25 +2081,78 @@ surfaces:
             .expect("v4")
             .clone();
 
-        let error = load_v4_materialization(
+        let materialized = load_v4_materialization(
             &layout,
             &workspace_name(),
             &source_name(),
             &changed_manifest_yaml,
             &changed_manifest,
         )
-        .expect_err("changed manifest hash should fail");
+        .expect("changed manifest hash should remain loadable");
 
-        assert!(
-            error
-                .to_string()
-                .contains("manifest fingerprint does not match installed manifest"),
-            "unexpected error: {error}"
-        );
+        assert_load_diagnostic(&materialized, "V4_MANIFEST_FINGERPRINT_MISMATCH");
     }
 
     #[test]
-    fn load_v4_materialization_rejects_generated_projection_catalog_without_generator_version() {
+    fn load_v4_materialization_warns_on_fingerprint_identity_mismatch() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
+        set_yaml_string_field(&fingerprint_path, "source_name", "stale_source_identity");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("fingerprint identity provenance should not block loading");
+
+        assert_load_diagnostic(&materialized, "V4_FINGERPRINT_HEADER_MISMATCH");
+    }
+
+    #[test]
+    fn load_v4_materialization_warns_on_semantic_ir_identity_mismatch() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let semantic_ir_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("semantic-ir.yaml");
+        set_yaml_string_field(&semantic_ir_path, "source_name", "stale_source_identity");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("semantic IR identity provenance should not block loading");
+
+        assert_load_diagnostic(&materialized, "V4_SEMANTIC_IR_PROVENANCE_MISMATCH");
+    }
+
+    #[test]
+    fn load_v4_materialization_warns_on_semantic_ir_importer_version_mismatch() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let semantic_ir_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("semantic-ir.yaml");
+        set_yaml_string_field(&semantic_ir_path, "importer_version", "openapi-v0");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("semantic IR producer provenance should not block loading");
+
+        assert_load_diagnostic(&materialized, "V4_SEMANTIC_IR_PROVENANCE_MISMATCH");
+    }
+
+    #[test]
+    fn load_v4_materialization_warns_on_generated_catalog_without_generator_version() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let projection_path = layout
             .v4_materialized_dir(&workspace_name(), &source_name())
@@ -1824,20 +2165,64 @@ surfaces:
         )
         .expect("write generated projections");
 
-        let error = load_v4_materialization(
+        let materialized = load_v4_materialization(
             &layout,
             &workspace_name(),
             &source_name(),
             &manifest_yaml,
             &manifest,
         )
-        .expect_err("generated projection catalog without generator version should fail");
+        .expect("generated catalog provenance should not block loading");
 
+        assert_load_diagnostic(&materialized, "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH");
+    }
+
+    #[test]
+    fn load_v4_materialization_defaults_missing_projection_namespace() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projection_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog = installed_projection_catalog_value(&layout);
+        let first_projection = catalog
+            .get_mut("projections")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .and_then(|projections| projections.first_mut())
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .expect("first projection mapping");
+        first_projection.remove(serde_yaml::Value::String("namespace".to_string()));
+        std::fs::write(
+            &projection_path,
+            serde_yaml::to_string(&catalog).expect("encode projections"),
+        )
+        .expect("write projections without namespace");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("legacy projection namespace should be migrated");
+
+        let projection = materialized
+            .projections
+            .projections
+            .first()
+            .expect("first projection");
+        assert_eq!(
+            projection.namespace,
+            manifest
+                .surface("rest")
+                .expect("REST surface")
+                .relation_namespace
+        );
         assert!(
-            error
-                .to_string()
-                .contains("projection catalog generator version mismatch"),
-            "unexpected error: {error}"
+            !materialized
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "V4_PROJECTION_NAMESPACE_MISMATCH" })
         );
     }
 
@@ -1882,38 +2267,22 @@ surfaces:
     }
 
     #[test]
-    fn load_v4_materialization_rejects_stale_projection_override_generator_version() {
+    fn load_v4_materialization_warns_on_stale_projection_override_generator_version() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let mut catalog = installed_projection_catalog_value(&layout);
         set_generator_version(&mut catalog, "derive-read-v0");
-        let override_path = write_projection_override(&layout, &catalog);
+        write_projection_override(&layout, &catalog);
 
-        let error = load_v4_materialization(
+        let materialized = load_v4_materialization(
             &layout,
             &workspace_name(),
             &source_name(),
             &manifest_yaml,
             &manifest,
         )
-        .expect_err("stale projection override generator version should fail");
-        let message = error.to_string();
+        .expect("stale override provenance should not block loading");
 
-        assert!(
-            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
-            "unexpected error: {error:#}"
-        );
-        assert!(
-            message.contains(&override_path.display().to_string()),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("Edit or remove the override file"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            !message.contains("Re-add the source"),
-            "unexpected error: {message}"
-        );
+        assert_load_diagnostic(&materialized, "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH");
     }
 
     #[test]
@@ -1955,10 +2324,15 @@ surfaces:
     }
 
     #[test]
-    fn load_v4_materialization_rejects_corrupted_artifact_yaml_with_readd_guidance() {
+    fn load_v4_materialization_rejects_duplicate_projection_override_names() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
-        std::fs::write(&fingerprint_path, b": not yaml").expect("corrupt fingerprint");
+        let mut catalog = installed_projection_catalog_value(&layout);
+        let projections = catalog
+            .get_mut("projections")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("projection sequence");
+        projections.push(projections.first().expect("first projection").clone());
+        let override_path = write_projection_override(&layout, &catalog);
 
         let error = load_v4_materialization(
             &layout,
@@ -1967,17 +2341,65 @@ surfaces:
             &manifest_yaml,
             &manifest,
         )
-        .expect_err("corrupted artifact should fail");
-        let message = error.to_string();
+        .expect_err("duplicate projection names should fail at load time");
 
         assert!(
-            message.contains("missing or incompatible DSL v4 materialized artifacts"),
+            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("projection") && error.to_string().contains("is repeated"),
             "unexpected error: {error}"
         );
         assert!(
-            message.contains("Re-add the source"),
+            error
+                .to_string()
+                .contains(&override_path.display().to_string()),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn load_v4_materialization_ignores_corrupted_optional_fingerprint() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
+        std::fs::write(&fingerprint_path, b": not yaml").expect("corrupt fingerprint");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("corrupted optional fingerprint should not fail");
+
+        assert!(materialized.fingerprint.is_none());
+        assert!(
+            materialized
+                .surfaces
+                .iter()
+                .all(|surface| surface.source_document_sha256.is_none())
+        );
+        assert_load_diagnostic(&materialized, "V4_FINGERPRINT_UNAVAILABLE");
+    }
+
+    #[test]
+    fn load_v4_materialization_ignores_missing_optional_diagnostics() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        std::fs::remove_file(layout.v4_diagnostics_file(&workspace_name(), &source_name()))
+            .expect("remove diagnostics");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("missing optional diagnostics should not fail");
+
+        assert_load_diagnostic(&materialized, "V4_DIAGNOSTICS_UNAVAILABLE");
     }
 
     #[test]
@@ -2069,7 +2491,7 @@ operation_overrides:
     }
 
     #[test]
-    fn load_v4_materialization_rejects_extra_fingerprint_surface() {
+    fn load_v4_materialization_warns_on_extra_fingerprint_surface() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
         let mut fingerprint: serde_yaml::Value =
@@ -2091,51 +2513,41 @@ operation_overrides:
         )
         .expect("write fingerprint");
 
-        let error = load_v4_materialization(
+        let materialized = load_v4_materialization(
             &layout,
             &workspace_name(),
             &source_name(),
             &manifest_yaml,
             &manifest,
         )
-        .expect_err("extra surface should fail");
+        .expect("extra fingerprint surface should not fail");
 
-        assert!(
-            error
-                .to_string()
-                .contains("fingerprint surface set mismatch"),
-            "unexpected error: {error}"
-        );
+        assert_load_diagnostic(&materialized, "V4_FINGERPRINT_SURFACE_MISMATCH");
     }
 
     #[test]
-    fn load_v4_materialization_rejects_corrupted_raw_source_document() {
+    fn load_v4_materialization_warns_on_corrupted_raw_source_document() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let raw_path = layout
             .v4_surface_dir(&workspace_name(), &source_name(), "rest")
             .join("source-document.raw");
         std::fs::write(&raw_path, b"corrupted").expect("corrupt raw descriptor");
 
-        let error = load_v4_materialization(
+        let materialized = load_v4_materialization(
             &layout,
             &workspace_name(),
             &source_name(),
             &manifest_yaml,
             &manifest,
         )
-        .expect_err("corrupted raw descriptor should fail");
+        .expect("raw descriptor hash mismatch should not fail loading");
 
-        assert!(
-            error
-                .to_string()
-                .contains("raw source document hash does not match"),
-            "unexpected error: {error}"
-        );
+        assert_load_diagnostic(&materialized, "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH");
     }
 
     #[cfg(unix)]
     #[test]
-    fn load_v4_materialization_rejects_unreadable_raw_source_document_with_readd_guidance() {
+    fn load_v4_materialization_warns_on_unreadable_raw_source_document() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
@@ -2165,21 +2577,8 @@ operation_overrides:
 
         std::fs::set_permissions(&raw_path, original_permissions)
             .expect("restore raw descriptor permissions");
-        let message = result
-            .expect_err("unreadable raw descriptor should fail")
-            .to_string();
-        assert!(
-            message.contains("missing or incompatible DSL v4 materialized artifacts"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("failed to read raw source document artifact"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("Re-add the source"),
-            "unexpected error: {message}"
-        );
+        let materialized = result.expect("unreadable optional raw descriptor should not fail");
+        assert_load_diagnostic(&materialized, "V4_RAW_DOCUMENT_UNAVAILABLE");
     }
 
     #[test]

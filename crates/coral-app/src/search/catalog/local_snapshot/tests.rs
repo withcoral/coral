@@ -192,7 +192,85 @@ tables:
 }
 
 #[test]
-fn loader_fails_when_installed_manifest_cannot_be_read() {
+fn loader_builds_catalog_from_schema_v3_materialization_fixture_bytes() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let source_name = SourceName::parse("compatibility_fixture").expect("source");
+    let manifest_yaml = r"
+name: compatibility_fixture
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: rest
+    type: openapi
+    file: /tmp/schema-v3-openapi.yaml
+    base_url: https://api.example.com
+  - id: mcp
+    namespace_suffix: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: schema-v3-mcp-server
+";
+
+    config_store
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &source_name,
+        manifest_yaml,
+    );
+
+    let materialized_dir = layout.v4_materialized_dir(&workspace_name, &source_name);
+    let rest_dir = materialized_dir.join("surfaces").join("rest");
+    let mcp_dir = materialized_dir.join("surfaces").join("mcp");
+    std::fs::create_dir_all(&rest_dir).expect("create REST artifact dir");
+    std::fs::create_dir_all(&mcp_dir).expect("create MCP artifact dir");
+    std::fs::write(
+        materialized_dir.join("projections.yaml"),
+        include_str!("../../../../../coral-spec/src/v4/fixtures/v3/projections.yaml"),
+    )
+    .expect("write schema-v3 projections");
+    std::fs::write(
+        rest_dir.join("semantic-ir.yaml"),
+        include_str!("../../../../../coral-spec/src/v4/fixtures/v3/semantic-ir.yaml"),
+    )
+    .expect("write schema-v3 REST semantic IR");
+    std::fs::write(
+        mcp_dir.join("semantic-ir.yaml"),
+        include_str!("../../../../../coral-spec/src/v4/fixtures/v3/mcp-semantic-ir.yaml"),
+    )
+    .expect("write schema-v3 MCP semantic IR");
+
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
+        .load_catalog(&workspace_name)
+        .expect("load catalog from schema-v3 materialization");
+
+    let table = catalog
+        .tables
+        .iter()
+        .find(|table| {
+            table.schema_name == "compatibility_fixture_rest" && table.table_name == "items"
+        })
+        .expect("legacy projection without a namespace should produce the items table");
+    assert_eq!(
+        table
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "state", "owner"]
+    );
+    assert_eq!(table.required_filters, ["owner"]);
+}
+
+#[test]
+fn loader_fails_closed_when_installed_manifest_cannot_be_read() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let config_store = ConfigStore::new(layout.clone());
@@ -218,16 +296,16 @@ fn loader_fails_when_installed_manifest_cannot_be_read() {
 
     let error = CatalogSnapshotLoader::new(config_store, layout)
         .load_catalog(&workspace_name)
-        .expect_err("missing installed manifest should fail catalog load");
+        .expect_err("missing installed manifest should fail closed");
 
     assert!(
-        matches!(error, AppError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::NotFound),
+        matches!(error, AppError::Io(_)),
         "unexpected error: {error}"
     );
 }
 
 #[test]
-fn loader_fails_when_v4_source_missing_materialization() {
+fn loader_keeps_healthy_source_when_v4_source_is_missing_materialization() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let config_store = ConfigStore::new(layout.clone());
@@ -275,16 +353,13 @@ surfaces:
 ",
     );
 
-    let error = CatalogSnapshotLoader::new(config_store, layout)
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
         .load_catalog(&workspace_name)
-        .expect_err("missing v4 materialization should fail catalog load");
+        .expect("missing v4 materialization should be isolated");
 
-    match error {
-        AppError::MissingOrIncompatibleV4Materialization { source_name, .. } => {
-            assert_eq!(source_name, stale_v4_source.as_str());
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    assert!(catalog.tables.iter().any(|table| {
+        table.schema_name == healthy_source.as_str() && table.table_name == "messages"
+    }));
 }
 
 fn install_imported_source(
