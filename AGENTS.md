@@ -26,17 +26,24 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
-- For Postgres-backed database changes, run `make postgres-tests`. Keep this as
-  the single entry point for local and CI Postgres coverage; do not duplicate
-  its Cargo test invocations in workflows or contributor instructions. The
-  target uses `CORAL_TEST_POSTGRES_URL` when supplied. Otherwise it starts a
-  local Docker Postgres and creates a fresh database inside the reusable
-  container. Docker chooses an available localhost port by default; use
+- For Postgres-backed database changes, run `make postgres-tests`. Keep
+  `postgres-test-suite` as the single home for the suite's Cargo invocations;
+  do not duplicate them in workflows or contributor instructions. The suite runs
+  the `state::db` unit-test namespace, repeating shared repository assertions
+  against Postgres, then runs the dedicated Postgres integration target for
+  migration and server startup coverage plus the xtask recovery contracts.
+  The recovery checks use xtask's `admin` feature. `postgres-tests` uses
+  `CORAL_TEST_POSTGRES_URL` when supplied. Otherwise it starts a local Docker
+  Postgres and creates a fresh database inside the reusable container. Docker
+  chooses an available localhost port by default; use
   `make postgres-url` to print the server URL or
   `LOCAL_POSTGRES_PORT=55432 make postgres-start` when you need a stable port.
   Use `make postgres-start` when you only need the server,
   `make postgres-stop` when finished, and `make postgres-clean` to remove the
-  reusable container.
+  reusable container. Write repository coverage as normal tests that always
+  assert SQLite behavior and repeat the same assertions against Postgres when
+  `CORAL_TEST_POSTGRES_URL` is set. Do not mark them ignored or enumerate
+  individual test functions in Make or CI.
 - Run `make schema-check` before submitting PRs that touch generated manifest
   schemas or the Rust helpers that generate them. Use
   `make schema-generate` to refresh generated schema files. The Validate

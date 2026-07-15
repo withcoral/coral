@@ -74,8 +74,11 @@ root.
   columns. Put multi-repository transaction choreography in a focused
   `state/db/*_state.rs` operation; repositories expose the smallest reusable
   query primitives.
-- DB repository behavior should have shared tests that run against SQLite
-  locally and Postgres in CI through the repository harness.
+- DB repository tests should always assert SQLite behavior and repeat the same
+  assertions against Postgres when `CORAL_TEST_POSTGRES_URL` is set. Do not mark
+  Postgres branches ignored or enumerate individual test functions in the
+  repository harness; the Postgres suite selects the existing `state::db`
+  ownership namespace.
 - Until the RDBMS migration phases replace the relevant stores, persist
   imported manifests as files under app-owned state; do not inline them into
   `config.toml`.
