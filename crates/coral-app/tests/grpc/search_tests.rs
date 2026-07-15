@@ -279,7 +279,7 @@ async fn rebuild_search_index_forces_catalog_projection_refresh() {
 
 #[tokio::test]
 async fn rebuild_search_index_unspecified_rebuilds_catalog_and_observed_values() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::new_with_observed_values_search().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -311,8 +311,62 @@ async fn rebuild_search_index_unspecified_rebuilds_catalog_and_observed_values()
 }
 
 #[tokio::test]
-async fn rebuild_search_index_observed_values_rebuilds_projection() {
+async fn rebuild_search_index_all_rebuilds_catalog_and_noops_disabled_observed_values() {
     let harness = GrpcHarness::new().await;
+    harness
+        .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+
+    let response = harness
+        .search_client()
+        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+            workspace: Some(default_workspace()),
+            provider: SearchIndexProvider::All as i32,
+            force: false,
+        }))
+        .await
+        .expect("rebuild all search indexes")
+        .into_inner();
+
+    assert_eq!(response.results.len(), 2);
+    assert!(catalog_rebuild_detail(&response).new_document_count > 0);
+    assert_disabled_observed_maintenance_result(rebuild_result(
+        &response,
+        SearchProvider::ObservedValues,
+    ));
+}
+
+#[tokio::test]
+async fn rebuild_search_index_observed_values_noops_without_creating_storage_when_disabled() {
+    let harness = GrpcHarness::new().await;
+    let sqlite_path = search_sqlite_path(&harness);
+    assert!(!sqlite_path.exists());
+
+    let response = harness
+        .search_client()
+        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+            workspace: Some(default_workspace()),
+            provider: SearchIndexProvider::ObservedValues as i32,
+            force: false,
+        }))
+        .await
+        .expect("disabled observed-value search rebuild")
+        .into_inner();
+
+    assert_eq!(response.results.len(), 1);
+    assert_disabled_observed_maintenance_result(rebuild_result(
+        &response,
+        SearchProvider::ObservedValues,
+    ));
+    assert!(
+        !sqlite_path.exists(),
+        "disabled observed rebuild should not create search storage"
+    );
+}
+
+#[tokio::test]
+async fn rebuild_search_index_observed_values_rebuilds_projection() {
+    let harness = GrpcHarness::new_with_observed_values_search().await;
 
     let response = harness
         .search_client()
@@ -337,8 +391,32 @@ async fn rebuild_search_index_observed_values_rebuilds_projection() {
 }
 
 #[tokio::test]
-async fn drain_search_queue_reports_observed_provider_detail() {
+async fn drain_search_queue_noops_without_validating_budget_or_creating_storage_when_disabled() {
     let harness = GrpcHarness::new().await;
+    let sqlite_path = search_sqlite_path(&harness);
+    assert!(!sqlite_path.exists());
+
+    let response = harness
+        .search_client()
+        .drain_search_queue(Request::new(DrainSearchQueueRequest {
+            workspace: Some(default_workspace()),
+            budget_ms: 60_001,
+        }))
+        .await
+        .expect("disabled observed-value queue drain")
+        .into_inner();
+
+    assert_eq!(response.results.len(), 1);
+    assert_disabled_observed_maintenance_result(&response.results[0]);
+    assert!(
+        !sqlite_path.exists(),
+        "disabled observed drain should not create search storage"
+    );
+}
+
+#[tokio::test]
+async fn drain_search_queue_reports_observed_provider_detail() {
+    let harness = GrpcHarness::new_with_observed_values_search().await;
 
     let response = harness
         .search_client()
@@ -368,6 +446,35 @@ async fn drain_search_queue_reports_observed_provider_detail() {
         }
         other => panic!("expected observed drain detail, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn clear_search_data_remains_available_when_observed_values_search_is_disabled() {
+    let harness = GrpcHarness::new().await;
+
+    let response = harness
+        .search_client()
+        .clear_search_data(Request::new(ClearSearchDataRequest {
+            workspace: Some(default_workspace()),
+            scope: SearchDataScope::ObservedValues as i32,
+            target: Some(SearchClearTarget {
+                target: Some(search_clear_target::Target::Workspace(true)),
+            }),
+        }))
+        .await
+        .expect("clear disabled observed-value search data")
+        .into_inner();
+
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(
+        response.results[0].provider,
+        SearchProvider::ObservedValues as i32
+    );
+    assert!(matches!(
+        response.results[0].detail.as_ref(),
+        Some(search_maintenance_result::Detail::ObservedClear(_))
+    ));
+    assert!(response.storage_cleanup.is_some());
 }
 
 #[tokio::test]
@@ -441,7 +548,7 @@ async fn clear_search_data_removes_catalog_projection_and_next_search_recreates_
 
 #[tokio::test]
 async fn source_scoped_all_clear_does_not_load_manifest_and_bumps_generation() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::new_with_observed_values_search().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -743,6 +850,29 @@ fn observed_rebuild_detail(
             _ => None,
         })
         .expect("observed rebuild detail")
+}
+
+fn assert_disabled_observed_maintenance_result(result: &coral_api::v1::SearchMaintenanceResult) {
+    assert_eq!(result.provider, SearchProvider::ObservedValues as i32);
+    assert_eq!(
+        SearchMaintenanceState::try_from(result.state).expect("observed maintenance state"),
+        SearchMaintenanceState::Noop
+    );
+    assert!(
+        result.note.contains("enable") && result.note.contains("`observed_values_search`"),
+        "disabled observed maintenance note should explain how to enable it: {}",
+        result.note
+    );
+    assert!(
+        result.detail.is_none(),
+        "disabled observed maintenance should not report provider detail"
+    );
+}
+
+fn search_sqlite_path(harness: &GrpcHarness) -> std::path::PathBuf {
+    harness
+        .config_dir()
+        .join("workspaces/default/search/search.sqlite3")
 }
 
 fn catalog_clear_detail(

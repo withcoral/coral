@@ -46,6 +46,7 @@ const MAX_MANUAL_DRAIN_BUDGET_MS: u32 = 60_000;
 const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
 const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(1);
 const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
+const OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE: &str = "observed value search maintenance is disabled; enable `observed_values_search` to rebuild or drain observed values";
 
 impl SearchManager {
     pub(crate) fn new(
@@ -291,6 +292,9 @@ impl SearchManager {
         &self,
         request: &RebuildSearchIndexRequest,
     ) -> SearchMaintenanceResult {
+        if !self.observed_values_search_enabled {
+            return observed_values_search_disabled_maintenance_result();
+        }
         match self.try_rebuild_observed_index(request) {
             Ok(result) => result,
             Err(error) => observed_rebuild_error_provider_result(&error),
@@ -316,6 +320,9 @@ impl SearchManager {
         workspace_name: &WorkspaceName,
         budget_ms: u32,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        if !self.observed_values_search_enabled {
+            return Ok(observed_values_search_disabled_maintenance_result());
+        }
         let budget_ms = manual_drain_budget_ms(budget_ms)?;
         self.observed.drain_queue(
             workspace_name,
@@ -383,6 +390,15 @@ fn observed_rebuild_error_provider_result(error: &SearchManagerError) -> SearchM
             "observed-value search index rebuild failed: {}",
             search_manager_error_message(error)
         ),
+        detail: None,
+    }
+}
+
+fn observed_values_search_disabled_maintenance_result() -> SearchMaintenanceResult {
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::ObservedValues,
+        state: SearchMaintenanceState::Noop,
+        note: OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE.to_string(),
         detail: None,
     }
 }
