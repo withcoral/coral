@@ -50,6 +50,7 @@ export function SourceInstallDialog({
   actionError,
   entry,
   fetchOAuthInstall = fetch,
+  onOAuthInstallComplete,
   open,
   openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
   onOpenChange,
@@ -59,6 +60,7 @@ export function SourceInstallDialog({
   actionError?: string | null
   entry: CatalogEntry | null
   fetchOAuthInstall?: typeof fetch
+  onOAuthInstallComplete?: () => Promise<void> | void
   open: boolean
   openAuthorization?: (url: string) => unknown
   onOpenChange: (open: boolean) => void
@@ -75,6 +77,7 @@ export function SourceInstallDialog({
               actionError={actionError}
               entry={entry}
               fetchOAuthInstall={fetchOAuthInstall}
+              onOAuthInstallComplete={onOAuthInstallComplete}
               onCancel={() => onOpenChange(false)}
               openAuthorization={openAuthorization}
               submitting={submitting ?? false}
@@ -91,6 +94,7 @@ function SourceInstallDialogContent({
   actionError,
   entry,
   fetchOAuthInstall,
+  onOAuthInstallComplete,
   onCancel,
   openAuthorization,
   submitting,
@@ -99,6 +103,7 @@ function SourceInstallDialogContent({
   actionError?: string | null
   entry: CatalogEntry
   fetchOAuthInstall: typeof fetch
+  onOAuthInstallComplete?: () => Promise<void> | void
   onCancel: () => void
   openAuthorization: (url: string) => unknown
   submitting: boolean
@@ -197,7 +202,9 @@ function SourceInstallDialogContent({
         setProgress({ kind: 'success', name: source.name })
         await revalidator.revalidate()
         if (!abortController.signal.aborted) {
-          await navigate(routePath('workspaceSources', { workspaceId }))
+          await (onOAuthInstallComplete
+            ? onOAuthInstallComplete()
+            : navigate(routePath('workspaceSources', { workspaceId })))
         }
       }
     } catch (error) {

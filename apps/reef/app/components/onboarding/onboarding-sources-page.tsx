@@ -4,7 +4,7 @@ import { SourceCatalogSurface } from '@/components/sources'
 import type { SourceCatalogEntry, SourceCatalogLoadState } from '@/components/sources'
 
 import { OnboardingLink, OnboardingPage } from './onboarding-page'
-import { getOnboardingStepState } from './onboarding-steps'
+import type { OnboardingStepState } from './onboarding-steps'
 
 export interface OnboardingSourcesPageProps {
   continueDisabled?: boolean
@@ -16,6 +16,7 @@ export interface OnboardingSourcesPageProps {
   onSearchChange: (search: string) => void
   onSourceSelect: (entry: SourceCatalogEntry) => void
   search: string
+  step: OnboardingStepState
 }
 
 export function OnboardingSourcesPage({
@@ -28,8 +29,8 @@ export function OnboardingSourcesPage({
   onSearchChange,
   onSourceSelect,
   search,
+  step,
 }: OnboardingSourcesPageProps) {
-  const step = getOnboardingStepState('sources')
   const hasConnectedSource = entries.some((entry) => entry.installed)
   const canContinue = hasConnectedSource && !continueDisabled
 

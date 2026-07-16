@@ -8,21 +8,16 @@ import {
 } from '@/components/query-detail'
 import type { SourceCatalogEntry } from '@/components/sources'
 import { formatSQL } from '@/lib/sql-highlight'
-import type { OnboardingSampleQueryRow } from '@/lib/onboarding-query'
+import { ONBOARDING_SAMPLE_QUERY, type OnboardingSampleQueryRow } from '@/lib/onboarding-query'
 import { Table, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 
 import { OnboardingPage } from './onboarding-page'
 import * as styles from './onboarding-sample-query-page.css'
-import { getOnboardingStepState } from './onboarding-steps'
+import type { OnboardingStepState } from './onboarding-steps'
 import { pluralise } from '~/utils/pluralise'
 
 export type SampleQueryLoadState = 'error' | 'idle' | 'loading' | 'success'
-
-export const ONBOARDING_SAMPLE_QUERY = `SELECT schema_name AS source, COUNT(*) AS tables
-FROM coral.tables
-GROUP BY schema_name
-ORDER BY schema_name`
 
 export type { OnboardingSampleQueryRow } from '@/lib/onboarding-query'
 
@@ -36,6 +31,7 @@ export interface OnboardingSampleQueryPageProps {
   onContinue?: () => void
   onRetry?: () => void
   rows?: OnboardingSampleQueryRow[]
+  step: OnboardingStepState
 }
 
 export function OnboardingSampleQueryPage({
@@ -48,8 +44,8 @@ export function OnboardingSampleQueryPage({
   onContinue,
   onRetry,
   rows = [],
+  step,
 }: OnboardingSampleQueryPageProps) {
-  const step = getOnboardingStepState('query')
   const sourceCount = connectedSources.length
   const canContinue = sourceCount > 0 && loadState === 'success' && !continueDisabled
 

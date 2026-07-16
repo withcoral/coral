@@ -1,18 +1,17 @@
-import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { createMemoryRouter, RouterProvider, useActionData, useLoaderData } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 
+import { oauthInstallEventToNdjson } from '@/lib/source-oauth-install-stream'
 import type { CatalogEntry } from '@/lib/sources'
+import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
+import { OnboardingView, SourcesStep } from '@/views/onboarding/onboarding'
 
-const { executeSql } = vi.hoisted(() => ({ executeSql: vi.fn() }))
 const WORKSPACE_ID = 'default'
+const sourcesStep = getOnboardingStepState('sources')
+const queryStep = getOnboardingStepState('query')
 
-vi.mock('@/lib/coral-clients', () => ({
-  getQueryClient: async () => ({ executeSql }),
-}))
-
-import OnboardingRoute, { SourcesStep } from './onboarding'
+import OnboardingRoute from './onboarding'
 
 function TestOnboardingRoute() {
   const props = {
@@ -43,17 +42,49 @@ const installedGithub: CatalogEntry = {
   },
 }
 
-describe('onboarding sources step', () => {
-  beforeEach(() => {
-    executeSql.mockReset()
-  })
+const oauthGithub: CatalogEntry = {
+  ...github,
+  inputSpecs: [
+    {
+      hint: '',
+      input: {
+        case: 'secret',
+        value: {
+          credential: {
+            methods: [
+              {
+                description: '',
+                hint: '',
+                label: 'OAuth',
+                method: { case: 'oauth', value: {} },
+              },
+            ],
+          },
+        },
+      },
+      key: 'GITHUB_TOKEN',
+      required: true,
+    },
+  ],
+}
 
+afterEach(() => vi.unstubAllGlobals())
+
+describe('onboarding sources step', () => {
   it('opens the installation dialog when an unconfigured source card is clicked', async () => {
     const router = createMemoryRouter(
       [
         {
           action: () => null,
-          element: <SourcesStep actionData={undefined} entries={[github]} loadError={null} />,
+          element: (
+            <SourcesStep
+              actionData={undefined}
+              entries={[github]}
+              loadError={null}
+              step={sourcesStep}
+              workspaceId={WORKSPACE_ID}
+            />
+          ),
           path: '/',
         },
       ],
@@ -73,7 +104,13 @@ describe('onboarding sources step', () => {
         {
           action: () => null,
           element: (
-            <SourcesStep actionData={undefined} entries={[installedGithub]} loadError={null} />
+            <SourcesStep
+              actionData={undefined}
+              entries={[installedGithub]}
+              loadError={null}
+              step={sourcesStep}
+              workspaceId={WORKSPACE_ID}
+            />
           ),
           path: '/',
         },
@@ -105,6 +142,8 @@ describe('onboarding sources step', () => {
           loader: () => ({
             entries: [installed ? installedGithub : github],
             loadError: null,
+            sampleQuery: null,
+            step: sourcesStep,
             workspaceId: WORKSPACE_ID,
           }),
           path: '/onboarding',
@@ -140,6 +179,8 @@ describe('onboarding sources step', () => {
           loader: () => ({
             entries: [installedGithub],
             loadError: null,
+            sampleQuery: null,
+            step: sourcesStep,
             workspaceId: WORKSPACE_ID,
           }),
           path: '/onboarding',
@@ -174,7 +215,13 @@ describe('onboarding sources step', () => {
         {
           action: () => ({ intent: 'install', name: 'github', status: 'success' }),
           Component: TestOnboardingRoute,
-          loader: () => ({ entries: [github], loadError: null, workspaceId: WORKSPACE_ID }),
+          loader: () => ({
+            entries: [github],
+            loadError: null,
+            sampleQuery: null,
+            step: sourcesStep,
+            workspaceId: WORKSPACE_ID,
+          }),
           path: '/onboarding',
         },
       ],
@@ -202,7 +249,13 @@ describe('onboarding sources step', () => {
             status: 'error',
           }),
           Component: TestOnboardingRoute,
-          loader: () => ({ entries: [github], loadError: null, workspaceId: WORKSPACE_ID }),
+          loader: () => ({
+            entries: [github],
+            loadError: null,
+            sampleQuery: null,
+            step: sourcesStep,
+            workspaceId: WORKSPACE_ID,
+          }),
           path: '/onboarding',
         },
       ],
@@ -226,19 +279,68 @@ describe('onboarding sources step', () => {
     await expect.element(screen.getByText('Installation failed')).toBeVisible()
   })
 
+  it('stays in onboarding after an OAuth source install', async () => {
+    let installed = false
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        installed = true
+        return streamedResponse([
+          oauthInstallEventToNdjson({ type: 'source', name: 'github', version: '1.0.0' }),
+        ])
+      }),
+    )
+    const router = createMemoryRouter(
+      [
+        {
+          action: () => null,
+          Component: TestOnboardingRoute,
+          loader: () => ({
+            entries: [installed ? installedGithub : oauthGithub],
+            loadError: null,
+            sampleQuery: null,
+            step: sourcesStep,
+            workspaceId: WORKSPACE_ID,
+          }),
+          path: '/onboarding',
+        },
+      ],
+      { initialEntries: ['/onboarding'] },
+    )
+    const screen = await render(<RouterProvider router={router} />)
+
+    await screen.getByRole('button', { name: /github/i }).click()
+    await screen.getByRole('button', { name: 'Add source' }).click()
+
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/onboarding')
+  })
+
   it('recovers when sources fail to reload on the query step', async () => {
-    executeSql.mockResolvedValue({
-      arrowIpcStream: tableToIPC(
-        tableFromArrays({ source: ['github'], tables: BigInt64Array.from([1n]) }),
-      ),
-    })
+    const runSampleQuery = vi.fn(() => ({
+      rows: [{ source: 'github', tables: '1' }],
+      status: 'success' as const,
+    }))
     let loadCount = 0
-    const loadSources = vi.fn(() => {
+    const loadSources = vi.fn(({ request }: { request: Request }) => {
       loadCount += 1
       if (loadCount === 2) {
-        return { entries: [], loadError: 'Source catalog unavailable', workspaceId: WORKSPACE_ID }
+        return {
+          entries: [],
+          loadError: 'Source catalog unavailable',
+          sampleQuery: null,
+          step: queryStep,
+          workspaceId: WORKSPACE_ID,
+        }
       }
-      return { entries: [installedGithub], loadError: null, workspaceId: WORKSPACE_ID }
+      const step = getOnboardingStepState(new URL(request.url).searchParams.get('step'))
+      return {
+        entries: [installedGithub],
+        loadError: null,
+        sampleQuery: step.step === 'query' ? runSampleQuery() : null,
+        step,
+        workspaceId: WORKSPACE_ID,
+      }
     })
     const router = createMemoryRouter(
       [
@@ -262,22 +364,27 @@ describe('onboarding sources step', () => {
 
     await expect.element(screen.getByRole('button', { name: 'Finish setup' })).toBeEnabled()
     expect(loadSources).toHaveBeenCalledTimes(3)
-    expect(executeSql).toHaveBeenCalledOnce()
+    expect(runSampleQuery).toHaveBeenCalledOnce()
   })
 
   it('enters the normal app without persisting completion', async () => {
-    executeSql.mockResolvedValue({
-      arrowIpcStream: tableToIPC(
-        tableFromArrays({ source: ['github'], tables: BigInt64Array.from([1n]) }),
-      ),
+    let resolveSampleQuery: ((result: { rows: never[]; status: 'success' }) => void) | undefined
+    const sampleQuery = new Promise<{ rows: never[]; status: 'success' }>((resolve) => {
+      resolveSampleQuery = resolve
     })
     const props = {
       actionData: undefined,
-      loaderData: { entries: [installedGithub], loadError: null, workspaceId: WORKSPACE_ID },
-    } as Parameters<typeof OnboardingRoute>[0]
+      loaderData: {
+        entries: [installedGithub],
+        loadError: null,
+        sampleQuery,
+        step: queryStep,
+        workspaceId: WORKSPACE_ID,
+      },
+    }
     const router = createMemoryRouter(
       [
-        { element: <OnboardingRoute {...props} />, path: '/onboarding' },
+        { element: <OnboardingView {...props} />, path: '/onboarding' },
         { element: <p>Normal app</p>, path: `/workspaces/${WORKSPACE_ID}/sources` },
       ],
       { initialEntries: ['/onboarding?step=query'] },
@@ -285,10 +392,76 @@ describe('onboarding sources step', () => {
     const screen = await render(<RouterProvider router={router} />)
     const finish = screen.getByRole('button', { name: 'Finish setup' })
 
+    await expect.element(screen.getByText('Running query')).toBeVisible()
+    await expect.element(finish).toBeDisabled()
+    resolveSampleQuery?.({ rows: [], status: 'success' })
     await expect.element(finish).toBeEnabled()
     await finish.click()
 
     await expect.element(screen.getByText('Normal app')).toBeVisible()
-    expect(executeSql).toHaveBeenCalledOnce()
+  })
+
+  it('shows sample query errors returned by the onboarding page loader', async () => {
+    const props = {
+      actionData: undefined,
+      loaderData: {
+        entries: [installedGithub],
+        loadError: null,
+        sampleQuery: { message: 'Coral is unavailable', status: 'error' as const },
+        step: queryStep,
+        workspaceId: WORKSPACE_ID,
+      },
+    }
+    const router = createMemoryRouter(
+      [{ element: <OnboardingView {...props} />, path: '/onboarding' }],
+      { initialEntries: ['/onboarding?step=query'] },
+    )
+    const screen = await render(<RouterProvider router={router} />)
+
+    await expect.element(screen.getByText("Couldn't run the catalog query")).toBeVisible()
+    await expect.element(screen.getByText('Coral is unavailable')).toBeVisible()
+  })
+
+  it('keeps a rejected deferred query inside the onboarding error state', async () => {
+    let rejectSampleQuery: ((reason: Error) => void) | undefined
+    const sampleQuery = new Promise<never>((_resolve, reject) => {
+      rejectSampleQuery = reject
+    })
+    const props = {
+      actionData: undefined,
+      loaderData: {
+        entries: [installedGithub],
+        loadError: null,
+        sampleQuery,
+        step: queryStep,
+        workspaceId: WORKSPACE_ID,
+      },
+    }
+    const router = createMemoryRouter(
+      [{ element: <OnboardingView {...props} />, path: '/onboarding' }],
+      { initialEntries: ['/onboarding?step=query'] },
+    )
+    const screen = await render(<RouterProvider router={router} />)
+
+    await expect.element(screen.getByText('Running query')).toBeVisible()
+    rejectSampleQuery?.(new Error('Server Timeout'))
+
+    await expect.element(screen.getByText("Couldn't run the catalog query")).toBeVisible()
+    await expect
+      .element(screen.getByText("The sample query couldn't be completed. Try again."))
+      .toBeVisible()
+    await expect.element(screen.getByText('Oops!')).not.toBeInTheDocument()
   })
 })
+
+function streamedResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder()
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+        controller.close()
+      },
+    }),
+  )
+}
