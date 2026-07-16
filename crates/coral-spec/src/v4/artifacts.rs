@@ -307,7 +307,7 @@ surfaces:
         let manifest = manifest();
         let mut materialized = materialized_source();
         materialized.projections =
-            serde_yaml::from_str(include_str!("fixtures/v3/projections.yaml"))
+            serde_yaml::from_str(include_str!("fixtures/artefact-schema-v3/projections.yaml"))
                 .expect("decode projection fixture");
         let duplicate = materialized
             .projections

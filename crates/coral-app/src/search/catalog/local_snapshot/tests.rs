@@ -192,6 +192,10 @@ tables:
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This test keeps related failure cases together"
+)]
 fn loader_builds_catalog_from_schema_v3_materialization_fixture_bytes() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -233,17 +237,23 @@ surfaces:
     std::fs::create_dir_all(&mcp_dir).expect("create MCP artifact dir");
     std::fs::write(
         materialized_dir.join("projections.yaml"),
-        include_str!("../../../../../coral-spec/src/v4/fixtures/v3/projections.yaml"),
+        include_str!(
+            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/projections.yaml"
+        ),
     )
     .expect("write schema-v3 projections");
     std::fs::write(
         rest_dir.join("semantic-ir.yaml"),
-        include_str!("../../../../../coral-spec/src/v4/fixtures/v3/semantic-ir.yaml"),
+        include_str!(
+            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/semantic-ir.yaml"
+        ),
     )
     .expect("write schema-v3 REST semantic IR");
     std::fs::write(
         mcp_dir.join("semantic-ir.yaml"),
-        include_str!("../../../../../coral-spec/src/v4/fixtures/v3/mcp-semantic-ir.yaml"),
+        include_str!(
+            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/mcp-semantic-ir.yaml"
+        ),
     )
     .expect("write schema-v3 MCP semantic IR");
 
@@ -286,7 +296,6 @@ surfaces:
         ["id", "score"]
     );
     assert_eq!(table_function.arguments.len(), 1);
-    // Assert that the first arg is called "query" and is required
     let first_arg = table_function
         .arguments
         .first()
