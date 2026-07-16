@@ -195,24 +195,6 @@ impl FunctionManager {
         .await
     }
 
-    pub(crate) fn list_functions_with_preparation_failure(
-        &self,
-        workspace_name: &WorkspaceName,
-        preparation_error: &AppError,
-    ) -> Result<Vec<FunctionListing>, AppError> {
-        let preparation_error = format!("function runtime unavailable: {preparation_error}");
-        Ok(self
-            .load_function_artifacts(workspace_name)?
-            .into_iter()
-            .map(|artifact| {
-                let error = parse_function_artifact(&artifact)
-                    .err()
-                    .unwrap_or_else(|| preparation_error.clone());
-                invalid_listing(artifact.name, error)
-            })
-            .collect())
-    }
-
     pub(crate) async fn load_runtime_udfs(
         &self,
         workspace_name: &WorkspaceName,

@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
@@ -55,16 +55,6 @@ pub(crate) struct ValidatedSource {
 enum CredentialResolutionMode {
     Refreshing,
     StoredOnly,
-}
-
-fn is_source_scoped_load_failure(error: &AppError) -> bool {
-    matches!(
-        error,
-        AppError::MissingSourceInputs { .. }
-            | AppError::MissingOrIncompatibleV4Materialization { .. }
-            | AppError::InvalidV4ProjectionOverride { .. }
-            | AppError::Credentials(CredentialsError::Io(_) | CredentialsError::Parse(_))
-    )
 }
 
 #[derive(Debug, Clone)]
@@ -393,7 +383,7 @@ impl QueryManager {
         self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources_from_config(workspace_name, &config)?;
+        let sources = self.load_query_sources_from_config(workspace_name, &config);
         Ok((sources, config))
     }
 
@@ -407,7 +397,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Result<Vec<LoadedQuerySource>, AppError> {
+    ) -> Vec<LoadedQuerySource> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = tracing::field::Empty,
@@ -426,7 +416,7 @@ impl QueryManager {
                     );
                     loaded_sources.push(loaded_source);
                 }
-                Err(error) if is_source_scoped_load_failure(&error) => {
+                Err(error) => {
                     self.diagnostic_reporter.report_source_load_failure(
                         SourceLoadDiagnosticStage::Query,
                         workspace_name,
@@ -435,11 +425,10 @@ impl QueryManager {
                         &error.to_string(),
                     );
                 }
-                Err(error) => return Err(error),
             }
         }
         span.record("source.count", loaded_sources.len());
-        Ok(loaded_sources)
+        loaded_sources
     }
 
     fn load_query_source(
@@ -606,20 +595,10 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<FunctionListing>, QueryManagerError> {
-        let (loaded_sources, config) = match self.load_query_sources(workspace_name).await {
-            Ok(loaded) => loaded,
-            Err(
-                error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                | AppError::MissingOrIncompatibleV4Materialization { .. }
-                | AppError::InvalidV4ProjectionOverride { .. }),
-            ) => {
-                return self
-                    .function_manager
-                    .list_functions_with_preparation_failure(workspace_name, &error)
-                    .map_err(QueryManagerError::App);
-            }
-            Err(error) => return Err(QueryManagerError::App(error)),
-        };
+        let (loaded_sources, config) = self
+            .load_query_sources(workspace_name)
+            .await
+            .map_err(QueryManagerError::App)?;
         let sources = query_sources_from_loaded(&loaded_sources);
         self.function_manager
             .list_functions(workspace_name, &sources, || {
@@ -717,9 +696,7 @@ impl QueryManager {
                 .config_store
                 .load_config_unlocked()
                 .map_err(QueryManagerError::App)?;
-            let loaded_sources = self
-                .load_query_sources_from_config(workspace_name, &config)
-                .map_err(QueryManagerError::App)?;
+            let loaded_sources = self.load_query_sources_from_config(workspace_name, &config);
             (loaded_sources, config)
         };
         Ok((loaded_sources, config))
@@ -1063,9 +1040,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::credentials::{
-        CredentialStorageKind, CredentialStoragePreference, CredentialStore, CredentialsError,
-    };
+    use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
@@ -2095,61 +2070,22 @@ surfaces:
         assert!(sources.is_empty());
     }
 
-    #[test]
-    fn source_load_isolation_excludes_backend_wide_credential_failures() {
-        let missing_file = AppError::Credentials(CredentialsError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "missing source credential file",
-        )));
-        let corrupt_file =
-            AppError::Credentials(CredentialsError::Parse("invalid source credentials".into()));
-        let missing_inputs = AppError::MissingSourceInputs {
-            source_name: "demo".into(),
-            detail: "secret 'TOKEN'".into(),
-        };
-        let unavailable_backend =
-            AppError::Credentials(CredentialsError::Unavailable("keychain unavailable".into()));
-        let snapshot_mismatch = AppError::Credentials(CredentialsError::SnapshotStorageMismatch {
-            snapshot: "file",
-            requested: "keychain",
-        });
-
-        assert!(is_source_scoped_load_failure(&missing_file));
-        assert!(is_source_scoped_load_failure(&corrupt_file));
-        assert!(is_source_scoped_load_failure(&missing_inputs));
-        assert!(!is_source_scoped_load_failure(&unavailable_backend));
-        assert!(!is_source_scoped_load_failure(&snapshot_mismatch));
-    }
-
     #[tokio::test]
-    async fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
+    async fn load_query_sources_skips_unavailable_keychain_source() {
         let fixture = query_manager_with_unavailable_keychain().await;
         let workspace_name = WorkspaceName::default();
         install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
 
-        let error = fixture
+        let (sources, _) = fixture
             .manager
             .load_query_sources(&workspace_name)
             .await
-            .expect_err("unavailable keychain should fail closed");
-
-        assert!(
-            matches!(
-                error,
-                AppError::Credentials(CredentialsError::Unavailable(_))
-            ),
-            "unexpected error: {error:#}"
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("configured for keychain storage"),
-            "keychain-routed query failure should name the routed backend: {error}"
-        );
+            .expect("unavailable keychain source should be isolated");
+        assert!(sources.is_empty());
     }
 
     #[tokio::test]
-    async fn list_functions_keeps_inventory_visible_when_source_preparation_fails() {
+    async fn list_functions_keeps_unrelated_function_ready_when_source_preparation_fails() {
         let fixture = query_manager_with_unavailable_keychain().await;
         let workspace_name = WorkspaceName::default();
         let function_sql = r"/*
@@ -2182,11 +2118,9 @@ select 1 as value
             .first()
             .expect("installed function remains visible");
         assert_eq!(function.name.as_str(), "constant_value");
-        let crate::functions::manager::FunctionRuntimeStatus::Invalid(error) = &function.runtime
-        else {
-            panic!("function should be invalid while source preparation is unavailable");
+        let crate::functions::manager::FunctionRuntimeStatus::Ready(_) = &function.runtime else {
+            panic!("unrelated function should remain ready when source preparation fails");
         };
-        assert!(error.contains("configured for keychain storage"));
     }
 
     struct PrepareCountingDecorator {
