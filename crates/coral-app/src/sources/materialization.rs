@@ -9,13 +9,14 @@ use std::time::Duration;
 use coral_spec::v4::{
     Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
     MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, ProjectionPaginationInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr,
-    SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
-    apply_parameter_metadata_overrides, generate_projection_catalog, import_mcp_surface,
-    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
-    openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
-    sync_projection_pagination_inputs, validate_materialized_source,
-    validate_materialized_source_structure, validate_openapi_base_url_template,
+    ProjectionCatalog, ProjectionPaginationInputSyncMode, ProjectionVisibility,
+    SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+    V4MaterializedSource, V4SourceManifest, apply_parameter_metadata_overrides,
+    generate_projection_catalog, import_mcp_surface, import_openapi_surface,
+    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
+    parse_parameter_metadata_overrides_yaml, sync_projection_pagination_inputs,
+    validate_materialized_source, validate_materialized_source_structure,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -43,10 +44,18 @@ pub(crate) const PARAMETER_METADATA_OVERRIDE_FILENAME: &str = "parameter_metadat
 type ReportedDiagnosticKey = (String, String);
 type ReportedDiagnosticStateKey = (String, String, String);
 type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<ReportedDiagnosticKey>>;
+type RawDocumentValidationKey = (String, String, String);
+
+#[derive(Debug, Clone)]
+struct RawDocumentValidation {
+    expected_sha256: String,
+    diagnostic: Option<Diagnostic>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SourceDiagnosticReporter {
     reported: Arc<Mutex<ReportedDiagnostics>>,
+    raw_document_validations: Arc<Mutex<BTreeMap<RawDocumentValidationKey, RawDocumentValidation>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,13 +122,85 @@ impl SourceDiagnosticReporter {
     }
 
     pub(crate) fn clear_source(&self, workspace_name: &WorkspaceName, source_name: &SourceName) {
-        let mut reported = self
-            .reported
+        {
+            let mut reported = self
+                .reported
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            reported.retain(|(workspace, source, _stage), _diagnostics| {
+                workspace != workspace_name.as_str() || source != source_name.as_str()
+            });
+        }
+        let mut raw_document_validations = self
+            .raw_document_validations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        reported.retain(|(workspace, source, _stage), _diagnostics| {
+        raw_document_validations.retain(|(workspace, source, _surface), _validation| {
             workspace != workspace_name.as_str() || source != source_name.as_str()
         });
+    }
+
+    fn validate_raw_document_fingerprint(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface: &coral_spec::v4::V4Surface,
+        path: &Path,
+        expected_sha256: &str,
+    ) -> Option<Diagnostic> {
+        let key = (
+            workspace_name.to_string(),
+            source_name.to_string(),
+            surface.id.clone(),
+        );
+        if let Some(validation) = self
+            .raw_document_validations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .filter(|validation| validation.expected_sha256 == expected_sha256)
+        {
+            return validation.diagnostic.clone();
+        }
+
+        let (diagnostic, cacheable) = match std::fs::read(path) {
+            Ok(raw_bytes) if sha256_hex(&raw_bytes) != expected_sha256 => (
+                Some(materialization_warning(
+                    "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH",
+                    format!(
+                        "raw source document hash does not match for surface '{}'",
+                        surface.id
+                    ),
+                    Some(surface.id.clone()),
+                )),
+                true,
+            ),
+            Ok(_) => (None, true),
+            Err(error) => (
+                Some(materialization_warning(
+                    "V4_RAW_DOCUMENT_UNAVAILABLE",
+                    format!(
+                        "could not read raw source document '{}' for provenance validation: {error}",
+                        path.display()
+                    ),
+                    Some(surface.id.clone()),
+                )),
+                false,
+            ),
+        };
+        if cacheable {
+            self.raw_document_validations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    key,
+                    RawDocumentValidation {
+                        expected_sha256: expected_sha256.to_string(),
+                        diagnostic: diagnostic.clone(),
+                    },
+                );
+        }
+        diagnostic
     }
 
     fn report_source_diagnostics<'a>(
@@ -347,19 +428,18 @@ pub(crate) fn load_v4_materialization(
     let originally_published = projections
         .projections
         .iter()
-        .filter(|projection| {
-            projection.visibility == coral_spec::v4::ProjectionVisibility::Published
-        })
+        .filter(|projection| projection.visibility == ProjectionVisibility::Published)
         .count();
-    let (surfaces, mut failed_surfaces) = load_projected_surfaces(
+    let (surfaces, mut failed_surfaces, mut surface_diagnostics) = load_projected_surfaces(
         layout,
         workspace_name,
         source_name,
         manifest,
         &projections,
         fingerprint.as_ref(),
-        &mut load_diagnostics,
+        diagnostic_reporter,
     );
+    load_diagnostics.append(&mut surface_diagnostics);
     let projection_structure_failure = collect_projection_coherence_diagnostics(
         manifest,
         &projections,
@@ -389,26 +469,13 @@ pub(crate) fn load_v4_materialization(
         "materialization",
         load_diagnostics.iter(),
     );
-    if originally_published > 0
-        && !projections.projections.iter().any(|projection| {
-            projection.visibility == coral_spec::v4::ProjectionVisibility::Published
-        })
-    {
-        if let Some(detail) = projection_structure_failure {
-            return Err(match projections_file.origin {
-                V4ProjectionCatalogOrigin::Materialized => {
-                    incompatible_materialization_error(source_name, detail)
-                }
-                V4ProjectionCatalogOrigin::Override => {
-                    invalid_projection_override_error(source_name, &projections_file.path, detail)
-                }
-            });
-        }
-        return Err(incompatible_materialization_error(
-            source_name,
-            "no published projection surfaces could be loaded",
-        ));
-    }
+    ensure_published_projection_survives(
+        source_name,
+        &projections_file,
+        originally_published,
+        &projections,
+        projection_structure_failure,
+    )?;
     diagnostics.append(&mut load_diagnostics);
     let materialized = V4MaterializedSource {
         fingerprint,
@@ -418,6 +485,37 @@ pub(crate) fn load_v4_materialization(
     };
     validate_loaded_materialized_source(source_name, manifest, &projections_file, &materialized)?;
     Ok(materialized)
+}
+
+fn ensure_published_projection_survives(
+    source_name: &SourceName,
+    projections_file: &V4ProjectionCatalogFile,
+    originally_published: usize,
+    projections: &ProjectionCatalog,
+    structure_failure: Option<String>,
+) -> Result<(), AppError> {
+    if originally_published == 0
+        || projections
+            .projections
+            .iter()
+            .any(|projection| projection.visibility == ProjectionVisibility::Published)
+    {
+        return Ok(());
+    }
+    if let Some(detail) = structure_failure {
+        return Err(match projections_file.origin {
+            V4ProjectionCatalogOrigin::Materialized => {
+                incompatible_materialization_error(source_name, detail)
+            }
+            V4ProjectionCatalogOrigin::Override => {
+                invalid_projection_override_error(source_name, &projections_file.path, detail)
+            }
+        });
+    }
+    Err(incompatible_materialization_error(
+        source_name,
+        "no published projection surfaces could be loaded",
+    ))
 }
 
 fn validate_loaded_materialized_source(
@@ -540,8 +638,9 @@ fn load_projected_surfaces(
     manifest: &V4SourceManifest,
     projections: &ProjectionCatalog,
     fingerprint: Option<&Fingerprint>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> (Vec<MaterializedSurface>, BTreeSet<String>) {
+    diagnostic_reporter: &SourceDiagnosticReporter,
+) -> (Vec<MaterializedSurface>, BTreeSet<String>, Vec<Diagnostic>) {
+    let mut diagnostics = Vec::new();
     let projected_surface_ids = projections
         .projections
         .iter()
@@ -575,6 +674,7 @@ fn load_projected_surfaces(
             manifest,
             surface,
             fingerprint_surfaces.get(&surface.id).copied(),
+            diagnostic_reporter,
         ) {
             Ok((materialized_surface, mut surface_diagnostics)) => {
                 surfaces.push(materialized_surface);
@@ -586,7 +686,7 @@ fn load_projected_surfaces(
             }
         }
     }
-    (surfaces, failed_surfaces)
+    (surfaces, failed_surfaces, diagnostics)
 }
 
 fn load_projected_surface(
@@ -596,6 +696,7 @@ fn load_projected_surface(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     fingerprint: Option<&FingerprintSurface>,
+    diagnostic_reporter: &SourceDiagnosticReporter,
 ) -> Result<(MaterializedSurface, Vec<Diagnostic>), Box<Diagnostic>> {
     let surface_dir = layout.v4_surface_dir(workspace_name, source_name, &surface.id);
     let raw_source_document_path = surface_dir.join("source-document.raw");
@@ -630,28 +731,16 @@ fn load_projected_surface(
             Some(surface.id.clone()),
         ))
     })?;
-    if let Some(fingerprint) = fingerprint {
-        match std::fs::read(&raw_source_document_path) {
-            Ok(raw_bytes) if sha256_hex(&raw_bytes) != fingerprint.descriptor_sha256 => {
-                diagnostics.push(materialization_warning(
-                    "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH",
-                    format!(
-                        "raw source document hash does not match for surface '{}'",
-                        surface.id
-                    ),
-                    Some(surface.id.clone()),
-                ));
-            }
-            Err(error) => diagnostics.push(materialization_warning(
-                "V4_RAW_DOCUMENT_UNAVAILABLE",
-                format!(
-                    "could not read raw source document '{}' for provenance validation: {error}",
-                    raw_source_document_path.display()
-                ),
-                Some(surface.id.clone()),
-            )),
-            _ => {}
-        }
+    if let Some(fingerprint) = fingerprint
+        && let Some(diagnostic) = diagnostic_reporter.validate_raw_document_fingerprint(
+            workspace_name,
+            source_name,
+            surface,
+            &raw_source_document_path,
+            &fingerprint.descriptor_sha256,
+        )
+    {
+        diagnostics.push(diagnostic);
     }
     Ok((
         MaterializedSurface {
@@ -2709,6 +2798,43 @@ operation_overrides:
         .expect("raw descriptor hash mismatch should not fail loading");
 
         assert_load_diagnostic(&materialized, "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH");
+    }
+
+    #[test]
+    fn load_v4_materialization_caches_raw_document_fingerprint_validation() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let reporter = SourceDiagnosticReporter::default();
+        super::load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+            &reporter,
+        )
+        .expect("initial materialization load");
+        let raw_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("source-document.raw");
+        std::fs::remove_file(&raw_path).expect("remove raw descriptor after validation");
+
+        let materialized = super::load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+            &reporter,
+        )
+        .expect("cached provenance validation should not reread the raw descriptor");
+
+        assert!(
+            !materialized
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "V4_RAW_DOCUMENT_UNAVAILABLE"),
+            "cached validation unexpectedly reread the raw descriptor"
+        );
     }
 
     #[cfg(unix)]
