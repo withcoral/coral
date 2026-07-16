@@ -149,3 +149,13 @@ pub(in crate::state::db) enum SourceSecretKeys {
     SourceName,
     Key,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum SourceManifests {
+    Table,
+    WorkspaceId,
+    SourceName,
+    ManifestYaml,
+    ManifestHash,
+    CreatedAtUnixNanos,
+}

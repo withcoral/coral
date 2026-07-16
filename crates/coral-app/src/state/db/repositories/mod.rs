@@ -1,5 +1,6 @@
 pub(crate) mod gui_onboarding;
 pub(crate) mod identity_specs;
+pub(crate) mod source_manifests;
 pub(crate) mod sources;
 pub(crate) mod state_migrations;
 pub(crate) mod task_queries;
