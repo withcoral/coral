@@ -224,6 +224,9 @@ mod tests {
                 state: SearchProviderState::ResultsFound,
                 note: String::new(),
                 coverage: None,
+                diagnostics: Vec::new(),
+                diagnostics_truncated: false,
+                omitted_diagnostic_count: 0,
             },
         }
     }

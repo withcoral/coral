@@ -160,6 +160,9 @@ fn native_not_enabled_status() -> ProviderStatus {
         state: SearchProviderState::NotEnabled,
         note: "provider-native fanout is disabled".to_string(),
         coverage: None,
+        diagnostics: Vec::new(),
+        diagnostics_truncated: false,
+        omitted_diagnostic_count: 0,
     }
 }
 
@@ -228,6 +231,9 @@ pub(crate) fn provider_error_outcome(provider: SearchProviderKind) -> ProviderSe
             state: SearchProviderState::Error,
             note: "search provider failed without affecting other providers".to_string(),
             coverage: None,
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         },
     }
 }
@@ -238,6 +244,9 @@ fn observed_not_enabled_status() -> ProviderStatus {
         state: SearchProviderState::NotEnabled,
         note: "observed value search is disabled; enable `observed_values_search` to include values from earlier queries".to_string(),
         coverage: None,
+        diagnostics: Vec::new(),
+        diagnostics_truncated: false,
+        omitted_diagnostic_count: 0,
     }
 }
 

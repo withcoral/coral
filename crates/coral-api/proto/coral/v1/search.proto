@@ -246,6 +246,98 @@ message SearchProviderStatus {
   string note = 3;
   // Structured provider-local coverage for this request. Absent when the provider is not enabled or skipped.
   SearchProviderCoverage coverage = 4;
+  // Bounded per-function or route-resolution diagnostics for native fanout.
+  repeated NativeSearchDiagnostic diagnostics = 5;
+  // Whether native fanout diagnostics were truncated.
+  bool diagnostics_truncated = 6;
+  // Number of native fanout diagnostics omitted after the diagnostic cap.
+  uint32 omitted_diagnostic_count = 7;
+}
+
+// One bounded native fanout diagnostic.
+message NativeSearchDiagnostic {
+  // Installed source that owns the route.
+  string installed_source_name = 1;
+  // Query-visible schema when the route resolved to a runtime function.
+  optional string schema_name = 2;
+  // Query-visible function when the route resolved to a runtime function.
+  optional string function_name = 3;
+  // Source-authored route identifier when the source declared one.
+  optional string authored_route_id = 4;
+  // Outcome state for this function or unresolved route.
+  NativeSearchDiagnosticState state = 5;
+  // Stable, provider-independent reason category.
+  NativeSearchDiagnosticReason reason = 6;
+  // Elapsed execution time in milliseconds.
+  uint64 elapsed_ms = 7;
+  // Safe display candidates produced by this function.
+  uint32 safe_candidate_count = 8;
+  // Whether upstream continuation or total metadata explicitly reported more results.
+  bool has_more = 9;
+}
+
+// Outcome state for one native fanout function or unresolved route.
+enum NativeSearchDiagnosticState {
+  // Unknown diagnostic state.
+  NATIVE_SEARCH_DIAGNOSTIC_STATE_UNSPECIFIED = 0;
+  // The function returned one or more safe display candidates.
+  NATIVE_SEARCH_DIAGNOSTIC_STATE_RESULTS_FOUND = 1;
+  // The function completed without a safe display candidate.
+  NATIVE_SEARCH_DIAGNOSTIC_STATE_EMPTY = 2;
+  // The route was not attempted.
+  NATIVE_SEARCH_DIAGNOSTIC_STATE_SKIPPED = 3;
+  // The function reached its deadline.
+  NATIVE_SEARCH_DIAGNOSTIC_STATE_TIMED_OUT = 4;
+  // The function was cancelled.
+  NATIVE_SEARCH_DIAGNOSTIC_STATE_CANCELLED = 5;
+  // The route or function failed.
+  NATIVE_SEARCH_DIAGNOSTIC_STATE_ERROR = 6;
+}
+
+// Stable reason category for one native fanout diagnostic.
+enum NativeSearchDiagnosticReason {
+  // Unknown diagnostic reason.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_UNSPECIFIED = 0;
+  // The source did not authorize this route.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_NOT_AUTHORIZED = 1;
+  // More than one route matched where exactly one was required.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_AMBIGUOUS_ROUTE = 2;
+  // The route's search limits were missing or invalid.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_INVALID_SEARCH_LIMITS = 3;
+  // The query could not be mapped to the selected input.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_QUERY_INPUT_UNMAPPABLE = 4;
+  // A required non-query argument had no valid default.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_MISSING_ARGUMENT_DEFAULT = 5;
+  // The resolved route no longer matched current installed source state.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_ROUTE_STALE = 6;
+  // The selected operation was not proven retrieval-only and idempotent.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_UNSAFE_OPERATION = 7;
+  // Returned rows contained no safe display fields.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_NO_SAFE_DISPLAY_FIELDS = 8;
+  // The route was omitted by the per-request fanout cap.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_FANOUT_LIMIT_REACHED = 9;
+  // Too little request budget remained to start the function.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_INSUFFICIENT_BUDGET = 10;
+  // The absolute native fanout budget expired.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_GLOBAL_BUDGET_EXHAUSTED = 11;
+  // The function reached its per-call timeout.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_CALL_TIMEOUT = 12;
+  // The function was cancelled before completion.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_CANCELLED = 13;
+  // The upstream provider rate-limited the call.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_RATE_LIMITED = 14;
+  // Authentication or permission checks rejected the call.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_AUTH_OR_PERMISSION_FAILED = 15;
+  // The upstream provider was unavailable.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_UPSTREAM_UNAVAILABLE = 16;
+  // The upstream response could not be decoded under the source contract.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_INVALID_RESPONSE = 17;
+  // The selected function failed during execution.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_EXECUTION_FAILED = 18;
+  // The backend could not satisfy the required cancellation contract.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_UNSUPPORTED_CANCELLATION = 19;
+  // Coral encountered an internal native fanout failure.
+  NATIVE_SEARCH_DIAGNOSTIC_REASON_INTERNAL_ERROR = 20;
 }
 
 // Structured provider-local coverage for one request.
@@ -310,7 +402,43 @@ message SearchResult {
     ColumnHint column_hint = 11;
     // Local observed-value hit. Reserved for the observed-value provider.
     ObservedValue observed_value = 12;
+    // Compact provider-native result preview.
+    NativeSearchResult native_result = 13;
   }
+}
+
+// Compact provider-native result preview.
+message NativeSearchResult {
+  // Query-visible source schema.
+  string schema_name = 1;
+  // Query-visible table-function name.
+  string function_name = 2;
+  // Zero-based provider result order.
+  uint32 row_ordinal = 3;
+  // Source-authored entity type when available.
+  optional string entity_type = 4;
+  // Safe provider identifier when available.
+  optional string provider_id = 5;
+  // Compact display title when available.
+  optional string title = 6;
+  // Sanitized absolute HTTP or HTTPS URL when available.
+  optional string url = 7;
+  // Compact display text when available.
+  optional string snippet = 8;
+  // Bounded source-authored display attributes.
+  repeated NativeSearchAttribute attributes = 9;
+  // Safe selected attributes omitted by count or size limits.
+  uint32 omitted_attribute_count = 10;
+  // Whether safe display content was truncated or omitted by count or size limits.
+  bool content_truncated = 11;
+}
+
+// One bounded provider-native display attribute.
+message NativeSearchAttribute {
+  // Safe display name.
+  string name = 1;
+  // Safe display value.
+  string display_value = 2;
 }
 
 // Table or table-function metadata hit with search-specific context.

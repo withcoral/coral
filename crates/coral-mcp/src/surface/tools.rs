@@ -159,6 +159,74 @@ mod tests {
     }
 
     #[test]
+    fn search_output_schema_accepts_native_contract_and_feature_off_omission() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tools = available_tools(&context, BASE_TOOLS);
+        let search = tool_by_name(&tools, "search");
+        let schema = Value::Object(
+            search
+                .output_schema
+                .as_ref()
+                .expect("search output schema")
+                .as_ref()
+                .clone(),
+        );
+        let validator = jsonschema::validator_for(&schema).expect("valid search output schema");
+        let native = json!({
+            "results": [{
+                "provider": "native_fanout",
+                "kind": "native_result",
+                "native_result": {
+                    "schema_name": "github",
+                    "function_name": "search_issues",
+                    "row_ordinal": 0,
+                    "title": "Fix native search",
+                    "attributes": [{"name": "state", "display_value": "open"}],
+                    "omitted_attribute_count": 0,
+                    "content_truncated": false
+                }
+            }],
+            "provider_statuses": [{
+                "provider": "native_fanout",
+                "state": "partial",
+                "note": "one route skipped",
+                "coverage": null,
+                "diagnostics": [{
+                    "installed_source_name": "github",
+                    "authored_route_id": "issues",
+                    "state": "skipped",
+                    "reason": "fanout_limit_reached",
+                    "elapsed_ms": 0,
+                    "safe_candidate_count": 0,
+                    "has_more": false
+                }],
+                "diagnostics_truncated": true,
+                "omitted_diagnostic_count": 2
+            }],
+            "truncation": null
+        });
+        assert!(
+            validator.is_valid(&native),
+            "native response should match MCP output schema"
+        );
+
+        let feature_off = json!({
+            "results": [],
+            "provider_statuses": [{
+                "provider": "native_fanout",
+                "state": "not_enabled",
+                "note": "search provider fanout disabled",
+                "coverage": null
+            }],
+            "truncation": null
+        });
+        assert!(
+            validator.is_valid(&feature_off),
+            "feature-off response should not require default diagnostic fields"
+        );
+    }
+
+    #[test]
     fn available_tools_decorate_task_aware_tools() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
         let tools = available_tools(&context, DEFAULT_TOOLS);

@@ -966,9 +966,9 @@ paths:
                     catalog_item::Item::TableFunction(_) | catalog_item::Item::Table(_) => None,
                 }
             }
-            search_result::Payload::ColumnHint(_) | search_result::Payload::ObservedValue(_) => {
-                None
-            }
+            search_result::Payload::ColumnHint(_)
+            | search_result::Payload::ObservedValue(_)
+            | search_result::Payload::NativeResult(_) => None,
         })
         .expect("eligible table function metadata");
     let authorization = function

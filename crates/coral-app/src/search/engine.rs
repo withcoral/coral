@@ -203,6 +203,9 @@ mod tests {
                     stale_index: true,
                     ..ProviderCoverage::default()
                 }),
+                diagnostics: Vec::new(),
+                diagnostics_truncated: false,
+                omitted_diagnostic_count: 0,
             },
         };
 
@@ -223,6 +226,9 @@ mod tests {
                         state: SearchProviderState::ResultsFound,
                         note: String::new(),
                         coverage: None,
+                        diagnostics: Vec::new(),
+                        diagnostics_truncated: false,
+                        omitted_diagnostic_count: 0,
                     },
                 },
             })),
@@ -541,6 +547,9 @@ mod tests {
             state,
             note: String::new(),
             coverage: None,
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         })
     }
 

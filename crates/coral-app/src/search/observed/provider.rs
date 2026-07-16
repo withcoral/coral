@@ -282,6 +282,9 @@ fn observed_search_outcome(
                     || drain_error.is_some()
                     || policy.has_load_failures(),
             }),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         },
         candidates,
     }
@@ -416,6 +419,9 @@ fn observed_error_outcome(error: &SqliteSearchError) -> ProviderSearchOutcome {
                 failed_units: 1,
                 ..ProviderCoverage::default()
             }),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         },
     }
 }
@@ -431,6 +437,9 @@ fn observed_policy_error_outcome(error: &AppError) -> ProviderSearchOutcome {
                 failed_units: 1,
                 ..ProviderCoverage::default()
             }),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         },
     }
 }
