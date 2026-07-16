@@ -52,7 +52,7 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
       ? [
           {
             icon: 'Cable',
-            label: 'Connect',
+            label: 'MCP connections',
             paths: [routePath('connect')],
             to: routePath('connect'),
           } as const,
