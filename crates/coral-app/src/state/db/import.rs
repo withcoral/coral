@@ -28,7 +28,7 @@ pub(crate) async fn run_state_migrations(
     layout: &AppStateLayout,
 ) -> Result<(), AppError> {
     cutover_legacy_workspace_catalog(db, config_store, layout).await?;
-    import_config_source_catalog(db, config_store).await?;
+    import_config_source_catalog(db, config_store, now_unix_nanos_i64()?).await?;
     remove_legacy_task_jsonl(config_store, layout)?;
     Ok(())
 }
@@ -76,20 +76,15 @@ async fn cutover_legacy_workspace_catalog_at(
     if workspaces.is_empty() {
         workspaces = implicitly_provisioned_workspaces(layout)?;
     }
-    let mut imported_workspaces = BTreeSet::new();
-    import_legacy_workspaces(
-        &mut tx,
-        &workspaces,
-        now_unix_nanos,
-        &mut imported_workspaces,
-    )
-    .await?;
-    prune_stale_workspaces(&mut tx, &imported_workspaces).await?;
-    verify_workspace_parity(&mut tx, &imported_workspaces).await?;
+    let workspace_count = workspaces.len();
+
+    tx.workspaces().delete_all().await?;
+    import_legacy_workspaces(&mut tx, &workspaces, now_unix_nanos).await?;
+    verify_workspace_parity(&mut tx, &workspaces).await?;
     tx.commit().await?;
 
     Ok(WorkspaceCatalogCutoverReport {
-        workspace_count: imported_workspaces.len(),
+        workspace_count,
         cutover_performed: true,
     })
 }
@@ -165,13 +160,6 @@ fn implicitly_provisioned_workspaces(
 async fn import_config_source_catalog(
     db: &CoralDb,
     config_store: &ConfigStore,
-) -> Result<SourceCatalogImportReport, AppError> {
-    import_config_source_catalog_at(db, config_store, now_unix_nanos_i64()?).await
-}
-
-async fn import_config_source_catalog_at(
-    db: &CoralDb,
-    config_store: &ConfigStore,
     now_unix_nanos: i64,
 ) -> Result<SourceCatalogImportReport, AppError> {
     let _state_lock = config_store.state_lock_exclusive()?;
@@ -212,7 +200,6 @@ async fn import_legacy_workspaces<S>(
     session: &mut S,
     workspaces: &[WorkspaceRecord],
     now_unix_nanos: i64,
-    imported_workspaces: &mut BTreeSet<WorkspaceName>,
 ) -> Result<(), AppError>
 where
     S: DbRepos,
@@ -222,7 +209,6 @@ where
             .workspaces()
             .ensure(workspace.name.as_str(), now_unix_nanos)
             .await?;
-        imported_workspaces.insert(workspace.name.clone());
     }
     Ok(())
 }
@@ -235,6 +221,14 @@ async fn import_config_sources(
     let mut source_count = 0;
     for (workspace_name, source) in entries {
         if session
+            .workspaces()
+            .get(workspace_name.as_str())
+            .await?
+            .is_none()
+        {
+            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+        }
+        if session
             .sources()
             .get_source(workspace_name, &source.name)
             .await?
@@ -242,10 +236,6 @@ async fn import_config_sources(
         {
             continue;
         }
-        session
-            .workspaces()
-            .ensure(workspace_name.as_str(), now_unix_nanos)
-            .await?;
         session
             .sources()
             .upsert_source(workspace_name, source, now_unix_nanos)
@@ -265,35 +255,16 @@ async fn import_config_sources(
     Ok(source_count)
 }
 
-async fn prune_stale_workspaces<S>(
-    session: &mut S,
-    imported_workspaces: &BTreeSet<WorkspaceName>,
-) -> Result<(), AppError>
-where
-    S: DbRepos,
-{
-    let expected = imported_workspaces
-        .iter()
-        .map(WorkspaceName::as_str)
-        .collect::<BTreeSet<_>>();
-    for workspace in session.workspaces().list().await? {
-        if !expected.contains(workspace.id.as_str()) {
-            session.workspaces().delete(&workspace.id).await?;
-        }
-    }
-    Ok(())
-}
-
 async fn verify_workspace_parity<S>(
     session: &mut S,
-    imported_workspaces: &BTreeSet<WorkspaceName>,
+    legacy_workspaces: &[WorkspaceRecord],
 ) -> Result<(), AppError>
 where
     S: DbRepos,
 {
-    let expected = imported_workspaces
+    let expected = legacy_workspaces
         .iter()
-        .map(|workspace| workspace.as_str().to_string())
+        .map(|workspace| workspace.name.as_str().to_string())
         .collect::<BTreeSet<_>>();
     let actual = session
         .workspaces()
@@ -319,8 +290,7 @@ mod tests {
     use super::{
         SOURCE_CATALOG_IMPORT_ID, SourceCatalogImportReport, WORKSPACE_CATALOG_CUTOVER_ID,
         WorkspaceCatalogCutoverReport, cutover_legacy_workspace_catalog,
-        cutover_legacy_workspace_catalog_at, import_config_source_catalog,
-        import_config_source_catalog_at, run_state_migrations,
+        cutover_legacy_workspace_catalog_at, import_config_source_catalog, run_state_migrations,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -403,7 +373,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cuts_over_legacy_workspaces_without_sources() {
+    async fn cuts_over_legacy_workspaces_into_database() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
@@ -446,7 +416,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_cutover_preserves_database_source_in_source_only_workspace() {
+    async fn source_import_preserves_existing_database_source() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
@@ -468,6 +438,9 @@ mod tests {
             .upsert_source(&workspace, replacement)
             .expect("write config source");
         let db = open_sqlite(&layout).await;
+        cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 10)
+            .await
+            .expect("cut over legacy workspace catalog");
         {
             let mut tx = db.begin().await.expect("begin seed tx");
             tx.workspaces()
@@ -481,17 +454,7 @@ mod tests {
             tx.commit().await.expect("commit seed tx");
         }
 
-        let cutover_report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 10)
-            .await
-            .expect("cut over legacy workspace catalog");
-        assert_eq!(
-            cutover_report,
-            WorkspaceCatalogCutoverReport {
-                workspace_count: 1,
-                cutover_performed: true,
-            }
-        );
-        let report = import_config_source_catalog_at(&db, &config_store, 11)
+        let report = import_config_source_catalog(&db, &config_store, 11)
             .await
             .expect("import config source catalog");
 
@@ -551,7 +514,7 @@ mod tests {
             tx.commit().await.expect("commit seed tx");
         }
 
-        let report = import_config_source_catalog_at(&db, &config_store, 11)
+        let report = import_config_source_catalog(&db, &config_store, 11)
             .await
             .expect("import config source catalog");
 
@@ -590,6 +553,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_import_rejects_missing_workspace_without_marking_complete() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("missing").expect("workspace");
+        let source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        config_store
+            .upsert_source(&workspace, source.clone())
+            .expect("write config source");
+        let db = open_sqlite(&layout).await;
+        cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 5)
+            .await
+            .expect("cut over legacy workspace catalog");
+        let mut session = &db;
+        session
+            .workspaces()
+            .delete(workspace.as_str())
+            .await
+            .expect("delete imported workspace");
+
+        let error = import_config_source_catalog(&db, &config_store, 11)
+            .await
+            .expect_err("missing workspace should reject source import");
+
+        assert!(matches!(
+            error,
+            crate::bootstrap::AppError::WorkspaceNotFound(ref actual)
+                if actual == workspace.as_str()
+        ));
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get rejected source"),
+            None
+        );
+        assert!(
+            !session
+                .state_migrations()
+                .has_completed(SOURCE_CATALOG_IMPORT_ID)
+                .await
+                .expect("read source import marker")
+        );
+    }
+
+    #[tokio::test]
     async fn cutover_resets_stale_shadow_database_rows() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
@@ -600,17 +612,11 @@ mod tests {
             .create_legacy_workspace_entry_for_tests(&analytics_workspace)
             .expect("create legacy workspace entry");
         let db = open_sqlite(&layout).await;
-        let stale_workspace = WorkspaceName::parse("stale").expect("workspace");
-        let stale_source = source("stale_source", None, [], [], None, SourceOrigin::Bundled);
         let mut tx = db.begin().await.expect("begin stale seed tx");
         tx.workspaces()
-            .ensure(stale_workspace.as_str(), 7)
+            .ensure("stale", 7)
             .await
             .expect("seed stale workspace");
-        tx.sources()
-            .upsert_source(&stale_workspace, &stale_source, 7)
-            .await
-            .expect("seed stale source");
         tx.commit().await.expect("commit stale seed tx");
 
         cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
@@ -629,18 +635,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["analytics".to_string()]
         );
-        assert_eq!(
-            session
-                .sources()
-                .get_source(&stale_workspace, &stale_source.name)
-                .await
-                .expect("get stale source"),
-            None
-        );
     }
 
     #[tokio::test]
-    async fn completed_workspace_cutover_does_not_reload_config() {
+    async fn completed_cutover_does_not_reimport_legacy_config() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
@@ -654,7 +652,7 @@ mod tests {
 
         let report = cutover_legacy_workspace_catalog(&db, &config_store, &layout)
             .await
-            .expect("marker should skip workspace catalog reload");
+            .expect("marker should skip legacy config reload");
 
         assert_eq!(
             report,
@@ -897,12 +895,12 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
 
-        import_config_source_catalog_at(&db, &config_store, 11)
+        import_config_source_catalog(&db, &config_store, 11)
             .await
             .expect("initial source import");
         std::fs::write(layout.config_file(), "[[workspaces]\n").expect("corrupt config");
 
-        let report = import_config_source_catalog(&db, &config_store)
+        let report = import_config_source_catalog(&db, &config_store, 12)
             .await
             .expect("source marker should skip config reload");
 

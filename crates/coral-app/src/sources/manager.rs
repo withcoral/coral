@@ -138,6 +138,10 @@ impl ImportSourceEventSender {
             .await
             .map_err(|_closed| AppError::FailedPrecondition(import_stream_closed_message()))
     }
+
+    async fn closed(&self) {
+        self.tx.closed().await;
+    }
 }
 
 impl PendingImportSourceWithCredentialsEvent {
@@ -1226,22 +1230,29 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
-        self.config_store
-            .upsert_source_unlocked(workspace_name, source.clone())?;
         let db = Arc::clone(&self.db);
-        let workspace_name = workspace_name.clone();
+        let db_workspace_name = workspace_name.clone();
+        let db_source = source.clone();
         run_source_db_operation(async move {
             let mut tx = db.begin().await?;
             let now_unix_nanos = now_unix_nanos_i64()?;
-            tx.workspaces()
-                .ensure(workspace_name.as_str(), now_unix_nanos)
-                .await?;
+            if tx
+                .workspaces()
+                .get(db_workspace_name.as_str())
+                .await?
+                .is_none()
+            {
+                return Err(AppError::WorkspaceNotFound(db_workspace_name.to_string()));
+            }
             tx.sources()
-                .upsert_source(&workspace_name, &source, now_unix_nanos)
+                .upsert_source(&db_workspace_name, &db_source, now_unix_nanos)
                 .await?;
             tx.commit().await?;
             Ok(())
-        })
+        })?;
+        self.config_store
+            .upsert_source_unlocked(workspace_name, source)?;
+        Ok(())
     }
 
     fn remove_db_source_with_state_lock_held(
@@ -1335,45 +1346,49 @@ impl SourceManager {
             let authorization_events = events.clone();
             let callback_input_key = input_key.clone();
             let callback_events = events.clone();
-            let material = self
-                .oauth_credential_service
-                .authorize_with_callback(
-                    StartOAuthCredentialRequest {
-                        input_key: &input_key,
-                        oauth: config.oauth,
-                        source_inputs,
-                        credential_inputs,
-                    },
-                    move |authorization| {
-                        let events = authorization_events;
-                        async move {
-                            events
-                                .send(ImportSourceWithCredentialsEvent::Authorization {
-                                    input_key: authorization_input_key,
-                                    authorization_url: authorization.authorization_url,
-                                    expires_in_seconds: authorization.expires_in_seconds,
-                                    user_code: authorization.user_code,
-                                    verification_uri: authorization.verification_uri,
-                                    verification_uri_complete: authorization
-                                        .verification_uri_complete,
-                                })
-                                .await
-                        }
-                    },
-                    move || {
-                        let events = callback_events;
-                        async move {
-                            events
-                                .send(ImportSourceWithCredentialsEvent::CallbackReceived {
-                                    input_key: callback_input_key,
-                                })
-                                .await?;
-                            tokio::task::yield_now().await;
-                            Ok(())
-                        }
-                    },
-                )
-                .await?;
+            let cancellation_events = events.clone();
+            let authorization = self.oauth_credential_service.authorize_with_callback(
+                StartOAuthCredentialRequest {
+                    input_key: &input_key,
+                    oauth: config.oauth,
+                    source_inputs,
+                    credential_inputs,
+                },
+                move |authorization| {
+                    let events = authorization_events;
+                    async move {
+                        events
+                            .send(ImportSourceWithCredentialsEvent::Authorization {
+                                input_key: authorization_input_key,
+                                authorization_url: authorization.authorization_url,
+                                expires_in_seconds: authorization.expires_in_seconds,
+                                user_code: authorization.user_code,
+                                verification_uri: authorization.verification_uri,
+                                verification_uri_complete: authorization.verification_uri_complete,
+                            })
+                            .await
+                    }
+                },
+                move || {
+                    let events = callback_events;
+                    async move {
+                        events
+                            .send(ImportSourceWithCredentialsEvent::CallbackReceived {
+                                input_key: callback_input_key,
+                            })
+                            .await?;
+                        tokio::task::yield_now().await;
+                        Ok(())
+                    }
+                },
+            );
+            tokio::pin!(authorization);
+            let material = tokio::select! {
+                result = &mut authorization => result?,
+                () = cancellation_events.closed() => {
+                    return Err(AppError::FailedPrecondition(import_stream_closed_message()));
+                }
+            };
             events
                 .send(ImportSourceWithCredentialsEvent::Completed {
                     input_key: material.input_key.clone(),
@@ -3308,6 +3323,15 @@ surface:
             Err(crate::bootstrap::AppError::SourceNotFound(_))
         ));
         assert!(
+            config_store
+                .load_config()
+                .expect("load config after rejected import")
+                .legacy_workspace_records()
+                .into_iter()
+                .all(|workspace| workspace.name != workspace_name),
+            "workspace rejected by the database should not be synthesized in config"
+        );
+        assert!(
             !layout.source_dir(&workspace_name, &source_name).exists(),
             "source artifacts should be removed after database failure"
         );
@@ -4367,6 +4391,65 @@ surface:
             event_rx.try_recv().is_err(),
             "preflight validation should fail before OAuth retrieval starts"
         );
+    }
+
+    #[tokio::test]
+    async fn import_with_oauth_releases_listener_when_event_stream_closes() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manager = source_manager_for_tests(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+        );
+        let redirect_port = free_loopback_port();
+        let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let revision = active_revision(&manager, &workspace_name).await;
+        let import = manager.import_source_with_credentials(
+            &workspace_name,
+            revision,
+            ImportSourceWithCredentialsCommand {
+                manifest_yaml: manifest_with_oauth_secret(
+                    "http://127.0.0.1:1/token",
+                    redirect_port,
+                ),
+                bindings: SourceBindings {
+                    variables: vec![SourceBinding {
+                        key: "API_BASE".to_string(),
+                        value: "https://api.example.test".to_string(),
+                    }],
+                    secrets: Vec::new(),
+                },
+                oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
+                    input_key: "API_TOKEN".to_string(),
+                    method_index: 0,
+                    credential_inputs: Vec::new(),
+                }],
+            },
+            event_tx,
+        );
+        tokio::pin!(import);
+
+        let authorization = tokio::select! {
+            event = event_rx.recv() => event.expect("authorization event").into_event(),
+            result = &mut import => panic!("import completed before authorization: {result:?}"),
+        };
+        assert!(matches!(
+            authorization,
+            ImportSourceWithCredentialsEvent::Authorization { .. }
+        ));
+        drop(event_rx);
+
+        let error = tokio::time::timeout(Duration::from_secs(1), &mut import)
+            .await
+            .expect("closed event stream should cancel OAuth promptly")
+            .expect_err("closed event stream should reject import");
+        assert!(error.to_string().contains("source import stream closed"));
+        StdTcpListener::bind(("127.0.0.1", redirect_port))
+            .expect("OAuth redirect listener should be released");
     }
 
     async fn callback(authorization_url: &str, redirect_port: u16) {
