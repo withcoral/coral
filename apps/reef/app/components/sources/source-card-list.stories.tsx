@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { RouterProvider, createMemoryRouter } from 'react-router'
+import { createRoutesStub } from 'react-router'
 import { expect, fn, within } from 'storybook/test'
 
 import { oauthInstallEventToNdjson } from '@/lib/source-oauth-install-stream'
@@ -111,6 +111,15 @@ const oauthStateLabels: Record<OAuthStoryState, string> = {
   error: 'GitHub denied the authorization request.',
 }
 
+const OAuthStoryStateContext = createContext<OAuthStoryState>('awaiting-authorization')
+
+const OAuthInstallFlowRoutesStub = createRoutesStub([
+  {
+    Component: OAuthInstallFlowRoute,
+    path: '*',
+  },
+])
+
 export const OAuthInstallFlow: OAuthInstallFlowStory = {
   args: {
     oauthState: 'awaiting-authorization',
@@ -148,19 +157,16 @@ export const OAuthInstallFlow: OAuthInstallFlowStory = {
 }
 
 function OAuthInstallFlowPreview({ oauthState }: { oauthState: OAuthStoryState }) {
-  const [router] = useState(() =>
-    createMemoryRouter(
-      [
-        {
-          element: <OAuthInstallFlowSurface oauthState={oauthState} />,
-          path: '*',
-        },
-      ],
-      { initialEntries: ['/sources'] },
-    ),
+  return (
+    <OAuthStoryStateContext.Provider value={oauthState}>
+      <OAuthInstallFlowRoutesStub initialEntries={['/sources']} />
+    </OAuthStoryStateContext.Provider>
   )
+}
 
-  return <RouterProvider router={router} />
+function OAuthInstallFlowRoute() {
+  const oauthState = useContext(OAuthStoryStateContext)
+  return <OAuthInstallFlowSurface oauthState={oauthState} />
 }
 
 function OAuthInstallFlowSurface({ oauthState }: { oauthState: OAuthStoryState }) {

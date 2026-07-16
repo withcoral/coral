@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { createMemoryRouter, RouterProvider } from 'react-router'
+import { createRoutesStub } from 'react-router'
 
 import { Typography } from '@/wax/components/typography'
 import { theme } from '@/wax/theme/theme.css'
@@ -11,20 +11,15 @@ const meta = {
   component: Sidebar,
   decorators: [
     (Story, context) => {
-      const router = createMemoryRouter(
-        [
-          {
-            children: [{ index: true, element: <div /> }],
-            element: <Story />,
-            path: '/',
-          },
-        ],
+      const RoutesStub = createRoutesStub([
         {
-          initialEntries: [context.parameters.initialEntry ?? '/'],
+          children: [{ index: true, Component: () => null }],
+          Component: () => <Story />,
+          path: '/',
         },
-      )
+      ])
 
-      return <RouterProvider router={router} />
+      return <RoutesStub initialEntries={[context.parameters.initialEntry ?? '/']} />
     },
   ],
   parameters: {

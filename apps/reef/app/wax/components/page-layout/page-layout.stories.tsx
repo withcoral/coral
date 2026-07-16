@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { createMemoryRouter, RouterProvider } from 'react-router'
+import { createRoutesStub } from 'react-router'
 
 import { Button } from '@/wax/components'
 import { Typography } from '@/wax/components/typography'
@@ -27,10 +27,8 @@ const meta = {
   component: PageLayout,
   decorators: [
     (Story) => {
-      const router = createMemoryRouter([{ element: <Story />, path: '*' }], {
-        initialEntries: ['/'],
-      })
-      return <RouterProvider router={router} />
+      const RoutesStub = createRoutesStub([{ Component: () => <Story />, path: '*' }])
+      return <RoutesStub initialEntries={['/']} />
     },
   ],
   parameters: {
