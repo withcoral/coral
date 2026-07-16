@@ -165,6 +165,11 @@ impl WorkspacesRepo<'_, CoralTx<'_>> {
             .to_owned();
         Ok(DbSession::execute_rows_affected(self.session, statement).await? == 1)
     }
+
+    pub(crate) async fn delete_all(&mut self) -> Result<(), DbError> {
+        let statement = Query::delete().from_table(Workspaces::Table).to_owned();
+        self.session.execute(statement).await
+    }
 }
 
 #[cfg(test)]
