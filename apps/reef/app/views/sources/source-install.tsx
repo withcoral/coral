@@ -8,7 +8,6 @@ import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog, Tabs } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
 import { Markdown } from '@/components/markdown'
@@ -23,10 +22,14 @@ import type {
   CatalogSourceInputSpec,
 } from '@/lib/sources'
 import { routePath } from '@/routing/routemap'
-import { toSentenceCase } from '@/utils/to-sentence-case'
 
-import { formatSourceName, ProviderLogo } from '@/components/sources'
 import * as styles from './source-install.css'
+import {
+  formatFieldName,
+  SourceHeader,
+  SourceInputField,
+  SourceNoConfiguration,
+} from './source-presentation'
 
 type InstallProgress =
   | { kind: 'idle' }
@@ -42,10 +45,6 @@ type InstallProgress =
   | { kind: 'oauth-callback-received'; inputKey: string }
   | { kind: 'oauth-completed'; inputKey: string }
   | { kind: 'success'; name: string }
-
-function formatFieldName(key: string): string {
-  return toSentenceCase(key.replace(/_/g, ' '))
-}
 
 export function SourceInstallDialog({
   actionError,
@@ -118,8 +117,6 @@ function SourceInstallDialogContent({
   const [methodChoices, setMethodChoices] = useState<Record<string, number>>({})
   const [progress, setProgress] = useState<InstallProgress>({ kind: 'idle' })
   const [streamError, setStreamError] = useState<string | null>(null)
-  const sourceDisplayName = formatSourceName(entry.name)
-
   const inputSpecs = entry.inputSpecs
   const inputs: CatalogSourceInputSpec[] = inputSpecs ?? []
   const oauthBusy = progress.kind !== 'idle'
@@ -237,20 +234,12 @@ function SourceInstallDialogContent({
       <input type="hidden" name="_intent" value="install" />
       <input type="hidden" name="name" value={entry.name} />
 
-      <div className={styles.header}>
-        <ProviderLogo name={entry.name} size="large" />
-        <div className={styles.headerText}>
-          <Dialog.Title className={styles.headerTitleRow}>
-            <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-              {sourceDisplayName}
-            </Typography.HeadingMedium>
-            <Pill color="graySubtle">Core</Pill>
-          </Dialog.Title>
-          <Dialog.Description render={<div />}>
-            <Markdown>{entry.description}</Markdown>
-          </Dialog.Description>
-        </div>
-      </div>
+      <SourceHeader
+        description={entry.description}
+        name={entry.name}
+        origin={entry.origin}
+        version={entry.version}
+      />
 
       {!inputSpecs ? (
         <div className={classNames(styles.alertBox, styles.alertError)}>
@@ -258,9 +247,7 @@ function SourceInstallDialogContent({
           <Typography.BodySmall>Source metadata is unavailable.</Typography.BodySmall>
         </div>
       ) : inputs.length === 0 ? (
-        <Typography.BodySmall variant="tertiary">
-          No configuration needed — click Add source to install.
-        </Typography.BodySmall>
+        <SourceNoConfiguration />
       ) : (
         <div className={styles.fieldGroup}>
           {inputs.map((input) => (
@@ -362,15 +349,16 @@ function InputRow({
   if (input.input.case === 'variable') {
     const def = input.input.value.defaultValue
     return (
-      <Field input={input}>
+      <SourceInputField input={input}>
         <TextInput
+          ariaLabel={formatFieldName(input.key)}
           name={`var:${input.key}`}
           value={values[input.key] ?? def}
           onChange={(value) => onValueChange(input.key, value)}
           placeholder={def || formatFieldName(input.key)}
           disabled={disabled}
         />
-      </Field>
+      </SourceInputField>
     )
   }
 
@@ -381,12 +369,7 @@ function InputRow({
   const selected = methods[methodIndex]
 
   return (
-    <Field
-      input={input}
-      fullWidth={methods.length > 1 || isOAuth(selected)}
-      showHint={methods.length <= 1}
-      showLabel={methods.length <= 1}
-    >
+    <SourceInputField input={input} showHint={methods.length <= 1} showLabel={methods.length <= 1}>
       {methods.length > 0 ? (
         <input type="hidden" name={`method:${input.key}`} value={methodIndex} />
       ) : null}
@@ -444,7 +427,7 @@ function InputRow({
           values={values}
         />
       )}
-    </Field>
+    </SourceInputField>
   )
 }
 
@@ -502,41 +485,11 @@ function CredentialMethodFields({
   return null
 }
 
-function Field({
-  input,
-  children,
-  fullWidth,
-  showHint = true,
-  showLabel = true,
-}: {
-  input: CatalogSourceInputSpec
-  children: React.ReactNode
-  fullWidth?: boolean
-  showHint?: boolean
-  showLabel?: boolean
-}) {
-  return (
-    <div className={classNames(styles.fieldItem, fullWidth ? styles.fieldItemFull : null)}>
-      {showLabel ? (
-        <Typography.BodyStrong variant="primary">
-          {formatFieldName(input.key)}
-        </Typography.BodyStrong>
-      ) : null}
-      {children}
-      {showHint && input.hint ? <Markdown>{input.hint}</Markdown> : null}
-    </div>
-  )
-}
-
 function methodLabel(method: CatalogSourceCredentialMethod, index: number): string {
   if (method.label) return method.label
   if (method.method.case === 'sourceConfig') return 'Paste token'
   if (method.method.case === 'oauth') return 'OAuth'
   return `Method ${index + 1}`
-}
-
-function isOAuth(method: CatalogSourceCredentialMethod | undefined): boolean {
-  return method?.method.case === 'oauth'
 }
 
 interface OAuthInput extends OAuthField {

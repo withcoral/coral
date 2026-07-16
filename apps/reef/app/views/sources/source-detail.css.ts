@@ -2,54 +2,11 @@ import { style } from '@vanilla-extract/css'
 
 import { theme } from '@/wax/theme/theme.css'
 
-export const header = style({
-  alignItems: 'flex-start',
-  display: 'flex',
-  gap: 16,
-  paddingBlockEnd: 8,
-})
-
-export const headerText = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flexGrow: 1,
-  gap: 8,
-  minWidth: 0,
-})
-
-export const headerTitleRow = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 10,
-  marginInlineEnd: 24,
-})
-
-export const headerTitle = style({
-  textTransform: 'capitalize',
-})
-
-export const section = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-  paddingBlockStart: 16,
-})
-
 export const fieldGroup = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 16,
-})
-
-export const fieldItem = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-})
-
-export const fieldLabel = style({
-  color: theme.content.primary,
-  fontWeight: 500,
+  paddingBlockStart: 16,
 })
 
 export const alertError = style({

@@ -155,6 +155,8 @@ describe('SourceInstallDialog', () => {
     ])
     const screen = await render(<RoutesStub />)
 
+    await expect.element(screen.getByText('Query GitHub data.')).toBeVisible()
+    await expect.element(screen.getByText('Core', { exact: true })).toBeVisible()
     await expect.element(screen.getByText('Github token')).toBeVisible()
   })
 

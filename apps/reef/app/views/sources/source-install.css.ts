@@ -2,49 +2,12 @@ import { style } from '@vanilla-extract/css'
 
 import { theme } from '@/wax/theme/theme.css'
 
-export const header = style({
-  alignItems: 'flex-start',
-  display: 'flex',
-  gap: 16,
-  paddingBlockEnd: 8,
-})
-
-export const headerText = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flexGrow: 1,
-  gap: 8,
-  minWidth: 0,
-})
-
-export const headerTitleRow = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 10,
-  marginInlineEnd: 24,
-})
-
-export const headerTitle = style({
-  textTransform: 'capitalize',
-})
-
 export const fieldGroup = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 16,
   paddingBlockStart: 16,
 })
-
-export const fieldItem = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-})
-
-// Kept so the public API of <Field> is unchanged even though all fields are
-// now full-width — selecting this className is a no-op against the flex
-// column layout above.
-export const fieldItemFull = style({})
 
 export const methodTabsRoot = style({
   display: 'flex',

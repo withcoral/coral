@@ -7,25 +7,26 @@ import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
-import type {
-  CatalogEntry,
-  CatalogSource,
-  CatalogSourceInputSpec,
-  SourceOriginLabel,
-} from '@/lib/sources'
+import type { CatalogEntry, CatalogSource, CatalogSourceInputSpec } from '@/lib/sources'
 import type { SourcesActionData } from '@/routes/sources-action'
 
-import { formatSourceName, ProviderLogo } from '@/components/sources'
+import { formatSourceName } from '@/components/sources'
 import * as styles from './source-detail.css'
 import { SourceInstallDialog } from './source-install'
+import {
+  formatFieldName,
+  SourceField,
+  SourceHeader,
+  SourceInputField,
+  SourceNoConfiguration,
+} from './source-presentation'
 
 const SECRET_PLACEHOLDER = '••••••••'
 
 const IMPORTED_EDIT_NOTICE =
-  "Imported sources can't be edited here yet — re-import the source spec to change its credentials."
+  "Imported sources can't be edited. Please remove and re-import the source spec"
 
 export function SourceDetailView({
   actionData,
@@ -170,32 +171,18 @@ function SourceDetailDialogContent({
     return false
   }, [drafts, source, inputSpecs])
 
-  const origin = source ? source.origin : entry.origin
-
   return (
     <>
       <Form method="post">
         <input type="hidden" name="_intent" value="edit" />
         <input type="hidden" name="name" value={entry.name} />
 
-        <div className={styles.header}>
-          <ProviderLogo name={entry.name} size="large" />
-          <div className={styles.headerText}>
-            <Dialog.Title className={styles.headerTitleRow}>
-              <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-                {sourceDisplayName}
-              </Typography.HeadingMedium>
-              {origin ? <Pill color="graySubtle">{originBadgeLabel(origin)}</Pill> : null}
-            </Dialog.Title>
-            <Dialog.Description render={<div />}>
-              <Typography.BodySmall variant="secondary">
-                {source?.version || entry.version
-                  ? `v${source?.version || entry.version}`
-                  : 'Configured source'}
-              </Typography.BodySmall>
-            </Dialog.Description>
-          </div>
-        </div>
+        <SourceHeader
+          description={entry.description}
+          name={entry.name}
+          origin={source?.origin ?? entry.origin}
+          version={source?.version || entry.version}
+        />
 
         {!source ? (
           <div className={styles.alertError}>
@@ -240,10 +227,7 @@ function SourceDetailDialogContent({
             source={source}
           />
         ) : source.variables.length === 0 && source.secrets.length === 0 ? (
-          <section className={styles.section}>
-            <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-            <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
-          </section>
+          <SourceNoConfiguration />
         ) : (
           <InstalledBindings
             disabled={!editable || saving || deleting}
@@ -351,45 +335,44 @@ function InstalledBindings({
   source: CatalogSource
 }) {
   return (
-    <section className={styles.section}>
-      <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+    <div className={styles.fieldGroup}>
       {!editable ? (
         <Typography.BodySmall variant="tertiary">{IMPORTED_EDIT_NOTICE}</Typography.BodySmall>
       ) : null}
-      <div className={styles.fieldGroup}>
-        {source.variables.map((v) => {
-          const draftKey = `var:${v.key}`
-          return (
-            <div key={draftKey} className={styles.fieldItem}>
-              <Typography.Body className={styles.fieldLabel}>{v.key}</Typography.Body>
-              <TextInput
-                name={draftKey}
-                value={drafts[draftKey] ?? v.value}
-                onChange={(value) => onValueChange(draftKey, value)}
-                placeholder={v.key}
-                disabled={disabled}
-              />
-            </div>
-          )
-        })}
-        {source.secrets.map((s) => {
-          const draftKey = `sec:${s.key}`
-          return (
-            <div key={draftKey} className={styles.fieldItem}>
-              <Typography.Body className={styles.fieldLabel}>{s.key}</Typography.Body>
-              <input type="hidden" name={draftKey} value={drafts[draftKey] ?? ''} />
-              <TextInput
-                type="password"
-                value={drafts[draftKey] ?? ''}
-                onChange={(value) => onValueChange(draftKey, value)}
-                placeholder={SECRET_PLACEHOLDER}
-                disabled={disabled}
-              />
-            </div>
-          )
-        })}
-      </div>
-    </section>
+      {source.variables.map((v) => {
+        const draftKey = `var:${v.key}`
+        const label = formatFieldName(v.key)
+        return (
+          <SourceField key={draftKey} label={label}>
+            <TextInput
+              ariaLabel={label}
+              name={draftKey}
+              value={drafts[draftKey] ?? v.value}
+              onChange={(value) => onValueChange(draftKey, value)}
+              placeholder={label}
+              disabled={disabled}
+            />
+          </SourceField>
+        )
+      })}
+      {source.secrets.map((s) => {
+        const draftKey = `sec:${s.key}`
+        const label = formatFieldName(s.key)
+        return (
+          <SourceField key={draftKey} label={label}>
+            <input type="hidden" name={draftKey} value={drafts[draftKey] ?? ''} />
+            <TextInput
+              ariaLabel={label}
+              type="password"
+              value={drafts[draftKey] ?? ''}
+              onChange={(value) => onValueChange(draftKey, value)}
+              placeholder={SECRET_PLACEHOLDER}
+              disabled={disabled}
+            />
+          </SourceField>
+        )
+      })}
+    </div>
   )
 }
 
@@ -447,36 +430,28 @@ function SourceInputBindings({
   const configuredSecrets = useMemo(() => new Set(source.secrets.map((s) => s.key)), [source])
 
   if (inputSpecs.length === 0) {
-    return (
-      <section className={styles.section}>
-        <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-        <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
-      </section>
-    )
+    return <SourceNoConfiguration />
   }
 
   return (
-    <section className={styles.section}>
-      <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+    <div className={styles.fieldGroup}>
       {!editable ? (
         <Typography.BodySmall variant="tertiary">{IMPORTED_EDIT_NOTICE}</Typography.BodySmall>
       ) : null}
-      <div className={styles.fieldGroup}>
-        {inputSpecs.map((input) => (
-          <SourceInfoInputRow
-            key={input.key}
-            configuredSecret={configuredSecrets.has(input.key)}
-            disabled={disabled}
-            draft={drafts[`${input.input.case === 'secret' ? 'sec' : 'var'}:${input.key}`]}
-            input={input}
-            onSecretBlur={onSecretBlur}
-            onSecretFocus={onSecretFocus}
-            onValueChange={onValueChange}
-            value={variables.get(input.key)}
-          />
-        ))}
-      </div>
-    </section>
+      {inputSpecs.map((input) => (
+        <SourceInfoInputRow
+          key={input.key}
+          configuredSecret={configuredSecrets.has(input.key)}
+          disabled={disabled}
+          draft={drafts[`${input.input.case === 'secret' ? 'sec' : 'var'}:${input.key}`]}
+          input={input}
+          onSecretBlur={onSecretBlur}
+          onSecretFocus={onSecretFocus}
+          onValueChange={onValueChange}
+          value={variables.get(input.key)}
+        />
+      ))}
+    </div>
   )
 }
 
@@ -502,47 +477,34 @@ function SourceInfoInputRow({
   if (input.input.case === 'variable') {
     const resolved = value ?? input.input.value.defaultValue ?? ''
     return (
-      <Field input={input}>
+      <SourceInputField input={input}>
         <TextInput
+          ariaLabel={formatFieldName(input.key)}
           name={`var:${input.key}`}
           value={draft ?? resolved}
           onChange={(next) => onValueChange(input.key, next, false)}
-          placeholder={resolved || input.key}
+          placeholder={resolved || formatFieldName(input.key)}
           disabled={disabled}
         />
-      </Field>
+      </SourceInputField>
     )
   }
 
   if (input.input.case !== 'secret') return null
 
   return (
-    <Field input={input}>
+    <SourceInputField input={input}>
       <input type="hidden" name={`sec:${input.key}`} value={draft ?? ''} />
       <TextInput
+        ariaLabel={formatFieldName(input.key)}
         type="password"
         value={draft ?? (configuredSecret ? SECRET_PLACEHOLDER : '')}
         onBlur={() => onSecretBlur(input.key)}
         onChange={(next) => onValueChange(input.key, next, true)}
         onFocus={() => onSecretFocus(input.key)}
-        placeholder={input.key}
+        placeholder={formatFieldName(input.key)}
         disabled={disabled}
       />
-    </Field>
+    </SourceInputField>
   )
-}
-
-function Field({ input, children }: { input: CatalogSourceInputSpec; children: React.ReactNode }) {
-  return (
-    <div className={styles.fieldItem}>
-      <Typography.Body className={styles.fieldLabel}>{input.key}</Typography.Body>
-      {children}
-    </div>
-  )
-}
-
-function originBadgeLabel(origin: SourceOriginLabel): string {
-  if (origin === 'bundled') return 'Core'
-  if (origin === 'imported') return 'Imported'
-  return '—'
 }
