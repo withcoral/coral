@@ -23,6 +23,9 @@ use crate::search::observed::{
     ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad, ObservedValuesLiveScopeLoader,
     ObservedValuesRetrievalPolicy,
 };
+use crate::search::provider::{
+    ObservedValuesPolicyInput, SearchExecutionContext, SearchProviderRegistry,
+};
 use crate::search::result::{
     SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse,
 };
@@ -112,7 +115,7 @@ impl SearchManager {
             observed: observed.clone(),
             observed_scope_loader,
             observed_values_search_enabled,
-            engine: UniversalSearchEngine::new(catalog, observed),
+            engine: UniversalSearchEngine::new(SearchProviderRegistry::local(catalog, observed)),
             workspaces: workspace_manager,
             lifecycle_lock,
             layout,
@@ -124,6 +127,8 @@ impl SearchManager {
         request: &SearchRequest,
         attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
+        let request_started_at = Instant::now();
+        let runtime = tokio::runtime::Handle::current();
         for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
             let CatalogPreload::Ready {
                 revision,
@@ -136,7 +141,7 @@ impl SearchManager {
             };
             let search = self.clone();
             let request = request.clone();
-            let attribution = attribution.clone();
+            let runtime = runtime.clone();
             let operation = run_blocking_search_operation(move || {
                 let Some(_snapshot) = search
                     .lifecycle_lock
@@ -144,15 +149,26 @@ impl SearchManager {
                 else {
                     return Ok(SnapshotOperation::WorkspaceChanged);
                 };
-                let observed_policy = search
-                    .observed_values_search_enabled
-                    .then(|| search.observed_retrieval_policy(&request.workspace_name));
-                Ok(SnapshotOperation::Complete(search.engine.search(
-                    &request,
-                    &attribution,
-                    resolution.as_ref(),
-                    observed_policy.as_ref().map(Result::as_ref),
-                )))
+                let observed_values_policy = if search.observed_values_search_enabled {
+                    ObservedValuesPolicyInput::Enabled(
+                        search.observed_retrieval_policy(&request.workspace_name),
+                    )
+                } else {
+                    ObservedValuesPolicyInput::Disabled
+                };
+                let context = SearchExecutionContext::new(
+                    request_started_at,
+                    request,
+                    resolution,
+                    observed_values_policy,
+                );
+                // Keep the non-Send lifecycle snapshot alive until every provider
+                // finishes, so workspace deletion or source changes cannot race
+                // this search. Drive the async engine from this blocking thread
+                // instead of carrying the snapshot guard across an async await.
+                Ok(SnapshotOperation::Complete(
+                    runtime.block_on(search.engine.search(context)),
+                ))
             })
             .await?;
             if let SnapshotOperation::Complete(response) = operation {
