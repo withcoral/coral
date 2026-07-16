@@ -140,6 +140,25 @@ impl SourceDiagnosticReporter {
         });
     }
 
+    pub(crate) fn clear_workspace(&self, workspace_name: &WorkspaceName) {
+        {
+            let mut reported = self
+                .reported
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            reported.retain(|(workspace, _source, _stage), _diagnostics| {
+                workspace != workspace_name.as_str()
+            });
+        }
+        let mut raw_document_validations = self
+            .raw_document_validations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        raw_document_validations.retain(|(workspace, _source, _surface), _validation| {
+            workspace != workspace_name.as_str()
+        });
+    }
+
     fn validate_raw_document_fingerprint(
         &self,
         workspace_name: &WorkspaceName,
@@ -258,7 +277,7 @@ impl SourceDiagnosticReporter {
     }
 
     #[cfg(test)]
-    fn tracks_diagnostic(
+    pub(crate) fn tracks_diagnostic(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
@@ -278,6 +297,14 @@ impl SourceDiagnosticReporter {
                     .iter()
                     .any(|(diagnostic_code, _message)| diagnostic_code == code)
             })
+    }
+
+    #[cfg(test)]
+    fn tracked_raw_document_validation_count(&self) -> usize {
+        self.raw_document_validations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 }
 
@@ -2835,6 +2862,53 @@ operation_overrides:
                 .any(|diagnostic| diagnostic.code == "V4_RAW_DOCUMENT_UNAVAILABLE"),
             "cached validation unexpectedly reread the raw descriptor"
         );
+    }
+
+    #[test]
+    fn diagnostic_reporter_clears_all_workspace_state() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let reporter = SourceDiagnosticReporter::default();
+        let deleted_workspace = workspace_name();
+        let retained_workspace = WorkspaceName::parse("retained").expect("retained workspace");
+        let source_name = source_name();
+        super::load_v4_materialization(
+            &layout,
+            &deleted_workspace,
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &reporter,
+        )
+        .expect("seed raw document validation cache");
+        for workspace in [&deleted_workspace, &retained_workspace] {
+            reporter.report_source_load_failure(
+                SourceLoadDiagnosticStage::Query,
+                workspace,
+                &source_name,
+                "SOURCE_LOAD_FAILED",
+                "test failure",
+            );
+        }
+
+        assert_eq!(reporter.tracked_raw_document_validation_count(), 1);
+        assert_eq!(reporter.tracked_stage_count(), 2);
+
+        reporter.clear_workspace(&deleted_workspace);
+
+        assert_eq!(reporter.tracked_raw_document_validation_count(), 0);
+        assert_eq!(reporter.tracked_stage_count(), 1);
+        assert!(!reporter.tracks_diagnostic(
+            &deleted_workspace,
+            &source_name,
+            SourceLoadDiagnosticStage::Query.as_str(),
+            "SOURCE_LOAD_FAILED",
+        ));
+        assert!(reporter.tracks_diagnostic(
+            &retained_workspace,
+            &source_name,
+            SourceLoadDiagnosticStage::Query.as_str(),
+            "SOURCE_LOAD_FAILED",
+        ));
     }
 
     #[cfg(unix)]

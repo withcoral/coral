@@ -318,6 +318,7 @@ impl ServerBuilder {
             active_trace_store_dir.clone(),
             workspace_lifecycle_lock.clone(),
             Arc::clone(&coral_db),
+            diagnostic_reporter.clone(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
