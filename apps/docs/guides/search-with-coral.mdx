@@ -12,7 +12,7 @@ Catalog search is always available and reads Coral's local catalog metadata. Opt
 Use natural language to describe the data you need:
 
 ```shellscript
-coral search github issues assigned to me
+coral search github issues urgent
 ```
 
 Among the ranked results, you might see:
@@ -28,9 +28,20 @@ Results
 
 The `SQL` line gives you the table reference. For a table function, `SQL reference` identifies the function and `Call` shows its required arguments.
 
-Use the result's `SQL` reference or `Call` example in a query with `coral sql` to fetch rows. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
+Use a catalog result's `SQL` reference or `Call` example in a query with `coral sql` to fetch rows. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
 
-By default, Coral returns up to 10 results. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
+When observed-value search is enabled and Coral has previously seen a matching value, the same ranked list can also include:
+
+```text
+3. [observed_values] observed value github.issues.label_names
+   Value: urgent
+   Field path: label_names
+   Last observed: 2026-07-03T10:00:00Z (2 observation(s))
+```
+
+Here, `github` is the query-visible SQL schema; JSON and MCP results return it as `schema_name`. For a source with multiple runtime components, it can differ from the installed source name because each component can publish its own SQL schema. Use it with the result's table or table function and column when you write SQL.
+
+By default, Coral returns up to 10 results across all search providers. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
 
 ## Find values Coral has seen
 
@@ -48,40 +59,7 @@ Observed values are a sample of what Coral has encountered, not a complete index
 
 ### Enable observed-value search
 
-Observed-value collection, search, and maintenance are experimental and disabled by default. Enable the feature persistently before you run queries that should contribute observations:
-
-```shellscript
-coral features enable observed_values_search
-```
-
-To enable it for one process without changing `config.toml`, use the transient global flag:
-
-```shellscript
-coral --enable-observed-values-search search urgent
-```
-
-Use the same flag before `mcp-stdio` when you want one MCP server process to advertise and use observed-value search.
-
-### Search observed values
-
-Use the same command as catalog search:
-
-```shellscript
-coral search urgent
-```
-
-Catalog and observed-value matches appear in one ranked result list. After Coral has seen `urgent` in `github.issues.label_names`, an observed-value result can look like this:
-
-```text
-1. [observed_values] observed value github.issues.label_names
-   Value: urgent
-   Field path: label_names
-   Last observed: 2026-07-03T10:00:00Z (2 observation(s))
-```
-
-The result's `schema_name` is the query-visible SQL schema. For a source with multiple runtime components, it can differ from the installed source name because each component can publish its own SQL schema. Use it with the result's table or table function and column when you write SQL; see [Query your data](/getting-started/quickstart#3-query-your-data) for a complete query example.
-
-The `--limit` value applies across all search providers.
+Observed-value collection, search, and maintenance are experimental and disabled by default. Enable the `observed_values_search` [runtime feature](/reference/configuration#runtime-features).
 
 ## Use search over MCP
 

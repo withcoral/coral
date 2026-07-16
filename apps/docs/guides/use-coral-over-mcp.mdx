@@ -3,7 +3,7 @@ title: "Use Coral over MCP"
 description: "Set up MCP for Claude Code, Cursor, and other agents."
 ---
 
-Coral ships with a built-in MCP server that presents Coral to agents as a read-only SQL database with catalog and observed-value search.
+Coral ships with a built-in MCP server that lets agents discover where data lives across your connected sources, then query it through a read-only SQL interface.
 
 <Note>
 Before setting up a client, make sure you have [connected at least one source](/getting-started/quickstart).
@@ -214,7 +214,7 @@ When your agent has many tools available, name Coral explicitly:
 
 > "Use Coral to find where `payments-api` appeared, then query the matching data."
 
-When the right table or table function is not obvious, ask the agent to [search with Coral](/guides/search-with-coral). The `search` tool returns catalog metadata and, when observed-value search is enabled, locally observed values. An observed-value match is a local routing clue that can help the agent locate the right table and column; it does not fetch current source rows or prove that the value is still present in a connected source.
+When the right table or table function is not obvious, ask the agent to [search with Coral](/guides/search-with-coral). The `search` tool returns catalog metadata and optionally locally observed values.
 
 If an answer needs data from multiple connected sources, ask the agent to combine the data in Coral when possible.
 
