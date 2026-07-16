@@ -82,7 +82,7 @@ fn task_started_value(task: &coral_api::v1::Task) -> Result<TaskStartedValue, to
     Ok(TaskStartedValue {
         task_id,
         message: "Task started.",
-        instructions: "Pass this task_id as task_id on subsequent Coral MCP tool calls for this work, then call end_task when the task is complete.",
+        instructions: "Pass this task_id on subsequent Coral MCP tool calls, then call end_task when the task is complete.",
     })
 }
 
@@ -496,7 +496,6 @@ impl CoralMcpServer {
         serialize_tool_value(TaskEndedValue {
             task_id,
             task_status: task_status_from_proto(task_end.task_status)?,
-            success: "Task ended.",
             note: "Task status recorded.",
         })
     }

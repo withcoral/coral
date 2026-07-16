@@ -555,7 +555,11 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     assert_structured_content_only(&end);
     let end = end.structured_content.expect("end structured content");
     assert_matches_output_schema(end_task_tool, &end);
-    assert_eq!(end["success"], "Task ended.");
+    assert!(
+        !end.as_object()
+            .expect("end task object")
+            .contains_key("success")
+    );
     assert_eq!(end["task_status"], "success");
 
     let invalid_task_id = client
