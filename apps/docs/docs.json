@@ -110,11 +110,6 @@
       "source": "/guides/search-the-catalog",
       "destination": "/guides/search-with-coral",
       "permanent": true
-    },
-    {
-      "source": "/guides/search-observed-values",
-      "destination": "/guides/search-with-coral",
-      "permanent": true
     }
   ],
   "errors": {
