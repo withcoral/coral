@@ -13,7 +13,6 @@ coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
 coral --enable-feedback mcp-stdio
 coral --disable-feedback mcp-stdio
-coral --enable-observed-values-search search urgent
 ```
 
 These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
@@ -79,16 +78,7 @@ memory; those results identify the value and the surface and column where Coral
 saw it. Use those clues with `coral sql` to fetch current rows.
 
 Observed-value collection, retrieval, and maintenance are disabled by default.
-Enable them persistently, or for one command only:
-
-```shellscript
-coral features enable observed_values_search
-coral --enable-observed-values-search search urgent
-```
-
-Observed values are not a complete source index. See [Search with
-Coral](/guides/search-with-coral#find-values-coral-has-seen) for coverage, local
-storage, and removal details.
+Enable them persistently using Coral [runtime features](/reference/configuration#runtime-features).
 
 ### Options
 
