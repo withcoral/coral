@@ -78,7 +78,6 @@ Experimental runtime features are configured under `[features]`.
 ```toml
 [features]
 feedback = true
-observed_values_search = true
 ```
 
 You can inspect available features and their effective state with:
@@ -92,8 +91,6 @@ Enable or disable a feature with:
 ```shellscript
 coral features enable feedback
 coral features disable feedback
-coral features enable observed_values_search
-coral features disable observed_values_search
 ```
 
 Feature values must be booleans. Unknown feature keys are preserved in `config.toml` but ignored by Coral.
