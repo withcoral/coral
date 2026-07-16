@@ -1,6 +1,6 @@
 //! App-owned assembly of query-engine runtime source packages.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use coral_engine::RuntimeSourceComponent;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -40,12 +40,16 @@ pub(crate) fn runtime_components_for_v4_source(
             continue;
         }
         published_surface_count += 1;
-        let component = match surface.surface_type {
-            SurfaceType::OpenApi => http_manifest_for_surface(manifest, materialized, &surface.id)
-                .map(RuntimeSourceComponent::Http),
-            SurfaceType::Mcp => mcp_manifest_for_surface(manifest, materialized, &surface.id)
-                .map(RuntimeSourceComponent::Mcp),
-        };
+        let component = validate_surface_projection_names(materialized, &surface.id).and_then(
+            |()| match surface.surface_type {
+                SurfaceType::OpenApi => {
+                    http_manifest_for_surface(manifest, materialized, &surface.id)
+                        .map(RuntimeSourceComponent::Http)
+                }
+                SurfaceType::Mcp => mcp_manifest_for_surface(manifest, materialized, &surface.id)
+                    .map(RuntimeSourceComponent::Mcp),
+            },
+        );
         match component {
             Ok(component) => components.push(component),
             Err(error) => {
@@ -89,6 +93,30 @@ fn has_published_projection(materialized: &V4MaterializedSource, surface_id: &st
             projection.surface_id == surface_id
                 && projection.visibility == ProjectionVisibility::Published
         })
+}
+
+fn validate_surface_projection_names(
+    materialized: &V4MaterializedSource,
+    surface_id: &str,
+) -> Result<(), AppError> {
+    let mut names = BTreeSet::new();
+    for projection in materialized
+        .projections
+        .projections
+        .iter()
+        .filter(|projection| {
+            projection.surface_id == surface_id
+                && projection.visibility == ProjectionVisibility::Published
+        })
+    {
+        if !names.insert(projection.name.as_str()) {
+            return Err(AppError::FailedPrecondition(format!(
+                "DSL v4 projection '{}' is repeated for surface '{surface_id}'",
+                projection.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn http_manifest_for_surface(
@@ -751,6 +779,58 @@ mod tests {
 
         let components = runtime_components_for_v4_source(&manifest, &materialized)
             .expect("healthy surface should survive");
+
+        assert_eq!(components.len(), 1);
+        assert_eq!(
+            components
+                .first()
+                .map(coral_engine::RuntimeSourceComponent::source_name),
+            Some("github_v4_healthy")
+        );
+    }
+
+    #[test]
+    fn runtime_components_skip_surface_with_duplicate_names_across_namespaces() {
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            surfaces: vec![
+                mcp_surface("healthy", "github_v4_healthy"),
+                mcp_surface("duplicate", "github_v4_duplicate"),
+            ],
+            declared_inputs: Vec::new(),
+        };
+        let mut duplicate_a =
+            published_projection("duplicate", "github_v4_duplicate", "duplicate_list_issues");
+        let mut duplicate_b = duplicate_a.clone();
+        duplicate_a.namespace = "first_artifact_namespace".to_string();
+        duplicate_b.namespace = "second_artifact_namespace".to_string();
+        let materialized = V4MaterializedSource {
+            fingerprint: None,
+            surfaces: vec![
+                mcp_materialized_surface("healthy", "healthy_list_issues"),
+                mcp_materialized_surface("duplicate", "duplicate_list_issues"),
+            ],
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: vec![
+                    published_projection("healthy", "github_v4_healthy", "healthy_list_issues"),
+                    duplicate_a,
+                    duplicate_b,
+                ],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let components = runtime_components_for_v4_source(&manifest, &materialized)
+            .expect("healthy surface should survive duplicate names on another surface");
 
         assert_eq!(components.len(), 1);
         assert_eq!(

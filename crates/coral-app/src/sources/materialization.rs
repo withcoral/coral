@@ -360,7 +360,7 @@ pub(crate) fn load_v4_materialization(
         fingerprint.as_ref(),
         &mut load_diagnostics,
     );
-    collect_projection_coherence_diagnostics(
+    let projection_structure_failure = collect_projection_coherence_diagnostics(
         manifest,
         &projections,
         &surfaces,
@@ -394,6 +394,16 @@ pub(crate) fn load_v4_materialization(
             projection.visibility == coral_spec::v4::ProjectionVisibility::Published
         })
     {
+        if let Some(detail) = projection_structure_failure {
+            return Err(match projections_file.origin {
+                V4ProjectionCatalogOrigin::Materialized => {
+                    incompatible_materialization_error(source_name, detail)
+                }
+                V4ProjectionCatalogOrigin::Override => {
+                    invalid_projection_override_error(source_name, &projections_file.path, detail)
+                }
+            });
+        }
         return Err(incompatible_materialization_error(
             source_name,
             "no published projection surfaces could be loaded",
@@ -662,11 +672,29 @@ fn collect_projection_coherence_diagnostics(
     surfaces: &[MaterializedSurface],
     failed_surfaces: &mut BTreeSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> Option<String> {
+    let mut projection_names = BTreeSet::new();
+    let mut duplicate_projection_names = BTreeSet::new();
+    let mut first_structure_failure = None;
     for projection in &projections.projections {
         let Some(surface) = manifest.surface(&projection.surface_id) else {
             continue;
         };
+        let runtime_name = (projection.surface_id.as_str(), projection.name.as_str());
+        if !projection_names.insert(runtime_name) && duplicate_projection_names.insert(runtime_name)
+        {
+            let detail = format!(
+                "projection '{}' is repeated for surface '{}'",
+                projection.name, projection.surface_id
+            );
+            diagnostics.push(materialization_warning(
+                "V4_PROJECTION_NAME_REPEATED",
+                detail.clone(),
+                Some(surface.id.clone()),
+            ));
+            failed_surfaces.insert(surface.id.clone());
+            first_structure_failure.get_or_insert(detail);
+        }
         if projection.namespace != surface.relation_namespace {
             diagnostics.push(materialization_warning(
                 "V4_PROJECTION_NAMESPACE_MISMATCH",
@@ -700,6 +728,7 @@ fn collect_projection_coherence_diagnostics(
             failed_surfaces.insert(surface.id.clone());
         }
     }
+    first_structure_failure
 }
 
 fn materialization_warning(
@@ -2450,6 +2479,48 @@ surfaces:
             error
                 .to_string()
                 .contains(&override_path.display().to_string()),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_duplicate_runtime_names_across_namespaces() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut catalog = installed_projection_catalog_value(&layout);
+        let projections = catalog
+            .get_mut("projections")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("projection sequence");
+        let mut duplicate = projections.first().expect("first projection").clone();
+        let projection_name = duplicate
+            .get("name")
+            .and_then(serde_yaml::Value::as_str)
+            .expect("projection name")
+            .to_string();
+        duplicate
+            .as_mapping_mut()
+            .expect("projection mapping")
+            .insert("namespace".into(), "stale_namespace".into());
+        projections.push(duplicate);
+        write_projection_override(&layout, &catalog);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("duplicate runtime names should fail at load time");
+
+        assert!(
+            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains(&format!(
+                "projection '{projection_name}' is repeated for surface 'rest'"
+            )),
             "unexpected error: {error}"
         );
     }

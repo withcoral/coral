@@ -142,10 +142,10 @@ pub fn validate_materialized_source_structure(
     }
     let mut projection_names = BTreeSet::new();
     for projection in &materialized.projections.projections {
-        if !projection_names.insert((projection.namespace.as_str(), projection.name.as_str())) {
+        if !projection_names.insert((projection.surface_id.as_str(), projection.name.as_str())) {
             return Err(ManifestError::validation(format!(
-                "DSL v4 projection '{}.{}' is repeated",
-                projection.namespace, projection.name
+                "DSL v4 projection '{}' is repeated for surface '{}'",
+                projection.name, projection.surface_id
             )));
         }
     }
@@ -323,7 +323,34 @@ surfaces:
         assert!(
             error
                 .to_string()
-                .contains("projection '.items' is repeated"),
+                .contains("projection 'items' is repeated for surface 'rest'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn structural_validation_rejects_duplicate_runtime_names_across_artifact_namespaces() {
+        let manifest = manifest();
+        let mut materialized = materialized_source();
+        materialized.projections =
+            serde_yaml::from_str(include_str!("fixtures/artefact-schema-v3/projections.yaml"))
+                .expect("decode projection fixture");
+        let mut duplicate = materialized
+            .projections
+            .projections
+            .first()
+            .expect("fixture projection")
+            .clone();
+        duplicate.namespace = "stale_namespace".to_string();
+        materialized.projections.projections.push(duplicate);
+
+        let error = validate_materialized_source_structure(&manifest, &materialized)
+            .expect_err("runtime duplicate should fail structural validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("projection 'items' is repeated for surface 'rest'"),
             "unexpected error: {error}"
         );
     }
