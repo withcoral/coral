@@ -40,31 +40,25 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const tracesPath = workspaceNavTarget
     ? routePath('workspaceTraces', { workspaceId: workspaceNavTarget.name })
     : routePath('home')
-  const navItems = [
-    { icon: 'Plug', label: 'Sources', paths: [routePath('home'), sourcesPath], to: sourcesPath },
-    { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
-    { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
-  ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
-  const isConnectActive =
-    location.pathname === routePath('connect') ||
-    location.pathname.startsWith(`${routePath('connect')}/`)
   // Keep the desktop-only connect link stable across SSR and hydration. The
   // actual bridge can only be detected on the client, but the route is included
   // at build time for Electron and omitted from the web build.
   const isDesktopApp = isCoralDesktopBuild()
-
-  const connectButton = (
-    <SidebarButton
-      aria-label="Connect"
-      as={NavLink}
-      icon="Cable"
-      isActive={isConnectActive}
-      isMinimized={isMinimized}
-      to={routePath('connect')}
-    >
-      Connect
-    </SidebarButton>
-  )
+  const navItems = [
+    { icon: 'Plug', label: 'Sources', paths: [routePath('home'), sourcesPath], to: sourcesPath },
+    { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
+    { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
+    ...(isDesktopApp
+      ? [
+          {
+            icon: 'Cable',
+            label: 'Connect',
+            paths: [routePath('connect')],
+            to: routePath('connect'),
+          } as const,
+        ]
+      : []),
+  ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
 
   const handleToggleSidebar = (event: KeyboardEvent) => {
     event.preventDefault()
@@ -191,18 +185,6 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
             button
           )
         })}
-      </div>
-
-      <div className={styles.footer}>
-        {isDesktopApp &&
-          // Collapsed sidebar hides the label, so surface it on hover instead.
-          (isMinimized ? (
-            <Tooltip content="Connect" side="right">
-              {connectButton}
-            </Tooltip>
-          ) : (
-            connectButton
-          ))}
       </div>
     </nav>
   )

@@ -124,11 +124,3 @@ export const nav = style({
   marginBlockStart: '24px',
   minHeight: 0,
 })
-
-export const footer = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flexShrink: 0,
-  gap: '4px',
-  marginTop: 'auto',
-})
