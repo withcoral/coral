@@ -19,7 +19,7 @@ use crate::{
 pub const IDENTITY_SPEC_VERSION: u32 = 1;
 
 /// Validated identity manifest.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IdentityManifest {
     /// Authored identity-spec format version.
     pub spec_version: u32,
@@ -33,7 +33,7 @@ pub struct IdentityManifest {
     pub issuer: String,
     /// Type of identity, which determines setup and request injection semantics.
     pub identity_type: IdentitySpecType,
-    /// Provider-specific audience constraints for this identity.
+    /// Required request host, optional port, and provider-specific audience constraints.
     pub audience: BTreeMap<String, Value>,
     /// Identity setup inputs owned by the installed identity spec.
     pub inputs: Vec<ManifestInputSpec>,
@@ -42,7 +42,7 @@ pub struct IdentityManifest {
 }
 
 /// Supported identity spec types.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentitySpecType {
     /// OAuth access token identity.
@@ -52,18 +52,8 @@ pub enum IdentitySpecType {
     FixedToken,
 }
 
-impl IdentitySpecType {
-    /// Canonical manifest label.
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::OAuth => "oauth",
-            Self::FixedToken => "fixed_token",
-        }
-    }
-}
-
 /// Type-specific identity setup configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentitySpecConfig {
     /// OAuth identity setup method.
     OAuth(Box<IdentityOAuthSpec>),
@@ -72,14 +62,14 @@ pub enum IdentitySpecConfig {
 }
 
 /// OAuth setup configuration for an identity spec.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityOAuthSpec {
     /// Authored OAuth setup method.
     pub method: IdentityOAuthMethodSpec,
 }
 
 /// One OAuth setup method for an identity spec.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityOAuthMethodSpec {
     /// Optional display label.
     pub label: Option<String>,
@@ -104,12 +94,47 @@ struct RawIdentityManifest {
     issuer: String,
     #[serde(rename = "type")]
     identity_type: IdentitySpecType,
-    #[serde(default)]
-    audience: BTreeMap<String, Value>,
+    audience: RawIdentityAudience,
     #[serde(default, rename = "inputs")]
     _inputs: Option<Value>,
     #[serde(default)]
     oauth: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawIdentityAudience {
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(flatten)]
+    constraints: BTreeMap<String, Value>,
+}
+
+impl RawIdentityAudience {
+    fn validate_and_normalize(mut self, name: &str) -> Result<BTreeMap<String, Value>> {
+        if self.host.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "identity '{name}' audience.host must be a non-empty string"
+            )));
+        }
+        let host = url::Host::parse(&self.host).map_err(|_error| {
+            ManifestError::validation(format!(
+                "identity '{name}' audience.host must be a valid typed host"
+            ))
+        })?;
+        if self.port == Some(0) {
+            return Err(ManifestError::validation(format!(
+                "identity '{name}' audience.port must be an integer from 1 through 65535"
+            )));
+        }
+        self.constraints
+            .insert("host".to_string(), Value::String(host.to_string()));
+        if let Some(port) = self.port {
+            self.constraints
+                .insert("port".to_string(), Value::from(port));
+        }
+        Ok(self.constraints)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -133,6 +158,7 @@ pub fn parse_identity_manifest_value(value: Value) -> Result<IdentityManifest> {
         serde_json::from_value(value).map_err(ManifestError::deserialize)?;
 
     validate_identity_manifest(&raw)?;
+    let audience = raw.audience.validate_and_normalize(&raw.name)?;
     let config = parse_identity_config(&raw.name, raw.identity_type, raw.oauth.as_ref())?;
     validate_identity_inputs(&raw.name, raw.identity_type, &inputs, &config)?;
 
@@ -143,7 +169,7 @@ pub fn parse_identity_manifest_value(value: Value) -> Result<IdentityManifest> {
         description: raw.description,
         issuer: raw.issuer,
         identity_type: raw.identity_type,
-        audience: raw.audience,
+        audience,
         inputs,
         config,
     })
@@ -271,7 +297,7 @@ fn parse_identity_oauth_method_config(
         label: optional_string(method, "label", name)?,
         description: optional_string(method, "description", name)?,
         hint: optional_string(method, "hint", name)?,
-        oauth: parse_identity_oauth_method(name, 0, value)?,
+        oauth: parse_identity_oauth_method(name, value)?,
     })
 }
 
@@ -286,8 +312,7 @@ fn validate_identity_inputs(
             return Ok(());
         }
         return Err(ManifestError::validation(format!(
-            "identity '{name}' type '{}' must not declare inputs",
-            identity_type.label()
+            "identity '{name}' type fixed_token must not declare inputs"
         )));
     }
     let IdentitySpecConfig::OAuth(oauth) = config else {
@@ -500,8 +525,12 @@ mod tests {
     const OAUTH_BODY: &str = "oauth:\n  method:\n    flow: {type: device_code}\n    endpoints: {device_authorization_url: 'https://provider.example.com/device', token_url: 'https://provider.example.com/token'}\n    client: {id: {default: demo-client}}";
 
     fn identity(identity_type: &str, body: &str) -> String {
+        identity_with_audience(identity_type, "{host: provider.example.com}", body)
+    }
+
+    fn identity_with_audience(identity_type: &str, audience: &str, body: &str) -> String {
         format!(
-            "kind: identity\nspec_version: 1\nname: demo_{identity_type}\nversion: 0.1.0\nissuer: demo\ntype: {identity_type}\n{body}"
+            "kind: identity\nspec_version: 1\nname: demo_{identity_type}\nversion: 0.1.0\nissuer: demo\ntype: {identity_type}\naudience: {audience}\n{body}"
         )
     }
 
@@ -512,6 +541,35 @@ mod tests {
         let fixed =
             parse_identity_manifest_yaml(&identity("fixed_token", "")).expect("fixed token");
         assert!(matches!(fixed.config, IdentitySpecConfig::FixedToken));
+    }
+
+    #[test]
+    fn parses_typed_audience_with_provider_constraints() {
+        let parsed = parse_identity_manifest_yaml(&identity_with_audience(
+            "fixed_token",
+            "{host: PROVIDER.EXAMPLE.COM, port: 8443, tenant: demo}",
+            "",
+        ))
+        .expect("typed audience");
+
+        assert_eq!(
+            parsed.audience.get("host").and_then(|value| value.as_str()),
+            Some("provider.example.com")
+        );
+        assert_eq!(
+            parsed
+                .audience
+                .get("port")
+                .and_then(serde_json::Value::as_u64),
+            Some(8443)
+        );
+        assert_eq!(
+            parsed
+                .audience
+                .get("tenant")
+                .and_then(|value| value.as_str()),
+            Some("demo")
+        );
     }
 
     #[test]
@@ -560,8 +618,36 @@ oauth:
         for (raw, expected) in [
             (identity("fixed_token", "unexpected: true"), "unexpected"),
             (
-                "kind: identity\nspec_version: 2\nname: demo\nversion: 0.1.0\nissuer: demo\ntype: fixed_token".to_string(),
+                "kind: identity\nspec_version: 2\nname: demo\nversion: 0.1.0\nissuer: demo\ntype: fixed_token\naudience: {host: provider.example.com}".to_string(),
                 "spec_version",
+            ),
+            (
+                "kind: identity\nspec_version: 1\nname: demo\nversion: 0.1.0\nissuer: demo\ntype: fixed_token".to_string(),
+                "missing field `audience`",
+            ),
+            (
+                identity_with_audience("fixed_token", "{port: 443}", ""),
+                "missing field `host`",
+            ),
+            (
+                identity_with_audience("fixed_token", "{host: '   '}", ""),
+                "audience.host must be a non-empty string",
+            ),
+            (
+                identity_with_audience("fixed_token", "{host: 'https://provider.example.com'}", ""),
+                "audience.host must be a valid typed host",
+            ),
+            (
+                identity_with_audience("fixed_token", "{host: provider.example.com, port: 0}", ""),
+                "audience.port must be an integer from 1 through 65535",
+            ),
+            (
+                identity_with_audience(
+                    "fixed_token",
+                    "{host: provider.example.com, port: 65536}",
+                    "",
+                ),
+                "expected u16",
             ),
             (
                 identity("oauth", dangling_input),
