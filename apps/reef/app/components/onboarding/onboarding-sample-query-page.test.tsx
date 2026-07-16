@@ -1,10 +1,9 @@
-import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 
 import type { SourceCatalogEntry } from '@/components/sources'
 
-import { ONBOARDING_SAMPLE_QUERY, OnboardingSampleQueryPage } from './onboarding-sample-query-page'
+import { OnboardingSampleQueryPage } from './onboarding-sample-query-page'
 
 const github: SourceCatalogEntry = {
   description: 'Sync issues, pull requests, and code from your repositories.',
@@ -53,38 +52,20 @@ describe('OnboardingSampleQueryPage', () => {
     await expect.element(screen.getByRole('cell', { name: 'slack' })).toBeVisible()
   })
 
-  it('runs the fixed catalog query once when StrictMode replays effects', async () => {
-    const onRunSampleQuery = vi.fn()
-
-    await render(
-      <StrictMode>
-        <OnboardingSampleQueryPage
-          connectedSources={[github]}
-          loadState="idle"
-          onRunSampleQuery={onRunSampleQuery}
-        />
-      </StrictMode>,
-    )
-
-    await expect.poll(() => onRunSampleQuery.mock.calls.length).toBe(1)
-    expect(onRunSampleQuery).toHaveBeenCalledWith(ONBOARDING_SAMPLE_QUERY)
-  })
-
   it('retries a failed catalog query', async () => {
-    const onRunSampleQuery = vi.fn()
+    const onRetry = vi.fn()
     const screen = await render(
       <OnboardingSampleQueryPage
         connectedSources={[github]}
         errorMessage="Catalog unavailable."
         loadState="error"
-        onRunSampleQuery={onRunSampleQuery}
+        onRetry={onRetry}
       />,
     )
 
     await screen.getByRole('button', { name: 'Retry' }).click()
 
-    expect(onRunSampleQuery).toHaveBeenCalledOnce()
-    expect(onRunSampleQuery).toHaveBeenCalledWith(ONBOARDING_SAMPLE_QUERY)
+    expect(onRetry).toHaveBeenCalledOnce()
   })
 
   it('allows setup to finish when the catalog query succeeds without result metadata', async () => {

@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { fn } from 'storybook/test'
@@ -40,7 +39,7 @@ const meta = {
   args: {
     connectedSources,
     onContinue: fn(),
-    onRunSampleQuery: fn(),
+    onRetry: fn(),
     rows,
   },
   component: OnboardingSampleQueryPage,
@@ -81,43 +80,4 @@ export const QueryFailed: Story = {
     loadState: 'error',
     rows: [],
   },
-}
-
-export const InteractiveRun: Story = {
-  args: {
-    loadState: 'idle',
-    rows: [],
-  },
-  render: (args) => <InteractiveSampleQueryPage {...args} />,
-}
-
-function InteractiveSampleQueryPage(args: React.ComponentProps<typeof OnboardingSampleQueryPage>) {
-  const [loadState, setLoadState] = useState(args.loadState ?? 'idle')
-  const [queryRows, setQueryRows] = useState(args.rows ?? [])
-
-  useEffect(() => {
-    setLoadState(args.loadState ?? 'idle')
-    setQueryRows(args.rows ?? [])
-  }, [args.loadState, args.rows])
-
-  const handleRunSampleQuery = useCallback(
-    (sql: string) => {
-      args.onRunSampleQuery?.(sql)
-      setLoadState('loading')
-      window.setTimeout(() => {
-        setQueryRows(rows)
-        setLoadState('success')
-      }, 700)
-    },
-    [args],
-  )
-
-  return (
-    <OnboardingSampleQueryPage
-      {...args}
-      loadState={loadState}
-      onRunSampleQuery={handleRunSampleQuery}
-      rows={queryRows}
-    />
-  )
 }

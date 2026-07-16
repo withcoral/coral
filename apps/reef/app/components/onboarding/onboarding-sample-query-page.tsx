@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 
 import { ErrorBanner } from '@/components/error-banner'
 import {
@@ -35,7 +35,7 @@ export interface OnboardingSampleQueryPageProps {
   errorMessage?: string | null
   loadState?: SampleQueryLoadState
   onContinue?: () => void
-  onRunSampleQuery?: (sql: string) => void
+  onRetry?: () => void
   rows?: OnboardingSampleQueryRow[]
 }
 
@@ -46,31 +46,12 @@ export function OnboardingSampleQueryPage({
   errorMessage = null,
   loadState = 'idle',
   onContinue,
-  onRunSampleQuery,
+  onRetry,
   rows = [],
 }: OnboardingSampleQueryPageProps) {
   const step = getOnboardingStepState('query')
   const sourceCount = connectedSources.length
-  const sourceSetKey = connectedSources
-    .map((source) => source.name)
-    .toSorted()
-    .join('\0')
-  const lastAutoRunSourceSet = useRef<string | null>(null)
   const canContinue = sourceCount > 0 && loadState === 'success' && !continueDisabled
-
-  useEffect(() => {
-    if (
-      !onRunSampleQuery ||
-      !sourceSetKey ||
-      loadState !== 'idle' ||
-      lastAutoRunSourceSet.current === sourceSetKey
-    ) {
-      return
-    }
-
-    lastAutoRunSourceSet.current = sourceSetKey
-    onRunSampleQuery(ONBOARDING_SAMPLE_QUERY)
-  }, [loadState, onRunSampleQuery, sourceSetKey])
 
   return (
     <OnboardingPage
@@ -105,7 +86,7 @@ export function OnboardingSampleQueryPage({
         connectedSources={connectedSources}
         errorMessage={errorMessage}
         loadState={loadState}
-        onRetry={onRunSampleQuery ? () => onRunSampleQuery(ONBOARDING_SAMPLE_QUERY) : undefined}
+        onRetry={onRetry}
         rows={rows}
       />
     </OnboardingPage>
