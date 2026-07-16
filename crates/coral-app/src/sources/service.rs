@@ -923,6 +923,7 @@ mod tests {
             credentials.clone(),
             layout.clone(),
             workspaces.lifecycle_lock(),
+            Arc::clone(&db),
         );
         let queries = QueryManager::new_for_tests(
             deployment.config_store,
