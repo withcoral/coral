@@ -61,7 +61,7 @@ projections:
     guide: Use a selective query and follow the detail hint
     surface_id: mcp
     operation_id: search_items
-    visibility: hidden
+    visibility: published
     inputs:
       - name: query
         sql_exposure: function_arg

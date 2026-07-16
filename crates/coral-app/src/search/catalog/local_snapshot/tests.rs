@@ -267,6 +267,32 @@ surfaces:
         ["id", "state", "owner"]
     );
     assert_eq!(table.required_filters, ["owner"]);
+    let table_function = catalog
+        .table_functions
+        .iter()
+        .find(|table_function| {
+            table_function.schema_name == "compatibility_fixture_mcp"
+                && table_function.function_name == "search_items"
+        })
+        .expect(
+            "legacy projection without a namespace should produce the search_items table function",
+        );
+    assert_eq!(
+        table_function
+            .result_columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "score"]
+    );
+    assert_eq!(table_function.arguments.len(), 1);
+    // Assert that the first arg is called "query" and is required
+    let first_arg = table_function
+        .arguments
+        .first()
+        .expect("table function should have at least one argument");
+    assert_eq!(first_arg.name, "query");
+    assert!(first_arg.required);
 }
 
 #[test]
