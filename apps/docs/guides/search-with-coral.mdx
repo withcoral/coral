@@ -49,9 +49,9 @@ Sometimes you remember a project name, issue ID, deployment status, or another v
 
 Coral builds this memory from values produced by HTTP- and MCP-backed sources while executing SQL queries. It does not crawl your sources in the background or query them when you search.
 
-<Warning>
+<Callout icon="lock" color="#30A46C">
 The observed-values index and its stored values stay in the workspace's local search database. Coral does not upload them to a remote search service. Search matches are still returned to the CLI or MCP client that requested them.
-</Warning>
+</Callout>
 
 <Note>
 Observed values are a sample of what Coral has encountered, not a complete index of a connected source. A missing result means Coral found no match in its local observations—not that the value is absent from the source.
