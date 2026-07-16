@@ -201,16 +201,13 @@ impl SourceManager {
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
+        db: Arc<CoralDb>,
     ) -> Self {
-        let db = Arc::new(open_test_sqlite_with_legacy_config(
-            layout.clone(),
-            config_store.clone(),
-        ));
         Self::new(
             config_store,
             credential_manager,
             layout,
-            crate::workspaces::WorkspaceLifecycleLock::default(),
+            WorkspaceLifecycleLock::default(),
             db,
         )
     }
@@ -1475,6 +1472,21 @@ impl SourceManager {
                 warn!("rollback: failed to restore source config: {e}");
             }
         } else {
+            match self
+                .config_store
+                .get_source_unlocked(workspace_name, source_name)
+            {
+                Ok(_) => {
+                    if let Err(e) = self
+                        .config_store
+                        .remove_source_unlocked(workspace_name, source_name)
+                    {
+                        warn!("rollback: failed to remove new source config: {e}");
+                    }
+                }
+                Err(AppError::SourceNotFound(_)) => {}
+                Err(e) => warn!("rollback: failed to inspect new source config: {e}"),
+            }
             let source_dir = self.layout.source_dir(workspace_name, source_name);
             if source_dir.exists()
                 && let Err(e) = std::fs::remove_dir_all(&source_dir)
@@ -1893,26 +1905,6 @@ where
 }
 
 #[cfg(test)]
-fn open_test_sqlite_with_legacy_config(
-    layout: AppStateLayout,
-    config_store: ConfigStore,
-) -> CoralDb {
-    run_source_db_operation(async move {
-        let config = crate::state::db::DatabaseConfig::load(&layout)?;
-        let crate::state::db::DatabaseConfig::Sqlite { path } = config else {
-            return Err(AppError::FailedPrecondition(
-                "default test config should be sqlite".to_string(),
-            ));
-        };
-        let db = CoralDb::open(crate::state::db::ResolvedDatabaseConfig::Sqlite { path }).await?;
-        db.migrate().await?;
-        crate::state::db::import_legacy_config(&db, &config_store).await?;
-        Ok(db)
-    })
-    .expect("open test source catalog database")
-}
-
-#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::net::TcpListener as StdTcpListener;
@@ -1933,7 +1925,8 @@ mod tests {
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent,
         PersistSourceRequest, SourceBinding, SourceBindings, SourceManager,
         SourceOAuthCredentialRetrieval, ValidatedBindings, materialization_inputs_from_bindings,
-        normalize_binding_key, source_needs_stored_material_for_validation,
+        normalize_binding_key, run_source_db_operation,
+        source_needs_stored_material_for_validation,
     };
     use crate::bootstrap::AppError;
     use crate::credentials::{
@@ -1967,6 +1960,24 @@ mod tests {
             .revision_if_active_async(workspace_name)
             .await
             .expect("workspace lifecycle revision")
+    }
+
+    fn source_manager_for_tests(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+    ) -> SourceManager {
+        let db = run_source_db_operation({
+            let config_store = config_store.clone();
+            let layout = layout.clone();
+            async move {
+                let db = crate::state::db::open_test_database(&layout).await?;
+                crate::state::db::run_state_migrations(&db, &config_store, &layout).await?;
+                Ok(db)
+            }
+        })
+        .expect("open test database");
+        SourceManager::new_for_tests(config_store, credential_manager, layout, db)
     }
 
     fn manifest_with_secret() -> String {
@@ -2219,12 +2230,7 @@ tables:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(
-            config_store,
-            credential_manager,
-            layout.clone(),
-            crate::workspaces::WorkspaceLifecycleLock::default(),
-        );
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
         (manager, layout)
     }
 
@@ -2333,7 +2339,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
         let manager =
-            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout.clone());
+            source_manager_for_tests(config_store.clone(), credential_manager, layout.clone());
 
         let workspace_name = default_workspace();
         let original_manifest = manifest_without_secrets();
@@ -2418,7 +2424,7 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new_for_tests(
+        let manager = source_manager_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
@@ -2486,7 +2492,7 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new_for_tests(
+        let manager = source_manager_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
@@ -2578,7 +2584,7 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new_for_tests(
+        let manager = source_manager_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
@@ -2837,7 +2843,7 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let manager = source_manager_for_tests(config_store, credential_manager, layout);
         let candidate = CandidateSource {
             name: SourceName::parse("coral_db").expect("source"),
             description: String::new(),
@@ -2897,8 +2903,7 @@ surface:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout);
+        let manager = source_manager_for_tests(config_store.clone(), credential_manager, layout);
         let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
 
         config_store
@@ -2953,9 +2958,8 @@ surface:
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone())
-                .with_search_observation_handle(search_observations.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone())
+            .with_search_observation_handle(search_observations.clone());
         let workspace_name = default_workspace();
         let source_name = SourceName::parse("github").expect("source name");
 
@@ -2980,8 +2984,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
 
         let disabled = manager
             .discover_sources(&default_workspace())
@@ -3002,8 +3005,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
         let workspace_name = default_workspace();
 
         let imported = manager
@@ -3059,8 +3061,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
 
         let installed = manager
             .import_source(
@@ -3098,7 +3099,7 @@ surface:
             v4_openapi_fixture_with_defaulted_input_server_url(),
         )
         .expect("write fixture");
-        let manager = SourceManager::new_for_tests(
+        let manager = source_manager_for_tests(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
@@ -3136,7 +3137,7 @@ surface:
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let manager = SourceManager::new_for_tests(
+        let manager = source_manager_for_tests(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout,
@@ -3169,7 +3170,7 @@ surface:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture_with_metadata()).expect("write fixture");
-        let manager = SourceManager::new_for_tests(
+        let manager = source_manager_for_tests(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
@@ -3208,8 +3209,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         let source_dir = layout.source_dir(&default_workspace(), &source_name);
@@ -3257,6 +3257,59 @@ surface:
                 .expect("list sources")
                 .is_empty(),
             "source config should not be persisted after rollback"
+        );
+    }
+
+    #[test]
+    fn import_new_source_removes_config_when_database_persistence_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = run_source_db_operation({
+            let layout = layout.clone();
+            async move {
+                let db = crate::state::db::CoralDb::open(
+                    crate::state::db::ResolvedDatabaseConfig::Sqlite {
+                        path: layout.database_file(),
+                    },
+                )
+                .await?;
+                Ok(std::sync::Arc::new(db))
+            }
+        })
+        .expect("open unmigrated test database");
+        let manager = SourceManager::new_for_tests(
+            config_store.clone(),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+            db,
+        );
+        let workspace_name = default_workspace();
+        let source_name = SourceName::parse("public_messages").expect("source");
+
+        let error = manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("database persistence should fail without migrations");
+
+        assert!(
+            matches!(error, crate::bootstrap::AppError::Database(_)),
+            "unexpected error: {error:#}"
+        );
+        assert!(matches!(
+            config_store.get_source(&workspace_name, &source_name),
+            Err(crate::bootstrap::AppError::SourceNotFound(_))
+        ));
+        assert!(
+            !layout.source_dir(&workspace_name, &source_name).exists(),
+            "source artifacts should be removed after database failure"
         );
     }
 
@@ -3311,7 +3364,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let manager = source_manager_for_tests(config_store, credential_manager, layout);
 
         let source = manager
             .import_source(
@@ -3348,7 +3401,7 @@ surface:
         );
         let credential_manager = CredentialManager::new(credential_store);
         let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout.clone());
+            source_manager_for_tests(config_store, credential_manager.clone(), layout.clone());
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
 
@@ -3418,8 +3471,7 @@ surface:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
         let source_name = SourceName::parse("public_messages").expect("source");
 
         let source = manager
@@ -3460,7 +3512,7 @@ surface:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let manager = source_manager_for_tests(config_store, credential_manager, layout);
 
         let error = manager
             .import_source(
@@ -3489,8 +3541,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         manager
@@ -3542,8 +3593,7 @@ surface:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
         let workspace = default_workspace();
 
         let first = manager
@@ -3601,8 +3651,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         manager
@@ -3650,8 +3699,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = source_manager_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         credential_manager
@@ -3708,8 +3756,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = source_manager_for_tests(config_store, credential_manager, layout.clone());
         let source_name = SourceName::parse("secured_messages").expect("source");
         let secret_path = layout.secret_file(&default_workspace(), &source_name);
         std::fs::create_dir_all(&secret_path).expect("create blocking secret directory");
@@ -3744,8 +3791,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = source_manager_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         credential_manager
@@ -3812,7 +3858,7 @@ surface:
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store.clone());
         let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout.clone());
+            source_manager_for_tests(config_store, credential_manager.clone(), layout.clone());
         let workspace_name = default_workspace();
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
@@ -3908,7 +3954,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
         let manager =
-            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout.clone());
+            source_manager_for_tests(config_store.clone(), credential_manager, layout.clone());
         let workspace_name = default_workspace();
         let revision = active_revision(&manager, &workspace_name).await;
         let deletion_marker = manager
@@ -3952,7 +3998,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
         let manager =
-            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout.clone());
+            source_manager_for_tests(config_store.clone(), credential_manager, layout.clone());
         let fixture = OAuthFixture::new();
         let redirect_port = free_loopback_port();
         let (manifest_yaml, _) =
@@ -4042,8 +4088,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = source_manager_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let fixture = OAuthFixture::new();
@@ -4122,8 +4167,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = source_manager_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let fixture = OAuthFixture::new();
@@ -4201,8 +4245,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = source_manager_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         manager
@@ -4280,7 +4323,7 @@ surface:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let manager = source_manager_for_tests(config_store, credential_manager, layout);
         let redirect_port = free_loopback_port();
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();

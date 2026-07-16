@@ -45,3 +45,17 @@ pub(crate) use workspace_state::{
     AddMemberOutcome, CreateWorkspaceOutcome, RemoveMemberOutcome, WorkspaceDeletion,
     WorkspaceMemberRecord,
 };
+
+#[cfg(test)]
+pub(crate) async fn open_test_database(
+    layout: &super::AppStateLayout,
+) -> Result<std::sync::Arc<CoralDb>, crate::bootstrap::AppError> {
+    let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(layout)? else {
+        return Err(crate::bootstrap::AppError::FailedPrecondition(
+            "default test database config should use SQLite".to_string(),
+        ));
+    };
+    let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path }).await?;
+    db.migrate().await?;
+    Ok(std::sync::Arc::new(db))
+}

@@ -1049,7 +1049,8 @@ mod tests {
     use crate::sources::manager::SourceManager;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos as _, InaccessibleWorkspaces,
-        LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID, ResolvedDatabaseConfig, run_state_migrations,
+        LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID, ResolvedDatabaseConfig, open_test_database,
+        run_state_migrations,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
@@ -1125,18 +1126,12 @@ enabled = false
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
-        let config = DatabaseConfig::load(layout).expect("db config");
-        let DatabaseConfig::Sqlite { path } = config else {
-            panic!("default test config should be sqlite");
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+        let db = open_test_database(layout)
             .await
-            .expect("open sqlite");
-        db.migrate().await.expect("migrate sqlite");
+            .expect("open test database");
         run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
-        let db = Arc::new(db);
         create_workspace(&db, &test_workspace()).await;
         db
     }
@@ -2085,6 +2080,7 @@ backend = "unsupported"
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            Arc::clone(&db),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(
@@ -2247,6 +2243,7 @@ backend = "unsupported"
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            Arc::clone(&db),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(
@@ -2385,6 +2382,7 @@ tables:
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            Arc::clone(&db),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(
@@ -2520,6 +2518,7 @@ tables:
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            Arc::clone(&db),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let workspace_manager = WorkspaceManager::new_for_tests(

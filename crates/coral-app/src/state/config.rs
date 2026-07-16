@@ -47,10 +47,6 @@ impl AppConfig {
         self.catalog.workspace_sources(workspace_name)
     }
 
-    pub(crate) fn source_catalog_entries(&self) -> Vec<(WorkspaceName, InstalledSource)> {
-        self.catalog.source_entries()
-    }
-
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -289,18 +285,6 @@ impl From<&InstalledFunction> for PersistedInstalledFunction {
 pub(crate) struct SourceCatalog(BTreeMap<WorkspaceName, BTreeMap<SourceName, InstalledSource>>);
 
 impl SourceCatalog {
-    pub(crate) fn source_entries(&self) -> Vec<(WorkspaceName, InstalledSource)> {
-        self.0
-            .iter()
-            .flat_map(|(workspace_name, sources)| {
-                sources
-                    .values()
-                    .cloned()
-                    .map(|source| (workspace_name.clone(), source))
-            })
-            .collect()
-    }
-
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
         self.0
             .get(workspace_name)
