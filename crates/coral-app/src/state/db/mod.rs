@@ -19,7 +19,8 @@ pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
 pub(crate) use repositories::tasks::TaskRecord;
 pub(crate) use repositories::trajectory_memory::{
-    DistillationRecord, DistilledStepRecord, RawTrajectoryStepRecord,
+    ConsolidatedPathRecord, DistillationRecord, DistilledStepRecord, ExactIndexRecord,
+    IndexBuildRecord, PathCandidateRecord, RawTrajectoryStepRecord,
 };
 pub(crate) use session::{DbRepos, DbSession};
 pub(crate) use transaction::CoralTx;

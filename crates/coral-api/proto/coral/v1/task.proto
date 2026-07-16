@@ -46,6 +46,28 @@ message EndTaskResponse {
 message Task {
   // Server-minted, opaque task id.
   string task_id = 1;
+  // Exact-intent trajectory suggestions available when the task starts.
+  repeated SuggestedPath suggested_paths = 2;
+}
+
+// One advisory path distilled from successful prior tasks.
+message SuggestedPath {
+  // Stable structural path identifier.
+  string path_id = 1;
+  // Number of matching successful distilled paths supporting this selection.
+  uint64 support_count = 2;
+  // Relations touched across the whole path.
+  repeated string relations = 3;
+  // Ordered, parameterized SQL templates to re-run against live data.
+  repeated SuggestedPathStep steps = 4;
+}
+
+// One ordered SQL step within a suggested path.
+message SuggestedPathStep {
+  // Parameterized SQL template; placeholders must be rebound for the live task.
+  string sql_template = 1;
+  // Relations touched by this step.
+  repeated string relations = 2;
 }
 
 // A task end event.

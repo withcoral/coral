@@ -72,3 +72,38 @@ pub(in crate::state::db) enum TrajectoryDistilledSteps {
     ExactKey,
     CreatedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum TrajectoryConsolidatedPaths {
+    Table,
+    WorkspaceId,
+    NormalizedIntent,
+    PathKey,
+    RepresentativeDistillationId,
+    SupportCount,
+    StepCount,
+    UpdatedAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum TrajectoryExactIndex {
+    Table,
+    WorkspaceId,
+    NormalizedIntent,
+    PathKey,
+    SupportCount,
+    UpdatedAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum TrajectoryIndexBuilds {
+    Table,
+    WorkspaceId,
+    Id,
+    NormalizedIntent,
+    CandidatePathCount,
+    SelectedDistillationId,
+    SelectedPathKey,
+    SelectedSupportCount,
+    CreatedAtUnixNanos,
+}
