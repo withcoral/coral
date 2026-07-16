@@ -7,10 +7,11 @@ use serde_json::Value;
 
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::client::HttpSourceClient;
-use crate::backends::http::error::{pagination_error, provider_error};
+use crate::backends::http::error::{execution_stopped_error, pagination_error, provider_error};
 use crate::backends::http::pagination::{
     PageAdvance, PageAdvanceContext, advance_pagination_state, apply_pagination_body_fields,
-    apply_pagination_query_pairs, initial_page_state, pagination_state_values, resolve_page_size,
+    apply_pagination_query_pairs, has_explicit_continuation, initial_page_state,
+    pagination_state_values, resolve_page_size,
 };
 use crate::backends::http::request::{build_query_pairs, build_request_body};
 use crate::backends::http::target::HttpFetchTarget;
@@ -19,6 +20,7 @@ use crate::backends::http::url::{join_url, normalize_base_url};
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{RenderContext, render_template};
+use crate::{QueryExecutionControls, QueryPaginationPolicy};
 use coral_spec::HttpMethod;
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
@@ -37,8 +39,9 @@ pub(super) enum FetchCompleteness {
 }
 
 #[expect(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
+    reason = "Paginated fetch inputs and state are easier to audit in one sequential function"
 )]
 pub(super) async fn fetch_rows(
     client: &HttpSourceClient,
@@ -48,7 +51,11 @@ pub(super) async fn fetch_rows(
     row_limit: Option<usize>,
     page_hint: Option<usize>,
     completeness: FetchCompleteness,
+    controls: &QueryExecutionControls,
 ) -> Result<Vec<Value>> {
+    controls
+        .check_active()
+        .map_err(|kind| execution_stopped_error(&client.source_schema, target.name(), kind))?;
     let mut all_rows = Vec::new();
     let limits = resolve_fetch_limits(target, row_limit, page_hint, completeness);
     let pagination = target
@@ -73,6 +80,9 @@ pub(super) async fn fetch_rows(
     let max_pages = pagination.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
 
     loop {
+        controls
+            .check_active()
+            .map_err(|kind| execution_stopped_error(&client.source_schema, target.name(), kind))?;
         page_count += 1;
         if page_count > max_pages {
             return Err(provider_error(ProviderQueryError::Pagination {
@@ -84,7 +94,12 @@ pub(super) async fn fetch_rows(
             }));
         }
 
-        let resolved_inputs = client.resolved_inputs_for_request().await?;
+        let resolved_inputs = controls
+            .run_until_stopped(client.resolved_inputs_for_request())
+            .await
+            .map_err(|kind| {
+                execution_stopped_error(&client.source_schema, target.name(), kind)
+            })??;
         let state_values = pagination_state_values(&state);
         let render_context = RenderContext::new(
             filter_values,
@@ -150,7 +165,7 @@ pub(super) async fn fetch_rows(
         };
 
         let request = execute_request(
-            &client.http,
+            client.http_for(controls),
             client.request_timeout,
             OutgoingHttpRequest {
                 auth: &client.auth,
@@ -173,6 +188,7 @@ pub(super) async fn fetch_rows(
                 render_context,
                 allow_404_empty: target.response().allow_404_empty,
             },
+            controls,
         )
         .await?;
 
@@ -212,6 +228,32 @@ pub(super) async fn fetch_rows(
         let rows_on_page = rows.len();
         all_rows.append(&mut rows);
 
+        if controls.pagination_policy() == QueryPaginationPolicy::FirstPageOnly
+            && has_explicit_continuation(
+                &pagination,
+                PageAdvanceContext {
+                    payload: &payload,
+                    response_headers: &response.headers,
+                    request_url: &url,
+                    rows_on_page,
+                    page_size,
+                    source_schema: &client.source_schema,
+                    table_name: target.name(),
+                },
+            )
+            .map_err(|error| {
+                pagination_error(
+                    &client.source_schema,
+                    target.name(),
+                    Some(http_method_label(active_request.method)),
+                    Some(&url),
+                    &error,
+                )
+            })?
+        {
+            controls.mark_explicit_continuation();
+        }
+
         if let Some(limit) = limits.effective_limit
             && all_rows.len() >= limit
         {
@@ -225,6 +267,14 @@ pub(super) async fn fetch_rows(
         {
             break;
         }
+
+        if controls.pagination_policy() == QueryPaginationPolicy::FirstPageOnly {
+            break;
+        }
+
+        controls
+            .check_active()
+            .map_err(|kind| execution_stopped_error(&client.source_schema, target.name(), kind))?;
 
         let page_advance = advance_pagination_state(
             &mut state,
@@ -296,5 +346,160 @@ fn resolve_fetch_limits(
         effective_limit: effective_limit.map(|limit| limit.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use serde_json::json;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+    use crate::{
+        QueryCancellationToken, QueryPaginationPolicy, QueryRetryPolicy, RequestAuthenticator,
+    };
+    use coral_spec::parse_source_manifest_value;
+
+    #[tokio::test]
+    async fn first_page_only_stops_before_pagination_advance() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"id": 1}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"id": 2}]
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let manifest = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": server.uri(),
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": {"path": "/items"},
+                "response": {"rows_path": ["data"]},
+                "pagination": {
+                    "mode": "page",
+                    "page_param": "page",
+                    "page_start": 1
+                },
+                "columns": [{"name": "id", "type": "Int64"}]
+            }]
+        }))
+        .expect("manifest")
+        .as_http()
+        .expect("HTTP manifest")
+        .clone();
+        let request_authenticators: HashMap<String, std::sync::Arc<dyn RequestAuthenticator>> =
+            HashMap::new();
+        let client = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &request_authenticators,
+            None,
+            reqwest::Client::new(),
+        )
+        .expect("client");
+        let table = manifest.tables.first().expect("table");
+        let target = HttpFetchTarget::from_resolved_table_request(table, table.request.clone());
+        let controls = QueryExecutionControls::new(
+            None,
+            QueryCancellationToken::new(),
+            QueryPaginationPolicy::FirstPageOnly,
+            QueryRetryPolicy::Disabled,
+        );
+
+        let rows = client
+            .fetch(&target, &HashMap::new(), &HashMap::new(), None, &controls)
+            .await
+            .expect("first page fetch");
+
+        assert_eq!(rows, [json!({"id": 1})]);
+        assert!(controls.upstream_started());
+        assert!(
+            !controls.has_more(),
+            "a full numbered page is not explicit continuation metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_page_only_records_an_explicit_response_cursor() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"id": 1}],
+                "meta": {"next_cursor": "page-2"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let manifest = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": server.uri(),
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": {"path": "/items"},
+                "response": {"rows_path": ["data"]},
+                "pagination": {
+                    "mode": "cursor_query",
+                    "cursor_param": "cursor",
+                    "response_cursor_path": ["meta", "next_cursor"]
+                },
+                "columns": [{"name": "id", "type": "Int64"}]
+            }]
+        }))
+        .expect("manifest")
+        .as_http()
+        .expect("HTTP manifest")
+        .clone();
+        let request_authenticators: HashMap<String, std::sync::Arc<dyn RequestAuthenticator>> =
+            HashMap::new();
+        let client = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &request_authenticators,
+            None,
+            reqwest::Client::new(),
+        )
+        .expect("client");
+        let table = manifest.tables.first().expect("table");
+        let target = HttpFetchTarget::from_resolved_table_request(table, table.request.clone());
+        let controls = QueryExecutionControls::for_fanout(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            QueryCancellationToken::new(),
+        );
+
+        let rows = client
+            .fetch(&target, &HashMap::new(), &HashMap::new(), None, &controls)
+            .await
+            .expect("first page fetch");
+
+        assert_eq!(rows, [json!({"id": 1})]);
+        assert!(controls.upstream_started());
+        assert!(controls.has_more());
     }
 }

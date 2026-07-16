@@ -12,6 +12,8 @@ use datafusion::error::Result;
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
+use crate::QueryExecutionControls;
+
 #[derive(Clone)]
 pub(super) struct McpSourceClient {
     caller: Arc<dyn McpToolCaller>,
@@ -27,8 +29,11 @@ impl McpSourceClient {
         relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        controls: &QueryExecutionControls,
     ) -> Result<Value> {
-        self.caller.call_tool(relation, tool_name, arguments).await
+        self.caller
+            .call_tool(relation, tool_name, arguments, controls)
+            .await
     }
 }
 
@@ -45,5 +50,6 @@ pub(super) trait McpToolCaller: std::fmt::Debug + Send + Sync {
         relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        controls: &QueryExecutionControls,
     ) -> Result<Value>;
 }

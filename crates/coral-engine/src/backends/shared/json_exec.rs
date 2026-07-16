@@ -18,17 +18,17 @@ use datafusion::physical_plan::{
 use futures::{TryStreamExt, stream};
 use serde_json::Value;
 
-use crate::SourceObservationSurfaceKind;
 use crate::backends::shared::source_observation::{
     SourceObservationConfig, SourceObservationPublishers, publish_source_scan_batch,
 };
+use crate::{QueryExecutionControls, SourceObservationSurfaceKind};
 
 /// Fetches raw JSON rows for one logical table scan.
 #[async_trait]
 pub(crate) trait RowFetcher: fmt::Debug + Send + Sync {
     /// Materializes the JSON values that should be converted into one or more
     /// `RecordBatch` values.
-    async fn fetch(&self) -> Result<Vec<Value>>;
+    async fn fetch(&self, controls: &QueryExecutionControls) -> Result<Vec<Value>>;
 }
 
 /// Shared trait-object wrapper for a [`RowFetcher`] implementation.
@@ -242,15 +242,22 @@ impl ExecutionPlan for JsonExec {
         // representation is released incrementally instead of being held
         // alongside one large `RecordBatch`.
         let batch_size = context.session_config().batch_size().max(1);
+        let controls = context
+            .session_config()
+            .get_extension::<QueryExecutionControls>()
+            .unwrap_or_else(|| Arc::new(QueryExecutionControls::default()));
 
         let stream = stream::once(async move {
-            let items = fetcher.fetch().await?;
+            check_execution_controls(&controls)?;
+            let items = fetcher.fetch(&controls).await?;
+            check_execution_controls(&controls)?;
             let state = ChunkState {
                 rows: items.into_iter(),
                 converter,
                 projection,
                 batch_size,
                 emitted: false,
+                controls,
             };
             Ok::<_, DataFusionError>(stream::try_unfold(state, next_projected_batch))
         })
@@ -271,6 +278,7 @@ struct ChunkState {
     projection: Option<Vec<usize>>,
     batch_size: usize,
     emitted: bool,
+    controls: Arc<QueryExecutionControls>,
 }
 
 /// Pulls up to `batch_size` rows, converts them into one projected
@@ -278,6 +286,7 @@ struct ChunkState {
 /// a single empty batch so the schema is carried downstream, matching the
 /// previous single-batch behavior.
 async fn next_projected_batch(mut state: ChunkState) -> Result<Option<(RecordBatch, ChunkState)>> {
+    check_execution_controls(&state.controls)?;
     let chunk: Vec<Value> = state.rows.by_ref().take(state.batch_size).collect();
     if chunk.is_empty() && state.emitted {
         return Ok(None);
@@ -294,6 +303,12 @@ async fn next_projected_batch(mut state: ChunkState) -> Result<Option<(RecordBat
     // `chunk` is dropped here, releasing this slice of `serde_json::Value`
     // rows before the next batch is produced.
     Ok(Some((batch, state)))
+}
+
+fn check_execution_controls(controls: &QueryExecutionControls) -> Result<()> {
+    controls
+        .check_active()
+        .map_err(|kind| DataFusionError::External(Box::new(kind)))
 }
 
 #[cfg(test)]
@@ -315,7 +330,7 @@ mod tests {
     use crate::backends::shared::source_observation::{
         source_observation_publishers, test_support::RecordingSourceObservationPublisher,
     };
-    use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
+    use crate::{QueryExecutionControls, SourceObservationPublisher, SourceObservationSurfaceKind};
 
     #[derive(Debug)]
     struct NoopFetcher;
@@ -331,14 +346,20 @@ mod tests {
 
     #[async_trait]
     impl RowFetcher for NoopFetcher {
-        async fn fetch(&self) -> datafusion::error::Result<Vec<Value>> {
+        async fn fetch(
+            &self,
+            _controls: &QueryExecutionControls,
+        ) -> datafusion::error::Result<Vec<Value>> {
             Ok(Vec::new())
         }
     }
 
     #[async_trait]
     impl RowFetcher for StaticFetcher {
-        async fn fetch(&self) -> datafusion::error::Result<Vec<Value>> {
+        async fn fetch(
+            &self,
+            _controls: &QueryExecutionControls,
+        ) -> datafusion::error::Result<Vec<Value>> {
             Ok(self.rows.clone())
         }
     }
@@ -380,6 +401,7 @@ mod tests {
             projection: None,
             batch_size: 2,
             emitted: false,
+            controls: Arc::new(QueryExecutionControls::default()),
         };
 
         let mut batches = Vec::new();
@@ -602,6 +624,7 @@ mod tests {
             projection: None,
             batch_size: 8,
             emitted: false,
+            controls: Arc::new(QueryExecutionControls::default()),
         };
 
         let (batch, state) = futures::executor::block_on(next_projected_batch(state))

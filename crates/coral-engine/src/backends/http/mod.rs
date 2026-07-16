@@ -111,6 +111,8 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.manifest.common.name,
             self.request_identity_http_authenticator.is_some(),
         )?;
+        let single_attempt_http =
+            client::single_attempt_http_client(registration, &self.manifest.common.name)?;
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
@@ -118,6 +120,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             self.body_capture_max_bytes,
             self.trace_context.clone(),
             http,
+            single_attempt_http,
         );
         let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
             &self.manifest,

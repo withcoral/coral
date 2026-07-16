@@ -2,9 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
@@ -14,12 +17,420 @@ use coral_spec::backends::mcp::McpSourceManifest;
 use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use super::{ColumnInfo, UniversalSearchAuthorizationInfo};
 use crate::{
     EngineExtensions, RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelector,
 };
+
+const CONTROLLED_EXECUTION_CLEANUP_GRACE: Duration = Duration::from_millis(25);
+
+#[derive(Debug, Default)]
+struct QueryExecutionSignals {
+    upstream_started: AtomicBool,
+    explicit_continuation: AtomicBool,
+}
+
+#[derive(Debug, Default)]
+struct QueryCancellationState {
+    token: CancellationToken,
+    cancelled_at: OnceLock<Instant>,
+    parent: Option<Arc<QueryCancellationState>>,
+}
+
+/// Caller-owned cancellation signal for one query execution.
+///
+/// Clones and child tokens observe cancellation from the same execution, while
+/// separately constructed tokens remain isolated from unrelated queries.
+#[derive(Clone, Debug, Default)]
+pub struct QueryCancellationToken {
+    state: Arc<QueryCancellationState>,
+}
+
+impl QueryCancellationToken {
+    /// Builds an isolated, initially active cancellation signal.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Requests cancellation of this execution and all of its child tokens.
+    pub fn cancel(&self) {
+        let _already_cancelled = self.state.cancelled_at.set(Instant::now());
+        self.state.token.cancel();
+    }
+
+    /// Builds a child signal cancelled when this signal is cancelled.
+    #[must_use]
+    pub fn child_token(&self) -> Self {
+        Self {
+            state: Arc::new(QueryCancellationState {
+                token: self.state.token.child_token(),
+                cancelled_at: OnceLock::new(),
+                parent: Some(Arc::clone(&self.state)),
+            }),
+        }
+    }
+
+    /// Returns whether cancellation has already been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        if self.recorded_cancellation_time().is_some() || self.state.token.is_cancelled() {
+            return true;
+        }
+        self.recorded_cancellation_time().is_some()
+    }
+
+    /// Completes once cancellation is requested.
+    pub async fn cancelled(&self) {
+        self.state.token.cancelled().await;
+        if self.recorded_cancellation_time().is_none() {
+            let _already_recorded = self.state.cancelled_at.set(Instant::now());
+        }
+    }
+
+    fn cancelled_at(&self) -> Option<Instant> {
+        if let Some(cancelled_at) = self.recorded_cancellation_time() {
+            return Some(cancelled_at);
+        }
+        if !self.is_cancelled() {
+            return self.recorded_cancellation_time();
+        }
+        let fallback = *self.state.cancelled_at.get_or_init(Instant::now);
+        Some(self.recorded_cancellation_time().unwrap_or(fallback))
+    }
+
+    fn recorded_cancellation_time(&self) -> Option<Instant> {
+        let mut state = Some(&self.state);
+        let mut earliest = None;
+        while let Some(current) = state {
+            if let Some(cancelled_at) = current.cancelled_at.get().copied() {
+                earliest =
+                    Some(earliest.map_or(cancelled_at, |seen: Instant| seen.min(cancelled_at)));
+            }
+            state = current.parent.as_ref();
+        }
+        earliest
+    }
+}
+
+/// Pagination policy applied to one query execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum QueryPaginationPolicy {
+    /// Preserve the source's ordinary pagination behaviour.
+    #[default]
+    SourceDefault,
+    /// Fetch at most the first upstream response page.
+    FirstPageOnly,
+}
+
+/// Retry policy applied to one query execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum QueryRetryPolicy {
+    /// Preserve the source's ordinary retry behaviour.
+    #[default]
+    SourceDefault,
+    /// Make only one upstream attempt and skip retry sleeps.
+    Disabled,
+}
+
+/// Safe internal classification for a failed controlled query execution.
+///
+/// Variants deliberately carry no provider-controlled strings or request
+/// details so callers can aggregate failures without exposing credentials,
+/// request bodies, URL parameters, or upstream responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum QueryExecutionFailureKind {
+    /// The absolute execution deadline elapsed.
+    #[error("query execution timed out")]
+    Timeout,
+    /// The caller cancelled the execution.
+    #[error("query execution was cancelled")]
+    Cancelled,
+    /// The upstream provider rejected the request due to rate limiting.
+    #[error("upstream provider rate limited the query")]
+    RateLimited,
+    /// The upstream provider requires valid authentication.
+    #[error("upstream provider authentication failed")]
+    Authentication,
+    /// The authenticated principal lacks permission.
+    #[error("upstream provider denied permission")]
+    PermissionDenied,
+    /// The upstream provider or transport is unavailable.
+    #[error("upstream provider is unavailable")]
+    UpstreamUnavailable,
+    /// The upstream response could not be validated or decoded.
+    #[error("upstream provider returned an invalid response")]
+    InvalidResponse,
+    /// The query failed for another execution reason.
+    #[error("query execution failed")]
+    Execution,
+}
+
+/// Per-execution deadline, cancellation, pagination, and retry policy.
+///
+/// The default has no deadline and preserves each source's existing pagination
+/// and retry behaviour, so ordinary SQL execution is unchanged.
+#[derive(Clone, Debug)]
+pub struct QueryExecutionControls {
+    deadline: Option<Instant>,
+    cancellation: QueryCancellationToken,
+    pagination_policy: QueryPaginationPolicy,
+    retry_policy: QueryRetryPolicy,
+    transport_enforcement: bool,
+    signals: Arc<QueryExecutionSignals>,
+}
+
+impl Default for QueryExecutionControls {
+    fn default() -> Self {
+        Self {
+            deadline: None,
+            cancellation: QueryCancellationToken::new(),
+            pagination_policy: QueryPaginationPolicy::SourceDefault,
+            retry_policy: QueryRetryPolicy::SourceDefault,
+            transport_enforcement: false,
+            signals: Arc::new(QueryExecutionSignals::default()),
+        }
+    }
+}
+
+impl QueryExecutionControls {
+    /// Builds explicit controls for one execution.
+    #[must_use]
+    pub fn new(
+        deadline: Option<Instant>,
+        cancellation: QueryCancellationToken,
+        pagination_policy: QueryPaginationPolicy,
+        retry_policy: QueryRetryPolicy,
+    ) -> Self {
+        Self {
+            deadline,
+            cancellation,
+            pagination_policy,
+            retry_policy,
+            transport_enforcement: true,
+            signals: Arc::new(QueryExecutionSignals::default()),
+        }
+    }
+
+    /// Builds the bounded, one-request policy used by provider fanout.
+    #[must_use]
+    pub fn for_fanout(deadline: Instant, cancellation: QueryCancellationToken) -> Self {
+        Self::new(
+            Some(deadline),
+            cancellation,
+            QueryPaginationPolicy::FirstPageOnly,
+            QueryRetryPolicy::Disabled,
+        )
+    }
+
+    /// Returns the absolute execution deadline, when one is configured.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Returns the cancellation signal for this execution.
+    #[must_use]
+    pub fn cancellation(&self) -> &QueryCancellationToken {
+        &self.cancellation
+    }
+
+    /// Returns the pagination policy for this execution.
+    #[must_use]
+    pub fn pagination_policy(&self) -> QueryPaginationPolicy {
+        self.pagination_policy
+    }
+
+    /// Returns the retry policy for this execution.
+    #[must_use]
+    pub fn retry_policy(&self) -> QueryRetryPolicy {
+        self.retry_policy
+    }
+
+    /// Returns whether this execution reached an upstream transport boundary.
+    ///
+    /// Local route validation, planning, and argument binding leave this false.
+    /// Cloned controls share the signal so an app caller can inspect it after
+    /// controlled execution returns.
+    #[must_use]
+    pub fn upstream_started(&self) -> bool {
+        self.signals.upstream_started.load(Ordering::SeqCst)
+    }
+
+    /// Returns whether the first upstream page carried explicit continuation
+    /// metadata.
+    ///
+    /// A full page by itself is deliberately not continuation evidence.
+    #[must_use]
+    pub fn has_more(&self) -> bool {
+        self.signals.explicit_continuation.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn mark_upstream_started(&self) {
+        self.signals.upstream_started.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn mark_explicit_continuation(&self) {
+        self.signals
+            .explicit_continuation
+            .store(true, Ordering::SeqCst);
+    }
+
+    /// Returns whether backend transports must enforce this execution's stop
+    /// boundary internally rather than relying on their ordinary lifecycle.
+    pub(crate) fn requires_transport_enforcement(&self) -> bool {
+        self.transport_enforcement
+    }
+
+    pub(crate) fn with_transport_enforcement(mut self) -> Self {
+        self.transport_enforcement = true;
+        self
+    }
+
+    /// Returns the shared absolute cutoff for best-effort execution cleanup.
+    ///
+    /// Every layer uses the same cutoff, so protocol cancellation and session
+    /// closure cannot each consume a fresh grace period.
+    #[must_use]
+    pub fn cleanup_deadline(&self, kind: QueryExecutionFailureKind) -> Instant {
+        let stopped_at = match kind {
+            QueryExecutionFailureKind::Timeout => self.deadline.unwrap_or_else(Instant::now),
+            QueryExecutionFailureKind::Cancelled => self
+                .cancellation
+                .cancelled_at()
+                .unwrap_or_else(Instant::now),
+            QueryExecutionFailureKind::RateLimited
+            | QueryExecutionFailureKind::Authentication
+            | QueryExecutionFailureKind::PermissionDenied
+            | QueryExecutionFailureKind::UpstreamUnavailable
+            | QueryExecutionFailureKind::InvalidResponse
+            | QueryExecutionFailureKind::Execution => Instant::now(),
+        };
+        stopped_at
+            .checked_add(CONTROLLED_EXECUTION_CLEANUP_GRACE)
+            .unwrap_or(stopped_at)
+    }
+
+    /// Fails when the deadline has elapsed or cancellation was requested.
+    ///
+    /// The first stop signal wins. An earlier cancellation remains a
+    /// cancellation even when this method is not polled until after the
+    /// deadline; the deadline wins exact ties.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryExecutionFailureKind::Timeout`] or
+    /// [`QueryExecutionFailureKind::Cancelled`] when execution must stop.
+    pub fn check_active(&self) -> Result<(), QueryExecutionFailureKind> {
+        if let Some(kind) = self.stop_kind_at(Instant::now()) {
+            return Err(kind);
+        }
+        Ok(())
+    }
+
+    fn stop_kind_at(&self, now: Instant) -> Option<QueryExecutionFailureKind> {
+        let elapsed_deadline = self.deadline.filter(|deadline| now >= *deadline);
+        let cancelled_at = self.cancellation.cancelled_at();
+        match (elapsed_deadline, cancelled_at) {
+            (Some(deadline), Some(cancelled_at)) if cancelled_at < deadline => {
+                Some(QueryExecutionFailureKind::Cancelled)
+            }
+            (Some(_deadline), _) => Some(QueryExecutionFailureKind::Timeout),
+            (None, Some(_cancelled_at)) => Some(QueryExecutionFailureKind::Cancelled),
+            (None, None) => None,
+        }
+    }
+
+    /// Returns remaining deadline time, or `None` for unrestricted execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns the applicable stop classification when the execution is no
+    /// longer active.
+    pub fn remaining(&self) -> Result<Option<Duration>, QueryExecutionFailureKind> {
+        self.check_active()?;
+        Ok(self
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now())))
+    }
+
+    /// Caps a source timeout by the remaining absolute execution deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns the applicable stop classification when the execution is no
+    /// longer active.
+    pub fn effective_timeout(
+        &self,
+        source_timeout: Duration,
+    ) -> Result<Duration, QueryExecutionFailureKind> {
+        Ok(self
+            .remaining()?
+            .map_or(source_timeout, |remaining| remaining.min(source_timeout)))
+    }
+
+    /// Runs one future until it completes, the deadline elapses, or the caller
+    /// cancels the execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryExecutionFailureKind::Timeout`] or
+    /// [`QueryExecutionFailureKind::Cancelled`] when execution stops before
+    /// the future completes.
+    pub async fn run_until_stopped<F>(
+        &self,
+        future: F,
+    ) -> Result<F::Output, QueryExecutionFailureKind>
+    where
+        F: Future,
+    {
+        self.check_active()?;
+        tokio::pin!(future);
+
+        if let Some(deadline) = self.deadline {
+            let deadline_sleep = tokio::time::sleep_until(deadline);
+            tokio::pin!(deadline_sleep);
+            tokio::select! {
+                biased;
+                () = &mut deadline_sleep => Err(self
+                    .stop_kind_at(Instant::now())
+                    .unwrap_or(QueryExecutionFailureKind::Timeout)),
+                () = self.cancellation.cancelled() => Err(self
+                    .stop_kind_at(Instant::now())
+                    .unwrap_or(QueryExecutionFailureKind::Cancelled)),
+                output = &mut future => {
+                    self.check_active()?;
+                    Ok(output)
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                () = self.cancellation.cancelled() => Err(QueryExecutionFailureKind::Cancelled),
+                output = &mut future => {
+                    self.check_active()?;
+                    Ok(output)
+                }
+            }
+        }
+    }
+
+    /// Sleeps while remaining responsive to deadline and cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryExecutionFailureKind::Timeout`] or
+    /// [`QueryExecutionFailureKind::Cancelled`] when execution stops during
+    /// the sleep.
+    pub async fn sleep(&self, duration: Duration) -> Result<(), QueryExecutionFailureKind> {
+        self.run_until_stopped(tokio::time::sleep(duration)).await
+    }
+}
 
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
@@ -1213,12 +1624,193 @@ impl QueryTableFunctionUsage {
 mod tests {
     use std::collections::BTreeMap;
     use std::str::FromStr as _;
+    use std::time::Duration;
 
     use coral_spec::parse_source_manifest_value;
     use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
     use serde_json::json;
+    use tokio::time::Instant;
 
-    use super::{MemorySize, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+    use super::{
+        MemorySize, QueryCancellationToken, QueryExecutionControls, QueryExecutionFailureKind,
+        QueryPaginationPolicy, QueryRetryPolicy, QuerySource, RuntimeSourceComponent,
+        RuntimeSourcePackage,
+    };
+
+    #[test]
+    fn default_execution_controls_preserve_ordinary_query_behaviour() {
+        let controls = QueryExecutionControls::default();
+
+        assert_eq!(controls.deadline(), None);
+        assert_eq!(
+            controls.pagination_policy(),
+            QueryPaginationPolicy::SourceDefault
+        );
+        assert_eq!(controls.retry_policy(), QueryRetryPolicy::SourceDefault);
+        assert_eq!(controls.remaining(), Ok(None));
+        assert!(!controls.upstream_started());
+        assert!(!controls.has_more());
+        assert!(!controls.requires_transport_enforcement());
+    }
+
+    #[test]
+    fn execution_signals_are_shared_by_control_clones() {
+        let controls = QueryExecutionControls::for_fanout(
+            Instant::now() + Duration::from_secs(1),
+            QueryCancellationToken::new(),
+        );
+        let backend_controls = controls.clone();
+
+        backend_controls.mark_upstream_started();
+        backend_controls.mark_explicit_continuation();
+
+        assert!(controls.upstream_started());
+        assert!(controls.has_more());
+    }
+
+    #[test]
+    fn cleanup_uses_one_shared_twenty_five_millisecond_cutoff() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline_controls =
+            QueryExecutionControls::for_fanout(deadline, QueryCancellationToken::new());
+        assert_eq!(
+            deadline_controls.cleanup_deadline(QueryExecutionFailureKind::Timeout),
+            deadline + Duration::from_millis(25)
+        );
+
+        let cancellation = QueryCancellationToken::new();
+        let cancelled_controls = QueryExecutionControls::new(
+            None,
+            cancellation.clone(),
+            QueryPaginationPolicy::FirstPageOnly,
+            QueryRetryPolicy::Disabled,
+        );
+        cancellation.cancel();
+        let first = cancelled_controls.cleanup_deadline(QueryExecutionFailureKind::Cancelled);
+        let second = cancelled_controls.cleanup_deadline(QueryExecutionFailureKind::Cancelled);
+        assert_eq!(first, second);
+
+        let parent = QueryCancellationToken::new();
+        let child = parent.child_token();
+        let parent_controls = QueryExecutionControls::new(
+            None,
+            parent.clone(),
+            QueryPaginationPolicy::FirstPageOnly,
+            QueryRetryPolicy::Disabled,
+        );
+        let child_controls = QueryExecutionControls::new(
+            None,
+            child,
+            QueryPaginationPolicy::FirstPageOnly,
+            QueryRetryPolicy::Disabled,
+        );
+        parent.cancel();
+        assert_eq!(
+            child_controls.cleanup_deadline(QueryExecutionFailureKind::Cancelled),
+            parent_controls.cleanup_deadline(QueryExecutionFailureKind::Cancelled),
+            "child cleanup must inherit the parent's absolute cancellation time"
+        );
+    }
+
+    #[test]
+    fn delayed_poll_keeps_an_earlier_cancellation_classification() {
+        let cancellation = QueryCancellationToken::new();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let controls = QueryExecutionControls::new(
+            Some(deadline),
+            cancellation.clone(),
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::SourceDefault,
+        );
+        cancellation.cancel();
+
+        assert_eq!(
+            controls.stop_kind_at(deadline + Duration::from_secs(1)),
+            Some(QueryExecutionFailureKind::Cancelled),
+            "scheduler-delayed polling must not reclassify an earlier cancellation as timeout"
+        );
+        assert!(
+            controls.cleanup_deadline(QueryExecutionFailureKind::Cancelled) < deadline,
+            "cleanup must remain anchored to the earlier cancellation"
+        );
+    }
+
+    #[test]
+    fn recorded_cancellation_wins_before_token_wakeup_is_visible() {
+        let cancellation = QueryCancellationToken::new();
+        let cancelled_at = Instant::now();
+        cancellation
+            .state
+            .cancelled_at
+            .set(cancelled_at)
+            .expect("record cancellation timestamp");
+        let deadline = cancelled_at + Duration::from_secs(1);
+        let controls = QueryExecutionControls::new(
+            Some(deadline),
+            cancellation.clone(),
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::SourceDefault,
+        );
+
+        assert!(cancellation.is_cancelled());
+        assert_eq!(
+            controls.stop_kind_at(deadline + Duration::from_secs(1)),
+            Some(QueryExecutionFailureKind::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_controls_stop_sleep_at_the_absolute_deadline() {
+        let controls =
+            QueryExecutionControls::for_fanout(Instant::now(), QueryCancellationToken::new());
+
+        assert_eq!(
+            controls.sleep(Duration::from_secs(30)).await,
+            Err(QueryExecutionFailureKind::Timeout)
+        );
+        assert_eq!(
+            controls.pagination_policy(),
+            QueryPaginationPolicy::FirstPageOnly
+        );
+        assert_eq!(controls.retry_policy(), QueryRetryPolicy::Disabled);
+        assert!(controls.requires_transport_enforcement());
+    }
+
+    #[tokio::test]
+    async fn elapsed_deadline_wins_over_simultaneous_cancellation() {
+        let cancellation = QueryCancellationToken::new();
+        let deadline = Instant::now();
+        let controls = QueryExecutionControls::new(
+            Some(deadline),
+            cancellation.clone(),
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::SourceDefault,
+        );
+
+        cancellation.cancel();
+
+        assert_eq!(
+            controls.check_active(),
+            Err(QueryExecutionFailureKind::Timeout)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_controlled_sleep() {
+        let cancellation = QueryCancellationToken::new();
+        let controls = QueryExecutionControls::new(
+            None,
+            cancellation.clone(),
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::SourceDefault,
+        );
+        cancellation.cancel();
+
+        assert_eq!(
+            controls.sleep(Duration::from_secs(30)).await,
+            Err(QueryExecutionFailureKind::Cancelled)
+        );
+    }
 
     #[test]
     fn memory_size_parses_binary_units() {

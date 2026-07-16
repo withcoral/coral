@@ -1,4 +1,5 @@
 use super::*;
+use crate::backends::shared::json_exec::RowFetcher;
 use crate::backends::shared::source_observation::{
     source_observation_publishers, test_support::RecordingSourceObservationPublisher,
 };
@@ -6,8 +7,10 @@ use crate::runtime::catalog;
 use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    QuerySource, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
-    SourceObservationPublisher, SourceObservationSurfaceKind,
+    QueryCancellationToken, QueryExecutionControls, QueryExecutionFailureKind,
+    QueryPaginationPolicy, QueryRetryPolicy, QuerySource, SourceInputResolutionContext,
+    SourceInputResolver, SourceInputResolverError, SourceObservationPublisher,
+    SourceObservationSurfaceKind,
 };
 use datafusion::arrow::array::StringArray;
 use datafusion::arrow::util::pretty::pretty_format_batches;
@@ -18,6 +21,10 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::time::Instant;
+
+use super::fetch::McpFetchPlan;
 
 #[derive(Debug)]
 struct FakeMcpCaller {
@@ -31,6 +38,7 @@ impl McpToolCaller for FakeMcpCaller {
         _relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        _controls: &QueryExecutionControls,
     ) -> Result<Value> {
         self.calls
             .lock()
@@ -87,6 +95,7 @@ impl McpToolCaller for FakeMcpTableCaller {
         _relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        _controls: &QueryExecutionControls,
     ) -> Result<Value> {
         self.calls
             .lock()
@@ -115,6 +124,7 @@ impl McpToolCaller for FakePaginatedMcpTableCaller {
         _relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        _controls: &QueryExecutionControls,
     ) -> Result<Value> {
         self.calls
             .lock()
@@ -153,6 +163,7 @@ impl McpToolCaller for FakeOffsetPaginatedMcpTableCaller {
         _relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        _controls: &QueryExecutionControls,
     ) -> Result<Value> {
         self.calls
             .lock()
@@ -196,6 +207,7 @@ impl McpToolCaller for FakeRepeatedCursorMcpTableCaller {
         _relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        _controls: &QueryExecutionControls,
     ) -> Result<Value> {
         self.calls
             .lock()
@@ -968,6 +980,7 @@ impl McpToolCaller for FakeMcpUnionCaller {
         _relation: &str,
         tool_name: &str,
         arguments: JsonObject,
+        _controls: &QueryExecutionControls,
     ) -> Result<Value> {
         self.calls
             .lock()
@@ -1242,6 +1255,25 @@ fn mcp_table_with_cursor_pagination_manifest() -> coral_spec::ValidatedSourceMan
         }]
     }))
     .expect("pagination manifest should parse")
+}
+
+fn cursor_fetch_plan(caller: Arc<dyn McpToolCaller>) -> McpFetchPlan {
+    let manifest = mcp_table_with_cursor_pagination_manifest();
+    let mcp = manifest.as_mcp().expect("mcp manifest");
+    let table = mcp.tables.first().expect("issues table");
+    McpFetchPlan {
+        backend: McpSourceClient::new(caller),
+        source_schema: mcp.common.name.clone(),
+        relation: table.name().to_string(),
+        tool_name: table.tool.clone(),
+        arguments: JsonObject::new(),
+        source_inputs: None,
+        source_tool_args: Arc::new(table.tool_args.clone()),
+        response: table.response.clone(),
+        pagination: table.pagination.clone(),
+        offset_pagination: table.offset_pagination.clone(),
+        limit: None,
+    }
 }
 
 fn mcp_server_env_manifest() -> coral_spec::ValidatedSourceManifest {
@@ -1591,6 +1623,67 @@ async fn cursor_pagination_fetches_until_response_cursor_is_absent() {
         second_call.1.get("cursor"),
         Some(&Value::String("page-2".to_string()))
     );
+}
+
+#[tokio::test]
+async fn mcp_fetch_controls_preserve_default_paging_and_bound_fanout_to_one_page() {
+    let ordinary_caller = Arc::new(FakePaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let ordinary_rows = cursor_fetch_plan(ordinary_caller.clone())
+        .fetch(&QueryExecutionControls::default())
+        .await
+        .expect("ordinary fetch");
+    assert_eq!(ordinary_rows.len(), 3);
+    assert_eq!(ordinary_caller.calls.lock().expect("calls lock").len(), 2);
+
+    let fanout_caller = Arc::new(FakePaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let controls = QueryExecutionControls::for_fanout(
+        Instant::now() + Duration::from_secs(1),
+        QueryCancellationToken::new(),
+    );
+    let fanout_rows = cursor_fetch_plan(fanout_caller.clone())
+        .fetch(&controls)
+        .await
+        .expect("fanout fetch");
+    assert_eq!(fanout_rows.len(), 1);
+    assert!(controls.has_more());
+    let calls = fanout_caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    assert!(calls.first().expect("first call").1.get("cursor").is_none());
+}
+
+#[tokio::test]
+async fn pre_cancelled_mcp_fetch_makes_no_tool_call() {
+    let caller = Arc::new(FakePaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let cancellation = QueryCancellationToken::new();
+    cancellation.cancel();
+    let controls = QueryExecutionControls::new(
+        Some(Instant::now() + Duration::from_secs(1)),
+        cancellation,
+        QueryPaginationPolicy::FirstPageOnly,
+        QueryRetryPolicy::Disabled,
+    );
+
+    let error = cursor_fetch_plan(caller.clone())
+        .fetch(&controls)
+        .await
+        .expect_err("pre-cancelled fetch should fail");
+    let DataFusionError::External(inner) = error.find_root() else {
+        panic!("expected typed MCP error, got {error}");
+    };
+    let mcp_error = inner
+        .downcast_ref::<McpProviderQueryError>()
+        .expect("MCP provider error");
+    assert_eq!(
+        mcp_error.execution_failure_kind(),
+        QueryExecutionFailureKind::Cancelled
+    );
+    assert!(caller.calls.lock().expect("calls lock").is_empty());
 }
 
 #[tokio::test]

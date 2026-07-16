@@ -13,7 +13,6 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use serde_json::Value;
 
-use crate::SourceObservationSurfaceKind;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::target::HttpFetchTarget;
@@ -25,6 +24,7 @@ use crate::backends::shared::filter_expr::{
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
 use crate::backends::shared::source_observation::SourceObservationPublishers;
+use crate::{QueryExecutionControls, SourceObservationSurfaceKind};
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -116,7 +116,7 @@ pub(crate) struct HttpJsonExecRequest<'a> {
 
 #[async_trait]
 impl RowFetcher for HttpFetchPlan {
-    async fn fetch(&self) -> Result<Vec<Value>> {
+    async fn fetch(&self, controls: &QueryExecutionControls) -> Result<Vec<Value>> {
         if self.has_residual_filters {
             return self
                 .backend
@@ -126,6 +126,7 @@ impl RowFetcher for HttpFetchPlan {
                     &self.arg_values,
                     None,
                     None,
+                    controls,
                 )
                 .await;
         }
@@ -136,6 +137,7 @@ impl RowFetcher for HttpFetchPlan {
                 &self.request_filter_values,
                 &self.arg_values,
                 self.limit,
+                controls,
             )
             .await
     }

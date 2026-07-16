@@ -13,11 +13,12 @@ use tracing::Instrument as _;
 use tracing::field;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
+use crate::backends::CONTROLLED_RESPONSE_BODY_LIMIT_BYTES;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::{
     ensure_identity_headers_use_credential_safe_transport, resolve_auth_headers,
 };
-use crate::backends::http::error::provider_error;
+use crate::backends::http::error::{execution_stopped_error, provider_error};
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
@@ -28,8 +29,8 @@ use crate::backends::http::trace::{
 };
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
 use crate::{
-    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator,
-    RequestIdentityHttpAuthenticatorError,
+    BoundRequestIdentityHttpAuthenticator, QueryExecutionControls, QueryRetryPolicy,
+    RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
 };
 use coral_spec::backends::http::RateLimitSpec;
 use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat};
@@ -71,6 +72,7 @@ pub(super) async fn execute_request(
     http: &reqwest::Client,
     request_timeout: Duration,
     request: OutgoingHttpRequest<'_>,
+    controls: &QueryExecutionControls,
 ) -> Result<Option<DecodedHttpResponse>> {
     enum ResponseOutcome {
         Done(Result<Option<DecodedHttpResponse>>),
@@ -96,12 +98,25 @@ pub(super) async fn execute_request(
         render_context,
         allow_404_empty,
     } = request;
+    let controlled_body_limit = controls
+        .requires_transport_enforcement()
+        .then_some(CONTROLLED_RESPONSE_BODY_LIMIT_BYTES);
+    let body_capture = match controlled_body_limit {
+        Some(limit) => body_capture.capped(limit),
+        None => body_capture,
+    };
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
     let mut decode_retries = 0usize;
     loop {
+        controls
+            .check_active()
+            .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?;
+        let effective_timeout = controls
+            .effective_timeout(request_timeout)
+            .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?;
         let method_label = http_method_label(method);
-        let mut request = build_http_request(http, method, url);
+        let mut request = build_http_request(http, method, url).timeout(effective_timeout);
 
         let mut header_map = HeaderMap::new();
         for header in request_headers.iter().chain(table_headers.iter()) {
@@ -211,7 +226,10 @@ pub(super) async fn execute_request(
             }
         };
         if let Some(authenticator) = request_identity_http_authenticator {
-            let identity_headers = match authenticator(&built, render_context.resolved_inputs).await
+            let identity_headers = match controls
+                .run_until_stopped(authenticator(&built, render_context.resolved_inputs))
+                .await
+                .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?
             {
                 Ok(headers) => headers,
                 Err(error) => {
@@ -237,7 +255,14 @@ pub(super) async fn execute_request(
                 built.headers_mut().insert(name, value);
             }
         }
-        let response = match http.execute(built).instrument(request_span.clone()).await {
+        let response = controls
+            .run_until_stopped(async {
+                controls.mark_upstream_started();
+                http.execute(built).instrument(request_span.clone()).await
+            })
+            .await
+            .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?;
+        let response = match response {
             Ok(response) => response,
             Err(error) => {
                 record_http_processing_error(
@@ -253,7 +278,7 @@ pub(super) async fn execute_request(
                     table_name,
                     method_label,
                     &logged_url,
-                    request_timeout,
+                    effective_timeout,
                     &error,
                 ));
             }
@@ -266,22 +291,44 @@ pub(super) async fn execute_request(
                 request_span.record("http.response.body.size", length);
             }
 
-            match check_rate_limit(status, response.headers(), rate_limit, throttle_retries) {
+            let rate_limit_retries = match controls.retry_policy() {
+                QueryRetryPolicy::SourceDefault => throttle_retries,
+                QueryRetryPolicy::Disabled => usize::MAX,
+            };
+            match check_rate_limit(status, response.headers(), rate_limit, rate_limit_retries) {
                 RateLimitDecision::Continue => {}
                 RateLimitDecision::Retry(wait) => {
                     record_http_status_error(&request_span, status, "rate limited; retrying");
-                    body_capture
-                        .record_unconsumed_response(&request_span, request_id, response)
-                        .await;
+                    if controlled_body_limit.is_none() {
+                        controls
+                            .run_until_stopped(body_capture.record_unconsumed_response(
+                                &request_span,
+                                request_id,
+                                response,
+                            ))
+                            .await
+                            .map_err(|kind| {
+                                execution_stopped_error(source_schema, table_name, kind)
+                            })?;
+                    }
                     throttle_retries += 1;
                     break 'response ResponseOutcome::Retry(wait);
                 }
                 RateLimitDecision::Fail(error) => {
                     let error_message = error.to_string();
                     record_http_status_error(&request_span, status, error_message.as_str());
-                    body_capture
-                        .record_unconsumed_response(&request_span, request_id, response)
-                        .await;
+                    if controlled_body_limit.is_none() {
+                        controls
+                            .run_until_stopped(body_capture.record_unconsumed_response(
+                                &request_span,
+                                request_id,
+                                response,
+                            ))
+                            .await
+                            .map_err(|kind| {
+                                execution_stopped_error(source_schema, table_name, kind)
+                            })?;
+                    }
                     break 'response ResponseOutcome::Done(Err(DataFusionError::External(
                         Box::new(ProviderQueryError::RateLimited {
                             source_schema: source_schema.to_string(),
@@ -294,28 +341,51 @@ pub(super) async fn execute_request(
                 }
             }
 
-            if status.is_server_error() && server_error_retries < 2 {
+            if status.is_server_error()
+                && server_error_retries < 2
+                && controls.retry_policy() == QueryRetryPolicy::SourceDefault
+            {
                 record_http_status_error(&request_span, status, "server error; retrying");
-                body_capture
-                    .record_unconsumed_response(&request_span, request_id, response)
-                    .await;
+                if controlled_body_limit.is_none() {
+                    controls
+                        .run_until_stopped(body_capture.record_unconsumed_response(
+                            &request_span,
+                            request_id,
+                            response,
+                        ))
+                        .await
+                        .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?;
+                }
                 server_error_retries += 1;
                 break 'response ResponseOutcome::Retry(Duration::from_secs(2));
             }
 
             if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
-                body_capture
-                    .record_unconsumed_response(&request_span, request_id, response)
-                    .await;
+                if controlled_body_limit.is_none() {
+                    controls
+                        .run_until_stopped(body_capture.record_unconsumed_response(
+                            &request_span,
+                            request_id,
+                            response,
+                        ))
+                        .await
+                        .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?;
+                }
                 break 'response ResponseOutcome::Done(Ok(None));
             }
 
             if !status.is_success() {
-                let body = response
-                    .text()
-                    .instrument(request_span.clone())
-                    .await
-                    .unwrap_or_default();
+                let body = match controlled_body_limit {
+                    // A known HTTP status is already a complete safe failure
+                    // classification. Do not let an untrusted error body turn
+                    // 401/403/429/5xx into a later timeout.
+                    Some(_) => String::new(),
+                    None => controls
+                        .run_until_stopped(response.text().instrument(request_span.clone()))
+                        .await
+                        .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?
+                        .unwrap_or_default(),
+                };
                 record_http_status_error(
                     &request_span,
                     status,
@@ -338,21 +408,26 @@ pub(super) async fn execute_request(
 
             let response_headers = response.headers().clone();
 
-            match decode_response_body(
-                response,
-                response_format,
-                ResponseDecodeContext {
-                    source_schema,
-                    table_name,
-                    method_label,
-                    logged_url: &logged_url,
-                    body_capture: &body_capture,
-                    response_span: &request_span,
-                    request_id,
-                },
-            )
-            .instrument(request_span.clone())
-            .await
+            match controls
+                .run_until_stopped(
+                    decode_response_body(
+                        response,
+                        response_format,
+                        ResponseDecodeContext {
+                            source_schema,
+                            table_name,
+                            method_label,
+                            logged_url: &logged_url,
+                            body_capture: &body_capture,
+                            response_span: &request_span,
+                            request_id,
+                            max_body_bytes: controlled_body_limit,
+                        },
+                    )
+                    .instrument(request_span.clone()),
+                )
+                .await
+                .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?
             {
                 Ok(payload) => ResponseOutcome::Done(Ok(Some(DecodedHttpResponse {
                     payload,
@@ -370,7 +445,10 @@ pub(super) async fn execute_request(
                                 ..
                             }
                         );
-                    if retry && decode_retries < 2 {
+                    if retry
+                        && decode_retries < 2
+                        && controls.retry_policy() == QueryRetryPolicy::SourceDefault
+                    {
                         record_http_processing_error(
                             &request_span,
                             "DECODE_RETRY",
@@ -394,7 +472,10 @@ pub(super) async fn execute_request(
         match outcome {
             ResponseOutcome::Done(result) => return result,
             ResponseOutcome::Retry(wait) => {
-                tokio::time::sleep(wait).await;
+                controls
+                    .sleep(wait)
+                    .await
+                    .map_err(|kind| execution_stopped_error(source_schema, table_name, kind))?;
             }
         }
     }
@@ -511,15 +592,25 @@ mod tests {
 
     use datafusion::error::DataFusionError;
     use reqwest::header::{AUTHORIZATION, HeaderValue};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+    use tokio::time::Instant;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{OutgoingHttpRequest as TestOutgoingHttpRequest, execute_request};
+    use crate::backends::BackendRegistrationContext;
+    use crate::backends::CONTROLLED_RESPONSE_BODY_LIMIT_BYTES;
     use crate::backends::http::ProviderQueryError;
+    use crate::backends::http::client::single_attempt_http_client;
     use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
-    use crate::{BoundRequestIdentityHttpAuthenticator, RequestIdentityHttpAuthenticatorError};
+    use crate::{
+        BoundRequestIdentityHttpAuthenticator, QueryCancellationToken, QueryExecutionControls,
+        QueryPaginationPolicy, QueryRetryPolicy, RequestIdentityHttpAuthenticatorError,
+    };
     use coral_spec::backends::http::RateLimitSpec;
     use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat, ValueSourceSpec};
 
@@ -571,6 +662,85 @@ mod tests {
         (format!("http://{addr}"), task)
     }
 
+    async fn spawn_partial_body_server(status: u16) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind partial-body http server");
+        let addr = listener.local_addr().expect("local addr");
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let _read = socket.read(&mut request).await.expect("read request");
+            let prefix = b"{\"data\":[";
+            let headers = format!(
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n"
+            );
+            socket
+                .write_all(headers.as_bytes())
+                .await
+                .expect("write headers");
+            socket
+                .write_all(format!("{:X}\r\n", prefix.len()).as_bytes())
+                .await
+                .expect("write first chunk length");
+            socket.write_all(prefix).await.expect("write first chunk");
+            socket
+                .write_all(b"\r\n100\r\nprovider-private")
+                .await
+                .expect("write partial second chunk");
+            socket.flush().await.expect("flush partial response");
+            std::future::pending::<()>().await;
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
+    async fn controlled_request_error(
+        http: &reqwest::Client,
+        url: &str,
+        request_timeout: Duration,
+        execution_budget: Duration,
+    ) -> DataFusionError {
+        let controls = QueryExecutionControls::new(
+            Some(Instant::now() + execution_budget),
+            QueryCancellationToken::new(),
+            QueryPaginationPolicy::FirstPageOnly,
+            QueryRetryPolicy::Disabled,
+        );
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+
+        execute_request(
+            http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: None,
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::Json,
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+            &controls,
+        )
+        .await
+        .expect_err("controlled test request should fail")
+    }
+
     #[tokio::test]
     async fn execute_request_times_out_when_upstream_stalls() {
         let (base_url, task) = spawn_hanging_http_server().await;
@@ -609,6 +779,7 @@ mod tests {
                 render_context,
                 allow_404_empty: false,
             },
+            &QueryExecutionControls::default(),
         )
         .await
         .expect_err("hung upstream should time out");
@@ -643,6 +814,84 @@ mod tests {
             }
             other => panic!("expected external provider error, got {other:?}"),
         }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn execution_deadline_caps_ordinary_http_timeout_when_upstream_stalls() {
+        let (base_url, task) = spawn_hanging_http_server().await;
+        let request_timeout = Duration::from_secs(30);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let controls = QueryExecutionControls::new(
+            Some(Instant::now() + Duration::from_millis(100)),
+            QueryCancellationToken::new(),
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::SourceDefault,
+        );
+        let url = format!("{base_url}/items");
+        let query_pairs = vec![("api_key".to_string(), "secret-token".to_string())];
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            execute_request(
+                &http,
+                request_timeout,
+                TestOutgoingHttpRequest {
+                    auth: &AuthSpec::default(),
+                    request_headers: &[],
+                    request_authenticators: &HashMap::new(),
+                    request_identity_http_authenticator: None,
+                    trace_context: None,
+                    table_headers: &[],
+                    table_name: "items",
+                    method: HttpMethod::GET,
+                    url: &url,
+                    query_pairs: &query_pairs,
+                    body: None,
+                    response_format: ResponseBodyFormat::default(),
+                    source_schema: "demo",
+                    rate_limit: &RateLimitSpec::default(),
+                    body_capture: HttpBodyCapture::default(),
+                    render_context,
+                    allow_404_empty: false,
+                },
+                &controls,
+            ),
+        )
+        .await
+        .expect("execution deadline should beat the outer test guard")
+        .expect_err("hung upstream should time out");
+
+        match error {
+            DataFusionError::External(inner) => {
+                let provider_error = inner
+                    .downcast_ref::<ProviderQueryError>()
+                    .expect("timeout should be a provider query error");
+                match provider_error {
+                    ProviderQueryError::ExecutionTimedOut {
+                        source_schema,
+                        table,
+                    } => {
+                        assert_eq!(source_schema, "demo");
+                        assert_eq!(table, "items");
+                    }
+                    other => panic!("expected execution timeout, got {other:?}"),
+                }
+                let structured = provider_error.to_structured();
+                assert_eq!(structured.reason(), "QUERY_EXECUTION_TIMEOUT");
+                assert!(!structured.detail().contains("secret-token"));
+            }
+            other => panic!("expected external provider error, got {other:?}"),
+        }
+        assert!(controls.upstream_started());
         task.abort();
     }
 
@@ -698,6 +947,7 @@ mod tests {
                 render_context,
                 allow_404_empty: false,
             },
+            &QueryExecutionControls::default(),
         )
         .await
         .expect_err("identity headers must not overwrite existing headers");
@@ -762,6 +1012,7 @@ mod tests {
                 render_context,
                 allow_404_empty: false,
             },
+            &QueryExecutionControls::default(),
         )
         .await
         .expect_err("identity headers must not use unsafe transport");
@@ -818,6 +1069,7 @@ mod tests {
                 render_context,
                 allow_404_empty: false,
             },
+            &QueryExecutionControls::default(),
         )
         .await
         .expect("identity-authenticated request should succeed");
@@ -828,5 +1080,398 @@ mod tests {
             raw_request.contains("\r\nx-identity-token: identity-token\r\n"),
             "{raw_request}"
         );
+    }
+
+    #[tokio::test]
+    async fn controlled_partial_success_body_timeout_is_typed_timeout() {
+        let (url, task) = spawn_partial_body_server(200).await;
+        let http = reqwest::Client::new();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            controlled_request_error(
+                &http,
+                &url,
+                Duration::from_millis(100),
+                Duration::from_secs(1),
+            ),
+        )
+        .await
+        .expect("source body timeout should beat the outer guard");
+
+        let DataFusionError::External(inner) = error else {
+            panic!("expected external timeout error");
+        };
+        assert!(matches!(
+            inner.downcast_ref::<ProviderQueryError>(),
+            Some(ProviderQueryError::ExecutionTimedOut { .. })
+        ));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn ordinary_partial_body_timeout_keeps_legacy_decode_shape() {
+        let (url, task) = spawn_partial_body_server(200).await;
+        let http = reqwest::Client::new();
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+
+        let error = execute_request(
+            &http,
+            Duration::from_millis(100),
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: None,
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::POST,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::Json,
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+            &QueryExecutionControls::default(),
+        )
+        .await
+        .expect_err("ordinary partial response must retain its legacy decode failure");
+
+        let DataFusionError::External(inner) = error else {
+            panic!("expected external decode error");
+        };
+        let provider_error = inner
+            .downcast_ref::<ProviderQueryError>()
+            .expect("provider decode error");
+        assert!(matches!(
+            provider_error,
+            ProviderQueryError::Decode {
+                retryable: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            provider_error.execution_failure_kind(),
+            Some(crate::QueryExecutionFailureKind::InvalidResponse)
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn controlled_known_status_does_not_wait_for_stalled_error_body() {
+        for (status, expected_kind) in [
+            (401, crate::QueryExecutionFailureKind::Authentication),
+            (503, crate::QueryExecutionFailureKind::UpstreamUnavailable),
+        ] {
+            let (url, task) = spawn_partial_body_server(status).await;
+            let http = reqwest::Client::new();
+            let error = tokio::time::timeout(
+                Duration::from_secs(1),
+                controlled_request_error(
+                    &http,
+                    &url,
+                    Duration::from_secs(30),
+                    Duration::from_millis(250),
+                ),
+            )
+            .await
+            .expect("known status should not wait for the stalled response body");
+            let DataFusionError::External(inner) = error else {
+                panic!("expected external status error");
+            };
+            let provider_error = inner
+                .downcast_ref::<ProviderQueryError>()
+                .expect("provider status error");
+            assert!(
+                matches!(
+                    provider_error,
+                    ProviderQueryError::ApiRequest {
+                        status: Some(actual),
+                        detail,
+                        ..
+                    } if *actual == status && detail.is_empty()
+                ),
+                "unexpected provider error: {provider_error:?}"
+            );
+            assert_eq!(provider_error.execution_failure_kind(), Some(expected_kind));
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_execution_makes_no_http_request() {
+        let server = MockServer::start().await;
+        let cancellation = QueryCancellationToken::new();
+        cancellation.cancel();
+        let controls = QueryExecutionControls::new(
+            None,
+            cancellation,
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::SourceDefault,
+        );
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+
+        let error = execute_request(
+            &reqwest::Client::new(),
+            Duration::from_secs(30),
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: None,
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &format!("{}/items", server.uri()),
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+            &controls,
+        )
+        .await
+        .expect_err("pre-cancelled execution should fail before transport work");
+
+        let DataFusionError::External(inner) = error else {
+            panic!("expected external cancellation error");
+        };
+        assert!(matches!(
+            inner.downcast_ref::<ProviderQueryError>(),
+            Some(ProviderQueryError::ExecutionCancelled { .. })
+        ));
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty()
+        );
+        assert!(!controls.upstream_started());
+    }
+
+    #[tokio::test]
+    async fn controlled_execution_rejects_oversized_json_before_unbounded_decode() {
+        let server = MockServer::start().await;
+        let private_body = "provider-private"
+            .repeat(CONTROLLED_RESPONSE_BODY_LIMIT_BYTES / "provider-private".len() + 2);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": private_body })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let controls = QueryExecutionControls::new(
+            Some(deadline),
+            QueryCancellationToken::new(),
+            QueryPaginationPolicy::FirstPageOnly,
+            QueryRetryPolicy::Disabled,
+        );
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+
+        let error = execute_request(
+            &http,
+            Duration::from_secs(30),
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: None,
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &format!("{}/items", server.uri()),
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::Json,
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+            &controls,
+        )
+        .await
+        .expect_err("oversized controlled JSON must fail before serde decoding");
+
+        let DataFusionError::External(inner) = error else {
+            panic!("expected typed provider error");
+        };
+        let provider_error = inner
+            .downcast_ref::<ProviderQueryError>()
+            .expect("provider error");
+        assert_eq!(
+            provider_error.execution_failure_kind(),
+            Some(crate::QueryExecutionFailureKind::InvalidResponse)
+        );
+        assert!(!provider_error.to_string().contains("provider-private"));
+        assert!(Instant::now() <= deadline + Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn disabled_retry_policy_makes_one_request_for_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let controls = QueryExecutionControls::new(
+            None,
+            QueryCancellationToken::new(),
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::Disabled,
+        );
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let registration = BackendRegistrationContext::default();
+        let http = single_attempt_http_client(&registration, "demo")
+            .expect("build production single-attempt client");
+
+        let error = execute_request(
+            &http,
+            Duration::from_secs(30),
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: None,
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &format!("{}/items", server.uri()),
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+            &controls,
+        )
+        .await
+        .expect_err("disabled retries should surface the first server error");
+
+        let DataFusionError::External(inner) = error else {
+            panic!("expected external API error");
+        };
+        assert!(matches!(
+            inner.downcast_ref::<ProviderQueryError>(),
+            Some(ProviderQueryError::ApiRequest {
+                status: Some(500),
+                ..
+            })
+        ));
+        assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_retry_sleep_prevents_a_second_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let cancellation = QueryCancellationToken::new();
+        let controls = QueryExecutionControls::new(
+            None,
+            cancellation.clone(),
+            QueryPaginationPolicy::SourceDefault,
+            QueryRetryPolicy::SourceDefault,
+        );
+        let url = format!("{}/items", server.uri());
+        let task = tokio::spawn(async move {
+            let filters = HashMap::new();
+            let args = HashMap::new();
+            let state = HashMap::new();
+            let resolved_inputs = BTreeMap::new();
+            let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+            execute_request(
+                &reqwest::Client::new(),
+                Duration::from_secs(30),
+                TestOutgoingHttpRequest {
+                    auth: &AuthSpec::default(),
+                    request_headers: &[],
+                    request_authenticators: &HashMap::new(),
+                    request_identity_http_authenticator: None,
+                    trace_context: None,
+                    table_headers: &[],
+                    table_name: "items",
+                    method: HttpMethod::GET,
+                    url: &url,
+                    query_pairs: &[],
+                    body: None,
+                    response_format: ResponseBodyFormat::default(),
+                    source_schema: "demo",
+                    rate_limit: &RateLimitSpec::default(),
+                    body_capture: HttpBodyCapture::default(),
+                    render_context,
+                    allow_404_empty: false,
+                },
+                &controls,
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !server
+                    .received_requests()
+                    .await
+                    .expect("requests")
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first request should arrive");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        cancellation.cancel();
+
+        let error = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancellation should interrupt retry sleep")
+            .expect("request task should join")
+            .expect_err("cancelled retry should fail");
+        let DataFusionError::External(inner) = error else {
+            panic!("expected external cancellation error");
+        };
+        assert!(matches!(
+            inner.downcast_ref::<ProviderQueryError>(),
+            Some(ProviderQueryError::ExecutionCancelled { .. })
+        ));
+        assert_eq!(server.received_requests().await.expect("requests").len(), 1);
     }
 }

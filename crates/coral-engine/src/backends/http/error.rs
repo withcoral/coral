@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use datafusion::error::DataFusionError;
 use reqwest::StatusCode as HttpStatus;
 
-use crate::contracts::{StatusCode, StructuredQueryError};
+use crate::contracts::{QueryExecutionFailureKind, StatusCode, StructuredQueryError};
 
 // Named bindings for the HTTP status codes the dispatch table matches
 // against. Declared as `const` so they can appear directly in match arm
@@ -19,6 +19,18 @@ const TOO_MANY_REQUESTS: u16 = HttpStatus::TOO_MANY_REQUESTS.as_u16();
 /// Structured query-time failures for HTTP-backed tables.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ProviderQueryError {
+    #[error("{source_schema}.{table} query execution timed out")]
+    ExecutionTimedOut {
+        source_schema: String,
+        table: String,
+    },
+
+    #[error("{source_schema}.{table} query execution was cancelled")]
+    ExecutionCancelled {
+        source_schema: String,
+        table: String,
+    },
+
     #[error(
         "{schema}.{table} table requires a constant equality filter: WHERE {column} = <constant>"
     )]
@@ -98,6 +110,26 @@ pub(super) fn provider_error(error: ProviderQueryError) -> DataFusionError {
     DataFusionError::External(Box::new(error))
 }
 
+pub(super) fn execution_stopped_error(
+    source_schema: &str,
+    table: &str,
+    kind: QueryExecutionFailureKind,
+) -> DataFusionError {
+    provider_error(match kind {
+        QueryExecutionFailureKind::Timeout => ProviderQueryError::ExecutionTimedOut {
+            source_schema: source_schema.to_string(),
+            table: table.to_string(),
+        },
+        QueryExecutionFailureKind::Cancelled => ProviderQueryError::ExecutionCancelled {
+            source_schema: source_schema.to_string(),
+            table: table.to_string(),
+        },
+        _ => {
+            return DataFusionError::External(Box::new(kind));
+        }
+    })
+}
+
 fn datafusion_detail(error: &DataFusionError) -> String {
     match error {
         DataFusionError::Execution(detail) => detail.clone(),
@@ -110,9 +142,54 @@ fn datafusion_detail(error: &DataFusionError) -> String {
 // ---------------------------------------------------------------------------
 
 impl ProviderQueryError {
+    /// Returns a provider-string-free classification for fanout aggregation.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "The shared provider classifier hook permits intentionally unclassified errors"
+    )]
+    pub(crate) fn execution_failure_kind(&self) -> Option<QueryExecutionFailureKind> {
+        Some(match self {
+            Self::ExecutionTimedOut { .. } => QueryExecutionFailureKind::Timeout,
+            Self::ExecutionCancelled { .. } => QueryExecutionFailureKind::Cancelled,
+            Self::RateLimited { .. } => QueryExecutionFailureKind::RateLimited,
+            Self::ApiRequest { status, .. } => match *status {
+                Some(401) => QueryExecutionFailureKind::Authentication,
+                Some(403) => QueryExecutionFailureKind::PermissionDenied,
+                Some(429) => QueryExecutionFailureKind::RateLimited,
+                Some(status) if is_server_error(status) => {
+                    QueryExecutionFailureKind::UpstreamUnavailable
+                }
+                _ => QueryExecutionFailureKind::Execution,
+            },
+            Self::Request { timed_out, .. } => {
+                if *timed_out {
+                    QueryExecutionFailureKind::Timeout
+                } else {
+                    QueryExecutionFailureKind::UpstreamUnavailable
+                }
+            }
+            Self::Decode { .. } | Self::Pagination { .. } => {
+                QueryExecutionFailureKind::InvalidResponse
+            }
+            Self::MissingRequiredFilter { .. } => QueryExecutionFailureKind::Execution,
+        })
+    }
+
     /// Converts this HTTP-specific error into the canonical structured error.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Per-variant structured error mapping is kept as one auditable dispatch table"
+    )]
     pub(crate) fn to_structured(&self) -> StructuredQueryError {
         match self {
+            Self::ExecutionTimedOut {
+                source_schema,
+                table,
+            } => execution_stopped_to_structured(source_schema, table, true),
+            Self::ExecutionCancelled {
+                source_schema,
+                table,
+            } => execution_stopped_to_structured(source_schema, table, false),
             Self::MissingRequiredFilter {
                 schema,
                 table,
@@ -212,6 +289,41 @@ impl ProviderQueryError {
             ),
         }
     }
+}
+
+fn execution_stopped_to_structured(
+    source_schema: &str,
+    table: &str,
+    timed_out: bool,
+) -> StructuredQueryError {
+    let mut metadata = HashMap::new();
+    metadata.insert("source".to_string(), source_schema.to_string());
+    metadata.insert("table".to_string(), table.to_string());
+    metadata.insert(
+        "execution_stopped".to_string(),
+        if timed_out { "timeout" } else { "cancelled" }.to_string(),
+    );
+    StructuredQueryError::new(
+        if timed_out {
+            "QUERY_EXECUTION_TIMEOUT"
+        } else {
+            "QUERY_EXECUTION_CANCELLED"
+        },
+        if timed_out {
+            "Query execution timed out"
+        } else {
+            "Query execution was cancelled"
+        },
+        if timed_out {
+            "The query exceeded its execution deadline."
+        } else {
+            "The caller cancelled the query execution."
+        },
+        None,
+        timed_out,
+        StatusCode::Unavailable,
+        metadata,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -543,9 +655,30 @@ fn enrich_provider_detail(detail: &str, method: Option<&str>, url: Option<&str>)
 mod tests {
     use std::collections::HashMap;
 
-    use crate::contracts::StatusCode;
+    use crate::contracts::{QueryExecutionFailureKind, StatusCode};
 
     use super::ProviderQueryError;
+
+    #[test]
+    fn execution_stop_errors_have_typed_string_free_classifications() {
+        let timed_out = ProviderQueryError::ExecutionTimedOut {
+            source_schema: "provider-controlled-source".to_string(),
+            table: "provider-controlled-table".to_string(),
+        };
+        let cancelled = ProviderQueryError::ExecutionCancelled {
+            source_schema: "provider-controlled-source".to_string(),
+            table: "provider-controlled-table".to_string(),
+        };
+
+        assert_eq!(
+            timed_out.execution_failure_kind(),
+            Some(QueryExecutionFailureKind::Timeout)
+        );
+        assert_eq!(
+            cancelled.execution_failure_kind(),
+            Some(QueryExecutionFailureKind::Cancelled)
+        );
+    }
 
     #[test]
     fn missing_required_filter_sets_reason_and_metadata() {

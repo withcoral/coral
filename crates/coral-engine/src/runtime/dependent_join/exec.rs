@@ -18,7 +18,6 @@ use datafusion::physical_plan::{
 };
 use futures::{StreamExt, stream};
 
-use crate::SourceObservationSurfaceKind;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::shared::source_observation::{
     SourceObservationConfig, SourceObservationPublishers,
@@ -30,6 +29,7 @@ use crate::runtime::dependent_join::logical::BindingKey;
 use crate::runtime::dependent_join::output::{BuildJoinedBatchesConfig, build_joined_batches};
 use crate::runtime::dependent_join::state::{DependentJoinRuntimeState, ResolverCaps};
 use crate::runtime::memory::{RetainedMemory, RetainedRecordBatches};
+use crate::{QueryExecutionControls, SourceObservationSurfaceKind};
 
 pub(crate) struct DependentJoinExec {
     resolver: Arc<dyn ExecutionPlan>,
@@ -278,6 +278,13 @@ impl ExecutionPlan for DependentJoinExec {
         if partition != 0 {
             return plan_err!("DependentJoinExec has one output partition, got {partition}");
         }
+        let controls = context
+            .session_config()
+            .get_extension::<QueryExecutionControls>()
+            .unwrap_or_else(|| Arc::new(QueryExecutionControls::default()));
+        controls
+            .check_active()
+            .map_err(|kind| datafusion::error::DataFusionError::External(Box::new(kind)))?;
 
         let resolver = Arc::clone(&self.resolver);
         let resolver_partition_count = resolver
@@ -343,6 +350,7 @@ impl ExecutionPlan for DependentJoinExec {
                 metrics,
                 output_schema,
                 memory,
+                controls,
             )
             .await
         })
@@ -389,14 +397,24 @@ async fn execute_dependent_join(
     metrics: DependentJoinMetrics,
     output_schema: SchemaRef,
     memory: RetainedMemory,
+    controls: Arc<QueryExecutionControls>,
 ) -> Result<RetainedRecordBatches> {
+    controls
+        .check_active()
+        .map_err(|kind| datafusion::error::DataFusionError::External(Box::new(kind)))?;
     let projector = BindingProjector::new(binding_keys);
     let mut state = DependentJoinRuntimeState::new(memory);
     let mut tuples = Vec::new();
 
     for resolver_partition in 0..resolver_partition_count {
+        controls
+            .check_active()
+            .map_err(|kind| datafusion::error::DataFusionError::External(Box::new(kind)))?;
         let mut resolver_stream = resolver.execute(resolver_partition, Arc::clone(&context))?;
         while let Some(batch) = resolver_stream.next().await.transpose()? {
+            controls
+                .check_active()
+                .map_err(|kind| datafusion::error::DataFusionError::External(Box::new(kind)))?;
             tuples.extend(state.ingest_resolver_batch(&batch, &projector, &caps)?);
         }
     }
@@ -410,8 +428,12 @@ async fn execute_dependent_join(
         max_concurrency,
         max_rows_per_binding,
         page_hint,
+        controls: Arc::clone(&controls),
     });
     let state = run_binding_phase(state, tuples, &fetcher).await?;
+    controls
+        .check_active()
+        .map_err(|kind| datafusion::error::DataFusionError::External(Box::new(kind)))?;
     metrics.record(&state);
 
     let output_memory = state.memory().new_empty();
@@ -431,6 +453,7 @@ async fn execute_dependent_join(
             dependent_first,
             output_schema: &output_schema,
             source_observation: source_observation.as_ref(),
+            controls: &controls,
         },
         output_memory,
     )

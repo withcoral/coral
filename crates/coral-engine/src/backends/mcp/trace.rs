@@ -158,6 +158,11 @@ pub(super) fn mcp_error_type(error: &McpProviderQueryError) -> &'static str {
         McpProviderQueryError::AuthRequired { .. } => "MCP_AUTH_REQUIRED",
         McpProviderQueryError::AuthFailed { .. } => "MCP_AUTH_FAILED",
         McpProviderQueryError::ToolCall { .. } => "MCP_TOOL_CALL_FAILED",
+        McpProviderQueryError::ExecutionStopped { kind, .. } => match kind {
+            crate::QueryExecutionFailureKind::Timeout => "MCP_EXECUTION_TIMEOUT",
+            crate::QueryExecutionFailureKind::Cancelled => "MCP_EXECUTION_CANCELLED",
+            _ => "MCP_EXECUTION_FAILED",
+        },
         McpProviderQueryError::ToolReturnedError { .. } => "MCP_TOOL_RETURNED_ERROR",
         McpProviderQueryError::ResultDecode { .. } => "MCP_RESULT_DECODE_FAILED",
         McpProviderQueryError::Pagination { .. } => "MCP_PAGINATION_FAILED",

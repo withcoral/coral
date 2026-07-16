@@ -277,6 +277,27 @@ pub(super) fn advance_pagination_state(
     }
 }
 
+/// Returns whether a response explicitly identifies a next page.
+///
+/// Page-number and offset modes deliberately return false: a full page is a
+/// paging heuristic, not upstream continuation metadata.
+pub(super) fn has_explicit_continuation(
+    pagination: &ValidatedPagination,
+    context: PageAdvanceContext<'_>,
+) -> Result<bool> {
+    if !matches!(
+        pagination.mode,
+        ValidatedPaginationMode::CursorQuery
+            | ValidatedPaginationMode::CursorBody
+            | ValidatedPaginationMode::LinkHeader
+            | ValidatedPaginationMode::Auto
+    ) {
+        return Ok(false);
+    }
+    let mut ignored_state = PageState::default();
+    Ok(advance_pagination_state(&mut ignored_state, pagination, context)? == PageAdvance::Continue)
+}
+
 pub(super) fn extract_response_pagination_hints(
     headers: &HeaderMap,
     request_url: &str,

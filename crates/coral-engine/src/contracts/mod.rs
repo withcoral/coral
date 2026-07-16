@@ -14,10 +14,11 @@ pub use catalog::{
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
     DependentJoinConfig, DependentJoinSourceConfig, EffectiveDependentJoinConfig, MemorySize,
-    QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue,
-    QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage,
+    QueryCancellationToken, QueryExecution, QueryExecutionControls, QueryExecutionFailureKind,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryPaginationPolicy, QueryParameterValue,
+    QueryParameters, QueryPlan, QueryRetryPolicy, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult,
+    QueryTestSuccess, ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage,
     RuntimeTableFunctionAuthorizationInfo, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};

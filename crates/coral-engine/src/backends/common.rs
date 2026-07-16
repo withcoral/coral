@@ -199,6 +199,7 @@ pub(crate) struct BackendCompileRequest<'a> {
 pub(crate) struct BackendRegistrationContext {
     default_http_client: OnceLock<Result<reqwest::Client, String>>,
     credential_safe_http_client: OnceLock<Result<reqwest::Client, String>>,
+    single_attempt_http_client: OnceLock<Result<reqwest::Client, String>>,
 }
 
 impl BackendRegistrationContext {
@@ -213,6 +214,17 @@ impl BackendRegistrationContext {
             &self.default_http_client
         };
         cache
+            .get_or_init(build_client)
+            .as_ref()
+            .cloned()
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn single_attempt_http_client(
+        &self,
+        build_client: impl FnOnce() -> Result<reqwest::Client, String>,
+    ) -> Result<reqwest::Client, String> {
+        self.single_attempt_http_client
             .get_or_init(build_client)
             .as_ref()
             .cloned()
@@ -540,45 +552,72 @@ mod tests {
     }
 
     #[test]
-    fn default_http_client_is_shared_only_within_registration_context() {
-        let build_count = AtomicUsize::new(0);
+    fn http_clients_are_each_shared_only_within_registration_context() {
+        let default_build_count = AtomicUsize::new(0);
+        let credential_safe_build_count = AtomicUsize::new(0);
+        let single_attempt_build_count = AtomicUsize::new(0);
         let first_context = BackendRegistrationContext::default();
 
         first_context
-            .default_http_client(false, || build_counted_client(&build_count))
+            .default_http_client(false, || build_counted_client(&default_build_count))
             .expect("first context should build a client");
         first_context
-            .default_http_client(false, || build_counted_client(&build_count))
+            .default_http_client(false, || build_counted_client(&default_build_count))
             .expect("first context should reuse its client");
+        first_context
+            .default_http_client(true, || build_counted_client(&credential_safe_build_count))
+            .expect("first context should build a credential-safe client");
+        first_context
+            .default_http_client(true, || build_counted_client(&credential_safe_build_count))
+            .expect("first context should reuse its credential-safe client");
+        first_context
+            .single_attempt_http_client(|| build_counted_client(&single_attempt_build_count))
+            .expect("first context should build a single-attempt client");
+        first_context
+            .single_attempt_http_client(|| build_counted_client(&single_attempt_build_count))
+            .expect("first context should reuse its single-attempt client");
 
         assert_eq!(
-            build_count.load(Ordering::SeqCst),
+            default_build_count.load(Ordering::SeqCst),
             1,
             "one registration context should build one default HTTP client"
         );
-
-        first_context
-            .default_http_client(true, || build_counted_client(&build_count))
-            .expect("credential-safe requests should build a separate client");
-        first_context
-            .default_http_client(true, || build_counted_client(&build_count))
-            .expect("credential-safe requests should reuse their client");
-
         assert_eq!(
-            build_count.load(Ordering::SeqCst),
-            2,
-            "default and credential-safe HTTP clients should use separate caches"
+            credential_safe_build_count.load(Ordering::SeqCst),
+            1,
+            "one registration context should build one credential-safe HTTP client"
+        );
+        assert_eq!(
+            single_attempt_build_count.load(Ordering::SeqCst),
+            1,
+            "one registration context should build one single-attempt HTTP client"
         );
 
         let second_context = BackendRegistrationContext::default();
         second_context
-            .default_http_client(false, || build_counted_client(&build_count))
+            .default_http_client(false, || build_counted_client(&default_build_count))
             .expect("new context should build its own client");
+        second_context
+            .default_http_client(true, || build_counted_client(&credential_safe_build_count))
+            .expect("new context should build its own credential-safe client");
+        second_context
+            .single_attempt_http_client(|| build_counted_client(&single_attempt_build_count))
+            .expect("new context should build its own single-attempt client");
 
         assert_eq!(
-            build_count.load(Ordering::SeqCst),
-            3,
+            default_build_count.load(Ordering::SeqCst),
+            2,
             "default HTTP clients should not be process-global"
+        );
+        assert_eq!(
+            credential_safe_build_count.load(Ordering::SeqCst),
+            2,
+            "credential-safe HTTP clients should not be process-global"
+        );
+        assert_eq!(
+            single_attempt_build_count.load(Ordering::SeqCst),
+            2,
+            "single-attempt HTTP clients should not be process-global"
         );
     }
 

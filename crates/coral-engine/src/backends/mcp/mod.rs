@@ -2,6 +2,8 @@
 
 mod catalog;
 mod client;
+mod controlled_http;
+mod controlled_stdio;
 pub(crate) mod error;
 mod fetch;
 mod function;
@@ -117,12 +119,12 @@ pub(crate) fn compile_manifest(
             source_inputs: Arc::clone(&source_inputs),
             body_capture,
         }),
-        McpServerSpec::StreamableHttp { .. } => Arc::new(StreamableHttpMcpToolCaller {
-            source_name: manifest.common.name.clone(),
-            server: manifest.server.clone(),
-            source_inputs: Arc::clone(&source_inputs),
+        McpServerSpec::StreamableHttp { .. } => Arc::new(StreamableHttpMcpToolCaller::new(
+            manifest.common.name.clone(),
+            manifest.server.clone(),
+            Arc::clone(&source_inputs),
             body_capture,
-        }),
+        )),
     };
     compile_source_with_caller(
         manifest.clone(),

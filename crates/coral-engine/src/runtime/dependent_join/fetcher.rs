@@ -5,6 +5,7 @@ use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::Result;
 use serde_json::Value;
 
+use crate::QueryExecutionControls;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::runtime::dependent_join::bindings::{Tuple, filter_values_for_tuple};
@@ -20,6 +21,7 @@ pub(crate) struct BindingFetcher {
     max_concurrency: usize,
     max_rows_per_binding: usize,
     page_hint: Option<usize>,
+    controls: Arc<QueryExecutionControls>,
 }
 
 pub(crate) struct BindingFetcherConfig {
@@ -31,6 +33,7 @@ pub(crate) struct BindingFetcherConfig {
     pub(crate) max_concurrency: usize,
     pub(crate) max_rows_per_binding: usize,
     pub(crate) page_hint: Option<usize>,
+    pub(crate) controls: Arc<QueryExecutionControls>,
 }
 
 impl BindingFetcher {
@@ -46,6 +49,7 @@ impl BindingFetcher {
             max_concurrency,
             max_rows_per_binding: config.max_rows_per_binding,
             page_hint: config.page_hint,
+            controls: config.controls,
         }
     }
 
@@ -54,6 +58,9 @@ impl BindingFetcher {
     }
 
     pub(crate) async fn fetch_one(&self, tuple: Tuple) -> Result<(Tuple, Vec<Value>)> {
+        self.controls
+            .check_active()
+            .map_err(|kind| datafusion::error::DataFusionError::External(Box::new(kind)))?;
         let filter_values = filter_values_for_tuple(
             self.literal_filters.as_ref(),
             self.binding_filters.as_ref(),
@@ -69,6 +76,7 @@ impl BindingFetcher {
                 &HashMap::new(),
                 row_limit,
                 row_limit,
+                &self.controls,
             )
             .await?;
 
