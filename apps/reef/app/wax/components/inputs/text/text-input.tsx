@@ -6,6 +6,7 @@ import type { IconName } from '@/wax/components/icon'
 import * as styles from '@/wax/components/inputs/base-input.css'
 
 export interface TextInputProps {
+  ariaLabel?: string
   autoFocus?: boolean
   className?: string
   disabled?: boolean
@@ -22,6 +23,7 @@ export interface TextInputProps {
 }
 
 export function TextInput({
+  ariaLabel,
   autoFocus,
   className,
   disabled,
@@ -52,6 +54,7 @@ export function TextInput({
           />
         )}
         <Field.Control
+          aria-label={ariaLabel}
           autoFocus={autoFocus}
           className={classNames(styles.input, { [styles.inputWithIcon]: !!icon }, className)}
           name={name}

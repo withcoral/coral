@@ -7,6 +7,7 @@ import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
+import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
 import type {
@@ -175,9 +176,7 @@ function SourceDetailDialogContent({
               <Typography.HeadingMedium as="span" className={styles.headerTitle}>
                 {sourceDisplayName}
               </Typography.HeadingMedium>
-              {origin ? (
-                <span className={styles.headerPill}>{originBadgeLabel(origin)}</span>
-              ) : null}
+              {origin ? <Pill color="graySubtle">{originBadgeLabel(origin)}</Pill> : null}
             </Dialog.Title>
             <Dialog.Description render={<div />}>
               <Typography.BodySmall variant="secondary">

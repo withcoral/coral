@@ -38,9 +38,118 @@ const entry: CatalogEntry = {
   version: '1.0.0',
 }
 
+const entryWithMultipleSetupMethods: CatalogEntry = {
+  ...entry,
+  inputSpecs: [
+    {
+      hint: 'Choose how to connect.',
+      input: {
+        case: 'secret',
+        value: {
+          credential: {
+            methods: [
+              {
+                description: '',
+                hint: '',
+                label: 'Personal access token',
+                method: { case: 'sourceConfig', value: {} },
+              },
+              {
+                description: '',
+                hint: '',
+                label: 'OAuth',
+                method: {
+                  case: 'oauth',
+                  value: {
+                    client: {
+                      id: { defaultValue: '', input: 'GITHUB_CLIENT_ID' },
+                      secret: { input: 'GITHUB_CLIENT_SECRET' },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+      key: 'GITHUB_TOKEN',
+      required: true,
+    },
+  ],
+}
+
 afterEach(() => vi.unstubAllGlobals())
 
 describe('SourceInstallDialog', () => {
+  it('uses Wax tabs to switch between source setup methods', async () => {
+    const router = createMemoryRouter(
+      [
+        {
+          element: (
+            <SourceInstallDialog
+              entry={entryWithMultipleSetupMethods}
+              open
+              onOpenChange={() => undefined}
+            />
+          ),
+          path: '/',
+        },
+      ],
+      { initialEntries: ['/'] },
+    )
+    const screen = await render(<RouterProvider router={router} />)
+    const tokenTab = screen.getByRole('tab', { name: 'Personal access token' })
+    const oauthTab = screen.getByRole('tab', { name: 'OAuth' })
+    const dialog = screen.getByRole('dialog')
+
+    await expect
+      .element(screen.getByRole('tablist', { name: 'Github token setup method' }))
+      .toBeVisible()
+    await expect.element(tokenTab).toHaveAttribute('aria-selected', 'true')
+    const tokenPanel = dialog
+      .element()
+      .querySelector<HTMLElement>('[role="tabpanel"]:not([hidden])')
+    const tokenInput = tokenPanel?.querySelector('input')
+    const hint = tokenPanel?.querySelector('p')
+    expect(tokenInput).not.toBeNull()
+    expect(tokenInput).toHaveAttribute('aria-label', 'Github token')
+    expect(hint).not.toBeNull()
+    expect(dialog.element().textContent).not.toContain('Github token')
+    expect(
+      hint!.getBoundingClientRect().top - tokenInput!.getBoundingClientRect().bottom,
+    ).toBeLessThan(12)
+    const initialDialogHeight = dialog.element().getBoundingClientRect().height
+
+    await oauthTab.click()
+
+    await expect.element(oauthTab).toHaveAttribute('aria-selected', 'true')
+    const oauthPanel = dialog
+      .element()
+      .querySelector<HTMLElement>('[role="tabpanel"]:not([hidden])')
+    expect(oauthPanel?.textContent).toContain('Github client id')
+    expect(dialog.element().getBoundingClientRect().height).toBe(initialDialogHeight)
+
+    const panels = dialog.element().querySelectorAll<HTMLElement>('[role="tabpanel"]')
+    expect(panels).toHaveLength(2)
+    expect(panels[0]).toHaveAttribute('hidden')
+    expect(panels[0].querySelector('input')).toBeDisabled()
+  })
+
+  it('keeps the field label when there is only one setup method', async () => {
+    const router = createMemoryRouter(
+      [
+        {
+          element: <SourceInstallDialog entry={entry} open onOpenChange={() => undefined} />,
+          path: '/',
+        },
+      ],
+      { initialEntries: ['/'] },
+    )
+    const screen = await render(<RouterProvider router={router} />)
+
+    await expect.element(screen.getByText('Github token')).toBeVisible()
+  })
+
   it('commits catalog revalidation before leaving the detail route', async () => {
     let installed = false
     let loaderCalls = 0

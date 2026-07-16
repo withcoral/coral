@@ -35,8 +35,9 @@ export function OAuthFields({
     <div className={styles.fields}>
       {fields.map(({ key, label, secret, defaultValue }) => (
         <div key={key} className={styles.field}>
-          <Typography.Body className={styles.label}>{label}</Typography.Body>
+          <Typography.BodyStrong variant="primary">{label}</Typography.BodyStrong>
           <TextInput
+            ariaLabel={label}
             name={`oauth:${inputKey}:${key}`}
             type={secret ? 'password' : 'text'}
             value={values[key] ?? ''}

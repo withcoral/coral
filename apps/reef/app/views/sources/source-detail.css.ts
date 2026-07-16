@@ -5,14 +5,15 @@ import { theme } from '@/wax/theme/theme.css'
 export const header = style({
   alignItems: 'flex-start',
   display: 'flex',
-  gap: 12,
+  gap: 16,
+  paddingBlockEnd: 8,
 })
 
 export const headerText = style({
   display: 'flex',
   flexDirection: 'column',
   flexGrow: 1,
-  gap: 4,
+  gap: 8,
   minWidth: 0,
 })
 
@@ -27,36 +28,23 @@ export const headerTitle = style({
   textTransform: 'capitalize',
 })
 
-export const headerPill = style({
-  alignItems: 'center',
-  background: theme.surface.onMainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 999,
-  color: theme.content.secondary,
-  display: 'inline-flex',
-  fontSize: 11,
-  fontWeight: 600,
-  letterSpacing: '0.02em',
-  padding: '2px 8px',
-  textTransform: 'uppercase',
-})
-
 export const section = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 8,
+  gap: 12,
+  paddingBlockStart: 16,
 })
 
 export const fieldGroup = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 14,
+  gap: 16,
 })
 
 export const fieldItem = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 6,
+  gap: 8,
 })
 
 export const fieldLabel = style({
