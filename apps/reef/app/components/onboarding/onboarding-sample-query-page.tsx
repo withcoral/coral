@@ -13,6 +13,7 @@ import { Icon } from '@/wax/components/icon'
 
 import { OnboardingPage } from './onboarding-page'
 import * as styles from './onboarding-sample-query-page.css'
+import { getOnboardingStepState } from './onboarding-steps'
 import { pluralise } from '~/utils/pluralise'
 
 export type SampleQueryLoadState = 'error' | 'idle' | 'loading' | 'success'
@@ -36,7 +37,6 @@ export interface OnboardingSampleQueryPageProps {
   onContinue?: () => void
   onRunSampleQuery?: (sql: string) => void
   rows?: OnboardingSampleQueryRow[]
-  stepLabel?: string
 }
 
 export function OnboardingSampleQueryPage({
@@ -48,8 +48,8 @@ export function OnboardingSampleQueryPage({
   onContinue,
   onRunSampleQuery,
   rows = [],
-  stepLabel = 'Step 2/2',
 }: OnboardingSampleQueryPageProps) {
+  const step = getOnboardingStepState('query')
   const sourceCount = connectedSources.length
   const sourceSetKey = connectedSources
     .map((source) => source.name)
@@ -80,7 +80,7 @@ export function OnboardingSampleQueryPage({
         onClick: onContinue,
       }}
       ariaLabel="Confirm connected sources"
-      stepLabel={stepLabel}
+      step={step}
       sideContent={
         <>
           <Typography.BodyLarge>

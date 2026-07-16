@@ -6,6 +6,7 @@ import { Button, Typography } from '@/wax/components'
 import { Pill } from '@/wax/components/pill'
 
 import * as styles from './onboarding-page.css'
+import type { OnboardingStepState } from './onboarding-steps'
 
 interface OnboardingPageActionBase {
   disabled?: boolean
@@ -31,7 +32,7 @@ export interface OnboardingPageProps {
   mainFrameClassName?: string
   sideContent: ReactNode
   sideTitle: string
-  stepLabel?: string
+  step: OnboardingStepState
   title?: string
 }
 
@@ -42,7 +43,7 @@ export function OnboardingPage({
   mainFrameClassName,
   sideContent,
   sideTitle,
-  stepLabel,
+  step,
   title = 'Onboarding',
 }: OnboardingPageProps) {
   return (
@@ -52,11 +53,9 @@ export function OnboardingPage({
           <div className={styles.headerText}>
             <div className={styles.titleRow}>
               <Typography.HeadingLarge as="h1">{title}</Typography.HeadingLarge>
-              {stepLabel ? (
-                <Pill className={styles.stepPill} color="graySubtle">
-                  {stepLabel}
-                </Pill>
-              ) : null}
+              <Pill className={styles.stepPill} color="graySubtle">
+                Step {step.current}/{step.total}
+              </Pill>
             </div>
           </div>
         </header>

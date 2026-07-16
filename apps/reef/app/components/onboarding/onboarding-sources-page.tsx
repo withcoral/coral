@@ -4,6 +4,7 @@ import { SourceCatalogSurface } from '@/components/sources'
 import type { SourceCatalogEntry, SourceCatalogLoadState } from '@/components/sources'
 
 import { OnboardingLink, OnboardingPage } from './onboarding-page'
+import { getOnboardingStepState } from './onboarding-steps'
 
 export interface OnboardingSourcesPageProps {
   continueDisabled?: boolean
@@ -15,7 +16,6 @@ export interface OnboardingSourcesPageProps {
   onSearchChange: (search: string) => void
   onSourceSelect: (entry: SourceCatalogEntry) => void
   search: string
-  stepLabel?: string
 }
 
 export function OnboardingSourcesPage({
@@ -28,19 +28,23 @@ export function OnboardingSourcesPage({
   onSearchChange,
   onSourceSelect,
   search,
-  stepLabel = 'Step 1/2',
 }: OnboardingSourcesPageProps) {
+  const step = getOnboardingStepState('sources')
   const hasConnectedSource = entries.some((entry) => entry.installed)
   const canContinue = hasConnectedSource && !continueDisabled
+
+  if (!step.nextHref) {
+    throw new Error('The onboarding sources step must have a next step')
+  }
 
   return (
     <OnboardingPage
       action={{
         disabled: !canContinue,
         label: continueLabel,
-        to: '?step=query',
+        to: step.nextHref,
       }}
-      stepLabel={stepLabel}
+      step={step}
       sideContent={
         <>
           <Typography.BodyLarge>

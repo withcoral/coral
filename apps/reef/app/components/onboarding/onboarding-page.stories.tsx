@@ -5,6 +5,7 @@ import { fn } from 'storybook/test'
 import { Typography } from '@/wax/components'
 
 import { OnboardingPage } from './onboarding-page'
+import { getOnboardingStepState } from './onboarding-steps'
 
 const meta = {
   args: {
@@ -28,7 +29,7 @@ const meta = {
       </>
     ),
     sideTitle: 'Shared onboarding shell',
-    stepLabel: 'Step 1/2',
+    step: getOnboardingStepState('sources'),
   },
   component: OnboardingPage,
   parameters: {
