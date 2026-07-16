@@ -275,6 +275,7 @@ fn http_manifest_for_surface(
                     fetch_limit_default: None,
                     search_limits: projection.search_limits.clone(),
                     detail_hints: projection.detail_hints.clone(),
+                    universal_search: None,
                     args: projection_arg_specs(projection),
                     request,
                     response,
@@ -442,6 +443,7 @@ fn mcp_table_function_spec(
             fetch_limit_default: None,
             search_limits: projection.search_limits.clone(),
             detail_hints: projection.detail_hints.clone(),
+            universal_search: None,
             args: mcp_projection_arg_specs(projection),
             request: RequestSpec::default(),
             response: response_with_row_path(ResponseSpec::default(), row_path),
@@ -747,6 +749,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface,
         }
@@ -1219,6 +1222,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -1511,6 +1515,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -1605,6 +1610,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -1661,6 +1667,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface,
         };

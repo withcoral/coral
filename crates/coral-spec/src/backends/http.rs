@@ -28,6 +28,7 @@ use crate::{
     validate::validate_template,
     validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
     validate_http_table, validate_required_guide, validate_source_name, validate_test_queries,
+    validate_universal_search_route_ids,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -326,6 +327,7 @@ impl HttpSourceManifest {
                 Ok(function)
             })
             .collect::<Result<Vec<_>>>()?;
+        validate_universal_search_route_ids(&common.name, &functions)?;
         validate_http_detail_hints(&common.name, &tables, &functions)?;
         if base_url.raw().trim().is_empty() {
             return Err(ManifestError::validation(format!(

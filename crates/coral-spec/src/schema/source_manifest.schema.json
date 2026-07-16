@@ -637,6 +637,45 @@
         "purpose": { "type": "string", "minLength": 1 }
       }
     },
+    "universal_search_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entity_type": { "type": "string", "minLength": 1 },
+        "identity_fields": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "provider_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "minLength": 1 },
+        "snippet": { "type": "string", "minLength": 1 },
+        "attributes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "universal_search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "execute"],
+      "allOf": [
+        {
+          "if": { "properties": { "execute": { "const": true } } },
+          "then": { "required": ["query_arg"] },
+          "else": { "not": { "required": ["query_arg"] } }
+        }
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "execute": { "type": "boolean" },
+        "query_arg": { "$ref": "#/$defs/table_function_identifier" },
+        "result": { "$ref": "#/$defs/universal_search_result" }
+      }
+    },
     "table_function": {
       "type": "object",
       "additionalProperties": false,
@@ -662,6 +701,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/detail_hint" }
         },
+        "universal_search": { "$ref": "#/$defs/universal_search" },
         "args": {
           "type": "array",
           "items": { "$ref": "#/$defs/table_function_arg" }
@@ -678,14 +718,30 @@
     "mcp_table_function": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "search" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["search_limits"] }
+        }
+      ],
       "required": ["name", "tool"],
       "properties": {
         "name": { "$ref": "#/$defs/table_function_identifier" },
         "tool": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["table", "search"] },
         "description": { "type": "string" },
         "guide": { "type": "string" },
         "require_guide_read": { "type": "boolean" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
+        "search_limits": { "$ref": "#/$defs/search_limits" },
+        "detail_hints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/detail_hint" }
+        },
+        "universal_search": { "$ref": "#/$defs/universal_search" },
         "args": {
           "type": "array",
           "items": { "$ref": "#/$defs/table_function_arg" }
@@ -877,6 +933,7 @@
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true
         },
+        "default": {},
         "bind": { "$ref": "#/$defs/function_binding" }
       }
     },

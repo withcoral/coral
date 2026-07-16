@@ -25,13 +25,14 @@ test_queries:
   - SELECT * FROM my_source.messages LIMIT 1
 ```
 
-| Field         | Description                                        |
-| ------------- | -------------------------------------------------- |
-| `name`        | Source name, also used as the SQL schema name      |
-| `version`     | Source spec version string                         |
-| `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http`, `file`, or `mcp` |
-| `test_queries` | Optional read-only SQL checks Coral runs during source validation |
+| Field          | Description                                                                      |
+| -------------- | -------------------------------------------------------------------------------- |
+| `name`         | Source name, also used as the SQL schema name                                    |
+| `version`      | DSL v3 source spec version string                                                |
+| `dsl_version`  | Coral source spec DSL version: `3`, or `4` for a preview imported-surface source |
+| `backend`      | DSL v3 fetch backend: `http`, `file`, or `mcp`                                   |
+| `surface`      | DSL v4 imported OpenAPI or MCP surface                                            |
+| `test_queries` | Optional read-only SQL checks Coral runs during source validation                |
 
 ## Test queries
 
@@ -557,6 +558,10 @@ Function args accept an optional `type` field using Coral manifest data type
 names. It defaults to `Utf8`; set it when the provider argument is numeric,
 boolean, timestamp-shaped, or JSON-shaped.
 
+Function args also accept an optional typed `default`. Coral preserves the
+YAML/JSON value type rather than converting every default to text. The default
+must match the argument `type` and any declared `values`.
+
 ```yaml
 functions:
   - name: search_issues
@@ -578,8 +583,20 @@ functions:
       - name: mode
         type: Utf8
         values: [lexical, semantic, hybrid]
+        default: lexical
         bind:
           arg: search_type
+    universal_search:
+      id: issue_search
+      execute: true
+      query_arg: q
+      result:
+        entity_type: issue
+        identity_fields: [id]
+        provider_id: id
+        title: title
+        url: html_url
+        attributes: [score]
     request:
       method: GET
       path: /search/issues
@@ -661,6 +678,96 @@ per provider call, and `max_calls_per_query` caps provider calls for one SQL
 query. Values must be positive. `default_top_k` and `max_top_k` are capped at
 1000, `max_calls_per_query` is capped at 100, and
 `max_top_k * max_calls_per_query` cannot exceed 10000 candidates.
+
+### Universal Search authorization
+
+Universal Search authorization is source-authored policy for a `kind: search`
+route. It does not replace `kind` or `search_limits`, and result display
+metadata does not grant authorization.
+
+In DSL v3, put `universal_search` on the authored table function, as in the
+`search_issues` example above:
+
+- `id` is a source-stable route identifier, must match
+  `[a-z][a-z0-9_]*`, and must be unique within the source.
+- `execute: true` explicitly allows the route when the rest of the route
+  validates. `execute: false` explicitly denies it.
+- `query_arg` names the one exposed query argument, whose type must be exactly
+  `Utf8`. An allowed query argument cannot have a default.
+- Every other exposed argument on an allowed route must have a type-correct
+  `default`.
+- Optional `result` fields name authored result columns. `identity_fields` is
+  ordered; `provider_id`, `title`, `url`, and `snippet` name scalar columns;
+  `attributes` lists explicitly selected display fields.
+
+DSL v4 table functions are generated from one imported surface, so author routes
+at the top level and bind them to the original imported operation identity:
+
+```yaml
+name: github_v4
+dsl_version: 4
+surface:
+  type: openapi
+  url: https://example.com/openapi.json
+
+universal_search:
+  routes:
+    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues_and_pull_requests
+      query_input:
+        location: query
+        name: q
+      result:
+        entity_type: issue
+        identity_fields: [/node_id]
+        provider_id: /id
+        title: /title
+        url: /html_url
+        snippet: /body
+        attributes: [/state, /author/login]
+```
+
+The route map key, such as `issue_search`, is the authored authorization ID and
+must match `[a-z][a-z0-9_]*`. Because each DSL v4 source has exactly one
+surface, `operation_id` is its exact current target. Generated schema and
+function names are not authorization identities. `query_input.location` must
+be `path`, `query`, or `tool_arg`;
+header, cookie, and body inputs cannot be selected.
+
+DSL v4 result fields are RFC 6901 JSON Pointers rooted at the imported result
+row. Use escapes `~0` for `~` and `~1` for `/`. Manifest validation checks the
+pointer syntax; during route resolution, every pointer must resolve to exactly
+one imported result field. Identity and display fields must be scalar. An
+attribute may select a structured value only when its schema permits bounded
+canonical JSON.
+
+To deny a DSL v4 route, keep the exact target and omit `query_input`:
+
+```yaml
+universal_search:
+  routes:
+    issue_search:
+      execute: false
+      target:
+        operation_id: search_issues_and_pull_requests
+```
+
+Authorization fails closed:
+
+- Any authored `universal_search` policy puts the source in explicit mode;
+  unlisted routes are not inferred.
+- Without authored policy, only one unambiguous, safe `kind: search` route can
+  be inferred. Legacy `mode: search` filters never qualify.
+- Duplicate or missing targets, ambiguous query inputs, invalid defaults, and
+  unresolved result fields do not fall back to a guessed operation.
+- `execute: true` is the source author's assertion that the target is
+  retrieval-only and idempotent. Verify that assertion against the upstream
+  API. Inference is stricter: HTTP operations must use a safe retrieval method,
+  and MCP tools must declare read-only and idempotent annotations.
+- Changing result identity or display mappings does not create a new
+  authorization.
 
 ### MCP sources
 

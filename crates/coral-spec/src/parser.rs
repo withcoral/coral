@@ -207,7 +207,12 @@ impl ValidatedSourceManifest {
 /// Returns a [`ManifestError`] if the `YAML` cannot be parsed or the source
 /// spec violates any validation rules.
 pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> {
-    let manifest_value: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    // Deserialize through serde_yaml's mapping representation first because it
+    // rejects duplicate keys instead of silently keeping the last value.
+    let yaml_value: serde_yaml::Value =
+        serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    let manifest_value: Value =
+        serde_yaml::from_value(yaml_value).map_err(ManifestError::parse_yaml)?;
     parse_source_manifest_value(manifest_value)
 }
 
@@ -291,6 +296,40 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_duplicate_yaml_mapping_keys() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+universal_search:
+  routes:
+    issue_search:
+      execute: false
+      target:
+        operation_id: search_issues
+    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+",
+        )
+        .expect_err("a duplicate route key must not override an earlier policy");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate entry with key \"issue_search\""),
+            "unexpected duplicate-key error: {error}"
+        );
     }
 
     #[test]

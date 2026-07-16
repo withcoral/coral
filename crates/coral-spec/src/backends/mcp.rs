@@ -12,16 +12,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestDataType,
+    ColumnSpec, DeclaredRelation, DetailHintDeclaringSurface, DetailHintSpec,
+    DetailHintTargetTable, FilterMode, FilterSpec, FunctionArgBinding, ManifestDataType,
     ManifestError, ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec,
-    Result, SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
-    TableCommon, TableFunctionArgSpec, ValueSourceSpec,
+    Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionKind,
+    SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec, UniversalSearchSpec,
+    ValueSourceSpec,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
-    validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_required_guide, validate_source_name, validate_test_queries,
-    validate_unique_values,
+    validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
+    validate_filters_and_column_exprs, validate_identifier, validate_required_guide,
+    validate_source_name, validate_table_function_search_contract, validate_test_queries,
+    validate_unique_values, validate_universal_search_route_ids,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -122,6 +125,8 @@ struct RawMcpTableFunctionSpec {
     name: String,
     tool: String,
     #[serde(default)]
+    kind: SourceTableFunctionKind,
+    #[serde(default)]
     description: String,
     #[serde(default)]
     guide: String,
@@ -129,6 +134,12 @@ struct RawMcpTableFunctionSpec {
     require_guide_read: bool,
     #[serde(default)]
     fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    search_limits: Option<SearchLimitsSpec>,
+    #[serde(default)]
+    detail_hints: Vec<DetailHintSpec>,
+    #[serde(default)]
+    universal_search: Option<UniversalSearchSpec>,
     #[serde(default)]
     args: Vec<TableFunctionArgSpec>,
     #[serde(default)]
@@ -331,25 +342,28 @@ impl McpTableFilterSpec {
 impl RawMcpTableFunctionSpec {
     fn into_validated(self, source_name: &str) -> Result<McpTableFunctionSpec> {
         validate_mcp_function(source_name, &self)?;
+        let common = SourceTableFunctionSpec {
+            name: self.name,
+            kind: self.kind,
+            description: self.description,
+            guide: self.guide,
+            require_guide_read: self.require_guide_read,
+            fetch_limit_default: self.fetch_limit_default,
+            search_limits: self.search_limits,
+            detail_hints: self.detail_hints,
+            universal_search: self.universal_search,
+            args: self.args,
+            request: RequestSpec::default(),
+            response: self.response,
+            pagination: PaginationSpec::default(),
+            columns: self.columns,
+        };
+        validate_table_function_search_contract(source_name, &common)?;
         Ok(McpTableFunctionSpec {
             tool: self.tool,
             pagination: self.pagination,
             offset_pagination: None,
-            common: SourceTableFunctionSpec {
-                name: self.name,
-                kind: SourceTableFunctionKind::default(),
-                description: self.description,
-                guide: self.guide,
-                require_guide_read: self.require_guide_read,
-                fetch_limit_default: self.fetch_limit_default,
-                search_limits: None,
-                detail_hints: Vec::new(),
-                args: self.args,
-                request: RequestSpec::default(),
-                response: self.response,
-                pagination: PaginationSpec::default(),
-                columns: self.columns,
-            },
+            common,
         })
     }
 }
@@ -450,10 +464,16 @@ impl McpSourceManifest {
             .into_iter()
             .map(|function| function.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
+        let function_contracts = functions
+            .iter()
+            .map(|function| function.common.clone())
+            .collect::<Vec<_>>();
+        validate_universal_search_route_ids(&common.name, &function_contracts)?;
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
+        validate_mcp_detail_hints(&common.name, &tables, &functions)?;
 
         Ok(Self {
             common,
@@ -463,6 +483,37 @@ impl McpSourceManifest {
             declared_inputs,
         })
     }
+}
+
+fn validate_mcp_detail_hints(
+    schema: &str,
+    tables: &[McpTableSpec],
+    functions: &[McpTableFunctionSpec],
+) -> Result<()> {
+    let targets = tables
+        .iter()
+        .map(|table| DetailHintTargetTable {
+            name: table.name(),
+            filters: table.filters(),
+        })
+        .collect::<Vec<_>>();
+    let sources = tables
+        .iter()
+        .map(|table| DetailHintDeclaringSurface {
+            surface_kind: "table",
+            surface_name: table.name(),
+            hints: &table.common.detail_hints,
+            columns: table.columns(),
+        })
+        .chain(functions.iter().map(|function| DetailHintDeclaringSurface {
+            surface_kind: "function",
+            surface_name: function.name(),
+            hints: &function.common.detail_hints,
+            columns: function.columns(),
+        }))
+        .collect::<Vec<_>>();
+
+    validate_detail_hint_references(schema, &targets, &sources)
 }
 
 pub(crate) fn validate_mcp_server(
@@ -974,9 +1025,45 @@ fn validate_function_binding<'a>(
 mod tests {
     use std::collections::BTreeSet;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{McpServerSpec, McpSourceManifest};
+
+    fn detail_hint_manifest(target_table: &str, detail_filter: &str) -> Value {
+        json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "items",
+                "tool": "get_item",
+                "filters": [{
+                    "name": "item_id",
+                    "tool_arg": "id"
+                }],
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }],
+            "functions": [{
+                "name": "search",
+                "tool": "search_items",
+                "kind": "search",
+                "search_limits": {
+                    "default_top_k": 10,
+                    "max_top_k": 100,
+                    "max_calls_per_query": 1
+                },
+                "detail_hints": [{
+                    "table": target_table,
+                    "search_result_column": "id",
+                    "detail_filter": detail_filter,
+                    "purpose": "Fetch the full item."
+                }],
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        })
+    }
 
     #[test]
     fn parses_mcp_manifest_with_secret_input() {
@@ -1021,6 +1108,44 @@ mod tests {
         assert_eq!(
             manifest.required_secret_names(),
             BTreeSet::from(["GITHUB_TOKEN".to_string()])
+        );
+    }
+
+    #[test]
+    fn parses_mcp_function_detail_hint_with_known_table_and_filter() {
+        McpSourceManifest::parse_manifest_value(detail_hint_manifest("demo.items", "item_id"))
+            .expect("known MCP detail hint target should parse");
+    }
+
+    #[test]
+    fn rejects_mcp_function_detail_hint_with_unknown_target_table() {
+        let error = McpSourceManifest::parse_manifest_value(detail_hint_manifest(
+            "demo.missing",
+            "item_id",
+        ))
+        .expect_err("unknown MCP detail hint target table should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("target table 'demo.missing' does not match any table"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_function_detail_hint_with_unknown_target_filter() {
+        let error = McpSourceManifest::parse_manifest_value(detail_hint_manifest(
+            "demo.items",
+            "missing_filter",
+        ))
+        .expect_err("unknown MCP detail hint target filter should fail");
+
+        assert!(
+            error.to_string().contains(
+                "target table 'demo.items' does not declare detail_filter 'missing_filter'"
+            ),
+            "unexpected error: {error}"
         );
     }
 

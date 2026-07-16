@@ -88,6 +88,35 @@ Additional hint guidance:
 - Do not model provider-native search as a table filter. Use `mode: contains` only for ordinary substring filters on normal list/detail tables. Provider-ranked retrieval belongs in a `kind: search` function.
 - If a search result is not a complete entity, make sure the returned identifier can be used with ordinary detail tables or required filters.
 
+## Universal Search Authorization
+
+- Keep authorization attached to source-authored identity. In DSL v3, use
+  `functions[].universal_search` with a source-stable `id`, `execute`, and, for
+  an allow, `query_arg`. In DSL v4, use top-level
+  `universal_search.routes.<route_id>` with an exact `target.operation_id` on
+  the source's singular surface. Make every authored route ID match
+  `[a-z][a-z0-9_]*`; keep DSL v3 IDs unique within the source.
+- For an allowed DSL v4 route, select the original imported input with
+  `query_input.location` (`path`, `query`, or `tool_arg`) and
+  `query_input.name`. Never authorize a generated projection or function name.
+- The allowed query argument must have type `Utf8` and no default.
+  Give every other exposed argument a type-correct typed `default`; preserve
+  booleans, numbers, arrays, and objects as their YAML/JSON types instead of
+  flattening them into strings.
+- Use optional `result` mapping only for identity and display. DSL v3 mappings
+  name authored result columns. DSL v4 mappings use RFC 6901 JSON Pointers to
+  original imported output fields. Pointers must be syntactically valid in the
+  manifest and resolve exactly once during route resolution; identity/display
+  fields must be scalar.
+- Use `execute: false` for a denial. A denied DSL v4 route keeps its target and
+  omits `query_input`. If the source contains any authored Universal Search
+  policy, treat unlisted routes as unauthorized.
+- Verify every explicit allow is retrieval-only and idempotent upstream. Do not
+  infer authorization from legacy `mode: search`, a mutating HTTP method, or an
+  unannotated MCP tool. Missing targets, ambiguous inputs, invalid defaults,
+  duplicate targets, and unresolved result fields must fail closed rather than
+  retargeting another operation.
+
 ## Response Extraction
 
 - Set `rows_path` to the array Coral should read as rows.

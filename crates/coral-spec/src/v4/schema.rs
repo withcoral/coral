@@ -1,6 +1,6 @@
 //! Generated JSON Schema for authored DSL v4 source manifests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,95 @@ struct V4SourceManifestSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required)]
     identity_requirements: Option<IdentityRequirementsSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    universal_search: Option<V4UniversalSearchSchema>,
     surface: V4SurfaceSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4UniversalSearchSchema {
+    #[schemars(extend("propertyNames" = { "pattern": "^[a-z][a-z0-9_]*$" }))]
+    routes: BTreeMap<String, V4UniversalSearchRouteSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("allOf" = [
+    {
+        "if": {
+            "properties": { "execute": { "const": true } },
+            "required": ["execute"]
+        },
+        "then": { "required": ["query_input"] }
+    },
+    {
+        "if": {
+            "properties": { "execute": { "const": false } },
+            "required": ["execute"]
+        },
+        "then": { "not": { "required": ["query_input"] } }
+    }
+]))]
+struct V4UniversalSearchRouteSchema {
+    execute: bool,
+    target: V4UniversalSearchTargetSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    query_input: Option<V4UniversalSearchQueryInputSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    result: Option<V4UniversalSearchResultMappingSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4UniversalSearchTargetSchema {
+    #[schemars(length(min = 1))]
+    operation_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4UniversalSearchQueryInputSchema {
+    location: V4UniversalSearchInputLocationSchema,
+    #[schemars(length(min = 1))]
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4UniversalSearchInputLocationSchema {
+    Path,
+    Query,
+    ToolArg,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4UniversalSearchResultMappingSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    entity_type: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[schemars(inner(pattern(r"^(?:/(?:[^~/]|~[01])*)+$")))]
+    identity_fields: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^(?:/(?:[^~/]|~[01])*)+$"))]
+    provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^(?:/(?:[^~/]|~[01])*)+$"))]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^(?:/(?:[^~/]|~[01])*)+$"))]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^(?:/(?:[^~/]|~[01])*)+$"))]
+    snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[schemars(inner(pattern(r"^(?:/(?:[^~/]|~[01])*)+$")))]
+    attributes: BTreeSet<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -482,6 +570,103 @@ mod tests {
         assert!(parsed_sources.contains(&("github".to_string(), "github_v4".to_string())));
         assert!(parsed_sources.contains(&("github_mcp".to_string(), "github_mcp_v4".to_string())));
         assert_ne!("github_v4", "github_mcp_v4");
+    }
+
+    #[test]
+    fn generated_schema_accepts_v4_universal_search_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+universal_search:
+  routes:
+    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+      result:
+        entity_type: issue
+        identity_fields: [/node_id]
+        title: /author/title~1display
+        attributes: [/metadata/a~0b]
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+";
+
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept v4 Universal Search: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts v4 Universal Search");
+    }
+
+    #[test]
+    fn generated_schema_rejects_invalid_v4_universal_search_shapes() {
+        for (label, route) in [
+            (
+                "allow without query input",
+                r"    issue_search:
+      execute: true
+      target: {operation_id: search_issues}",
+            ),
+            (
+                "deny with query input",
+                r"    issue_search:
+      execute: false
+      target: {operation_id: search_issues}
+      query_input: {location: query, name: q}",
+            ),
+            (
+                "unsupported input location",
+                r"    issue_search:
+      execute: true
+      target: {operation_id: search_issues}
+      query_input: {location: body, name: q}",
+            ),
+            (
+                "invalid result pointer",
+                r"    issue_search:
+      execute: true
+      target: {operation_id: search_issues}
+      query_input: {location: query, name: q}
+      result: {title: title}",
+            ),
+            (
+                "unknown route field",
+                r"    issue_search:
+      execute: true
+      target: {operation_id: search_issues}
+      query_input: {location: query, name: q}
+      fallback: true",
+            ),
+        ] {
+            let raw = format!(
+                r"
+name: demo
+dsl_version: 4
+universal_search:
+  routes:
+{route}
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+"
+            );
+            assert!(
+                !validator().is_valid(&manifest_json(&raw)),
+                "generated schema should reject {label}"
+            );
+            assert!(
+                parse_source_manifest_yaml(&raw).is_err(),
+                "parser should reject {label}"
+            );
+        }
     }
 
     #[test]

@@ -63,6 +63,35 @@ These checks should be based on the authoritative API docs for the API the sourc
   quoted SQL table names are valid for compatibility but should not leak odd
   provider operation names unless the source is intentionally generated.
 
+### Universal Search Authorization
+
+- Treat `kind: search` and valid `search_limits` as prerequisites, not as
+  authorization by themselves. Legacy `mode: search` filters never authorize a
+  route.
+- For DSL v3, verify each function-level `universal_search.id` matches
+  `[a-z][a-z0-9_]*` and is unique, an allowed `query_arg` names exactly one
+  exposed argument of type `Utf8` with no default, and every other exposed
+  argument has a type-correct typed default.
+- For DSL v4, verify each top-level route map key matches `[a-z][a-z0-9_]*` and
+  is the stable authored ID, targets one exact `operation_id` on the source's
+  singular surface, and selects the original input by allowed location plus
+  wire name. Generated projection names are execution locators, not
+  authorization identities.
+- Review every `execute: true` as the source author's assertion that the
+  operation is retrieval-only and idempotent. Check the real HTTP method or MCP
+  annotations against authoritative upstream documentation. An explicit
+  `execute: false` is final; a denied DSL v4 route keeps its target and omits
+  `query_input`.
+- If any Universal Search policy is authored, flag attempts to infer unlisted
+  routes. Missing or duplicate targets, ambiguous inputs, invalid defaults,
+  unsafe operations, and unresolved mappings must fail closed instead of
+  falling back to a guessed operation.
+- Check optional result mapping separately from authorization. DSL v3 fields
+  name authored result columns; DSL v4 fields are RFC 6901 JSON Pointers that
+  must be syntactically valid in the manifest and resolve exactly once during
+  route resolution. Identity and display fields are scalar, while a structured
+  attribute must be explicitly selected and schema-compatible.
+
 ### HTTP and API Semantics
 
 - `base_url` and input-derived URLs handle hosted, cloud, region, or enterprise variants without making the common case painful.

@@ -12,7 +12,8 @@ use crate::inputs::{
 };
 use crate::{
     HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec, ParsedTemplate, Result,
-    TemplateNamespace, validate_identifier, validate_source_name, validate_test_queries,
+    TemplateNamespace, UniversalSearchResultMappingSpec, validate_identifier, validate_source_name,
+    validate_test_queries,
 };
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub struct V4SourceManifest {
     pub common: V4SourceCommon,
     /// Identity requirements that gate this source at runtime.
     pub identity_requirements: Option<IdentityRequirements>,
+    pub universal_search: Option<V4UniversalSearchSpec>,
     pub surface: V4Surface,
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
@@ -129,6 +131,49 @@ impl V4Surface {
     }
 }
 
+/// Source-authored Universal Search policy for a generated DSL v4 operation.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct V4UniversalSearchSpec {
+    pub routes: BTreeMap<String, V4UniversalSearchRouteSpec>,
+}
+
+/// One source-authored Universal Search route bound to an imported operation.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct V4UniversalSearchRouteSpec {
+    pub execute: bool,
+    pub target: V4UniversalSearchTargetSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_input: Option<V4UniversalSearchQueryInputSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<UniversalSearchResultMappingSpec>,
+}
+
+/// Stable imported-operation identity used by an authored v4 search route.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct V4UniversalSearchTargetSpec {
+    pub operation_id: String,
+}
+
+/// Original imported input identity carrying the Universal Search query.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct V4UniversalSearchQueryInputSpec {
+    pub location: V4UniversalSearchInputLocation,
+    pub name: String,
+}
+
+/// Imported input locations that can become table-function arguments.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum V4UniversalSearchInputLocation {
+    Path,
+    Query,
+    ToolArg,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawV4SourceManifest {
@@ -144,6 +189,8 @@ struct RawV4SourceManifest {
     test_queries: Vec<String>,
     #[serde(default)]
     identity_requirements: Option<IdentityRequirements>,
+    #[serde(default)]
+    universal_search: Option<V4UniversalSearchSpec>,
     surface: RawV4Surface,
 }
 
@@ -187,6 +234,7 @@ impl V4SourceManifest {
             description,
             test_queries,
             mut identity_requirements,
+            universal_search,
             surface,
             ..
         } = raw;
@@ -197,6 +245,7 @@ impl V4SourceManifest {
             description,
             test_queries,
         };
+        validate_optional_universal_search(&name, universal_search.as_ref())?;
         let surface_value = raw_value
             .get("surface")
             .ok_or_else(|| ManifestError::validation("v4 manifest is missing surface"))?;
@@ -214,6 +263,7 @@ impl V4SourceManifest {
         Ok(Self {
             common,
             identity_requirements,
+            universal_search,
             surface,
             declared_inputs,
         })
@@ -308,10 +358,7 @@ fn parse_mcp_surface(
 }
 
 fn validate_v4_source_name(name: &str) -> Result<()> {
-    let mut chars = name.chars();
-    let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    if !valid {
+    if !is_authored_identifier(name) {
         return Err(ManifestError::validation(format!(
             "source name '{name}' must match [a-z][a-z0-9_]*"
         )));
@@ -423,6 +470,178 @@ fn validate_accepted_identity_specs(
     }
 
     Ok(())
+}
+
+fn validate_optional_universal_search(
+    source_name: &str,
+    spec: Option<&V4UniversalSearchSpec>,
+) -> Result<()> {
+    spec.map_or(Ok(()), |spec| validate_universal_search(source_name, spec))
+}
+
+fn validate_universal_search(source_name: &str, spec: &V4UniversalSearchSpec) -> Result<()> {
+    let mut target_operation_ids = HashSet::new();
+    for (route_id, route) in &spec.routes {
+        if !is_authored_identifier(route_id) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' Universal Search route id '{route_id}' must match [a-z][a-z0-9_]*"
+            )));
+        }
+        validate_nonempty_route_field(
+            source_name,
+            route_id,
+            "target.operation_id",
+            &route.target.operation_id,
+        )?;
+        if !target_operation_ids.insert(route.target.operation_id.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' Universal Search target operation_id '{}' is declared by more than one route",
+                route.target.operation_id
+            )));
+        }
+        match (route.execute, route.query_input.as_ref()) {
+            (true, None) => {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' Universal Search route '{route_id}' with execute: true must declare query_input"
+                )));
+            }
+            (false, Some(_)) => {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' Universal Search route '{route_id}' with execute: false must not declare query_input"
+                )));
+            }
+            (_, Some(query_input)) => validate_nonempty_route_field(
+                source_name,
+                route_id,
+                "query_input.name",
+                &query_input.name,
+            )?,
+            (_, None) => {}
+        }
+        if let Some(result) = route.result.as_ref() {
+            validate_v4_result_mapping(source_name, route_id, result)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_authored_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn validate_nonempty_route_field(
+    source_name: &str,
+    route_id: &str,
+    field: &str,
+    value: &str,
+) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' Universal Search route '{route_id}' field '{field}' must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_v4_result_mapping(
+    source_name: &str,
+    route_id: &str,
+    result: &UniversalSearchResultMappingSpec,
+) -> Result<()> {
+    if result
+        .entity_type
+        .as_deref()
+        .is_some_and(|entity_type| entity_type.trim().is_empty())
+    {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' Universal Search route '{route_id}' field 'result.entity_type' must not be empty"
+        )));
+    }
+    validate_unique_result_pointers(
+        source_name,
+        route_id,
+        "result.identity_fields",
+        &result.identity_fields,
+    )?;
+    validate_unique_result_pointers(
+        source_name,
+        route_id,
+        "result.attributes",
+        &result.attributes,
+    )?;
+    for (index, pointer) in result.identity_fields.iter().enumerate() {
+        validate_result_pointer(
+            source_name,
+            route_id,
+            &format!("result.identity_fields[{index}]"),
+            pointer,
+        )?;
+    }
+    for (field, pointer) in [
+        ("result.provider_id", result.provider_id.as_deref()),
+        ("result.title", result.title.as_deref()),
+        ("result.url", result.url.as_deref()),
+        ("result.snippet", result.snippet.as_deref()),
+    ] {
+        if let Some(pointer) = pointer {
+            validate_result_pointer(source_name, route_id, field, pointer)?;
+        }
+    }
+    for (index, pointer) in result.attributes.iter().enumerate() {
+        validate_result_pointer(
+            source_name,
+            route_id,
+            &format!("result.attributes[{index}]"),
+            pointer,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_unique_result_pointers(
+    source_name: &str,
+    route_id: &str,
+    field: &str,
+    pointers: &[String],
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    for pointer in pointers {
+        if !seen.insert(pointer.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' Universal Search route '{route_id}' field '{field}' contains duplicate pointer '{pointer}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_result_pointer(
+    source_name: &str,
+    route_id: &str,
+    field: &str,
+    pointer: &str,
+) -> Result<()> {
+    if is_rfc6901_json_pointer(pointer) {
+        return Ok(());
+    }
+    Err(ManifestError::validation(format!(
+        "source '{source_name}' Universal Search route '{route_id}' field '{field}' must be an RFC 6901 JSON Pointer using only ~0 and ~1 escapes"
+    )))
+}
+
+fn is_rfc6901_json_pointer(pointer: &str) -> bool {
+    if pointer.is_empty() || !pointer.starts_with('/') {
+        return false;
+    }
+    let mut chars = pointer.chars();
+    while let Some(character) = chars.next() {
+        if character == '~' && !matches!(chars.next(), Some('0' | '1')) {
+            return false;
+        }
+    }
+    true
 }
 
 fn mcp_server_location(server: &McpServerSpec) -> String {

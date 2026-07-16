@@ -399,6 +399,11 @@ pub struct SourceTableFunctionSpec {
     pub search_limits: Option<SearchLimitsSpec>,
     #[serde(default)]
     pub detail_hints: Vec<DetailHintSpec>,
+    /// Source-authored permission for Universal Search to execute this
+    /// function. Absence leaves the function available only for canonical
+    /// inference; the runtime feature gate remains separate.
+    #[serde(default)]
+    pub universal_search: Option<UniversalSearchSpec>,
     #[serde(default)]
     pub args: Vec<TableFunctionArgSpec>,
     #[serde(default)]
@@ -421,7 +426,84 @@ pub struct TableFunctionArgSpec {
     pub required: bool,
     #[serde(default)]
     pub values: Vec<String>,
+    /// An authored JSON default. The outer option records whether the field
+    /// was present, so `default: null` remains distinct from no default.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_declared_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default: Option<DeclaredDefaultValue>,
     pub bind: FunctionArgBinding,
+}
+
+/// A type-preserving authored table-function argument default.
+///
+/// This wrapper deliberately preserves JSON `null`: using `Option<Value>`
+/// directly would collapse an explicit null into the same state as a missing
+/// field during deserialization.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(transparent)]
+pub struct DeclaredDefaultValue(Value);
+
+impl DeclaredDefaultValue {
+    #[must_use]
+    pub fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_value(self) -> Value {
+        self.0
+    }
+}
+
+fn deserialize_declared_default<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<DeclaredDefaultValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(|value| Some(DeclaredDefaultValue::new(value)))
+}
+
+/// Source-authored permission and result mapping for one DSL v3 table
+/// function.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UniversalSearchSpec {
+    pub id: String,
+    pub execute: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_arg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<UniversalSearchResultMappingSpec>,
+}
+
+/// Common result-display and entity-identity mapping shared by DSL v3 and
+/// DSL v4 Universal Search routes.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UniversalSearchResultMappingSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<String>,
 }
 
 fn default_table_function_arg_data_type() -> ManifestDataType {

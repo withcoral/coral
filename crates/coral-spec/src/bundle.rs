@@ -125,7 +125,7 @@ mod tests {
 
     fn source_yaml(name: &str) -> String {
         format!(
-            "name: {name}\ndsl_version: 4\nidentity_requirements:\n  accepts:\n    - id: github_api\n      identity_specs: [github_oauth, github_pat]\n      audience: {{host: api.github.com}}\nsurface:\n  type: openapi\n  file: /tmp/github-openapi.yaml\n"
+            "name: {name}\ndsl_version: 4\nidentity_requirements:\n  accepts:\n    - id: github_api\n      identity_specs: [github_oauth, github_pat]\n      audience: {{host: api.github.com}}\nuniversal_search:\n  routes:\n    primary:\n      execute: true\n      target:\n        operation_id: searchIssues\n      query_input:\n        location: query\n        name: q\nsurface:\n  type: openapi\n  file: /tmp/github-openapi.yaml\n"
         )
     }
 
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_v4_source_with_multiple_identity_specs_and_canonicalizes_documents() {
+    fn parses_v4_source_with_identity_specs_and_universal_search_and_canonicalizes_documents() {
         let raw = format!(
             "---\n\n---\n{}---\n{}---\nnull\n---\n{}",
             identity_yaml("github_oauth"),
@@ -176,6 +176,9 @@ mod tests {
         let reparsed_source = parse_source_manifest_yaml(&bundle.source_manifest_yaml)
             .expect("canonical source document reparses");
         assert_eq!(reparsed_source.schema_name(), "demo");
+        let reparsed_v4 = reparsed_source.as_v4().expect("v4 source");
+        assert!(reparsed_v4.identity_requirements.is_some());
+        assert!(reparsed_v4.universal_search.is_some());
         for document in &bundle.identity_manifests {
             assert_eq!(
                 parse_identity_manifest_yaml(&document.manifest_yaml)
