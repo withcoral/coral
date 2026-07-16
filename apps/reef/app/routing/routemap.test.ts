@@ -5,7 +5,7 @@ import { routeMap, routeObjects, routePath, routePattern } from './routemap'
 
 const CANONICAL_PATTERNS = {
   home: '/',
-  settings: '/settings',
+  connect: '/connect',
   workspaces: '/workspaces',
   workspaceSchema: '/workspaces/:workspaceId/schema',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
@@ -32,7 +32,7 @@ describe('route map', () => {
   it('generates canonical URLs for every mapped route', () => {
     const paths = {
       home: routePath('home'),
-      settings: routePath('settings'),
+      connect: routePath('connect'),
       workspaces: routePath('workspaces'),
       workspaceSchema: routePath('workspaceSchema', { workspaceId: 'analytics' }),
       workspaceSchemaTable: routePath('workspaceSchemaTable', {
@@ -54,7 +54,7 @@ describe('route map', () => {
 
     expect(paths).toEqual({
       home: '/',
-      settings: '/settings',
+      connect: '/connect',
       workspaces: '/workspaces',
       workspaceSchema: '/workspaces/analytics/schema',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',

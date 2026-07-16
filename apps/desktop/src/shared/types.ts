@@ -1,4 +1,4 @@
-export type McpClientId = 'codex' | 'claude-code'
+export type McpClientId = 'claude-code' | 'claude-desktop' | 'codex' | 'cursor' | 'vscode'
 
 export interface SidecarInfo {
   /**
@@ -15,6 +15,8 @@ export interface McpClientDescriptor {
   id: McpClientId
   name: string
   configPath: string
+  /** Whether the client's desktop app supports a "test connection" deep link. */
+  testable: boolean
 }
 
 export interface McpConfigureResult {
@@ -26,4 +28,8 @@ export interface CoralDesktopApi {
   awaitInitialization(): Promise<SidecarInfo>
   listMcpClients(): Promise<McpClientDescriptor[]>
   configureMcp(clientId: McpClientId): Promise<McpConfigureResult>
+  /** Shell command that installs the Coral MCP server into any add-mcp agent. */
+  mcpAddCommand(): Promise<string>
+  /** Open the client's desktop app with a prefilled prompt exercising Coral MCP. */
+  testMcpClient(clientId: McpClientId): Promise<void>
 }

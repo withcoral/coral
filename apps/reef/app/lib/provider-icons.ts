@@ -62,6 +62,12 @@ const PROVIDER_ICONS: Record<string, string> = {
   openai: '/images/providers/openai.svg',
   xai: '/images/providers/xai.svg',
 
+  // MCP clients (Connect page)
+  'claude-code': '/images/providers/claude_code.svg',
+  'claude-desktop': '/images/providers/claude_code.svg',
+  cursor: '/images/providers/cursor.svg',
+  vscode: '/images/providers/vscode.svg',
+
   // Project / product
   clickup: '/images/providers/clickup.svg',
   intercom: '/images/providers/intercom.svg',
@@ -76,7 +82,7 @@ const PROVIDER_ICONS: Record<string, string> = {
 
 // These icons need to be inverted to look nice in dark mode. Usually means they are all black (e.g. GitHub), so
 // inverting them makes them white.
-const DARK_MODE_INVERT_PROVIDER_ICONS = new Set(['codex', 'github', 'notion', 'openai'])
+const DARK_MODE_INVERT_PROVIDER_ICONS = new Set(['codex', 'cursor', 'github', 'notion', 'openai'])
 
 export function providerIcon(key: string): string | null {
   return PROVIDER_ICONS[key.toLowerCase()] ?? null

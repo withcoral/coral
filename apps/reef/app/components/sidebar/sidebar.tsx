@@ -45,24 +45,24 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
     { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
     { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
   ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
-  const isSettingsActive =
-    location.pathname === routePath('settings') ||
-    location.pathname.startsWith(`${routePath('settings')}/`)
-  // Keep the desktop-only settings link stable across SSR and hydration. The
+  const isConnectActive =
+    location.pathname === routePath('connect') ||
+    location.pathname.startsWith(`${routePath('connect')}/`)
+  // Keep the desktop-only connect link stable across SSR and hydration. The
   // actual bridge can only be detected on the client, but the route is included
   // at build time for Electron and omitted from the web build.
   const isDesktopApp = isCoralDesktopBuild()
 
-  const settingsButton = (
+  const connectButton = (
     <SidebarButton
-      aria-label="Settings"
+      aria-label="Connect"
       as={NavLink}
-      icon="Settings"
-      isActive={isSettingsActive}
+      icon="Cable"
+      isActive={isConnectActive}
       isMinimized={isMinimized}
-      to={routePath('settings')}
+      to={routePath('connect')}
     >
-      Settings
+      Connect
     </SidebarButton>
   )
 
@@ -197,11 +197,11 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
         {isDesktopApp &&
           // Collapsed sidebar hides the label, so surface it on hover instead.
           (isMinimized ? (
-            <Tooltip content="Settings" side="right">
-              {settingsButton}
+            <Tooltip content="Connect" side="right">
+              {connectButton}
             </Tooltip>
           ) : (
-            settingsButton
+            connectButton
           ))}
       </div>
     </nav>

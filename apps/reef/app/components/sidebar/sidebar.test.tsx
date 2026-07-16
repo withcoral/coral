@@ -196,7 +196,7 @@ describe('Sidebar', () => {
   })
 
   it('falls back to the first workspace outside a canonical workspace route', async () => {
-    const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
+    const screen = await renderSidebar(false, routePath('connect'), WORKSPACES)
 
     await expect.element(screen.getByText('default', { exact: true })).toBeVisible()
     await expect

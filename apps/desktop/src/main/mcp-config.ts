@@ -1,8 +1,28 @@
+import { shell } from 'electron'
 import { agents, upsertServer, type AgentType, type McpServerConfig } from 'add-mcp'
 import type { McpClientDescriptor, McpClientId, McpConfigureResult } from '../shared/types'
 import { externalCoralPath } from './sidecar'
 
-const MCP_CLIENT_IDS: readonly McpClientId[] = ['codex', 'claude-code']
+// Display order for the Connect page and the app menu.
+const MCP_CLIENT_IDS: readonly McpClientId[] = [
+  'claude-code',
+  'codex',
+  'claude-desktop',
+  'vscode',
+  'cursor',
+]
+
+const MCP_SERVER_NAME = 'coral'
+
+const TEST_PROMPT =
+  'Use the coral MCP tools to explore my data: list the available tables, then run an example SQL query on one of them and summarize the result.'
+
+// Deep links are constructed here from fixed templates so the renderer can
+// never route an arbitrary URL through shell.openExternal.
+const TEST_DEEP_LINKS: Partial<Record<McpClientId, (prompt: string) => string>> = {
+  'claude-desktop': (prompt) => `claude://claude.ai/new?q=${encodeURIComponent(prompt)}`,
+  codex: (prompt) => `codex://threads/new?prompt=${encodeURIComponent(prompt)}`,
+}
 
 function agentTypeForClient(clientId: McpClientId): AgentType {
   return clientId
@@ -14,6 +34,7 @@ function descriptorForClient(clientId: McpClientId): McpClientDescriptor {
     id: clientId,
     name: agent.displayName,
     configPath: agent.configPath,
+    testable: clientId in TEST_DEEP_LINKS,
   }
 }
 
@@ -34,7 +55,7 @@ export async function configureMcpClient(clientId: McpClientId): Promise<McpConf
     args: ['mcp-stdio'],
   }
 
-  const result = upsertServer(agentTypeForClient(client.id), 'coral', serverConfig, {
+  const result = upsertServer(agentTypeForClient(client.id), MCP_SERVER_NAME, serverConfig, {
     local: false,
   })
   if (!result.success) {
@@ -46,4 +67,16 @@ export async function configureMcpClient(clientId: McpClientId): Promise<McpConf
     client: { ...client, configPath },
     configPath,
   }
+}
+
+export async function mcpAddCommand(): Promise<string> {
+  const coralPath = await externalCoralPath()
+  return `npx add-mcp "${coralPath} mcp-stdio" --name ${MCP_SERVER_NAME} -g`
+}
+
+export async function testMcpClient(clientId: McpClientId): Promise<void> {
+  const client = findClient(clientId)
+  const deepLink = TEST_DEEP_LINKS[client.id]
+  if (!deepLink) throw new Error(`${client.name} does not support a connection test`)
+  await shell.openExternal(deepLink(TEST_PROMPT))
 }

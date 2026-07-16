@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } from 'e
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
-import { configureMcpClient, mcpClients } from './mcp-config'
+import { configureMcpClient, mcpAddCommand, mcpClients, testMcpClient } from './mcp-config'
 import {
   APP_ENTRY_URL,
   APP_GRPC_BASE,
@@ -255,6 +255,8 @@ function registerIpcHandlers() {
   })
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
+  ipcMain.handle('coral:mcp-add-command', () => mcpAddCommand())
+  ipcMain.handle('coral:test-mcp', (_event, clientId: McpClientId) => testMcpClient(clientId))
 }
 
 function installMenu() {

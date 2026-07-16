@@ -6,31 +6,25 @@ import {
   type McpClientDescriptor,
   type McpClientId,
 } from '@/lib/coral-desktop'
+import { ProviderLogo } from '@/components/sources/provider-logo'
 import { Button, Typography } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
-import type { IconName } from '@/wax/components/icon'
+import { CopyButton } from '@/wax/components/button/copy-button'
 import { addToast } from '@/wax/components/toast'
 
-import * as styles from './settings.css'
+import * as styles from './connect.css'
 
-type PendingAction = { clientId: McpClientId; kind: 'connect' } | null
+type PendingAction = { clientId: McpClientId; kind: 'connect' | 'test' } | null
 
 type ClientStatus = Partial<Record<McpClientId, string>>
-type PendingKind = 'connect'
 
-const CLIENT_ICONS = {
-  'claude-code': 'Bot',
-  codex: 'Terminal',
-} satisfies Record<McpClientId, IconName>
-
-function isPending(pending: PendingAction, kind: PendingKind, clientId?: McpClientId) {
-  if (!pending || pending.kind !== kind) return false
-  return 'clientId' in pending && pending.clientId === clientId
+function isPending(pending: PendingAction, kind: 'connect' | 'test', clientId: McpClientId) {
+  return pending?.kind === kind && pending.clientId === clientId
 }
 
-export default function SettingsRoute() {
+export default function ConnectRoute() {
   const desktop = useMemo(() => coralDesktopApi(), [])
   const [clients, setClients] = useState<McpClientDescriptor[]>([])
+  const [addCommand, setAddCommand] = useState<string | null>(null)
   const [clientStatus, setClientStatus] = useState<ClientStatus>({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingAction>(null)
@@ -48,6 +42,14 @@ export default function SettingsRoute() {
       .listMcpClients()
       .then((nextClients) => {
         if (!cancelled) setClients(nextClients)
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setLoadError(desktopErrorMessage(error))
+      })
+    desktop
+      .mcpAddCommand()
+      .then((command) => {
+        if (!cancelled) setAddCommand(command)
       })
       .catch((error: unknown) => {
         if (!cancelled) setLoadError(desktopErrorMessage(error))
@@ -82,17 +84,50 @@ export default function SettingsRoute() {
     }
   }
 
+  async function handleTestMcp(client: McpClientDescriptor) {
+    if (!desktop || hasPendingAction) return
+
+    setPending({ clientId: client.id, kind: 'test' })
+    try {
+      await desktop.testMcpClient(client.id)
+    } catch (error) {
+      addToast('error', {
+        description: `${desktopErrorMessage(error)} Make sure the ${client.name} app is installed.`,
+        title: `Could not open ${client.name}`,
+      })
+    } finally {
+      setPending(null)
+    }
+  }
+
   return (
     <main className={styles.page}>
       <div className={styles.container}>
         <header className={styles.header}>
-          <Typography.HeadingLarge as="h1">Settings</Typography.HeadingLarge>
+          <Typography.HeadingLarge as="h1">Connect your agents</Typography.HeadingLarge>
         </header>
+
+        <section className={styles.connectCard}>
+          <div className={styles.connectCardHead}>
+            <Typography.HeadingXSmall as="h2">Connect an agent</Typography.HeadingXSmall>
+            <Typography.BodySmall variant="tertiary">
+              Paste this into a terminal to add Coral to Claude Code, Cursor, or any MCP client —
+              your agent gets every source you connect here.
+            </Typography.BodySmall>
+          </div>
+          <div className={styles.commandRow}>
+            <code className={styles.commandBox}>{addCommand ?? 'Loading command…'}</code>
+            <CopyButton
+              disabled={!addCommand}
+              onCopy={() => addToast('success', { title: 'Command copied' })}
+              textToCopy={addCommand ?? ''}
+            />
+          </div>
+        </section>
 
         <section className={styles.section}>
           <div className={styles.sectionHead}>
-            <Typography.HeadingXSmall as="h2">MCP clients</Typography.HeadingXSmall>
-            <span className={styles.sectionCount}>{clients.length}</span>
+            <Typography.HeadingXSmall as="h2">One-click setup</Typography.HeadingXSmall>
           </div>
 
           {loadError && (
@@ -110,9 +145,7 @@ export default function SettingsRoute() {
               return (
                 <article className={styles.clientCard} key={client.id}>
                   <div className={styles.cardHeader}>
-                    <div className={styles.clientLogo}>
-                      <Icon color="tertiary" name={CLIENT_ICONS[client.id]} size="18" />
-                    </div>
+                    <ProviderLogo name={client.id} size="medium" />
                     <Typography.BodyLargeStrong className={styles.cardTitle} truncate>
                       {client.name}
                     </Typography.BodyLargeStrong>
@@ -123,17 +156,26 @@ export default function SettingsRoute() {
                   </Typography.CodeSmallInline>
 
                   <div className={styles.cardFooter}>
-                    <div className={styles.cardActions}>
+                    {client.testable && (
                       <Button.Container
                         disabled={!isDesktopAvailable || hasPendingAction}
-                        onClick={() => handleConnectMcp(client)}
+                        onClick={() => handleTestMcp(client)}
                         size="32"
-                        variant="secondary"
+                        variant="bare"
                       >
-                        <Button.Icon name="Link" />
-                        <Button.Text>{connectPending ? 'Connecting' : 'Connect'}</Button.Text>
+                        <Button.Icon name="MessageCircle" />
+                        <Button.Text>Test connection</Button.Text>
                       </Button.Container>
-                    </div>
+                    )}
+                    <Button.Container
+                      disabled={!isDesktopAvailable || hasPendingAction}
+                      onClick={() => handleConnectMcp(client)}
+                      size="32"
+                      variant="secondary"
+                    >
+                      <Button.Icon name="Link" />
+                      <Button.Text>{connectPending ? 'Connecting' : 'Connect'}</Button.Text>
+                    </Button.Container>
                   </div>
                 </article>
               )
