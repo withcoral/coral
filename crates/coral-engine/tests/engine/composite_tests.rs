@@ -291,6 +291,32 @@ async fn identity_gated_source_requires_request_identity_authenticator_factory()
 }
 
 #[tokio::test]
+async fn identity_gated_sources_reject_duplicate_source_names_before_binding() {
+    let sources = [
+        identity_runtime_source(identity_http_component()),
+        identity_runtime_source(identity_http_component()),
+    ];
+    let factory_called = Arc::new(AtomicBool::new(false));
+    let runtime = test_runtime()
+        .with_request_identity_selector(Some(Arc::new(UnexpectedIdentitySelector)))
+        .with_request_identity_http_authenticator_factory(Some(identity_factory(Arc::clone(
+            &factory_called,
+        ))));
+
+    let error = CoralQuery::list_catalog(&sources, runtime, None)
+        .await
+        .expect_err("duplicate gated source names should fail before identity binding");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source 'github_v4' appears more than once with identity_requirements"),
+        "{error}"
+    );
+    assert!(!factory_called.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
 async fn identity_gated_source_binds_identity_once_for_all_http_components() {
     let first = identity_http_component();
     let mut second = identity_http_component();
