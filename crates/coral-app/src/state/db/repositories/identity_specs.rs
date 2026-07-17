@@ -3,11 +3,11 @@
     reason = "identity persistence APIs are not yet wired to production consumers"
 )]
 
-use sea_query::{Expr, ExprTrait, Order, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::bootstrap::AppError;
 use crate::state::db::schema::IdentitySpecs;
-use crate::state::db::{DbError, DbSession};
+use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 use coral_spec::validate_identity_spec_name;
 use uuid::{Uuid, Variant, Version};
@@ -148,6 +148,43 @@ pub(crate) struct IdentitySpecRecord {
     pub(crate) updated_at_unix_nanos: i64,
 }
 
+/// Validated authored fields used to insert or replace an identity spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IdentitySpecWrite {
+    version: String,
+    description: String,
+    issuer: String,
+    identity_type: String,
+    manifest_yaml: String,
+}
+
+impl IdentitySpecWrite {
+    /// Validate authored fields before they can reach the database repository.
+    pub(crate) fn new(
+        version: impl Into<String>,
+        description: impl Into<String>,
+        issuer: impl Into<String>,
+        identity_type: impl Into<String>,
+        manifest_yaml: impl Into<String>,
+    ) -> Result<Self, AppError> {
+        let write = Self {
+            version: version.into(),
+            description: description.into(),
+            issuer: issuer.into(),
+            identity_type: identity_type.into(),
+            manifest_yaml: manifest_yaml.into(),
+        };
+        validate_identity_spec_fields([
+            &write.version,
+            &write.issuer,
+            &write.identity_type,
+            &write.manifest_yaml,
+        ])
+        .map_err(AppError::InvalidInput)?;
+        Ok(write)
+    }
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct IdentitySpecRow {
     id: String,
@@ -164,19 +201,13 @@ struct IdentitySpecRow {
 
 impl IdentitySpecRow {
     fn validate(self) -> Result<IdentitySpecRecord, DbError> {
-        if [
+        validate_identity_spec_fields([
             &self.version,
             &self.issuer,
             &self.identity_type,
             &self.manifest_yaml,
-        ]
-        .into_iter()
-        .any(|value| value.trim().is_empty())
-        {
-            return Err(DbError::CorruptData(
-                "identity spec row has an empty required field".to_string(),
-            ));
-        }
+        ])
+        .map_err(DbError::CorruptData)?;
         if self.created_at_unix_nanos < 0 || self.updated_at_unix_nanos < self.created_at_unix_nanos
         {
             return Err(DbError::CorruptData(
@@ -248,6 +279,91 @@ where
     }
 }
 
+impl IdentitySpecsRepo<'_, CoralTx<'_>> {
+    /// Insert or replace one exact-scope definition while preserving creation time.
+    pub(crate) async fn upsert(
+        &mut self,
+        key: &IdentitySpecKey,
+        spec: &IdentitySpecWrite,
+        now_unix_nanos: i64,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        validate_write_timestamp(now_unix_nanos)?;
+        let current_updated_at =
+            Expr::col((IdentitySpecs::Table, IdentitySpecs::UpdatedAtUnixNanos));
+        let id = IdentitySpecId::new();
+        let mut on_conflict = match key.scope() {
+            IdentitySpecScope::Global => OnConflict::column(IdentitySpecs::Name),
+            IdentitySpecScope::Workspace(_) => {
+                OnConflict::columns([IdentitySpecs::WorkspaceId, IdentitySpecs::Name])
+            }
+        };
+        match key.scope() {
+            IdentitySpecScope::Global => {
+                on_conflict.target_and_where(Expr::col(IdentitySpecs::WorkspaceId).is_null());
+            }
+            IdentitySpecScope::Workspace(_) => {
+                on_conflict.target_and_where(Expr::col(IdentitySpecs::WorkspaceId).is_not_null());
+            }
+        }
+        on_conflict
+            .update_columns([
+                IdentitySpecs::Version,
+                IdentitySpecs::Description,
+                IdentitySpecs::Issuer,
+                IdentitySpecs::IdentityType,
+                IdentitySpecs::ManifestYaml,
+            ])
+            .value(
+                IdentitySpecs::UpdatedAtUnixNanos,
+                Expr::case(
+                    current_updated_at.clone().gt(now_unix_nanos),
+                    current_updated_at,
+                )
+                .finally(now_unix_nanos),
+            );
+        let statement = Query::insert()
+            .into_table(IdentitySpecs::Table)
+            .columns(identity_spec_columns())
+            .values_panic([
+                Expr::val(id.as_str()),
+                Expr::val(key.scope.workspace_id().map(ToString::to_string)),
+                Expr::val(key.name.clone()),
+                Expr::val(spec.version.clone()),
+                Expr::val(spec.description.clone()),
+                Expr::val(spec.issuer.clone()),
+                Expr::val(spec.identity_type.clone()),
+                Expr::val(spec.manifest_yaml.clone()),
+                Expr::val(now_unix_nanos),
+                Expr::val(now_unix_nanos),
+            ])
+            .on_conflict(on_conflict)
+            .to_owned();
+        let rows_affected = self.session.execute_rows_affected(statement).await?;
+        if rows_affected != 1 {
+            return Err(AppError::Database(format!(
+                "identity spec upsert affected {rows_affected} rows"
+            )));
+        }
+        self.get(key)
+            .await?
+            .ok_or_else(|| AppError::Database("identity spec disappeared after upsert".to_string()))
+    }
+
+    /// Delete one exact-scope definition.
+    pub(crate) async fn delete(&mut self, key: &IdentitySpecKey) -> Result<bool, DbError> {
+        let rows_affected = self
+            .session
+            .execute_rows_affected(
+                Query::delete()
+                    .from_table(IdentitySpecs::Table)
+                    .and_where(identity_spec_key_where(key))
+                    .to_owned(),
+            )
+            .await?;
+        zero_or_one_affected(rows_affected, "identity spec delete")
+    }
+}
+
 /// Repository shell for encrypted setup-input documents owned by identity specs.
 pub(crate) struct IdentitySpecDocumentsRepo<'a, S> {
     session: &'a mut S,
@@ -266,6 +382,32 @@ where
 fn parse_identity_spec_name(name: &str) -> Result<String, AppError> {
     validate_identity_spec_name(name).map_err(|error| AppError::InvalidInput(error.to_string()))?;
     Ok(name.to_string())
+}
+
+fn validate_identity_spec_fields(fields: [&str; 4]) -> Result<(), String> {
+    if fields.into_iter().any(|value| value.trim().is_empty()) {
+        return Err("identity spec has an empty required field".to_string());
+    }
+    Ok(())
+}
+
+fn validate_write_timestamp(now_unix_nanos: i64) -> Result<(), AppError> {
+    match now_unix_nanos {
+        0.. => Ok(()),
+        _ => Err(AppError::InvalidInput(
+            "identity spec timestamp is negative".to_string(),
+        )),
+    }
+}
+
+fn zero_or_one_affected(rows_affected: u64, operation: &str) -> Result<bool, DbError> {
+    match rows_affected {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DbError::CorruptData(format!(
+            "{operation} affected {rows_affected} rows"
+        ))),
+    }
 }
 
 fn parse_workspace_name(workspace_id: &str) -> Result<WorkspaceName, DbError> {
@@ -333,7 +475,10 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    use super::{IdentitySpecId, IdentitySpecKey, IdentitySpecRecord, identity_spec_columns};
+    use super::{
+        IdentitySpecId, IdentitySpecKey, IdentitySpecRecord, IdentitySpecWrite,
+        identity_spec_columns,
+    };
     use crate::bootstrap::AppError;
     use crate::state::db::schema::IdentitySpecs;
     use crate::state::db::{CoralDb, CoralTx, DbError, DbRepos, ResolvedDatabaseConfig};
@@ -413,6 +558,23 @@ mod tests {
                 Err(DbError::CorruptData(_))
             ));
         }
+    }
+
+    #[test]
+    fn identity_spec_writes_validate_required_fields() {
+        for (version, issuer, identity_type, manifest_yaml) in [
+            ("", "github", "oauth", "kind: identity"),
+            ("1.0.0", " ", "oauth", "kind: identity"),
+            ("1.0.0", "github", "", "kind: identity"),
+            ("1.0.0", "github", "oauth", "\n"),
+        ] {
+            assert!(matches!(
+                IdentitySpecWrite::new(version, "", issuer, identity_type, manifest_yaml),
+                Err(AppError::InvalidInput(_))
+            ));
+        }
+        IdentitySpecWrite::new("1.0.0", "", "github", "oauth", "kind: identity")
+            .expect("blank descriptions are valid");
     }
 
     #[tokio::test]
@@ -572,6 +734,154 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn upserts_preserve_creation_and_monotonic_update_time() {
+        let (_temp, db) = open_sqlite().await;
+        let global = IdentitySpecKey::global("github").expect("global key");
+        let mut tx = db.begin().await.expect("begin mutation transaction");
+        let inserted = tx
+            .identity_specs()
+            .upsert(&global, &valid_write("1.0.0"), 10)
+            .await
+            .expect("insert global spec");
+        assert_eq!(
+            (
+                inserted.version.as_str(),
+                inserted.created_at_unix_nanos,
+                inserted.updated_at_unix_nanos,
+            ),
+            ("1.0.0", 10, 10)
+        );
+        tx.identity_specs()
+            .upsert(&global, &valid_write("2.0.0"), 30)
+            .await
+            .expect("replace global spec");
+        let stale_clock_update = tx
+            .identity_specs()
+            .upsert(&global, &valid_write("3.0.0"), 20)
+            .await
+            .expect("replace without timestamp regression");
+        assert_eq!(
+            stale_clock_update.id, inserted.id,
+            "upserts must preserve the internal identity spec id"
+        );
+        assert_eq!(
+            (
+                stale_clock_update.version.as_str(),
+                stale_clock_update.created_at_unix_nanos,
+                stale_clock_update.updated_at_unix_nanos,
+            ),
+            ("3.0.0", 10, 30)
+        );
+        tx.commit().await.expect("commit mutation transaction");
+
+        let mut session = &db;
+        let persisted = session
+            .identity_specs()
+            .get(&global)
+            .await
+            .expect("read global")
+            .expect("global persists");
+        assert_eq!(persisted, stale_clock_update);
+    }
+
+    #[tokio::test]
+    async fn mutations_are_exact_and_transactional_against_sqlite() {
+        let (_temp, db) = open_sqlite().await;
+        let (global, workspace_key) = seed_scoped_specs(&db).await;
+        let negative_timestamp = IdentitySpecKey::global("negative_timestamp").expect("key");
+        let mut tx = db.begin().await.expect("begin validation transaction");
+        assert!(matches!(
+            tx.identity_specs()
+                .upsert(&negative_timestamp, &valid_write("1.0.0"), -1)
+                .await,
+            Err(AppError::InvalidInput(_))
+        ));
+        tx.commit().await.expect("commit validation transaction");
+
+        let rolled_back = IdentitySpecKey::global("rolled_back").expect("key");
+        let mut tx = db.begin().await.expect("begin rollback transaction");
+        tx.identity_specs()
+            .upsert(&rolled_back, &valid_write("1.0.0"), 40)
+            .await
+            .expect("insert rolled-back spec");
+        assert!(
+            tx.identity_specs()
+                .delete(&global)
+                .await
+                .expect("delete global in rollback")
+        );
+        tx.rollback().await.expect("rollback mutation transaction");
+
+        let missing_workspace = WorkspaceName::parse("missing_team").expect("workspace");
+        let missing_workspace_key =
+            IdentitySpecKey::workspace(missing_workspace, "github").expect("key");
+        let mut tx = db.begin().await.expect("begin foreign-key transaction");
+        assert!(matches!(
+            tx.identity_specs()
+                .upsert(&missing_workspace_key, &valid_write("1.0.0"), 50)
+                .await,
+            Err(AppError::Database(_))
+        ));
+        tx.rollback().await.expect("rollback failed upsert");
+
+        let mut tx = db.begin().await.expect("begin delete transaction");
+        assert!(
+            tx.identity_specs()
+                .delete(&workspace_key)
+                .await
+                .expect("delete workspace spec")
+        );
+        assert!(
+            !tx.identity_specs()
+                .delete(&workspace_key)
+                .await
+                .expect("repeat workspace delete")
+        );
+        tx.commit().await.expect("commit exact delete");
+
+        let mut session = &db;
+        let persisted_global = session
+            .identity_specs()
+            .get(&global)
+            .await
+            .expect("read global after rollback")
+            .expect("global survives exact workspace delete");
+        assert_eq!(persisted_global.version, "global");
+        for missing in [&negative_timestamp, &rolled_back, &workspace_key] {
+            assert!(
+                session
+                    .identity_specs()
+                    .get(missing)
+                    .await
+                    .expect("read missing exact key")
+                    .is_none()
+            );
+        }
+    }
+
+    async fn seed_scoped_specs(db: &CoralDb) -> (IdentitySpecKey, IdentitySpecKey) {
+        let workspace = WorkspaceName::parse("team").expect("workspace");
+        let global = IdentitySpecKey::global("github").expect("global key");
+        let workspace_key =
+            IdentitySpecKey::workspace(workspace.clone(), "github").expect("workspace key");
+        let mut tx = db.begin().await.expect("begin seed transaction");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 1)
+            .await
+            .expect("create workspace");
+        tx.identity_specs()
+            .upsert(&global, &valid_write("global"), 10)
+            .await
+            .expect("insert global spec");
+        tx.identity_specs()
+            .upsert(&workspace_key, &valid_write("workspace"), 12)
+            .await
+            .expect("insert workspace spec");
+        tx.commit().await.expect("commit seed transaction");
+        (global, workspace_key)
+    }
+
     async fn open_sqlite() -> (tempfile::TempDir, CoralDb) {
         let temp = tempdir().expect("temp dir");
         let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
@@ -632,5 +942,16 @@ mod tests {
 
     fn spec_names(records: &[IdentitySpecRecord]) -> Vec<&str> {
         records.iter().map(|record| record.key.name()).collect()
+    }
+
+    fn valid_write(version: &str) -> IdentitySpecWrite {
+        IdentitySpecWrite::new(
+            version,
+            "test identity spec",
+            "github",
+            "oauth",
+            "kind: identity\nname: github\n",
+        )
+        .expect("valid identity spec write")
     }
 }
