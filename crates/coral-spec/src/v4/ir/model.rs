@@ -346,7 +346,7 @@ diagnostics: []
     #[test]
     fn semantic_ir_ignores_unknown_future_fields() {
         let raw = format!(
-            r#"
+            r"
 artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
 source_name: demo
 surface_type: open_api
@@ -356,7 +356,7 @@ types: []
 diagnostics: []
 future_generator_metadata:
   revision: 2
-"#
+"
         );
 
         let ir: SemanticIr =
