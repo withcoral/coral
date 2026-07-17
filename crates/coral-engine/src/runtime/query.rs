@@ -648,10 +648,21 @@ impl QueryRuntimeAdapter {
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, CoreError> {
-        let mut tables = self
+        let matches = self
             .list_tables(catalog_name, Some(schema_name), Some(table_name))
             .await?;
-        if let Some(table) = tables.pop() {
+        if matches.len() > 1 {
+            let candidates = matches
+                .iter()
+                .map(Self::qualified_table_reference)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CoreError::InvalidInput(format!(
+                "table reference `{schema_name}.{table_name}` is ambiguous; \
+                 qualify the catalog: {candidates}"
+            )));
+        }
+        if let Some(table) = matches.into_iter().next() {
             return Ok(DescribeTableInfo {
                 table: Some(table),
                 missing_context_tables: Vec::new(),
@@ -668,6 +679,17 @@ impl QueryRuntimeAdapter {
             table: None,
             missing_context_tables,
         })
+    }
+
+    fn qualified_table_reference(table: &TableInfo) -> String {
+        if table.catalog_name.is_empty() {
+            format!("`{}.{}`", table.schema_name, table.table_name)
+        } else {
+            format!(
+                "`{}.{}.{}`",
+                table.catalog_name, table.schema_name, table.table_name
+            )
+        }
     }
 
     pub(crate) fn registration_failure(
