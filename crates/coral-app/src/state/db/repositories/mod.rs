@@ -6,3 +6,5 @@ pub(crate) mod workspaces;
 
 #[cfg(test)]
 mod identity_specs_contract_tests;
+#[cfg(test)]
+mod identity_specs_negative_contract_tests;

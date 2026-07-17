@@ -422,7 +422,7 @@ fn expected_spec(
     }
 }
 
-async fn upsert_spec(
+pub(super) async fn upsert_spec(
     tx: &mut CoralTx<'_>,
     key: &IdentitySpecKey,
     label: &str,
@@ -444,7 +444,7 @@ fn spec(key: &IdentitySpecKey, label: &str) -> (IdentityManifest, String) {
     (manifest, manifest_yaml)
 }
 
-fn document(label: &str) -> EncryptedEnvelopeDocument {
+pub(super) fn document(label: &str) -> EncryptedEnvelopeDocument {
     EncryptedEnvelopeDocument::new(
         format!("cipher-{label}").into_bytes(),
         format!("nonce-{label}").into_bytes(),
