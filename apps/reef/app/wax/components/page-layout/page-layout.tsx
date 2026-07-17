@@ -2,7 +2,7 @@ import { type ReactNode } from 'react'
 
 import { copyTextToClipboard } from '@/utils/copy-text-to-clipboard'
 import { Breadcrumbs, type Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
-import * as Button from '@/wax/components/button'
+import { Button } from '@/wax/components'
 import { Tooltip } from '@/wax/components/tooltip'
 
 import * as styles from './page-layout.css'

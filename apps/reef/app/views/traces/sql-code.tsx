@@ -1,6 +1,6 @@
 import { highlightSQL } from '@/lib/sql-highlight'
 
-import * as s from '../traces-page.css'
+import * as s from './traces.css'
 
 export function SqlCode({ sql, inline = false }: { sql: string; inline?: boolean }) {
   return (

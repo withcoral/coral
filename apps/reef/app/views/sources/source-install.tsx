@@ -1,34 +1,29 @@
-import { create } from '@bufbuild/protobuf'
 import classNames from 'classnames'
-import { useEffect, useMemo, useState } from 'react'
-
-import {
-  OAuthCredentialRetrievalSchema,
-  type OAuthCredentialMethod,
-  type SourceCredentialMethod,
-  type SourceInputSpec,
-} from '@/generated/coral/v1/sources_pb'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Form, useNavigate, useRevalidator } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
-import { Icon as ButtonIcon } from '@/wax/components/button/icon'
+import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
-import * as Dialog from '@/wax/components/dialog'
+import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
 import { Markdown } from '@/components/markdown'
-import { providerIcon } from '@/lib/provider-icons'
-import {
-  createBundledSource,
-  createBundledSourceWithOAuth,
-  getSourceInfo,
-  type InstallInput,
-  type ResolvedSourceInfo,
+import { OAuthFields, type OAuthField } from '@/components/sources/install/oauth-fields'
+import { OAuthProgress } from '@/components/sources/install/oauth-progress'
+import * as oauthStatusStyles from '@/components/sources/install/oauth-status.css'
+import { readOAuthInstallStream } from '@/lib/source-oauth-install-stream'
+import type {
+  CatalogEntry,
+  CatalogOAuthCredentialMethod,
+  CatalogSourceCredentialMethod,
+  CatalogSourceInputSpec,
 } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
+import { formatSourceName, ProviderLogo } from '@/components/sources'
 import * as styles from './source-install.css'
 
 type InstallProgress =
@@ -36,39 +31,50 @@ type InstallProgress =
   | { kind: 'busy' }
   | {
       kind: 'awaiting-oauth'
-      inputKey: string
       authorizationUrl: string
+      inputKey: string
       userCode: string
       verificationUri: string
       verificationUriComplete: string
     }
+  | { kind: 'oauth-callback-received'; inputKey: string }
   | { kind: 'oauth-completed'; inputKey: string }
+  | { kind: 'success'; name: string }
 
 function formatFieldName(key: string): string {
   return toSentenceCase(key.replace(/_/g, ' '))
 }
 
 export function SourceInstallDialog({
-  name,
+  actionError,
+  entry,
+  fetchOAuthInstall = fetch,
   open,
+  openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
   onOpenChange,
-  onInstalled,
+  submitting,
 }: {
-  name: string | null
+  actionError?: string | null
+  entry: CatalogEntry | null
+  fetchOAuthInstall?: typeof fetch
   open: boolean
+  openAuthorization?: (url: string) => unknown
   onOpenChange: (open: boolean) => void
-  onInstalled: (name: string) => void
+  submitting?: boolean
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup size="l">
-          {name ? (
+          {entry ? (
             <SourceInstallDialogContent
-              name={name}
+              actionError={actionError}
+              entry={entry}
+              fetchOAuthInstall={fetchOAuthInstall}
               onCancel={() => onOpenChange(false)}
-              onInstalled={onInstalled}
+              openAuthorization={openAuthorization}
+              submitting={submitting ?? false}
             />
           ) : null}
         </Dialog.Popup>
@@ -78,229 +84,238 @@ export function SourceInstallDialog({
 }
 
 function SourceInstallDialogContent({
-  name,
+  actionError,
+  entry,
+  fetchOAuthInstall,
   onCancel,
-  onInstalled,
+  openAuthorization,
+  submitting,
 }: {
-  name: string
+  actionError?: string | null
+  entry: CatalogEntry
+  fetchOAuthInstall: typeof fetch
   onCancel: () => void
-  onInstalled: (name: string) => void
+  openAuthorization: (url: string) => unknown
+  submitting: boolean
 }) {
-  const [resolved, setResolved] = useState<ResolvedSourceInfo | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const navigate = useNavigate()
+  const revalidator = useRevalidator()
+  const abortRef = useRef<AbortController | null>(null)
+  const formRef = useRef<HTMLFormElement>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [methodChoices, setMethodChoices] = useState<Record<string, number>>({})
   const [progress, setProgress] = useState<InstallProgress>({ kind: 'idle' })
-  const [error, setError] = useState<string | null>(null)
+  const [streamError, setStreamError] = useState<string | null>(null)
+  const sourceDisplayName = formatSourceName(entry.name)
 
-  useEffect(() => {
-    let cancelled = false
-    getSourceInfo(name)
-      .then((info) => !cancelled && setResolved(info))
-      .catch((e) => !cancelled && setLoadError(e instanceof Error ? e.message : String(e)))
-    return () => {
-      cancelled = true
-    }
-  }, [name])
+  const inputSpecs = entry.inputSpecs
+  const inputs: CatalogSourceInputSpec[] = inputSpecs ?? []
+  const oauthBusy = progress.kind !== 'idle'
+  const busy = submitting || oauthBusy
 
-  const inputs: SourceInputSpec[] = resolved?.info.inputs ?? []
-  const icon = providerIcon(name)
-  const busy = progress.kind !== 'idle'
-
-  const effectiveChoice = (input: SourceInputSpec): number => methodChoices[input.key] ?? 0
+  const effectiveChoice = (input: CatalogSourceInputSpec): number => methodChoices[input.key] ?? 0
+  const usesOAuth = inputs.some((input) => {
+    if (input.input.case !== 'secret') return false
+    return input.input.value.credential?.methods[effectiveChoice(input)]?.method.case === 'oauth'
+  })
 
   const canSubmit = useMemo(() => {
-    if (!resolved) return false
-    return resolved.info.inputs.every((input) => {
-      if (!input.required) return true
+    if (!inputSpecs) return false
+    return inputSpecs.every((input) => {
       const choice = methodChoices[input.key] ?? 0
       if (input.input.case === 'variable') {
+        if (!input.required) return true
         const def = input.input.value.defaultValue
         return (values[input.key] ?? def).trim().length > 0
       }
       if (input.input.case === 'secret') {
         const method = input.input.value.credential?.methods[choice]
-        if (!method || method.method.case === 'sourceConfig') {
-          return (values[input.key] ?? '').trim().length > 0
-        }
-        if (method.method.case === 'oauth') {
+        if (method?.method.case === 'oauth') {
           return oauthMethodReady(method.method.value, values)
         }
+        if (!input.required) return true
+        return (values[input.key] ?? '').trim().length > 0
       }
       return true
     })
-  }, [resolved, values, methodChoices])
+  }, [inputSpecs, values, methodChoices])
 
-  async function submit() {
-    if (!resolved) return
-    setError(null)
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
+
+  function cancel() {
+    abortRef.current?.abort()
+    onCancel()
+  }
+
+  async function submitOAuthInstall() {
+    if (!formRef.current || oauthBusy) return
+    setStreamError(null)
     setProgress({ kind: 'busy' })
 
+    const abortController = new AbortController()
+    abortRef.current = abortController
     try {
-      const bindings: InstallInput[] = []
-      const retrievalProtos = []
-
-      for (const input of inputs) {
-        if (input.input.case === 'variable') {
-          const value = (values[input.key] ?? input.input.value.defaultValue ?? '').trim()
-          if (value.length > 0) bindings.push({ key: input.key, value, secret: false })
-          continue
-        }
-        if (input.input.case !== 'secret') continue
-
-        const method = input.input.value.credential?.methods[effectiveChoice(input)]
-        if (!method || method.method.case === 'sourceConfig') {
-          const value = (values[input.key] ?? '').trim()
-          if (value.length > 0) bindings.push({ key: input.key, value, secret: true })
-          continue
-        }
-        if (method.method.case === 'oauth') {
-          retrievalProtos.push(
-            create(OAuthCredentialRetrievalSchema, {
-              inputKey: input.key,
-              methodIndex: effectiveChoice(input),
-              credentialInputs: oauthCredentialInputs(method.method.value, values),
-            }),
-          )
-        }
-      }
-
-      const callbacks = {
-        onAuthorization: (event: {
-          inputKey: string
-          authorizationUrl: string
-          userCode: string
-          verificationUri: string
-          verificationUriComplete: string
-        }) => {
+      const response = await fetchOAuthInstall(oauthInstallEndpoint(entry.name), {
+        body: new FormData(formRef.current),
+        method: 'POST',
+        signal: abortController.signal,
+      })
+      const source = await readOAuthInstallStream(response, {
+        onAuthorization: (event) => {
           setProgress({
             kind: 'awaiting-oauth',
-            inputKey: event.inputKey,
             authorizationUrl: event.authorizationUrl,
+            inputKey: event.inputKey,
             userCode: event.userCode,
             verificationUri: event.verificationUri,
             verificationUriComplete: event.verificationUriComplete,
           })
-          window.open(event.authorizationUrl, '_blank', 'noopener,noreferrer')
+          openAuthorization(event.authorizationUrl)
         },
-        onCompleted: (event: { inputKey: string }) => {
+        onCallbackReceived: (event) => {
+          setProgress({ kind: 'oauth-callback-received', inputKey: event.inputKey })
+        },
+        onCompleted: (event) => {
           setProgress({ kind: 'oauth-completed', inputKey: event.inputKey })
         },
-      }
-
-      if (retrievalProtos.length === 0) {
-        await createBundledSource(name, bindings)
-      } else {
-        await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
-      }
-
-      addToast('neutral', {
-        title: `Configured ${name}`,
-        description: 'Credentials were saved but not verified.',
+        onSource: (event) => {
+          setProgress({ kind: 'success', name: event.name })
+        },
       })
-      onInstalled(name)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+
+      if (!abortController.signal.aborted) {
+        setProgress({ kind: 'success', name: source.name })
+        await revalidator.revalidate()
+        if (!abortController.signal.aborted) await navigate('/sources')
+      }
+    } catch (error) {
+      if (abortController.signal.aborted) return
+      setStreamError(error instanceof Error ? error.message : String(error))
       setProgress({ kind: 'idle' })
+    } finally {
+      if (abortRef.current === abortController) abortRef.current = null
     }
   }
 
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    if (!usesOAuth) return
+    event.preventDefault()
+    void submitOAuthInstall()
+  }
+
   return (
-    <>
+    <Form method="post" ref={formRef} onSubmit={handleSubmit}>
+      <input type="hidden" name="_intent" value="install" />
+      <input type="hidden" name="name" value={entry.name} />
+
       <div className={styles.header}>
-        <div className={styles.headerLogo}>
-          {icon ? (
-            <img alt="" className={styles.headerLogoImg} src={icon} />
-          ) : (
-            <Icon name="Plug" size="22" color="secondary" />
-          )}
-        </div>
+        <ProviderLogo name={entry.name} size="large" />
         <div className={styles.headerText}>
           <Dialog.Title className={styles.headerTitleRow}>
             <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-              {name}
+              {sourceDisplayName}
             </Typography.HeadingMedium>
             <span className={styles.headerPill}>Core</span>
           </Dialog.Title>
           <Dialog.Description render={<div />}>
-            <Markdown>{resolved?.info.description ?? 'Officially supported by Coral.'}</Markdown>
+            <Markdown>{entry.description}</Markdown>
           </Dialog.Description>
         </div>
       </div>
 
-      {loadError ? (
+      {!inputSpecs ? (
         <div className={classNames(styles.alertBox, styles.alertError)}>
           <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>{loadError}</Typography.BodySmall>
+          <Typography.BodySmall>Source metadata is unavailable.</Typography.BodySmall>
+        </div>
+      ) : inputs.length === 0 ? (
+        <Typography.BodySmall variant="tertiary">
+          No configuration needed — click Add source to install.
+        </Typography.BodySmall>
+      ) : (
+        <div className={styles.fieldGroup}>
+          {inputs.map((input) => (
+            <InputRow
+              key={input.key}
+              input={input}
+              methodIndex={effectiveChoice(input)}
+              values={values}
+              disabled={busy}
+              onValueChange={(key, value) => setValues((p) => ({ ...p, [key]: value }))}
+              onMethodChange={(key, index) => setMethodChoices((p) => ({ ...p, [key]: index }))}
+            />
+          ))}
+        </div>
+      )}
+
+      {progress.kind === 'awaiting-oauth' ? (
+        <OAuthProgress
+          authorizationUrl={progress.authorizationUrl}
+          inputLabel={formatFieldName(progress.inputKey)}
+          userCode={progress.userCode}
+          verificationUri={progress.verificationUri}
+          verificationUriComplete={progress.verificationUriComplete}
+        />
+      ) : null}
+      {progress.kind === 'oauth-completed' ? (
+        <div className={oauthStatusStyles.box}>
+          <Icon name="CircleCheck" size="16" color="success" />
+          <Typography.BodySmall variant="primary">
+            {formatFieldName(progress.inputKey)} authorized. Finishing install…
+          </Typography.BodySmall>
+        </div>
+      ) : null}
+      {progress.kind === 'oauth-callback-received' ? (
+        <div className={oauthStatusStyles.box}>
+          <Icon name="Loader" size="16" color="secondary" />
+          <Typography.BodySmall variant="primary">
+            {formatFieldName(progress.inputKey)} authorization received. Exchanging token…
+          </Typography.BodySmall>
+        </div>
+      ) : null}
+      {progress.kind === 'success' ? (
+        <div className={oauthStatusStyles.box}>
+          <Icon name="CircleCheck" size="16" color="success" />
+          <Typography.BodySmall variant="primary">
+            {formatFieldName(progress.name)} configured.
+          </Typography.BodySmall>
         </div>
       ) : null}
 
-      {resolved === null && !loadError ? (
-        <Typography.BodySmall variant="tertiary">Loading…</Typography.BodySmall>
-      ) : !resolved ? null : (
-        <>
-          {inputs.length === 0 ? (
-            <Typography.BodySmall variant="tertiary">
-              No configuration needed — click Add source to install.
-            </Typography.BodySmall>
-          ) : (
-            <div className={styles.fieldGroup}>
-              {inputs.map((input) => (
-                <InputRow
-                  key={input.key}
-                  input={input}
-                  methodIndex={effectiveChoice(input)}
-                  values={values}
-                  disabled={busy}
-                  onValueChange={(key, value) => setValues((p) => ({ ...p, [key]: value }))}
-                  onMethodChange={(key, index) => setMethodChoices((p) => ({ ...p, [key]: index }))}
-                />
-              ))}
-            </div>
-          )}
+      {streamError ? (
+        <div className={classNames(styles.alertBox, styles.alertError)}>
+          <Icon color="inherit" name="CircleAlert" size="14" />
+          <Typography.BodySmall>{streamError}</Typography.BodySmall>
+        </div>
+      ) : null}
 
-          {progress.kind === 'awaiting-oauth' ? (
-            <OAuthProgress
-              authorizationUrl={progress.authorizationUrl}
-              inputKey={progress.inputKey}
-              userCode={progress.userCode}
-              verificationUri={progress.verificationUri}
-              verificationUriComplete={progress.verificationUriComplete}
-            />
-          ) : null}
-          {progress.kind === 'oauth-completed' ? (
-            <div className={styles.oauthBox}>
-              <Icon name="CircleCheck" size="16" color="success" />
-              <Typography.BodySmall variant="primary">
-                {progress.inputKey} authorized. Finishing install…
-              </Typography.BodySmall>
-            </div>
-          ) : null}
+      {actionError ? (
+        <div className={classNames(styles.alertBox, styles.alertError)}>
+          <Icon color="inherit" name="CircleAlert" size="14" />
+          <Typography.BodySmall>{actionError}</Typography.BodySmall>
+        </div>
+      ) : null}
 
-          {error ? (
-            <div className={classNames(styles.alertBox, styles.alertError)}>
-              <Icon color="inherit" name="CircleAlert" size="14" />
-              <Typography.BodySmall>{error}</Typography.BodySmall>
-            </div>
-          ) : null}
-
-          <Dialog.Actions>
-            <ButtonContainer disabled={busy} onClick={onCancel} size="32" variant="bare">
-              <ButtonText>Cancel</ButtonText>
-            </ButtonContainer>
-            <ButtonContainer
-              disabled={busy || !canSubmit}
-              onClick={() => void submit()}
-              size="32"
-              variant="primary"
-            >
-              {busy ? <ButtonIcon name="Loader" /> : null}
-              <ButtonText>{busyLabel(progress)}</ButtonText>
-            </ButtonContainer>
-          </Dialog.Actions>
-        </>
-      )}
-    </>
+      <Dialog.Actions>
+        <ButtonContainer disabled={submitting} onClick={cancel} size="32" variant="bare">
+          <ButtonText>Cancel</ButtonText>
+        </ButtonContainer>
+        <ButtonContainer
+          disabled={busy || !canSubmit}
+          onClick={usesOAuth ? () => void submitOAuthInstall() : undefined}
+          size="32"
+          type={usesOAuth ? 'button' : 'submit'}
+          variant="primary"
+        >
+          {busy ? <SpinningButtonIcon name="Loader" /> : null}
+          <ButtonText>{busyLabel(progress, submitting)}</ButtonText>
+        </ButtonContainer>
+      </Dialog.Actions>
+    </Form>
   )
 }
 
@@ -312,7 +327,7 @@ function InputRow({
   onValueChange,
   onMethodChange,
 }: {
-  input: SourceInputSpec
+  input: CatalogSourceInputSpec
   methodIndex: number
   values: Record<string, string>
   disabled: boolean
@@ -324,6 +339,7 @@ function InputRow({
     return (
       <Field input={input}>
         <TextInput
+          name={`var:${input.key}`}
           value={values[input.key] ?? def}
           onChange={(value) => onValueChange(input.key, value)}
           placeholder={def || formatFieldName(input.key)}
@@ -341,6 +357,10 @@ function InputRow({
 
   return (
     <Field input={input} fullWidth={methods.length > 1 || isOAuth(selected)}>
+      {methods.length > 0 ? (
+        <input type="hidden" name={`method:${input.key}`} value={methodIndex} />
+      ) : null}
+
       {methods.length > 1 ? (
         <div className={styles.methodTabs}>
           {methods.map((m, i) => (
@@ -360,6 +380,7 @@ function InputRow({
 
       {!selected || selected.method.case === 'sourceConfig' ? (
         <TextInput
+          name={`sec:${input.key}`}
           type="password"
           value={values[input.key] ?? ''}
           onChange={(value) => onValueChange(input.key, value)}
@@ -368,7 +389,8 @@ function InputRow({
         />
       ) : selected.method.case === 'oauth' ? (
         <OAuthFields
-          oauth={selected.method.value}
+          fields={oauthInputs(selected.method.value)}
+          inputKey={input.key}
           values={values}
           disabled={disabled}
           onValueChange={onValueChange}
@@ -383,7 +405,7 @@ function Field({
   children,
   fullWidth,
 }: {
-  input: SourceInputSpec
+  input: CatalogSourceInputSpec
   children: React.ReactNode
   fullWidth?: boolean
 }) {
@@ -396,117 +418,28 @@ function Field({
   )
 }
 
-function OAuthFields({
-  oauth,
-  values,
-  disabled,
-  onValueChange,
-}: {
-  oauth: OAuthCredentialMethod
-  values: Record<string, string>
-  disabled: boolean
-  onValueChange: (key: string, value: string) => void
-}) {
-  const fields = oauthInputs(oauth)
-  if (fields.length === 0) {
-    return (
-      <Typography.BodySmall variant="secondary">
-        Click Add source to open your browser and complete sign-in.
-      </Typography.BodySmall>
-    )
-  }
-  return (
-    <div className={styles.oauthFields}>
-      {fields.map(({ key, secret, defaultValue }) => (
-        <div key={key} className={styles.fieldItem}>
-          <Typography.Body className={styles.fieldLabel}>{formatFieldName(key)}</Typography.Body>
-          <TextInput
-            type={secret ? 'password' : 'text'}
-            value={values[key] ?? ''}
-            onChange={(value) => onValueChange(key, value)}
-            placeholder={defaultValue || formatFieldName(key)}
-            disabled={disabled}
-          />
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function OAuthProgress({
-  authorizationUrl,
-  inputKey,
-  userCode,
-  verificationUri,
-  verificationUriComplete,
-}: {
-  authorizationUrl: string
-  inputKey: string
-  userCode: string
-  verificationUri: string
-  verificationUriComplete: string
-}) {
-  const link = verificationUriComplete || authorizationUrl
-  const displayUri = verificationUri || authorizationUrl
-
-  return (
-    <div className={styles.oauthBox}>
-      <Icon name="Loader" size="16" color="secondary" />
-      <div>
-        <Typography.BodySmall variant="primary">
-          Waiting for {formatFieldName(inputKey)} authorization in your browser…
-        </Typography.BodySmall>
-        {userCode ? (
-          <>
-            <Typography.BodySmall variant="secondary">
-              Enter code <code className={styles.oauthCode}>{userCode}</code> at{' '}
-              <a href={link} target="_blank" rel="noopener noreferrer">
-                {displayUri}
-              </a>
-              .
-            </Typography.BodySmall>
-            <Typography.BodySmall variant="tertiary">
-              If the new tab didn't open, use the link above.
-            </Typography.BodySmall>
-          </>
-        ) : (
-          <Typography.BodySmall variant="tertiary">
-            If the new tab didn't open,{' '}
-            <a href={authorizationUrl} target="_blank" rel="noopener noreferrer">
-              click here to open it
-            </a>
-            .
-          </Typography.BodySmall>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function methodLabel(method: SourceCredentialMethod, index: number): string {
+function methodLabel(method: CatalogSourceCredentialMethod, index: number): string {
   if (method.label) return method.label
   if (method.method.case === 'sourceConfig') return 'Paste token'
   if (method.method.case === 'oauth') return 'OAuth'
   return `Method ${index + 1}`
 }
 
-function isOAuth(method: SourceCredentialMethod | undefined): boolean {
+function isOAuth(method: CatalogSourceCredentialMethod | undefined): boolean {
   return method?.method.case === 'oauth'
 }
 
-interface OAuthInput {
-  key: string
-  secret: boolean
-  defaultValue?: string
+interface OAuthInput extends OAuthField {
   required: boolean
 }
 
-function oauthInputs(oauth: OAuthCredentialMethod): OAuthInput[] {
+function oauthInputs(oauth: CatalogOAuthCredentialMethod): OAuthInput[] {
   const out: OAuthInput[] = []
   const id = oauth.client?.id
   if (id?.input) {
     out.push({
       key: id.input,
+      label: formatFieldName(id.input),
       secret: false,
       defaultValue: id.defaultValue,
       required: !id.defaultValue,
@@ -514,29 +447,35 @@ function oauthInputs(oauth: OAuthCredentialMethod): OAuthInput[] {
   }
   const secret = oauth.client?.secret
   if (secret?.input) {
-    out.push({ key: secret.input, secret: true, required: true })
+    out.push({
+      key: secret.input,
+      label: formatFieldName(secret.input),
+      secret: true,
+      required: true,
+    })
   }
   return out
 }
 
-function oauthMethodReady(oauth: OAuthCredentialMethod, values: Record<string, string>): boolean {
-  return oauthInputs(oauth)
-    .filter((input) => input.required)
-    .every(({ key }) => (values[key] ?? '').trim().length > 0)
-}
-
-function oauthCredentialInputs(
-  oauth: OAuthCredentialMethod,
+function oauthMethodReady(
+  oauth: CatalogOAuthCredentialMethod,
   values: Record<string, string>,
-): { key: string; value: string }[] {
-  return oauthInputs(oauth)
-    .map(({ key }) => ({ key, value: (values[key] ?? '').trim() }))
-    .filter((entry) => entry.value.length > 0)
+): boolean {
+  return oauthInputs(oauth).every((input) => {
+    if (!input.required) return true
+    return (values[input.key] ?? input.defaultValue ?? '').trim().length > 0
+  })
 }
 
-function busyLabel(progress: InstallProgress): string {
-  if (progress.kind === 'busy') return 'Adding…'
+function oauthInstallEndpoint(name: string): string {
+  return `/sources/${encodeURIComponent(name)}/oauth-install`
+}
+
+function busyLabel(progress: InstallProgress, submitting: boolean): string {
+  if (submitting || progress.kind === 'busy') return 'Adding…'
   if (progress.kind === 'awaiting-oauth') return 'Awaiting OAuth…'
+  if (progress.kind === 'oauth-callback-received') return 'Exchanging token…'
   if (progress.kind === 'oauth-completed') return 'Finishing…'
+  if (progress.kind === 'success') return 'Configured'
   return 'Add source'
 }

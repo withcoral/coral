@@ -653,7 +653,7 @@ mod tests {
             projections: ProjectionCatalog {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "github_v4".to_string(),
-                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
                 projections: vec![
                     published_projection("rest", "github_v4_rest", "rest_list_issues"),
                     published_projection("mcp", "github_v4_mcp", "mcp_list_issues"),
@@ -716,7 +716,7 @@ mod tests {
             projections: ProjectionCatalog {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "github_v4".to_string(),
-                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
                 projections: vec![published_projection(
                     "rest",
                     "github_v4_rest",
@@ -784,7 +784,7 @@ mod tests {
             projections: ProjectionCatalog {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "github_v4".to_string(),
-                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
                 projections: vec![published_projection(
                     "mcp",
                     "github_v4_mcp",
@@ -848,7 +848,7 @@ mod tests {
             projections: ProjectionCatalog {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "github_v4".to_string(),
-                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
                 projections: vec![published_projection(
                     "mcp",
                     "github_v4_mcp",

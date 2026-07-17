@@ -45,14 +45,17 @@
 pub mod bootstrap;
 mod catalog;
 mod credentials;
-mod episode;
 pub mod features;
 mod feedback;
+mod functions;
 mod identity;
 mod query;
+mod request_context;
+mod search;
 mod sources;
 mod state;
 mod storage;
+mod task;
 pub mod telemetry;
 mod transport;
 mod workspaces;
@@ -61,6 +64,9 @@ pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
+pub use identity::{
+    SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError,
+};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };

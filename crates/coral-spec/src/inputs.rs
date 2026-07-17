@@ -10,6 +10,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use url::Url;
 
@@ -255,7 +257,8 @@ fn validate_oauth_url_fragment_policy(
 }
 
 /// Supported loopback redirect URI port binding modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ManifestOAuthRedirectUriPortMode {
     /// Bind the exact port authored in `redirect_uri`.
     Fixed,
@@ -291,7 +294,8 @@ pub enum ManifestOAuthFlowKind {
 }
 
 /// Supported PKCE modes for OAuth credential retrieval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ManifestOAuthPkceMode {
     /// Require a generated code verifier and S256 challenge.
     Required,
@@ -328,16 +332,19 @@ impl ManifestOAuthClientIdSpec {
 }
 
 /// OAuth client secret retrieval configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestOAuthClientSecretSpec {
     /// Credential-retrieval input key for the client secret.
+    #[schemars(length(min = 1))]
     pub input: String,
     /// How Coral sends the client secret to the token endpoint.
     pub transport: ManifestOAuthClientSecretTransport,
 }
 
 /// Supported confidential-client secret transport modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ManifestOAuthClientSecretTransport {
     /// Send `Authorization: Basic base64(client_id:client_secret)`.
     BasicAuth,
@@ -346,22 +353,30 @@ pub enum ManifestOAuthClientSecretTransport {
 }
 
 /// OAuth 2.0 Dynamic Client Registration configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestOAuthDynamicClientRegistrationSpec {
     /// OAuth client registration endpoint URL template.
+    #[schemars(length(min = 1))]
     pub registration_url: String,
     /// Optional client display name sent during registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
     pub client_name: Option<String>,
     /// Requested token endpoint authentication method.
+    #[serde(default)]
     pub token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod,
     /// Whether Coral requests the `refresh_token` grant type during registration.
+    #[serde(default)]
     pub request_refresh_token_grant: bool,
 }
 
 /// Supported DCR token endpoint authentication method requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ManifestOAuthDynamicClientRegistrationAuthMethod {
     /// Public client; no client authentication at the token endpoint.
+    #[default]
     None,
     /// Confidential client using HTTP Basic authentication at the token endpoint.
     ClientSecretBasic,
@@ -410,23 +425,27 @@ impl ManifestOAuthClientSecretTransport {
 }
 
 /// OAuth scope parameter configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestOAuthScopesSpec {
     /// The `scope` parameter value definition.
     pub scope: ManifestOAuthScopeSpec,
 }
 
 /// OAuth scope parameter values and delimiter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestOAuthScopeSpec {
     /// Delimiter used to join scope values.
     pub delimiter: ManifestOAuthScopeDelimiter,
     /// Authored scope values.
+    #[schemars(length(min = 1), inner(length(min = 1)))]
     pub values: Vec<String>,
 }
 
 /// Supported OAuth scope delimiters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ManifestOAuthScopeDelimiter {
     /// Join scope values with a single space.
     Space,

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use coral_engine::{CoralQuery, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::parse_source_manifest_yaml;
-use coral_spec::{FilterMode, FilterSpec};
+use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -295,7 +295,7 @@ tables:
     let table = manifest.tables.first_mut().expect("file manifest table");
     table.common.filters.push(FilterSpec {
         name: "id".to_string(),
-        data_type: "Utf8".to_string(),
+        data_type: ManifestDataType::Utf8,
         required: false,
         mode: FilterMode::Equality,
         description: String::new(),

@@ -1,56 +1,103 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-
-import type { Source, SourceInfo, SourceInputSpec } from '@/generated/coral/v1/sources_pb'
+import { useEffect, useMemo, useState } from 'react'
+import { Form, useActionData, useNavigate, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
-import { Icon as ButtonIcon } from '@/wax/components/button/icon'
+import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
-import * as Dialog from '@/wax/components/dialog'
+import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
-import { providerIcon } from '@/lib/provider-icons'
-import {
-  createBundledSource,
-  deleteSource,
-  getInstalledSource,
-  getSourceInfo,
-  originLabel,
-  type InstallInput,
-  type SourceOriginLabel,
+import type {
+  CatalogEntry,
+  CatalogSource,
+  CatalogSourceInputSpec,
+  SourceOriginLabel,
 } from '@/lib/sources'
+import type { action as sourceDetailAction } from '@/routes/source-detail'
+import type { SourcesActionData } from '@/routes/sources-action'
 
+import { formatSourceName, ProviderLogo } from '@/components/sources'
 import * as styles from './source-detail.css'
+import { SourceInstallDialog } from './source-install'
 
 const SECRET_PLACEHOLDER = '••••••••'
 
 const IMPORTED_EDIT_NOTICE =
   "Imported sources can't be edited here yet — re-import the source spec to change its credentials."
 
+export function SourceDetailView({
+  actionData,
+  loaderData,
+  sourcesPath,
+}: {
+  actionData: SourcesActionData | undefined
+  loaderData: {
+    entry: CatalogEntry
+    loadError: string | null
+  }
+  sourcesPath: string
+}) {
+  const navigate = useNavigate()
+  const navigation = useNavigation()
+  const actionError = actionData?.status === 'error' ? actionData : null
+  const pendingIntent = formValue(navigation.formData, '_intent')
+  const pendingName = formValue(navigation.formData, 'name')
+  const entry = loaderData.entry
+
+  if (!entry.installed) {
+    return (
+      <SourceInstallDialog
+        actionError={
+          actionError && actionError.intent === 'install' && actionError.name === entry.name
+            ? actionError.message
+            : loaderData.loadError
+        }
+        entry={entry}
+        open
+        onOpenChange={(open) => {
+          if (!open) navigate(sourcesPath)
+        }}
+        submitting={pendingName === entry.name && pendingIntent === 'install'}
+      />
+    )
+  }
+
+  return (
+    <SourceDetailDialog
+      entry={entry}
+      loadError={loaderData.loadError}
+      open
+      onOpenChange={(open) => {
+        if (!open) navigate(sourcesPath)
+      }}
+    />
+  )
+}
+
 export function SourceDetailDialog({
-  name,
+  entry,
+  loadError,
   open,
   onOpenChange,
-  onRemoved,
 }: {
-  name: string | null
+  entry: CatalogEntry | null
+  loadError: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
-  onRemoved: (name: string) => void
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup size="l">
-          {name ? (
+          {entry ? (
             <SourceDetailDialogContent
-              key={name}
-              name={name}
+              key={entry.name}
+              entry={entry}
+              loadError={loadError}
               onClose={() => onOpenChange(false)}
-              onRemoved={onRemoved}
             />
           ) : null}
         </Dialog.Popup>
@@ -60,68 +107,34 @@ export function SourceDetailDialog({
 }
 
 function SourceDetailDialogContent({
-  name,
+  entry,
+  loadError,
   onClose,
-  onRemoved,
 }: {
-  name: string
+  entry: CatalogEntry
+  loadError: string | null
   onClose: () => void
-  onRemoved: (name: string) => void
 }) {
-  const [source, setSource] = useState<Source | null>(null)
-  const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [confirmingRemove, setConfirmingRemove] = useState(false)
-  const [deleting, setDeleting] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const [saving, setSaving] = useState(false)
+  const { actionError, pendingIntent, removeError } = useSourceDetailActionState(entry, loadError)
+  const sourceDisplayName = formatSourceName(entry.name)
 
-  const refresh = useCallback(async () => {
-    // getSourceInfo no longer depends on the installed origin, so fetch both in
-    // parallel. Source info is best-effort (imported sources may not have it).
-    const [installedResult, infoResult] = await Promise.allSettled([
-      getInstalledSource(name),
-      getSourceInfo(name),
-    ])
-
-    if (installedResult.status === 'rejected') {
-      const reason = installedResult.reason
-      setSource(null)
-      setSourceInfo(null)
-      setLoadError(reason instanceof Error ? reason.message : String(reason))
-      return
-    }
-
-    setSource(installedResult.value)
-    setSourceInfo(infoResult.status === 'fulfilled' ? infoResult.value.info : null)
-    setDrafts({})
-    setLoadError(null)
-  }, [name])
+  const source = entry.source ?? null
+  const inputSpecs = entry.inputSpecs
+  const deleting = pendingIntent === 'delete'
+  const saving = pendingIntent === 'edit'
+  const editable = source ? source.origin === 'bundled' : false
 
   useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  const onDelete = useCallback(async () => {
-    setDeleting(true)
-    try {
-      await deleteSource(name)
-      addToast('success', { title: `Removed ${name}` })
-      setConfirmingRemove(false)
-      onRemoved(name)
-    } catch (e) {
-      addToast('error', { title: e instanceof Error ? e.message : String(e) })
-      setDeleting(false)
-    }
-  }, [name, onRemoved])
-
-  const editable = source ? originLabel(source.origin) === 'bundled' : false
+    if (removeError) setConfirmingRemove(true)
+  }, [removeError])
 
   const hasChanges = useMemo(() => {
     if (!source) return false
-    if (sourceInfo) {
+    if (inputSpecs) {
       const variables = new Map(source.variables.map((v) => [v.key, v.value]))
-      for (const input of sourceInfo.inputs) {
+      for (const input of inputSpecs) {
         if (input.input.case === 'variable') {
           const draft = drafts[`var:${input.key}`]
           const current = variables.get(input.key) ?? input.input.value.defaultValue ?? ''
@@ -142,165 +155,117 @@ function SourceDetailDialogContent({
       if (draft !== undefined && draft.trim().length > 0) return true
     }
     return false
-  }, [drafts, source, sourceInfo])
+  }, [drafts, source, inputSpecs])
 
-  async function save() {
-    if (!source) return
-    setSaving(true)
-    try {
-      const bindings: InstallInput[] = []
-      if (sourceInfo) {
-        const variables = new Map(source.variables.map((v) => [v.key, v.value]))
-        for (const input of sourceInfo.inputs) {
-          if (input.input.case === 'variable') {
-            const value = (
-              drafts[`var:${input.key}`] ??
-              variables.get(input.key) ??
-              input.input.value.defaultValue ??
-              ''
-            ).trim()
-            if (value.length > 0) bindings.push({ key: input.key, value, secret: false })
-            continue
-          }
-          if (input.input.case !== 'secret') continue
-          const draft = drafts[`sec:${input.key}`]
-          if (draft === undefined) continue
-          const trimmed = draft.trim()
-          if (trimmed.length > 0) {
-            bindings.push({ key: input.key, value: trimmed, secret: true })
-          }
-        }
-      } else {
-        bindings.push(
-          ...source.variables.map((v) => ({
-            key: v.key,
-            value: drafts[`var:${v.key}`] ?? v.value,
-            secret: false,
-          })),
-        )
-        for (const s of source.secrets) {
-          const draft = drafts[`sec:${s.key}`]
-          if (draft === undefined) continue
-          const trimmed = draft.trim()
-          if (trimmed.length > 0) {
-            bindings.push({ key: s.key, value: trimmed, secret: true })
-          }
-        }
-      }
-      await createBundledSource(name, bindings)
-      onClose()
-      addToast('success', { title: `Updated ${name}` })
-    } catch (e) {
-      addToast('error', { title: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const icon = providerIcon(name)
-  const origin = source ? originLabel(source.origin) : null
+  const origin = source ? source.origin : entry.origin
 
   return (
     <>
-      <div className={styles.header}>
-        <div className={styles.headerLogo}>
-          {icon ? (
-            <img src={icon} alt="" className={styles.headerLogoImg} />
-          ) : (
-            <Icon name="Plug" size="22" color="secondary" />
-          )}
-        </div>
-        <div className={styles.headerText}>
-          <Dialog.Title className={styles.headerTitleRow}>
-            <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-              {name}
-            </Typography.HeadingMedium>
-            {origin ? <span className={styles.headerPill}>{originBadgeLabel(origin)}</span> : null}
-          </Dialog.Title>
-          <Dialog.Description render={<div />}>
-            <Typography.BodySmall variant="secondary">
-              {source?.version ? `v${source.version}` : 'Configured source'}
-            </Typography.BodySmall>
-          </Dialog.Description>
-        </div>
-      </div>
+      <Form method="post">
+        <input type="hidden" name="_intent" value="edit" />
+        <input type="hidden" name="name" value={entry.name} />
 
-      {loadError ? (
-        <div className={styles.alertError}>
-          <Icon name="CircleAlert" size="14" color="inherit" />
-          <Typography.BodySmall>{loadError}</Typography.BodySmall>
+        <div className={styles.header}>
+          <ProviderLogo name={entry.name} size="large" />
+          <div className={styles.headerText}>
+            <Dialog.Title className={styles.headerTitleRow}>
+              <Typography.HeadingMedium as="span" className={styles.headerTitle}>
+                {sourceDisplayName}
+              </Typography.HeadingMedium>
+              {origin ? (
+                <span className={styles.headerPill}>{originBadgeLabel(origin)}</span>
+              ) : null}
+            </Dialog.Title>
+            <Dialog.Description render={<div />}>
+              <Typography.BodySmall variant="secondary">
+                {source?.version || entry.version
+                  ? `v${source?.version || entry.version}`
+                  : 'Configured source'}
+              </Typography.BodySmall>
+            </Dialog.Description>
+          </div>
         </div>
-      ) : null}
 
-      {!source && !loadError ? (
-        <Typography.BodySmall variant="tertiary">Loading…</Typography.BodySmall>
-      ) : !source ? null : sourceInfo ? (
-        <SourceInfoBindings
-          disabled={!editable || saving || deleting}
-          drafts={drafts}
-          editable={editable}
-          onSecretBlur={(key) => {
-            const draftKey = `sec:${key}`
-            if (drafts[draftKey] !== '') return
-            setDrafts((previous) => {
-              const next = { ...previous }
-              delete next[draftKey]
-              return next
-            })
-          }}
-          onSecretFocus={(key) => {
-            const draftKey = `sec:${key}`
-            if (drafts[draftKey] !== undefined) return
-            setDrafts((previous) => ({ ...previous, [draftKey]: '' }))
-          }}
-          onValueChange={(key, value, secret) =>
-            setDrafts((previous) => ({ ...previous, [`${secret ? 'sec' : 'var'}:${key}`]: value }))
-          }
-          source={source}
-          sourceInfo={sourceInfo}
-        />
-      ) : source.variables.length === 0 && source.secrets.length === 0 ? (
-        <section className={styles.section}>
-          <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-          <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
-        </section>
-      ) : (
-        <FallbackBindings
-          disabled={!editable || saving || deleting}
-          drafts={drafts}
-          editable={editable}
-          onValueChange={(draftKey, value) =>
-            setDrafts((previous) => ({ ...previous, [draftKey]: value }))
-          }
-          source={source}
-        />
-      )}
+        {!source ? (
+          <div className={styles.alertError}>
+            <Icon name="CircleAlert" size="14" color="inherit" />
+            <Typography.BodySmall>Installed source details are unavailable.</Typography.BodySmall>
+          </div>
+        ) : null}
 
-      <Dialog.Actions>
-        <ButtonContainer
-          variant="bare"
-          size="32"
-          onClick={() => setConfirmingRemove(true)}
-          disabled={saving || deleting}
-        >
-          <ButtonText>Remove</ButtonText>
-        </ButtonContainer>
-        {editable && hasChanges ? (
-          <ButtonContainer
-            variant="primary"
-            size="32"
-            onClick={() => void save()}
-            disabled={saving}
-          >
-            {saving ? <ButtonIcon name="Loader" /> : null}
-            <ButtonText>{saving ? 'Saving…' : 'Save changes'}</ButtonText>
-          </ButtonContainer>
+        {actionError ? (
+          <div className={styles.alertError}>
+            <Icon name="CircleAlert" size="14" color="inherit" />
+            <Typography.BodySmall>{actionError}</Typography.BodySmall>
+          </div>
+        ) : null}
+
+        {!source ? null : inputSpecs ? (
+          <SourceInputBindings
+            disabled={!editable || saving || deleting}
+            drafts={drafts}
+            editable={editable}
+            inputSpecs={inputSpecs}
+            onSecretBlur={(key) => {
+              const draftKey = `sec:${key}`
+              if (drafts[draftKey] !== '') return
+              setDrafts((previous) => {
+                const next = { ...previous }
+                delete next[draftKey]
+                return next
+              })
+            }}
+            onSecretFocus={(key) => {
+              const draftKey = `sec:${key}`
+              if (drafts[draftKey] !== undefined) return
+              setDrafts((previous) => ({ ...previous, [draftKey]: '' }))
+            }}
+            onValueChange={(key, value, secret) =>
+              setDrafts((previous) => ({
+                ...previous,
+                [`${secret ? 'sec' : 'var'}:${key}`]: value,
+              }))
+            }
+            source={source}
+          />
+        ) : source.variables.length === 0 && source.secrets.length === 0 ? (
+          <section className={styles.section}>
+            <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+            <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
+          </section>
         ) : (
-          <ButtonContainer variant="primary" size="32" onClick={onClose}>
-            <ButtonText>Close</ButtonText>
-          </ButtonContainer>
+          <InstalledBindings
+            disabled={!editable || saving || deleting}
+            drafts={drafts}
+            editable={editable}
+            onValueChange={(draftKey, value) =>
+              setDrafts((previous) => ({ ...previous, [draftKey]: value }))
+            }
+            source={source}
+          />
         )}
-      </Dialog.Actions>
+
+        <Dialog.Actions>
+          <ButtonContainer
+            variant="bare"
+            size="32"
+            onClick={() => setConfirmingRemove(true)}
+            disabled={!source || saving || deleting}
+          >
+            <ButtonText>Remove</ButtonText>
+          </ButtonContainer>
+          {editable && hasChanges ? (
+            <ButtonContainer variant="primary" size="32" type="submit" disabled={saving}>
+              {saving ? <SpinningButtonIcon name="Loader" /> : null}
+              <ButtonText>{saving ? 'Saving…' : 'Save changes'}</ButtonText>
+            </ButtonContainer>
+          ) : (
+            <ButtonContainer variant="primary" size="32" onClick={onClose}>
+              <ButtonText>Close</ButtonText>
+            </ButtonContainer>
+          )}
+        </Dialog.Actions>
+      </Form>
 
       <Dialog.Root open={confirmingRemove} onOpenChange={(open) => setConfirmingRemove(open)}>
         <Dialog.Portal>
@@ -308,9 +273,9 @@ function SourceDetailDialogContent({
           <Dialog.Popup size="m">
             <RemoveConfirmation
               deleting={deleting}
-              name={name}
+              error={removeError}
+              name={sourceDisplayName}
               onCancel={() => setConfirmingRemove(false)}
-              onDelete={onDelete}
             />
           </Dialog.Popup>
         </Dialog.Portal>
@@ -321,17 +286,20 @@ function SourceDetailDialogContent({
 
 function RemoveConfirmation({
   deleting,
+  error,
   name,
   onCancel,
-  onDelete,
 }: {
   deleting: boolean
+  error?: string | null
   name: string
   onCancel: () => void
-  onDelete: () => void
 }) {
   return (
-    <>
+    <Form method="post">
+      <input type="hidden" name="_intent" value="delete" />
+      <input type="hidden" name="name" value={name} />
+
       <div className={styles.removeConfirmText}>
         <Dialog.Title>Remove {name}?</Dialog.Title>
         <Dialog.Description>
@@ -339,25 +307,26 @@ function RemoveConfirmation({
           reinstall later, but you'll need to re-supply any secrets.
         </Dialog.Description>
       </div>
+      {error ? (
+        <div className={styles.alertError}>
+          <Icon name="CircleAlert" size="14" color="inherit" />
+          <Typography.BodySmall>{error}</Typography.BodySmall>
+        </div>
+      ) : null}
       <Dialog.Actions className={styles.removeConfirmActions}>
         <ButtonContainer variant="secondary" size="32" onClick={onCancel} disabled={deleting}>
           <ButtonText>Cancel</ButtonText>
         </ButtonContainer>
-        <ButtonContainer
-          variant="destructive"
-          size="32"
-          onClick={() => void onDelete()}
-          disabled={deleting}
-        >
-          {deleting ? <ButtonIcon name="Loader" /> : null}
+        <ButtonContainer variant="destructive" size="32" type="submit" disabled={deleting}>
+          {deleting ? <SpinningButtonIcon name="Loader" /> : null}
           <ButtonText>{deleting ? 'Removing…' : 'Remove'}</ButtonText>
         </ButtonContainer>
       </Dialog.Actions>
-    </>
+    </Form>
   )
 }
 
-function FallbackBindings({
+function InstalledBindings({
   disabled,
   drafts,
   editable,
@@ -368,7 +337,7 @@ function FallbackBindings({
   drafts: Record<string, string>
   editable: boolean
   onValueChange: (draftKey: string, value: string) => void
-  source: Source
+  source: CatalogSource
 }) {
   return (
     <section className={styles.section}>
@@ -383,6 +352,7 @@ function FallbackBindings({
             <div key={draftKey} className={styles.fieldItem}>
               <Typography.Body className={styles.fieldLabel}>{v.key}</Typography.Body>
               <TextInput
+                name={draftKey}
                 value={drafts[draftKey] ?? v.value}
                 onChange={(value) => onValueChange(draftKey, value)}
                 placeholder={v.key}
@@ -396,6 +366,7 @@ function FallbackBindings({
           return (
             <div key={draftKey} className={styles.fieldItem}>
               <Typography.Body className={styles.fieldLabel}>{s.key}</Typography.Body>
+              <input type="hidden" name={draftKey} value={drafts[draftKey] ?? ''} />
               <TextInput
                 type="password"
                 value={drafts[draftKey] ?? ''}
@@ -411,29 +382,57 @@ function FallbackBindings({
   )
 }
 
-function SourceInfoBindings({
+function useSourceDetailActionState(entry: CatalogEntry, loadError: string | null) {
+  const actionData = useActionData<typeof sourceDetailAction>()
+  const navigation = useNavigation()
+  const actionError = actionData?.status === 'error' ? actionData : null
+  const pendingIntent = formValue(navigation.formData, '_intent')
+  const pendingName = formValue(navigation.formData, 'name')
+
+  return {
+    actionError:
+      actionError && actionError.intent === 'edit' && actionError.name === entry.name
+        ? actionError.message
+        : loadError,
+    pendingIntent:
+      pendingName === entry.name && (pendingIntent === 'delete' || pendingIntent === 'edit')
+        ? pendingIntent
+        : null,
+    removeError:
+      actionError && actionError.intent === 'delete' && actionError.name === entry.name
+        ? actionError.message
+        : null,
+  }
+}
+
+function formValue(formData: FormData | undefined, key: string): string | null {
+  const value = formData?.get(key)
+  return typeof value === 'string' ? value : null
+}
+
+function SourceInputBindings({
   disabled,
   drafts,
   editable,
+  inputSpecs,
   onSecretBlur,
   onSecretFocus,
   onValueChange,
   source,
-  sourceInfo,
 }: {
   disabled: boolean
   drafts: Record<string, string>
   editable: boolean
+  inputSpecs: CatalogSourceInputSpec[]
   onSecretBlur: (key: string) => void
   onSecretFocus: (key: string) => void
   onValueChange: (key: string, value: string, secret: boolean) => void
-  source: Source
-  sourceInfo: SourceInfo
+  source: CatalogSource
 }) {
   const variables = useMemo(() => new Map(source.variables.map((v) => [v.key, v.value])), [source])
   const configuredSecrets = useMemo(() => new Set(source.secrets.map((s) => s.key)), [source])
 
-  if (sourceInfo.inputs.length === 0) {
+  if (inputSpecs.length === 0) {
     return (
       <section className={styles.section}>
         <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
@@ -449,7 +448,7 @@ function SourceInfoBindings({
         <Typography.BodySmall variant="tertiary">{IMPORTED_EDIT_NOTICE}</Typography.BodySmall>
       ) : null}
       <div className={styles.fieldGroup}>
-        {sourceInfo.inputs.map((input) => (
+        {inputSpecs.map((input) => (
           <SourceInfoInputRow
             key={input.key}
             configuredSecret={configuredSecrets.has(input.key)}
@@ -480,7 +479,7 @@ function SourceInfoInputRow({
   configuredSecret: boolean
   disabled: boolean
   draft: string | undefined
-  input: SourceInputSpec
+  input: CatalogSourceInputSpec
   onSecretBlur: (key: string) => void
   onSecretFocus: (key: string) => void
   onValueChange: (key: string, value: string, secret: boolean) => void
@@ -491,6 +490,7 @@ function SourceInfoInputRow({
     return (
       <Field input={input}>
         <TextInput
+          name={`var:${input.key}`}
           value={draft ?? resolved}
           onChange={(next) => onValueChange(input.key, next, false)}
           placeholder={resolved || input.key}
@@ -504,6 +504,7 @@ function SourceInfoInputRow({
 
   return (
     <Field input={input}>
+      <input type="hidden" name={`sec:${input.key}`} value={draft ?? ''} />
       <TextInput
         type="password"
         value={draft ?? (configuredSecret ? SECRET_PLACEHOLDER : '')}
@@ -517,7 +518,7 @@ function SourceInfoInputRow({
   )
 }
 
-function Field({ input, children }: { input: SourceInputSpec; children: React.ReactNode }) {
+function Field({ input, children }: { input: CatalogSourceInputSpec; children: React.ReactNode }) {
   return (
     <div className={styles.fieldItem}>
       <Typography.Body className={styles.fieldLabel}>{input.key}</Typography.Body>

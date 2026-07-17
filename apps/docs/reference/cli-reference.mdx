@@ -61,6 +61,32 @@ coral sql "DESCRIBE datadog.hosts"
 
 `DESCRIBE SELECT ...` still describes the result schema of the query itself.
 
+## `coral search`
+
+Find relevant Coral tables, table functions, columns, and filters.
+
+```shellscript
+coral search github issues assigned to me
+coral search --limit 5 --json slack messages text
+```
+
+Search returns metadata and provider statuses. It does not fetch source rows or
+answer the question by itself; use the returned `sql_reference` or
+`sql_call_example` with `coral sql`.
+
+### Options
+
+| Option    | Type    | Default | Description                                               |
+| --------- | ------- | ------- | --------------------------------------------------------- |
+| `--json`  | flag    | `false` | Render the shared machine-readable JSON response          |
+| `--limit` | integer | `10`    | Maximum results to return, from 1 to 50                   |
+
+### JSON response
+
+With `--json`, the response separates `results`, `provider_statuses`, and `truncation`. Table results include `sql_reference`. Table-function results include `sql_reference` and `sql_call_example`. Field-level results include `surface_sql_reference`, identifying the table or table function that owns the matching column, filter, argument, or result column.
+
+For catalog search, the `catalog_metadata` provider status reports whether search found matches, completed with no matches, returned partial coverage, or failed. `truncation` reports when more matches were available than returned.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.
@@ -182,7 +208,7 @@ coral source remove github
 
 Manage local workspaces. Workspaces isolate installed source metadata and
 workspace-scoped artifacts such as source manifests, local credential material,
-feedback reports, episode logs, and workspace-attributed local trace history.
+feedback reports, and workspace-attributed local trace history.
 
 Imported source specs and source credential material are attached to the source
 installation in that workspace. Reusable global source specs and reusable
@@ -217,6 +243,73 @@ coral workspace remove work
 ```
 
 The `default` workspace cannot be removed.
+
+## `coral functions`
+
+Manage workspace functions. A function is a SQL artifact with SQL comment frontmatter that defines a reusable, typed query and publishes it as a SQL table function.
+
+User-installed functions are added to the current workspace with `coral functions add`. Functions commonly publish under `functions.*`.
+
+### `coral functions add --file <PATH>`
+
+Validate, then install or replace, a user-installed function from a SQL artifact.
+
+```shellscript
+coral functions add --file ./open-prs.function.sql
+```
+
+#### Options
+
+| Option          | Type | Default  | Description                  |
+| --------------- | ---- | -------- | ---------------------------- |
+| `--file <PATH>` | path | required | Function SQL artifact to install |
+
+Coral validates the function before storing it in the current workspace. Validation checks the frontmatter shape, installed-source references, SQL publish target collisions, and whether the SQL plans against the current workspace sources. Result columns are inferred from the planned SQL. If runtime validation fails, the function is not installed.
+
+Example function:
+
+```sql
+/*
+name: open_prs
+schema: functions
+description: All open PRs in the specified repo
+*/
+
+select number, title, html_url as url
+from github.pulls
+where owner = $owner and repo = $repo and state = 'open'
+```
+
+The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. Coral infers each required argument and its type from `$argument` uses in the SQL body. If the surrounding SQL does not provide enough type evidence, add an explicit cast such as `cast($limit as BIGINT)`.
+
+### `coral functions list`
+
+List configured functions.
+
+```shellscript
+coral functions list
+```
+
+The list includes every installed function. Runtime-ready entries show their inferred arguments, table-function target, and result-column preview. An artifact that is missing, invalid, or no longer plans successfully stays visible with an `invalid` status and an actionable reason below the table.
+
+If a function publishes a SQL table function and declares required inputs, call it with named arguments:
+
+```sql
+select *
+from functions.open_prs(owner => 'withcoral', repo => 'coral')
+```
+
+Functions without required inputs can be called with empty parentheses.
+
+### `coral functions remove <NAME>`
+
+Remove the user-installed function named `<NAME>`.
+
+```shellscript
+coral functions remove open_prs
+```
+
+Only user-installed functions are managed by this command.
 
 ## `coral onboard`
 
@@ -306,8 +399,8 @@ By default, this server exposes:
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `search`         | Find relevant tables, functions, columns, and filters   |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
-| Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
@@ -315,10 +408,10 @@ By default, this server exposes:
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 
-Catalog helpers include the `coral` system schema, so `list_catalog`,
-`search_catalog`, `describe_table`, `list_columns`, and `coral://tables` can discover
-`coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and
-`coral.inputs`.
+Discovery helpers include the `coral` system schema, so `search`,
+`list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
+discover `coral.tables`, `coral.columns`, `coral.filters`,
+`coral.table_functions`, and `coral.inputs`.
 
 For client setup, see [Use Coral over MCP](/guides/use-coral-over-mcp).
 

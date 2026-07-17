@@ -2,21 +2,28 @@
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
-    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_FUNCTION_NOT_FOUND,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::credentials::CredentialsError;
+use crate::state::db::DbError;
 
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// The request did not present valid authentication.
+    #[error("unauthenticated: {0}")]
+    Unauthenticated(String),
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested function was not found in config.
+    #[error("function '{0}' not found")]
+    FunctionNotFound(String),
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -37,6 +44,18 @@ pub enum AppError {
         /// Source name whose installed artifacts failed validation.
         source_name: String,
         /// Specific materialization mismatch or missing-artifact detail.
+        detail: String,
+    },
+    /// A user-maintained DSL v4 projection override is malformed or stale.
+    #[error(
+        "failed precondition: source '{source_name}' has invalid DSL v4 projection override '{override_path}': {detail}. Edit or remove the override file."
+    )]
+    InvalidV4ProjectionOverride {
+        /// Source name whose override failed validation.
+        source_name: String,
+        /// Projection override path that failed validation.
+        override_path: String,
+        /// Specific override mismatch or malformed-artifact detail.
         detail: String,
     },
     /// Provider-managed credential refresh failed during active source use.
@@ -72,9 +91,30 @@ pub enum AppError {
     /// Credential material access failed.
     #[error(transparent)]
     Credentials(#[from] CredentialsError),
+    /// Durable app-state database access failed.
+    #[error("database error: {0}")]
+    Database(String),
     /// The Coral config directory could not be discovered from defaults.
     #[error("failed to determine Coral config directory")]
     MissingConfigDir,
+}
+
+impl From<DbError> for AppError {
+    fn from(error: DbError) -> Self {
+        match error {
+            DbError::Config(detail) => {
+                Self::FailedPrecondition(format!("database configuration is invalid: {detail}"))
+            }
+            DbError::MissingDatabaseParent(path) => Self::FailedPrecondition(format!(
+                "database file parent directory is missing for {}",
+                path.display()
+            )),
+            DbError::Io(error) => Self::Io(error),
+            DbError::TomlDecode(error) => Self::TomlDecode(error),
+            DbError::Sqlx(error) => Self::Database(error.to_string()),
+            DbError::Migration(error) => Self::Database(error.to_string()),
+        }
+    }
 }
 
 /// Upper bound on the byte length of a `tonic::Status` message (detail).
@@ -109,6 +149,10 @@ fn truncate_status_detail(detail: String) -> String {
     format!("{truncated}{MARKER}")
 }
 
+pub(crate) fn status_with_bounded_detail(code: Code, detail: impl Into<String>) -> Status {
+    Status::new(code, truncate_status_detail(detail.into()))
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "used directly as a map_err adapter across tonic service handlers"
@@ -116,6 +160,7 @@ fn truncate_status_detail(detail: String) -> String {
 pub(crate) fn app_status(error: AppError) -> Status {
     let not_found_reason = match &error {
         AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::FunctionNotFound(_) => Some(CORAL_ERROR_REASON_FUNCTION_NOT_FOUND),
         AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
         _ => None,
     };
@@ -133,7 +178,7 @@ pub(crate) fn app_status(error: AppError) -> Status {
             details,
         );
     }
-    Status::new(app_code(&error), truncate_status_detail(error.to_string()))
+    status_with_bounded_detail(app_code(&error), error.to_string())
 }
 
 pub(crate) fn core_status(error: CoreError) -> Status {
@@ -201,11 +246,15 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
-        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::Unauthenticated(_) => Code::Unauthenticated,
+        AppError::SourceNotFound(_)
+        | AppError::FunctionNotFound(_)
+        | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::InvalidV4ProjectionOverride { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
@@ -221,7 +270,8 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Json(_)
         | AppError::Transport(_)
         | AppError::TaskJoin(_)
-        | AppError::Credentials(_) => Code::Internal,
+        | AppError::Credentials(_)
+        | AppError::Database(_) => Code::Internal,
     }
 }
 
@@ -244,6 +294,15 @@ mod tests {
     }
 
     #[test]
+    fn app_status_maps_unauthenticated_and_truncates_detail() {
+        let status = app_status(AppError::Unauthenticated("x".repeat(20 * 1024)));
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
+        assert!(status.message().ends_with("… (truncated)"));
+    }
+
+    #[test]
     fn app_status_attaches_structured_reason_for_source_not_found() {
         let status = app_status(AppError::SourceNotFound("default:hn".to_string()));
         assert_eq!(status.code(), Code::NotFound);
@@ -263,6 +322,28 @@ mod tests {
         assert!(
             info.metadata.is_empty(),
             "SOURCE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+        );
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_function_not_found() {
+        let status = app_status(AppError::FunctionNotFound("review_queue".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("function-not-found status must carry an ErrorInfo detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_FUNCTION_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert!(
+            info.metadata.is_empty(),
+            "FUNCTION_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
             info.metadata
         );
     }

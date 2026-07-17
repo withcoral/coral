@@ -67,10 +67,39 @@ pub(crate) fn optional_bool_argument(
     })
 }
 
+pub(crate) fn optional_u32_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+    default: u32,
+    min: u32,
+    max: u32,
+) -> Result<u32, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(default);
+    };
+    let value = value.as_i64().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be an integer"), None)
+    })?;
+    let value = u32::try_from(value).map_err(|_conversion_error| {
+        ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        )
+    })?;
+    if value < min || value > max {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        ));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        optional_non_empty_string_argument, optional_string_argument, required_string_argument,
+        optional_non_empty_string_argument, optional_string_argument, optional_u32_argument,
+        required_string_argument,
     };
     use serde_json::{Map, Value};
 
@@ -122,5 +151,13 @@ mod tests {
 
         optional_non_empty_string_argument(Some(&arguments), "pattern")
             .expect_err("whitespace-only non-empty argument should fail");
+    }
+
+    #[test]
+    fn optional_u32_argument_enforces_bounds() {
+        let arguments = Map::from_iter([("limit".to_string(), Value::from(51))]);
+
+        optional_u32_argument(Some(&arguments), "limit", 10, 1, 50)
+            .expect_err("out-of-range integer should fail");
     }
 }

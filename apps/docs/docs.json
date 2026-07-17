@@ -78,6 +78,7 @@
         "group": "Guides",
         "pages": [
           "guides/use-coral-over-mcp",
+          "guides/search-the-catalog",
           "guides/write-a-custom-source",
           "guides/observe-with-opentelemetry"
         ]

@@ -17,6 +17,9 @@ export const card = style({
 
 export const cardButton = style({
   alignItems: 'stretch',
+  color: 'inherit',
+  cursor: 'pointer',
+  font: 'inherit',
   justifyContent: 'flex-start',
   textAlign: 'left',
   selectors: {
@@ -38,7 +41,14 @@ export const header = style({
 })
 
 export const title = style({
+  flexShrink: 1,
   minWidth: 0,
+  textTransform: 'capitalize',
+})
+
+export const headerPill = style({
+  flexShrink: 0,
+  marginLeft: 'auto',
 })
 
 export const description = style({

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { createMemoryRouter, RouterProvider } from 'react-router'
+import { createRoutesStub } from 'react-router'
 
 import { Breadcrumbs } from './breadcrumbs'
 
@@ -25,10 +25,8 @@ const meta = {
   component: Breadcrumbs,
   decorators: [
     (Story) => {
-      const router = createMemoryRouter([{ element: <Story />, path: '*' }], {
-        initialEntries: ['/'],
-      })
-      return <RouterProvider router={router} />
+      const RoutesStub = createRoutesStub([{ Component: () => <Story />, path: '*' }])
+      return <RoutesStub initialEntries={['/']} />
     },
   ],
   parameters: {

@@ -17,6 +17,10 @@ declare global {
   }
 }
 
+export function isCoralDesktopBuild(): boolean {
+  return import.meta.env.VITE_CORAL_DESKTOP_APP === '1'
+}
+
 export function coralDesktopApi(): CoralDesktopApi | null {
   if (typeof window === 'undefined') return null
   return window.coralDesktop ?? null

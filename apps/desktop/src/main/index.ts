@@ -7,6 +7,7 @@ import {
   APP_ENTRY_URL,
   APP_GRPC_BASE,
   APP_ORIGIN,
+  GRPC_PATH_PREFIX,
   registerAppProtocol,
   registerAppSchemePrivileges,
 } from './app-renderer'
@@ -32,8 +33,14 @@ function rendererUrl(): string | null {
 }
 
 async function rendererEntryUrl(): Promise<string> {
-  // Dev uses the Vite server (HMR); packaged serves the built SPA over app://.
-  return rendererUrl() ?? APP_ENTRY_URL
+  const devRendererUrl = rendererUrl()
+  if (!devRendererUrl) return APP_ENTRY_URL
+
+  // Dev uses the Vite server (HMR), whose React Router loaders call the Electron
+  // sidecar through CORAL_ENDPOINT. Wait for the sidecar before the first
+  // document request so initial SSR does not race a still-building CLI.
+  await ensureSidecar()
+  return devRendererUrl
 }
 
 function escapeHtml(value: string): string {
@@ -238,9 +245,13 @@ function registerIpcHandlers() {
     if (rendererUrl() === null) {
       return { grpcBaseUrl: APP_GRPC_BASE, packaged: app.isPackaged }
     }
-    // Dev (Vite http origin) hits the sidecar directly, so wait for its endpoint.
+    // Dev: the Vite server proxies the same-origin `/__coral__` prefix to the
+    // sidecar (see apps/reef/vite.config.ts), so the renderer stays same-origin
+    // and needs no CORS — mirroring the packaged app:// proxy. Still wait for the
+    // sidecar so the proxy target is live before the UI starts issuing requests.
     const started = await ensureSidecar()
-    return { grpcBaseUrl: started.url, packaged: started.packaged }
+    const devOrigin = new URL(rendererUrl()!).origin
+    return { grpcBaseUrl: `${devOrigin}${GRPC_PATH_PREFIX}`, packaged: started.packaged }
   })
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))

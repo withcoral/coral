@@ -7,6 +7,8 @@ use datafusion::scalar::ScalarValue;
 
 use coral_spec::{FilterMode, FilterSpec};
 
+use super::scalar::timestamp_to_rfc3339;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FilterExtraction {
     Values(HashMap<String, String>),
@@ -402,11 +404,13 @@ pub(crate) fn literal_to_string(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Literal(ScalarValue::Utf8(Some(v)), _) => Some(v.clone()),
         Expr::Literal(ScalarValue::LargeUtf8(Some(v)), _) => Some(v.clone()),
+        Expr::Literal(ScalarValue::Utf8View(Some(v)), _) => Some(v.clone()),
         Expr::Literal(ScalarValue::Int64(Some(v)), _) => Some(v.to_string()),
         Expr::Literal(ScalarValue::Int32(Some(v)), _) => Some(v.to_string()),
         Expr::Literal(ScalarValue::Float64(Some(v)), _) => Some(v.to_string()),
         Expr::Literal(ScalarValue::Float32(Some(v)), _) => Some(v.to_string()),
         Expr::Literal(ScalarValue::Boolean(Some(v)), _) => Some(v.to_string()),
+        Expr::Literal(value, _) => timestamp_to_rfc3339(value),
         Expr::Cast(cast) => literal_to_string(cast.expr.as_ref()),
         Expr::TryCast(cast) => literal_to_string(cast.expr.as_ref()),
         _ => None,
@@ -419,7 +423,7 @@ mod tests {
         FilterExtraction, extract_exact_filter_values_checked, extract_filter_values,
         extract_filter_values_checked,
     };
-    use coral_spec::{FilterMode, FilterSpec};
+    use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
     use datafusion::logical_expr::{Expr, col, lit};
     use std::collections::HashMap;
     use std::ops::Not;
@@ -441,11 +445,30 @@ mod tests {
     fn filter(name: &str, required: bool, mode: FilterMode) -> FilterSpec {
         FilterSpec {
             name: name.into(),
-            data_type: "Utf8".into(),
+            data_type: ManifestDataType::Utf8,
             required,
             mode,
             description: String::new(),
             lookup_key: false,
+        }
+    }
+
+    #[test]
+    fn literal_to_string_accepts_every_string_literal_variant() {
+        use datafusion::common::ScalarValue;
+
+        for scalar in [
+            ScalarValue::Utf8(Some("alice".to_string())),
+            ScalarValue::LargeUtf8(Some("alice".to_string())),
+            ScalarValue::Utf8View(Some("alice".to_string())),
+        ] {
+            let variant = format!("{scalar:?}");
+            let expr = Expr::Literal(scalar, None);
+            assert_eq!(
+                super::literal_to_string(&expr).as_deref(),
+                Some("alice"),
+                "string literal variant should extract: {variant}"
+            );
         }
     }
 
@@ -631,7 +654,7 @@ mod tests {
 #[cfg(test)]
 mod pushdown_classification_tests {
     use super::{classify_filter, classify_filter_pushdown_for_consumed};
-    use coral_spec::{FilterMode, FilterSpec};
+    use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
     use datafusion::common::Column;
     use datafusion::logical_expr::{
         Expr, Operator, TableProviderFilterPushDown, binary_expr, expr::Like, lit,
@@ -650,7 +673,7 @@ mod pushdown_classification_tests {
     fn filter(name: &str) -> FilterSpec {
         FilterSpec {
             name: name.to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),

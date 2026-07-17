@@ -148,6 +148,32 @@ functions:
     }
 
     #[test]
+    fn validate_manifest_schema_accepts_table_function_arg_type() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_messages
+    args:
+      - name: include_archived
+        type: Boolean
+        bind:
+          arg: include_archived
+    request:
+      method: GET
+      path: /messages/search
+",
+        );
+
+        validate_manifest_schema(&manifest)
+            .expect("table function argument data types should pass schema validation");
+    }
+
+    #[test]
     fn validate_manifest_schema_directly_rejects_v4_manifest() {
         let manifest = manifest_json(
             r"
@@ -714,6 +740,53 @@ tables:
                 .to_string()
                 .contains("is not valid under any of the schemas listed in the 'oneOf' keyword"),
             "unexpected error: {error}"
+        );
+    }
+
+    fn schema_enum_spellings(schema: &serde_json::Value, def: &str) -> Vec<String> {
+        schema
+            .pointer(&format!("/$defs/{def}/enum"))
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("$defs.{def}.enum should be a list"))
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .expect("enum entries should be strings")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn manifest_schema_data_type_enums_match_rust_variants() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
+                .expect("bundled schema should parse");
+
+        let rust_spellings: Vec<String> = crate::ManifestDataType::ALL
+            .iter()
+            .map(|data_type| data_type.as_manifest_str().to_string())
+            .collect();
+        assert_eq!(
+            schema_enum_spellings(&schema, "manifest_data_type"),
+            rust_spellings,
+            "source_manifest.schema.json $defs.manifest_data_type must list the \
+             ManifestDataType variants in declaration order"
+        );
+
+        let partition_spellings: Vec<String> = crate::ManifestDataType::ALL
+            .iter()
+            .filter(|data_type| {
+                crate::backends::file::FilePartitionDataType::try_from(**data_type).is_ok()
+            })
+            .map(|data_type| data_type.as_manifest_str().to_string())
+            .collect();
+        assert_eq!(
+            schema_enum_spellings(&schema, "file_partition_data_type"),
+            partition_spellings,
+            "source_manifest.schema.json $defs.file_partition_data_type must list the \
+             partition-legal ManifestDataType variants in declaration order"
         );
     }
 }

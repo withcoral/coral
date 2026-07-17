@@ -15,6 +15,34 @@ This state includes installed-source metadata and non-secret source variables. S
   Prefer the `coral source` commands for source state instead of editing workspace entries manually.
 </Note>
 
+## Database
+
+Coral stores durable app state in a local SQLite database named `coral.db` inside the local state directory by default. You do not need a `[database]` section for the default setup.
+
+Use `[database]` to choose an explicit backend. Relative SQLite paths resolve from the local state directory.
+
+```toml
+[database]
+backend = "sqlite"
+path = "state/coral.db"
+```
+
+For Postgres, store the connection URL in an environment variable and reference the variable name from `config.toml`.
+
+```toml
+[database]
+backend = "postgres"
+url_env = "CORAL_DATABASE_URL"
+```
+
+```shellscript
+export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?sslmode=verify-full"
+```
+
+<Note>
+  Remote Postgres URLs must set `sslmode=verify-full` so Coral verifies the server identity. Loopback and local-socket Postgres URLs may omit TLS for local development.
+</Note>
+
 ## Workspaces
 
 Workspace metadata is stored under `[workspaces]`. The `default` workspace

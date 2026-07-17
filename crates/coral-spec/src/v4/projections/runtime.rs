@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrOperation};
 use crate::{
-    ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestDataType,
-    ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
+    ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ParsedTemplate, RequestSpec,
+    Result, TableFunctionArgSpec,
 };
 
 use super::model::{Projection, SqlInputExposure};
@@ -17,11 +17,11 @@ pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
         .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
         .map(|input| FilterSpec {
             name: input.name.clone(),
-            data_type: manifest_data_type_name(input.data_type).to_string(),
+            data_type: input.data_type,
             required: input.required,
             mode: FilterMode::Equality,
             description: input.description.clone(),
-            lookup_key: false,
+            lookup_key: input.lookup_key,
         })
         .collect()
 }
@@ -33,6 +33,7 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
         .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
         .map(|input| TableFunctionArgSpec {
             name: input.name.clone(),
+            data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
             bind: FunctionArgBinding {
@@ -49,6 +50,7 @@ pub fn mcp_projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArg
         .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
         .map(|input| TableFunctionArgSpec {
             name: input.name.clone(),
+            data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
             bind: FunctionArgBinding {
@@ -64,7 +66,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
         .iter()
         .map(|column| ColumnSpec {
             name: column.name.clone(),
-            data_type: manifest_data_type_name(column.data_type).to_string(),
+            data_type: column.data_type,
             nullable: column.nullable,
             r#virtual: false,
             description: column.description.clone(),
@@ -85,7 +87,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             .filter(|input| !existing.contains(&input.name))
             .map(|input| ColumnSpec {
                 name: input.name.clone(),
-                data_type: manifest_data_type_name(input.data_type).to_string(),
+                data_type: input.data_type,
                 nullable: !input.required,
                 r#virtual: true,
                 description: input.description.clone(),
@@ -95,17 +97,6 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             }),
     );
     columns
-}
-
-pub fn manifest_data_type_name(data_type: ManifestDataType) -> &'static str {
-    match data_type {
-        ManifestDataType::Utf8 => "Utf8",
-        ManifestDataType::Int64 => "Int64",
-        ManifestDataType::Boolean => "Boolean",
-        ManifestDataType::Float64 => "Float64",
-        ManifestDataType::Timestamp => "Timestamp",
-        ManifestDataType::Json => "Json",
-    }
 }
 
 pub fn request_spec_for_projection(

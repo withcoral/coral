@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
+import { Link, MemoryRouter } from 'react-router'
 import { fn } from 'storybook/test'
 
 import { Icon } from '@/wax/components/icon'
@@ -38,6 +39,15 @@ export const WithIcon: Story = {
   },
 }
 
+export const WithHeaderPill: Story = {
+  args: {
+    description: 'A source with a compact status pill in the card header.',
+    headerPill: { label: 'Imported' },
+    icon: <Icon name="Plug" size="20" />,
+    title: 'Custom source',
+  },
+}
+
 export const NoIcon: Story = {
   args: {
     description: 'A source rendered without an icon.',
@@ -47,11 +57,31 @@ export const NoIcon: Story = {
 
 export const Interactive: Story = {
   args: {
-    description: 'Click this card — it renders as a button when onSelect is provided.',
+    description: 'Click this card — it renders as a button through the polymorphic as prop.',
     icon: <Icon name="Database" size="20" />,
-    onSelect: fn(),
     title: 'Postgres',
   },
+  render: (args) => (
+    <div style={{ width: 320 }}>
+      <Card {...args} as="button" onClick={fn()} />
+    </div>
+  ),
+}
+
+export const AsReactRouterLink: Story = {
+  args: {
+    description: 'Navigate to the GitHub source details route using React Router Link.',
+    headerPill: { label: 'Core' },
+    icon: <Icon name="GitBranch" size="20" />,
+    title: 'GitHub',
+  },
+  render: (args) => (
+    <MemoryRouter>
+      <div style={{ width: 320 }}>
+        <Card {...args} as={Link} prefetch="intent" to="/sources/github" />
+      </div>
+    </MemoryRouter>
+  ),
 }
 
 export const LongText: Story = {

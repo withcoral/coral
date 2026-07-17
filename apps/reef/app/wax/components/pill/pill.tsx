@@ -1,5 +1,6 @@
 import classNames from 'classnames'
-import React, { Children, ElementType, isValidElement } from 'react'
+import React, { Children, isValidElement } from 'react'
+import type { ElementType } from 'react'
 
 import * as styles from './pill.css'
 

@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { type TraceSpan } from '@/generated/coral/v1/traces_pb'
-
-import { sortedSpans } from './trace-utils'
+import { sortedSpans, type TraceSpanData } from './trace-utils'
 
 export interface TimelineNode {
   children: TimelineNode[]
-  span: TraceSpan
+  span: TraceSpanData
 }
 
 export interface TimelineRow {
   childCount: number
   depth: number
-  span: TraceSpan
+  span: TraceSpanData
 }
 
-function compareSpanStart(a: TraceSpan, b: TraceSpan): number {
+function compareSpanStart(a: TraceSpanData, b: TraceSpanData): number {
   const aStart = BigInt(a.startTimeUnixNanos || 0)
   const bStart = BigInt(b.startTimeUnixNanos || 0)
   if (aStart < bStart) return -1
@@ -27,7 +25,7 @@ function compareTimelineNodes(a: TimelineNode, b: TimelineNode): number {
   return compareSpanStart(a.span, b.span)
 }
 
-export function buildTimelineTree(spans: TraceSpan[], rootSpanId?: string): TimelineNode[] {
+export function buildTimelineTree(spans: TraceSpanData[], rootSpanId?: string): TimelineNode[] {
   const ordered = sortedSpans(spans)
   const nodesById = new Map<string, TimelineNode>()
 
@@ -73,7 +71,7 @@ export function flattenVisibleTimelineTree(
   return rows
 }
 
-export function useTimelineTree(spans: TraceSpan[], rootSpanId?: string, traceId?: string) {
+export function useTimelineTree(spans: TraceSpanData[], rootSpanId?: string, traceId?: string) {
   const [collapsedSpanIds, setCollapsedSpanIds] = useState<Set<string>>(() => new Set())
 
   useEffect(() => setCollapsedSpanIds(new Set()), [traceId])

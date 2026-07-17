@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestError,
-    ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
+    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestDataType,
+    ManifestError, ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec,
+    Result, SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
     TableCommon, TableFunctionArgSpec, ValueSourceSpec,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
@@ -217,7 +217,7 @@ pub struct McpOffsetPaginationSpec {
 pub struct McpTableFilterSpec {
     pub name: String,
     #[serde(rename = "type", default = "default_mcp_filter_data_type")]
-    pub data_type: String,
+    pub data_type: ManifestDataType,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
@@ -294,15 +294,15 @@ impl McpTableFunctionSpec {
     }
 }
 
-fn default_mcp_filter_data_type() -> String {
-    "Utf8".to_string()
+fn default_mcp_filter_data_type() -> ManifestDataType {
+    ManifestDataType::Utf8
 }
 
 impl McpTableFilterSpec {
     fn filter_spec(&self) -> FilterSpec {
         FilterSpec {
             name: self.name.clone(),
-            data_type: self.data_type.clone(),
+            data_type: self.data_type,
             required: self.required,
             mode: self.mode,
             description: self.description.clone(),

@@ -61,6 +61,16 @@ export async function externalCoralPath(): Promise<string> {
   throw new Error('No Coral binary is available yet. Run `npm run stage:coral --prefix apps/desktop` first.')
 }
 
+// Dev binds a known port (default 8778, overridable) so the Vite dev server can
+// proxy the same-origin `/__coral__` prefix to it — the port must be fixed
+// because Vite's config loads before the sidecar exists. Packaged builds keep
+// `--port 0` (dynamic) since they proxy via the app:// scheme, not Vite.
+function devSidecarPort(): string {
+  // `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back — an empty
+  // string would otherwise become `--port ""` and the sidecar would fail to start.
+  return process.env.CORAL_DEV_SIDECAR_PORT || '8778'
+}
+
 function devSidecarCommand(): { command: string; args: string[]; cwd: string } {
   return {
     command: 'cargo',
@@ -75,7 +85,7 @@ function devSidecarCommand(): { command: string; args: string[]; cwd: string } {
       'ui',
       '--no-open',
       '--port',
-      '0',
+      devSidecarPort(),
     ],
     cwd: repoRoot(),
   }

@@ -1,6 +1,6 @@
 import React from 'react'
 
-import * as Button from '@/wax/components/button'
+import { Button } from '@/wax/components'
 import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
 import { iconContainer } from '@/wax/components/button/icon.css'
 import { Icon, IconSize } from '@/wax/components/icon'

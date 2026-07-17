@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
-    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrScalarType, IrType, IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
+    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput, IrType,
+    IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};
@@ -23,6 +23,8 @@ use super::names::{
 };
 use super::pagination::pagination_query_param_names;
 
+type TypeIndex<'a> = HashMap<&'a str, &'a IrType>;
+
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
     surfaces: &[SemanticIr],
@@ -39,8 +41,10 @@ pub fn generate_projection_catalog(
                     ir.surface_id, manifest.common.name
                 ))
             })?;
+        let type_by_id = type_index(ir);
         for operation in &ir.operations {
-            let projection = generate_projection(ir, namespace, operation, &mut diagnostics);
+            let projection =
+                generate_projection(ir, namespace, &type_by_id, operation, &mut diagnostics);
             projections.push(projection);
         }
         diagnostics.extend(ir.diagnostics.clone());
@@ -53,7 +57,7 @@ pub fn generate_projection_catalog(
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
-        generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+        generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
         projections,
         diagnostics,
     })
@@ -62,6 +66,7 @@ pub fn generate_projection_catalog(
 fn generate_projection(
     ir: &SemanticIr,
     namespace: &str,
+    type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Projection {
@@ -114,13 +119,14 @@ fn generate_projection(
                 source_location: input.location,
                 wire_name: input.name.clone(),
                 required: projection_input_required(input),
-                data_type: manifest_type(input.data_type),
+                data_type: input.data_type.lower(),
                 default_value: input.default_value.clone(),
                 description: input.description.clone(),
+                lookup_key: rest_filter_is_lookup_key(rest, input, exposure),
             }
         })
         .collect::<Vec<_>>();
-    let columns = projection_columns(ir, operation);
+    let columns = projection_columns(type_by_id, operation);
     let name = generated_projection_name(operation, is_search);
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
@@ -252,6 +258,18 @@ fn rest_input_exposure(
     (exposure, pagination_owned_query_input)
 }
 
+/// A REST filter input is a lookup key (dependent joins may bind to it) when
+/// the surface metadata does not exclude it. Lookup key exclusion never
+/// changes SQL exposure: an excluded input stays a pushdown filter, it just
+/// cannot anchor a join.
+fn rest_filter_is_lookup_key(
+    rest: Option<&RestExecutionAttachment>,
+    input: &IrOperationInput,
+    exposure: SqlInputExposure,
+) -> bool {
+    rest.is_some() && exposure == SqlInputExposure::Filter && !input.exclude_from_lookup_keys
+}
+
 fn mcp_pagination_owns_input(
     mcp: &crate::v4::McpExecutionAttachment,
     input: &IrOperationInput,
@@ -292,7 +310,14 @@ fn projection_input_name(
     name
 }
 
-fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
+fn type_index(ir: &SemanticIr) -> TypeIndex<'_> {
+    ir.types.iter().map(|ty| (ty.id.as_str(), ty)).collect()
+}
+
+fn projection_columns(
+    type_by_id: &TypeIndex<'_>,
+    operation: &IrOperation,
+) -> Vec<ProjectionColumn> {
     if matches!(&operation.execution, IrExecutionAttachment::Mcp(_)) {
         // MCP output schemas drive row cardinality and response extraction, but
         // SQL columns stay opaque until Coral has stable per-tool payload
@@ -314,11 +339,6 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
             },
         ];
     }
-    let type_by_id = ir
-        .types
-        .iter()
-        .map(|ty| (ty.id.as_str(), ty))
-        .collect::<HashMap<_, _>>();
     let Some(row_type) = type_by_id.get(operation.output.type_ref.as_str()) else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
@@ -361,22 +381,11 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
 
 fn projection_data_type(ty: &IrType) -> ManifestDataType {
     match &ty.shape {
-        IrTypeShape::Scalar(scalar) => manifest_type(*scalar),
+        IrTypeShape::Scalar(scalar) => scalar.lower(),
         IrTypeShape::Enum { .. } => ManifestDataType::Utf8,
         IrTypeShape::Json
         | IrTypeShape::Object { .. }
         | IrTypeShape::List { .. }
         | IrTypeShape::Map { .. } => ManifestDataType::Json,
-    }
-}
-
-fn manifest_type(scalar: IrScalarType) -> ManifestDataType {
-    match scalar {
-        IrScalarType::String | IrScalarType::Id => ManifestDataType::Utf8,
-        IrScalarType::Integer => ManifestDataType::Int64,
-        IrScalarType::Number => ManifestDataType::Float64,
-        IrScalarType::Boolean => ManifestDataType::Boolean,
-        IrScalarType::Timestamp => ManifestDataType::Timestamp,
-        IrScalarType::Json => ManifestDataType::Json,
     }
 }

@@ -14,28 +14,34 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
+use coral_api::v1::function_service_server::{FunctionService, FunctionServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
+use coral_api::v1::search_service_server::{SearchService, SearchServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
-    CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    AddFunctionRequest, AddFunctionResponse, CatalogCounts, CatalogItem, CatalogMetadata,
+    CatalogSearchResult, Column, ColumnHint, ColumnSearchResult, CreateBundledSourceRequest,
+    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
-    DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
+    DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse,
     ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
-    QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response,
-    source_input_spec::Input as ProtoSourceInput,
+    QueryPlan, SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchProvider,
+    SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse, SearchResult,
+    SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
+    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    import_source_response, search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
-    CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -51,6 +57,18 @@ fn workspace() -> Workspace {
     Workspace {
         name: "default".to_string(),
     }
+}
+
+pub(crate) fn assert_default_workspace(workspace: Option<&Workspace>) {
+    assert_workspace_name(workspace, "default");
+}
+
+pub(crate) fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
+    assert_eq!(
+        workspace.map(|workspace| workspace.name.as_str()),
+        Some(expected),
+        "expected workspace {expected:?}, got {workspace:?}"
+    );
 }
 
 fn mock_source() -> Source {
@@ -338,6 +356,106 @@ fn mock_validate_response() -> ValidateSourceResponse {
     }
 }
 
+fn mock_search_response() -> SearchResponse {
+    let table = mock_visible_table();
+    SearchResponse {
+        results: vec![
+            SearchResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                payload: Some(search_result::Payload::CatalogMetadata(CatalogMetadata {
+                    item: Some(CatalogItem {
+                        item: Some(catalog_item::Item::Table(table_summary(&table))),
+                    }),
+                    matched_fields: vec!["description".to_string()],
+                    table_column_preview: Some(SearchTableColumnPreview {
+                        column_count: 3,
+                        columns: vec![
+                            SearchTableColumnPreviewColumn {
+                                name: "owner".to_string(),
+                                data_type: "Utf8".to_string(),
+                                is_required_filter: true,
+                                description: "Repository owner filter".to_string(),
+                                matched_fields: Vec::new(),
+                            },
+                            SearchTableColumnPreviewColumn {
+                                name: "text".to_string(),
+                                data_type: "Utf8".to_string(),
+                                is_required_filter: false,
+                                description: "Message text".to_string(),
+                                matched_fields: vec!["description".to_string()],
+                            },
+                        ],
+                        omitted_column_count: 1,
+                    }),
+                })),
+            },
+            SearchResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                payload: Some(search_result::Payload::ColumnHint(ColumnHint {
+                    schema_name: "local_messages".to_string(),
+                    surface_name: "messages".to_string(),
+                    surface_kind: SearchSurfaceKind::Table as i32,
+                    name: "text".to_string(),
+                    data_type: "Utf8".to_string(),
+                    required: false,
+                    description: "Message text".to_string(),
+                    matched_fields: vec!["column_name".to_string()],
+                    field_role: SearchFieldRole::TableColumn as i32,
+                })),
+            },
+        ],
+        provider_statuses: vec![
+            mock_provider_status(
+                SearchProvider::CatalogMetadata,
+                SearchProviderState::ResultsFound,
+                "Catalog metadata returned 2 search hints",
+                Some(SearchProviderCoverage {
+                    eligible_units: 3,
+                    searched_units: 3,
+                    failed_units: 0,
+                    returned_count: 2,
+                    has_more: false,
+                    budget_exhausted: false,
+                    timed_out: false,
+                    stale_index: false,
+                }),
+            ),
+            mock_provider_status(
+                SearchProvider::ObservedValues,
+                SearchProviderState::NotEnabled,
+                "Observed-value provider is not enabled",
+                None,
+            ),
+            mock_provider_status(
+                SearchProvider::NativeFanout,
+                SearchProviderState::Skipped,
+                "Native fanout is not eligible for this request",
+                None,
+            ),
+        ],
+        truncation: Some(SearchResultTruncation {
+            truncated: false,
+            returned_count: 2,
+            max_results: 10,
+            note: String::new(),
+        }),
+    }
+}
+
+fn mock_provider_status(
+    provider: SearchProvider,
+    state: SearchProviderState,
+    note: &str,
+    coverage: Option<SearchProviderCoverage>,
+) -> coral_api::v1::SearchProviderStatus {
+    coral_api::v1::SearchProviderStatus {
+        provider: provider as i32,
+        state: state as i32,
+        note: note.to_string(),
+        coverage,
+    }
+}
+
 fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
     match name {
         "github" => Ok(SourceInfo {
@@ -462,17 +580,22 @@ impl<T> MockResult<T> {
 #[derive(Clone)]
 pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
+    search: MockResult<SearchResponse>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
     list_workspaces: MockResult<ListWorkspacesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
     delete_source: MockResult<()>,
+    add_function: MockResult<AddFunctionResponse>,
+    list_functions: MockResult<ListFunctionsResponse>,
+    delete_function: MockResult<()>,
 }
 
 impl Default for MockServerConfig {
     fn default() -> Self {
         Self {
             execute_sql_override: None,
+            search: MockResult::ok(mock_search_response()),
             discover_sources: MockResult::ok(mock_discover_response()),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
@@ -501,6 +624,11 @@ impl Default for MockServerConfig {
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
+            add_function: MockResult::ok(AddFunctionResponse { function: None }),
+            list_functions: MockResult::ok(ListFunctionsResponse {
+                functions: Vec::new(),
+            }),
+            delete_function: MockResult::ok(()),
         }
     }
 }
@@ -523,6 +651,16 @@ impl MockServerConfig {
 
     pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
         self.execute_sql_override = Some(MockResult::ok(response));
+        self
+    }
+
+    pub(crate) fn with_add_function(mut self, response: AddFunctionResponse) -> Self {
+        self.add_function = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_list_functions(mut self, response: ListFunctionsResponse) -> Self {
+        self.list_functions = MockResult::ok(response);
         self
     }
 
@@ -607,7 +745,8 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
-    execute_sql_episode_ids: Mutex<Vec<Option<String>>>,
+    search: Mutex<Vec<SearchRequest>>,
+    execute_sql_task_ids: Mutex<Vec<Option<String>>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
     describe_table: Mutex<Vec<DescribeTableRequest>>,
@@ -621,6 +760,9 @@ struct Captured {
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
+    add_function: Mutex<Vec<AddFunctionRequest>>,
+    list_functions: Mutex<Vec<ListFunctionsRequest>>,
+    remove_function: Mutex<Vec<DeleteFunctionRequest>>,
     list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
     create_workspace: Mutex<Vec<CreateWorkspaceRequest>>,
     delete_workspace: Mutex<Vec<DeleteWorkspaceRequest>>,
@@ -642,6 +784,29 @@ pub(crate) fn encode_arrow_ipc_stream(
 }
 
 #[derive(Clone)]
+struct MockSearchService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl SearchService for MockSearchService {
+    async fn search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        self.captured
+            .search
+            .lock()
+            .expect("search capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.search.clone().into_tonic_result()?,
+        ))
+    }
+}
+
+#[derive(Clone)]
 struct MockQueryService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
@@ -653,9 +818,9 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
-        let episode_id = request
+        let task_id = request
             .metadata()
-            .get(CORAL_EPISODE_ID_METADATA_KEY)
+            .get(CORAL_TASK_ID_METADATA_KEY)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         let request = request.into_inner();
@@ -665,10 +830,10 @@ impl QueryService for MockQueryService {
             .expect("execute_sql capture")
             .push(request.clone());
         self.captured
-            .execute_sql_episode_ids
+            .execute_sql_task_ids
             .lock()
-            .expect("execute_sql episode id capture")
-            .push(episode_id);
+            .expect("execute_sql task id capture")
+            .push(task_id);
         let sql = request.sql;
         if sql
             .trim_start()
@@ -860,6 +1025,63 @@ impl CatalogService for MockCatalogService {
 struct MockSourceService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
+}
+
+#[derive(Clone)]
+struct MockFunctionService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl FunctionService for MockFunctionService {
+    async fn add_function(
+        &self,
+        request: Request<AddFunctionRequest>,
+    ) -> Result<Response<AddFunctionResponse>, Status> {
+        self.captured
+            .add_function
+            .lock()
+            .expect("add_function capture")
+            .push(request.into_inner());
+        self.config
+            .add_function
+            .clone()
+            .into_tonic_result()
+            .map(Response::new)
+    }
+
+    async fn list_functions(
+        &self,
+        request: Request<ListFunctionsRequest>,
+    ) -> Result<Response<ListFunctionsResponse>, Status> {
+        self.captured
+            .list_functions
+            .lock()
+            .expect("list_functions capture")
+            .push(request.into_inner());
+        self.config
+            .list_functions
+            .clone()
+            .into_tonic_result()
+            .map(Response::new)
+    }
+
+    async fn delete_function(
+        &self,
+        request: Request<DeleteFunctionRequest>,
+    ) -> Result<Response<DeleteFunctionResponse>, Status> {
+        self.captured
+            .remove_function
+            .lock()
+            .expect("remove_function capture")
+            .push(request.into_inner());
+        self.config
+            .delete_function
+            .clone()
+            .into_tonic_result()
+            .map(|()| Response::new(DeleteFunctionResponse {}))
+    }
 }
 
 type MockBundledSourceStream =
@@ -1091,10 +1313,13 @@ impl MockServer {
         let config = Arc::new(config);
         let captured = Arc::new(Captured::default());
         let query_captured = Arc::clone(&captured);
+        let search_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
+        let function_captured = Arc::clone(&captured);
         let workspace_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
+        let search_config = Arc::clone(&config);
         let source_config = Arc::clone(&config);
         let workspace_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
@@ -1106,6 +1331,10 @@ impl MockServer {
                     config: query_config,
                     captured: query_captured,
                 }))
+                .add_service(SearchServiceServer::new(MockSearchService {
+                    config: search_config,
+                    captured: search_captured,
+                }))
                 .add_service(SourceServiceServer::new(MockSourceService {
                     config: source_config,
                     captured: source_captured,
@@ -1113,6 +1342,10 @@ impl MockServer {
                 .add_service(WorkspaceServiceServer::new(MockWorkspaceService {
                     config: workspace_config,
                     captured: workspace_captured,
+                }))
+                .add_service(FunctionServiceServer::new(MockFunctionService {
+                    config: Arc::clone(&config),
+                    captured: function_captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     drop(shutdown_rx.await);
@@ -1156,11 +1389,15 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn execute_sql_episode_ids(&self) -> Vec<Option<String>> {
+    pub(crate) fn search_requests(&self) -> Vec<SearchRequest> {
+        self.captured.search.lock().expect("search capture").clone()
+    }
+
+    pub(crate) fn execute_sql_task_ids(&self) -> Vec<Option<String>> {
         self.captured
-            .execute_sql_episode_ids
+            .execute_sql_task_ids
             .lock()
-            .expect("execute_sql episode id capture")
+            .expect("execute_sql task id capture")
             .clone()
     }
 
@@ -1225,6 +1462,30 @@ impl MockServer {
             .validate_source
             .lock()
             .expect("validate_source capture")
+            .clone()
+    }
+
+    pub(crate) fn list_functions_requests(&self) -> Vec<ListFunctionsRequest> {
+        self.captured
+            .list_functions
+            .lock()
+            .expect("list_functions capture")
+            .clone()
+    }
+
+    pub(crate) fn add_function_requests(&self) -> Vec<AddFunctionRequest> {
+        self.captured
+            .add_function
+            .lock()
+            .expect("add_function capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_function_requests(&self) -> Vec<DeleteFunctionRequest> {
+        self.captured
+            .remove_function
+            .lock()
+            .expect("remove_function capture")
             .clone()
     }
 

@@ -245,21 +245,25 @@ fn mcp_typed_args_manifest() -> coral_spec::ValidatedSourceManifest {
             "args": [
                 {
                     "name": "query",
+                    "type": "Utf8",
                     "required": true,
                     "bind": { "arg": "query" }
                 },
                 {
                     "name": "limit",
+                    "type": "Int64",
                     "required": true,
                     "bind": { "arg": "limit" }
                 },
                 {
                     "name": "include_archived",
+                    "type": "Boolean",
                     "required": true,
                     "bind": { "arg": "include_archived" }
                 },
                 {
                     "name": "threshold",
+                    "type": "Float64",
                     "required": true,
                     "bind": { "arg": "threshold" }
                 }
@@ -362,7 +366,7 @@ async fn executes_mcp_table_function_with_bound_args() {
 }
 
 #[tokio::test]
-async fn mcp_table_function_preserves_json_scalar_arg_types() {
+async fn mcp_table_function_declared_arg_types_keep_existing_call_behavior() {
     let ctx = SessionContext::new();
     let caller = Arc::new(FakeMcpCaller {
         calls: Mutex::new(Vec::new()),
@@ -435,7 +439,7 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
 
 fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
-    catalog::register(ctx, &registration.active_sources).expect("catalog should register");
+    catalog::register(ctx, &registration.active_sources, &[]).expect("catalog should register");
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources

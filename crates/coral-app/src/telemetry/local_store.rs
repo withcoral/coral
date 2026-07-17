@@ -478,6 +478,7 @@ pub(crate) struct TraceDetailRecord {
 pub(crate) struct TraceQueryHistoryEntry {
     pub(crate) trace_id: String,
     pub(crate) span_id: String,
+    pub(crate) workspace: String,
     pub(crate) sql: String,
     pub(crate) sources: Vec<String>,
     pub(crate) tables: Vec<TraceQueryTableUsage>,
@@ -1654,6 +1655,7 @@ fn query_history_entry_from_span(
     if sql.trim().is_empty() {
         return None;
     }
+    let workspace = attr_string(&attributes, WORKSPACE_SPAN_ATTRIBUTE)?;
     let row_count = attr_u64(&attributes, "row_count")?;
     let sources = attr_string_array(&attributes, super::QUERY_TRACE_SOURCES_ATTR)?;
     let tables =
@@ -1666,6 +1668,7 @@ fn query_history_entry_from_span(
     Some(TraceQueryHistoryEntry {
         trace_id: span.trace_id.clone(),
         span_id: span.span_id.clone(),
+        workspace,
         sql,
         sources,
         tables,
@@ -1839,6 +1842,7 @@ mod tests {
         JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus,
         TraceSpanRecord, TraceStore, unix_nanos,
     };
+    use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
     const TRACE_RETENTION: Duration = Duration::from_hours(7 * 24);
 
@@ -2027,13 +2031,30 @@ mod tests {
         legacy_record.attributes_json =
             r#"{"sql":"SELECT old","status":"ok","row_count":1}"#.to_string();
 
+        let mut missing_workspace_record = trace_record("missing-workspace-trace", "span");
+        missing_workspace_record.attributes_json = query_history_attributes(
+            None,
+            "SELECT missing_workspace",
+            r#"["github"]"#,
+            "[]",
+            "[]",
+            1,
+        );
+
         let mut malformed_record = trace_record("malformed-trace", "malformed-span");
-        malformed_record.attributes_json =
-            query_history_attributes("SELECT malformed", "not-json", "[]", "[]", 1);
+        malformed_record.attributes_json = query_history_attributes(
+            Some("default"),
+            "SELECT malformed",
+            "not-json",
+            "[]",
+            "[]",
+            1,
+        );
 
         let mut valid_record = trace_record("valid-trace", "valid-span");
         valid_record.end_time_unix_nanos = 42;
         valid_record.attributes_json = query_history_attributes(
+            Some("default"),
             "SELECT title FROM github.issues",
             r#"["github"]"#,
             r#"[{"source_name":"github","schema_name":"github","table_name":"issues"}]"#,
@@ -2042,7 +2063,15 @@ mod tests {
         );
 
         let path = dir.join(timestamped_jsonl_path(SystemTime::now()));
-        write_record_file_lines(&path, &[legacy_record, malformed_record, valid_record]);
+        write_record_file_lines(
+            &path,
+            &[
+                legacy_record,
+                missing_workspace_record,
+                malformed_record,
+                valid_record,
+            ],
+        );
 
         let history = TraceStore::new(dir)
             .list_query_history_sync()
@@ -2050,6 +2079,7 @@ mod tests {
 
         assert_eq!(history.len(), 1);
         let entry = history.first().expect("history entry");
+        assert_eq!(entry.workspace, "default");
         assert_eq!(entry.sql, "SELECT title FROM github.issues");
         assert_eq!(entry.sources, ["github"]);
         assert_eq!(entry.row_count, 15);
@@ -2611,6 +2641,7 @@ mod tests {
     }
 
     fn query_history_attributes(
+        workspace: Option<&str>,
         sql: &str,
         sources_json: &str,
         tables_json: &str,
@@ -2618,6 +2649,9 @@ mod tests {
         row_count: u64,
     ) -> String {
         let mut attributes = serde_json::Map::new();
+        if let Some(workspace) = workspace {
+            attributes.insert(WORKSPACE_SPAN_ATTRIBUTE.to_string(), json!(workspace));
+        }
         attributes.insert("sql".to_string(), json!(sql));
         attributes.insert("status".to_string(), json!("ok"));
         attributes.insert("row_count".to_string(), json!(row_count));

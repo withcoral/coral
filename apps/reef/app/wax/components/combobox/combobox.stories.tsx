@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
 
-import * as Combobox from './index'
+import { Combobox } from '@/wax/components'
 
 const fruits = [
   'Apple',

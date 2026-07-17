@@ -39,6 +39,11 @@ pub(super) struct OpenApiImporter<'a> {
     pub(super) diagnostics: Vec<Diagnostic>,
 }
 
+enum RefDiagnosticContext<'a> {
+    Operation { path: &'a str, method_name: &'a str },
+    OperationId(&'a str),
+}
+
 impl<'a> OpenApiImporter<'a> {
     fn new(manifest: &'a V4SourceManifest, surface: &'a V4Surface, document: &'a Value) -> Self {
         Self {
@@ -67,6 +72,21 @@ impl<'a> OpenApiImporter<'a> {
             ] {
                 let Some(operation_value) = path_item.get(method_name) else {
                     continue;
+                };
+                let operation_value = if operation_value.get("$ref").is_some() {
+                    match resolve_local_ref(self.document, operation_value) {
+                        Ok(operation_value) => operation_value,
+                        Err(error) => {
+                            let diagnostic = self.ref_error_diagnostic(
+                                error,
+                                &RefDiagnosticContext::Operation { path, method_name },
+                            );
+                            self.diagnostics.push(diagnostic);
+                            continue;
+                        }
+                    }
+                } else {
+                    operation_value
                 };
                 let operation =
                     self.import_operation(path, path_item, method_name, operation_value)?;
@@ -99,24 +119,44 @@ impl<'a> OpenApiImporter<'a> {
     ) -> Option<Value> {
         match resolve_local_ref(self.document, value) {
             Ok(resolved) => Some(resolved.clone()),
-            Err(RefError::External(reference)) => {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
-                    format!("external reference '{reference}' is unsupported"),
-                    self.surface.id.clone(),
-                    Some(operation_id.to_string()),
-                ));
-                None
-            }
-            Err(RefError::NotFound(reference)) => {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_REF_NOT_FOUND",
-                    format!("reference '{reference}' was not found"),
-                    self.surface.id.clone(),
-                    Some(operation_id.to_string()),
-                ));
+            Err(error) => {
+                diagnostics.push(
+                    self.ref_error_diagnostic(
+                        error,
+                        &RefDiagnosticContext::OperationId(operation_id),
+                    ),
+                );
                 None
             }
         }
+    }
+
+    fn ref_error_diagnostic(
+        &self,
+        error: RefError<'_>,
+        context: &RefDiagnosticContext<'_>,
+    ) -> Diagnostic {
+        let (code, message) = match error {
+            RefError::External(reference) => (
+                "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
+                format!(
+                    "external reference '{reference}' is unsupported; Coral currently requires dereferenced or bundled OpenAPI documents"
+                ),
+            ),
+            RefError::NotFound(reference) => (
+                "OPENAPI_REF_NOT_FOUND",
+                format!("reference '{reference}' was not found"),
+            ),
+        };
+        let (message, operation_id) = match context {
+            RefDiagnosticContext::Operation { path, method_name } => (
+                format!("OpenAPI operation {method_name} {path}: {message}"),
+                None,
+            ),
+            RefDiagnosticContext::OperationId(operation_id) => {
+                (message, Some(operation_id.to_string()))
+            }
+        };
+        Diagnostic::warning(code, message, self.surface.id.clone(), operation_id)
     }
 }

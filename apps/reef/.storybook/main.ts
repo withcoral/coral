@@ -54,6 +54,17 @@ const config: StorybookConfig = {
       { find: '~', replacement: resolve(__dirname, '../app') },
       ...existingAliases,
     ]
+
+    config.optimizeDeps ??= {}
+    const existingOptimizeIncludes = config.optimizeDeps.include ?? []
+    config.optimizeDeps.include = [
+      ...new Set([
+        ...existingOptimizeIncludes,
+        '@bufbuild/protobuf',
+        '@bufbuild/protobuf/codegenv2',
+      ]),
+    ]
+
     return config
   },
 }

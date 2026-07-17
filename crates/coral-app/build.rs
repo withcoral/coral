@@ -1,4 +1,4 @@
-//! Build script for bundled source manifests.
+//! Build script for bundled source packages.
 
 #![allow(
     clippy::disallowed_methods,
@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("migrations").display()
+    );
     let bundled_root = manifest_dir.join("../../sources/core");
     println!("cargo:rerun-if-changed={}", bundled_root.display());
 

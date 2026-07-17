@@ -520,6 +520,10 @@ operations that do not map cleanly to a stable table. If the endpoint is a
 provider search surface, such as GitHub issue search, use `kind: search` and
 declare `search_limits`.
 
+Function args accept an optional `type` field using Coral manifest data type
+names. It defaults to `Utf8`; set it when the provider argument is numeric,
+boolean, timestamp-shaped, or JSON-shaped.
+
 ```yaml
 functions:
   - name: search_issues
@@ -531,10 +535,12 @@ functions:
       max_calls_per_query: 1
     args:
       - name: q
+        type: Utf8
         required: true
         bind:
           arg: q
       - name: mode
+        type: Utf8
         values: [lexical, semantic, hybrid]
         bind:
           arg: search_type
@@ -1041,6 +1047,7 @@ functions:
 ```yaml
 args:
   - name: issue
+    type: Utf8
     required: true
     bind:
       arg: issue

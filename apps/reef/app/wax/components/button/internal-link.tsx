@@ -2,7 +2,7 @@ import React from 'react'
 import { Link } from 'react-router'
 import { To } from 'react-router'
 
-import * as Button from '@/wax/components/button'
+import { Button } from '@/wax/components'
 
 interface ButtonLinkProps {
   children: React.ReactNode

@@ -1,30 +1,11 @@
 import { style } from '@vanilla-extract/css'
 
-import { fontFamily } from '@/wax/theme/font.css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const header = style({
   alignItems: 'flex-start',
   display: 'flex',
   gap: 12,
-})
-
-export const headerLogo = style({
-  alignItems: 'center',
-  background: theme.surface.onMainContent,
-  borderRadius: '50%',
-  display: 'flex',
-  flexShrink: 0,
-  height: 40,
-  justifyContent: 'center',
-  overflow: 'hidden',
-  width: 40,
-})
-
-export const headerLogoImg = style({
-  height: '100%',
-  objectFit: 'cover',
-  width: '100%',
 })
 
 export const headerText = style({
@@ -110,28 +91,6 @@ export const methodTab = style({
       color: theme.content.primary,
     },
   },
-})
-
-export const oauthFields = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-})
-
-export const oauthBox = style({
-  alignItems: 'flex-start',
-  background: theme.surface.onMainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
-  display: 'flex',
-  gap: 10,
-  padding: 12,
-})
-
-export const oauthCode = style({
-  color: theme.content.primary,
-  fontFamily: fontFamily.dmMono,
-  fontWeight: 700,
 })
 
 export const alertBox = style({

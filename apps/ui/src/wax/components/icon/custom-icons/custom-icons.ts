@@ -6,6 +6,7 @@ import { CircleAlertIcon } from '@/wax/components/icon/custom-icons/circle-alert
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
 import { PanelLeftIcon } from '@/wax/components/icon/custom-icons/panel-left'
 import { PlugIcon } from '@/wax/components/icon/custom-icons/plug'
+import { RefreshCwIcon } from '@/wax/components/icon/custom-icons/refresh-cw'
 import { SearchIcon } from '@/wax/components/icon/custom-icons/search'
 import { XIcon } from '@/wax/components/icon/custom-icons/x'
 import { IconName } from '@/wax/components/icon'
@@ -26,6 +27,7 @@ export const customIcons = {
   Coral: CoralIcon,
   PanelLeft: PanelLeftIcon,
   Plug: PlugIcon,
+  RefreshCw: RefreshCwIcon,
   Search: SearchIcon,
   X: XIcon,
 } as const

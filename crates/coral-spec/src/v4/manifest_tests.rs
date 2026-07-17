@@ -1,4 +1,8 @@
-use crate::parse_source_manifest_yaml;
+use crate::{
+    ManifestCredentialMethodKind, ManifestOAuthDynamicClientRegistrationAuthMethod,
+    ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
+    ManifestOAuthScopeDelimiter, parse_source_manifest_yaml,
+};
 
 #[test]
 fn parses_v4_manifest_and_unions_surface_inputs() {
@@ -398,4 +402,171 @@ surfaces:
     .expect("v4 manifest");
 
     assert_eq!(manifest.declared_inputs().len(), 2);
+}
+
+#[test]
+fn parses_v4_surface_input_oauth_credential_metadata() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      TENANT_ID:
+        kind: variable
+        default: organizations
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              label: Connect with Demo
+              description: Use OAuth.
+              hint: Authorize in your browser.
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                resource: https://api.example.com/
+                redirect_uri: http://127.0.0.1:0/oauth/callback
+                redirect_uri_port_mode: random
+                endpoints:
+                  authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
+                  token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
+                client:
+                  dynamic_registration:
+                    registration_url: https://login.example.com/{{input.TENANT_ID}}/oauth/register
+                    client_name: Coral Demo
+                    token_endpoint_auth_method: client_secret_post
+                    request_refresh_token_grant: true
+                scopes:
+                  scope:
+                    delimiter: comma
+                    values:
+                      - read
+                      - offline_access
+            - type: source_config
+              label: Paste token
+",
+    )
+    .expect("v4 manifest");
+
+    let access_token = manifest
+        .declared_inputs()
+        .iter()
+        .find(|input| input.key == "ACCESS_TOKEN")
+        .expect("ACCESS_TOKEN input");
+    let credential = access_token.credential.as_ref().expect("credential");
+    let [oauth_method, source_config_method] = credential.methods.as_slice() else {
+        panic!(
+            "expected two credential methods, got {:?}",
+            credential.methods
+        );
+    };
+    assert_eq!(oauth_method.kind, ManifestCredentialMethodKind::OAuth);
+    assert_eq!(oauth_method.label.as_deref(), Some("Connect with Demo"));
+    assert_eq!(oauth_method.description.as_deref(), Some("Use OAuth."));
+    assert_eq!(
+        oauth_method.hint.as_deref(),
+        Some("Authorize in your browser.")
+    );
+    assert_eq!(
+        source_config_method.kind,
+        ManifestCredentialMethodKind::SourceConfig
+    );
+
+    let oauth = oauth_method.oauth.as_ref().expect("oauth");
+    assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::AuthorizationCode);
+    assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Required);
+    assert_eq!(
+        oauth.redirect_uri_port_mode,
+        ManifestOAuthRedirectUriPortMode::Random
+    );
+    assert_eq!(oauth.resource.as_deref(), Some("https://api.example.com/"));
+    assert_eq!(
+        oauth.authorization_url.as_deref(),
+        Some("https://login.example.com/{{input.TENANT_ID}}/oauth/authorize")
+    );
+    assert_eq!(
+        oauth.token_url,
+        "https://login.example.com/{{input.TENANT_ID}}/oauth/token"
+    );
+    let registration = oauth
+        .client
+        .dynamic_registration
+        .as_ref()
+        .expect("dynamic registration");
+    assert_eq!(
+        registration.token_endpoint_auth_method,
+        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost
+    );
+    assert!(registration.request_refresh_token_grant);
+    assert_eq!(
+        oauth.scopes.as_ref().expect("scopes").scope.delimiter,
+        ManifestOAuthScopeDelimiter::Comma
+    );
+}
+
+#[test]
+fn rejects_v4_surfaces_with_incompatible_oauth_input_metadata() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:0/oauth/callback
+                endpoints:
+                  authorization_url: https://login.example.com/oauth/authorize
+                  token_url: https://login.example.com/oauth/token
+                client:
+                  id:
+                    default: rest-client
+  - id: mcp
+    namespace_suffix: mcp
+    type: mcp
+    inputs:
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              oauth:
+                flow:
+                  type: device_code
+                endpoints:
+                  device_authorization_url: https://login.example.com/oauth/device
+                  token_url: https://login.example.com/oauth/token
+                client:
+                  id:
+                    default: mcp-client
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect_err("incompatible duplicate input metadata should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("declare incompatible input 'ACCESS_TOKEN'"),
+        "unexpected error: {error}"
+    );
 }

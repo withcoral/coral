@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
@@ -298,6 +298,9 @@ enum CredentialStreamEvent {
         authorization_url: String,
         user_code: String,
     },
+    OAuthCallbackReceived {
+        input_key: String,
+    },
     OAuthCompleted,
 }
 
@@ -314,6 +317,11 @@ impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStrea
                 authorization_url: authorization.authorization_url,
                 user_code: authorization.user_code,
             },
+            create_bundled_source_with_o_auth_response::Event::OauthCallbackReceived(callback) => {
+                Self::OAuthCallbackReceived {
+                    input_key: callback.input_key,
+                }
+            }
             create_bundled_source_with_o_auth_response::Event::OauthCompleted(_) => {
                 Self::OAuthCompleted
             }
@@ -330,6 +338,11 @@ impl From<import_source_response::Event> for CredentialStreamEvent {
                     input_key: authorization.input_key,
                     authorization_url: authorization.authorization_url,
                     user_code: authorization.user_code,
+                }
+            }
+            import_source_response::Event::OauthCallbackReceived(callback) => {
+                Self::OAuthCallbackReceived {
+                    input_key: callback.input_key,
                 }
             }
             import_source_response::Event::OauthCompleted(_) => Self::OAuthCompleted,
@@ -365,12 +378,39 @@ fn handle_credential_stream_event(
             }
             None
         }
+        Some(CredentialStreamEvent::OAuthCallbackReceived { input_key }) => {
+            let label = oauth_labels
+                .get(&input_key)
+                .map_or(input_key.as_str(), String::as_str);
+            redirect_prompt.cancel_and_join();
+            redirect_prompt.callback_received_at = Some(Instant::now());
+            println!(
+                "{}",
+                style(format!(
+                    "Authorization received for {label}. Exchanging authorization code for token..."
+                ))
+                .dim()
+            );
+            None
+        }
         Some(CredentialStreamEvent::Source(source)) => {
             redirect_prompt.cancel_and_join();
             Some(source)
         }
         Some(CredentialStreamEvent::OAuthCompleted) => {
             redirect_prompt.cancel_and_join();
+            let elapsed = redirect_prompt
+                .callback_received_at
+                .take()
+                .map(|started| format!(" in {:.1}s", started.elapsed().as_secs_f64()))
+                .unwrap_or_default();
+            println!(
+                "{}",
+                style(format!(
+                    "OAuth token received{elapsed}. Installing source..."
+                ))
+                .dim()
+            );
             None
         }
         None => None,
@@ -830,6 +870,7 @@ pub(crate) async fn validate_and_warn(
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
+    println!("{}", style("Validating source...").dim());
     if let Err(err) = validate_and_print(app, workspace, source_name, limit).await {
         eprintln!("Warning: validation failed: {err}");
     }
@@ -1242,6 +1283,7 @@ fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
 struct OAuthRedirectPastePrompt {
     cancel: Option<Arc<AtomicBool>>,
     handle: Option<JoinHandle<()>>,
+    callback_received_at: Option<Instant>,
 }
 
 impl OAuthRedirectPastePrompt {
@@ -1249,6 +1291,7 @@ impl OAuthRedirectPastePrompt {
         Self {
             cancel: Some(cancel),
             handle: Some(handle),
+            callback_received_at: None,
         }
     }
 

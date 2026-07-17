@@ -17,13 +17,18 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    AddFunctionResponse, DiscoverSourcesResponse, ExecuteSqlResponse, Function, FunctionArgument,
+    FunctionRuntimeInvalid, FunctionRuntimeReady, ListFunctionsResponse, ListSourcesResponse,
+    ListWorkspacesResponse, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    function,
 };
 use tempfile::tempdir;
 use tonic::Code;
 
-use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
+use harness::{
+    MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
+    encode_arrow_ipc_stream,
+};
 
 #[cfg(feature = "embedded-ui")]
 #[test]
@@ -55,18 +60,6 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect()
-}
-
-fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
-    assert_workspace_name(workspace, "default");
-}
-
-fn assert_workspace_name(workspace: Option<&coral_api::v1::Workspace>, expected: &str) {
-    assert_eq!(
-        workspace.map(|w| w.name.as_str()),
-        Some(expected),
-        "expected workspace {expected:?}, got {workspace:?}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -174,6 +167,146 @@ async fn source_list_accepts_workspace_flag_after_subcommand() {
     let requests = server.list_sources_requests();
     assert_eq!(requests.len(), 1, "expected one list_sources call");
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_list_uses_workspace_flag() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "list"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "No installed functions.");
+    let requests = server.list_functions_requests();
+    assert_eq!(requests.len(), 1, "expected one list_functions call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_list_renders_runtime_details() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_functions(
+        ListFunctionsResponse {
+            functions: vec![
+                Function {
+                    name: "github_issues".to_string(),
+                    runtime: Some(function::Runtime::Ready(FunctionRuntimeReady {
+                        arguments: vec![
+                            FunctionArgument {
+                                name: "owner".to_string(),
+                                data_type: "Utf8".to_string(),
+                            },
+                            FunctionArgument {
+                                name: "repo".to_string(),
+                                data_type: "Utf8".to_string(),
+                            },
+                        ],
+                        ..FunctionRuntimeReady::default()
+                    })),
+                    ..Function::default()
+                },
+                Function {
+                    name: "broken_function".to_string(),
+                    runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
+                        reason: "could not plan function\nsource is unavailable\nHint: reinstall the source"
+                            .to_string(),
+                    })),
+                    ..Function::default()
+                },
+            ],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["functions", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Arguments"),
+        "missing arguments header: {stdout}"
+    );
+    assert!(
+        stdout.contains("owner: Utf8, repo: Utf8"),
+        "missing inferred arguments: {stdout}"
+    );
+    let invalid_row = stdout
+        .lines()
+        .find(|line| line.starts_with("broken_function"))
+        .expect("invalid function row");
+    assert!(invalid_row.contains("invalid"), "invalid status: {stdout}");
+    assert!(
+        !invalid_row.contains("could not plan function"),
+        "validation reason leaked into table: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "Invalid functions:\n  broken_function:\n    could not plan function\n    source is unavailable\n    Hint: reinstall the source"
+        ),
+        "missing indented validation reason: {stdout}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_add_sends_file_to_selected_workspace() {
+    let temp = tempdir().expect("temp dir");
+    let function_file = temp.path().join("echo_value.sql");
+    let sql = "/* name: echo_value */ select 1 as value\n";
+    std::fs::write(&function_file, sql).expect("write function");
+    let server = MockServer::start_with_config(MockServerConfig::default().with_add_function(
+        AddFunctionResponse {
+            function: Some(Function {
+                name: "echo_value".to_string(),
+                runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
+                ..Function::default()
+            }),
+        },
+    ))
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "add", "--file"])
+        .arg(&function_file)
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&assert.get_output().stdout).trim(),
+        "Added function echo_value"
+    );
+    let requests = server.add_function_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].sql, sql);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_remove_uses_selected_workspace() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "remove", "echo_value"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&assert.get_output().stdout).trim(),
+        "Removed function echo_value"
+    );
+    let requests = server.delete_function_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].name, "echo_value");
 
     server.shutdown().await;
 }
@@ -786,6 +919,97 @@ async fn sql_json_output_renders_multiple_rows() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select id, name from users");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_command_renders_text_output_and_provider_statuses() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search", "messages", "text"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Results"),
+        "expected results section: {stdout}"
+    );
+    assert!(
+        stdout.contains("[catalog_metadata] table local_messages.messages"),
+        "expected catalog table result: {stdout}"
+    );
+    assert!(
+        stdout.contains("SQL: local_messages.messages"),
+        "expected SQL reference: {stdout}"
+    );
+    assert!(
+        stdout.contains("Provider statuses"),
+        "expected provider statuses section: {stdout}"
+    );
+    assert!(
+        stdout.contains("- observed_values: not_enabled"),
+        "disabled provider should remain visible: {stdout}"
+    );
+    assert!(
+        stdout.contains("- native_fanout: skipped"),
+        "skipped provider should remain visible: {stdout}"
+    );
+
+    let requests = server.search_requests();
+    assert_eq!(requests.len(), 1, "expected one search call");
+    assert_eq!(requests[0].query, "messages text");
+    assert_eq!(requests[0].limit, 10);
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_json_output_preserves_typed_payloads_and_statuses() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search", "--json", "--limit", "5", "messages"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let response: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("search --json should emit JSON");
+
+    assert_eq!(response["results"][0]["provider"], "catalog_metadata");
+    assert_eq!(response["results"][0]["kind"], "catalog_metadata");
+    assert_eq!(
+        response["results"][0]["catalog_metadata"]["item"]["sql_reference"],
+        "local_messages.messages"
+    );
+    assert_eq!(
+        response["results"][1]["column_hint"]["field_role"],
+        "table_column"
+    );
+    assert_eq!(
+        response["provider_statuses"][0]["coverage"]["searched_units"],
+        3
+    );
+    assert_eq!(
+        response["provider_statuses"][1]["provider"],
+        "observed_values"
+    );
+    assert!(response["provider_statuses"][1]["coverage"].is_null());
+    assert_eq!(response["provider_statuses"][2]["state"], "skipped");
+    assert!(response["provider_statuses"][2]["coverage"].is_null());
+    assert_eq!(response["truncation"]["returned_count"], 2);
+
+    let requests = server.search_requests();
+    assert_eq!(requests.len(), 1, "expected one search call");
+    assert_eq!(requests[0].query, "messages");
+    assert_eq!(requests[0].limit, 5);
     assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;

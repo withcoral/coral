@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 
 use crate::ResponseSpec;
@@ -7,6 +9,30 @@ use crate::v4::ir::{
 };
 
 use super::import::OpenApiImporter;
+
+pub(super) struct OpenApiResponsePaginationContext {
+    pub(super) schema: Value,
+    pub(super) headers: BTreeMap<String, Value>,
+    pub(super) cardinality: OutputCardinality,
+}
+
+impl Default for OpenApiResponsePaginationContext {
+    fn default() -> Self {
+        Self {
+            schema: Value::Null,
+            headers: BTreeMap::new(),
+            cardinality: OutputCardinality::None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SelectedJsonResponse {
+    status_code: u16,
+    media_type: String,
+    schema: Value,
+    headers: BTreeMap<String, Value>,
+}
 
 impl OpenApiImporter<'_> {
     pub(super) fn import_response(
@@ -19,8 +45,9 @@ impl OpenApiImporter<'_> {
         IrOperationOutput,
         RestResponseAttachment,
         Option<IrEntityCandidate>,
+        OpenApiResponsePaginationContext,
     ) {
-        let Some((status_code, media_type, schema)) = self.select_json_response(
+        let Some(selected) = self.select_json_response(
             operation.get("responses").and_then(Value::as_object),
             operation_id,
             diagnostics,
@@ -38,10 +65,11 @@ impl OpenApiImporter<'_> {
                     response,
                 },
                 None,
+                OpenApiResponsePaginationContext::default(),
             );
         };
 
-        let Some(resolved) = self.resolve_ref(&schema, operation_id, diagnostics) else {
+        let Some(resolved) = self.resolve_ref(&selected.schema, operation_id, diagnostics) else {
             diagnostics.push(Diagnostic::warning(
                 "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
                 format!("operation '{operation_id}' response schema could not be resolved"),
@@ -55,11 +83,16 @@ impl OpenApiImporter<'_> {
                     row_path: Vec::new(),
                 },
                 RestResponseAttachment {
-                    status_code,
-                    media_type,
+                    status_code: selected.status_code,
+                    media_type: selected.media_type,
                     response: ResponseSpec::default(),
                 },
                 None,
+                OpenApiResponsePaginationContext {
+                    schema: Value::Null,
+                    headers: selected.headers,
+                    cardinality: OutputCardinality::Unknown,
+                },
             );
         };
         let (cardinality, row_path, row_schema, entity_name) =
@@ -90,11 +123,16 @@ impl OpenApiImporter<'_> {
                 row_path,
             },
             RestResponseAttachment {
-                status_code,
-                media_type,
+                status_code: selected.status_code,
+                media_type: selected.media_type,
                 response,
             },
             entity,
+            OpenApiResponsePaginationContext {
+                schema: resolved,
+                headers: selected.headers,
+                cardinality,
+            },
         )
     }
     fn select_json_response(
@@ -102,7 +140,7 @@ impl OpenApiImporter<'_> {
         responses: Option<&Map<String, Value>>,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<(u16, String, Value)> {
+    ) -> Option<SelectedJsonResponse> {
         let responses = responses?;
         let mut numeric_candidates = Vec::new();
         let mut range_candidates = Vec::new();
@@ -120,11 +158,13 @@ impl OpenApiImporter<'_> {
                 continue;
             };
             let schema = json.get("schema").cloned().unwrap_or(Value::Null);
-            let candidate = (
-                status.representative_status_code(),
-                "application/json".to_string(),
+            let headers = response_headers(&response, operation_id, diagnostics, self);
+            let candidate = SelectedJsonResponse {
+                status_code: status.representative_status_code(),
+                media_type: "application/json".to_string(),
                 schema,
-            );
+                headers,
+            };
             if status.is_range() {
                 range_candidates.push(candidate);
             } else {
@@ -167,13 +207,36 @@ fn success_response_status(status: &str) -> Option<SuccessResponseStatus> {
 }
 
 fn preferred_numeric_response(
-    candidates: Vec<(u16, String, Value)>,
-) -> Option<(u16, String, Value)> {
+    candidates: Vec<SelectedJsonResponse>,
+) -> Option<SelectedJsonResponse> {
     candidates
         .iter()
-        .position(|(status, _, _)| *status == 200)
+        .position(|candidate| candidate.status_code == 200)
         .and_then(|index| candidates.get(index).cloned())
-        .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .min_by_key(|candidate| candidate.status_code)
+        })
+}
+
+fn response_headers(
+    response: &Value,
+    operation_id: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+    importer: &OpenApiImporter<'_>,
+) -> BTreeMap<String, Value> {
+    response
+        .get("headers")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|headers| headers.iter())
+        .filter_map(|(name, header)| {
+            importer
+                .resolve_ref(header, operation_id, diagnostics)
+                .map(|resolved| (name.clone(), resolved))
+        })
+        .collect()
 }
 
 fn classify_response_schema(
@@ -200,21 +263,6 @@ fn classify_response_schema(
         .unwrap_or("object")
         == "object"
     {
-        if let Some((property_name, items)) = schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .and_then(wrapped_list_property)
-        {
-            let item = items.get("items").cloned().unwrap_or(Value::Null);
-            return (
-                OutputCardinality::WrappedList,
-                vec![property_name.to_string()],
-                item.clone(),
-                item.get("$ref")
-                    .and_then(Value::as_str)
-                    .map(entity_name_from_ref),
-            );
-        }
         return (
             OutputCardinality::Singleton,
             Vec::new(),
@@ -227,37 +275,6 @@ fn classify_response_schema(
         );
     }
     (OutputCardinality::Unknown, Vec::new(), schema.clone(), None)
-}
-
-fn wrapped_list_property(properties: &Map<String, Value>) -> Option<(&str, &Value)> {
-    ["items", "data", "results", "rows"]
-        .iter()
-        .find_map(|name| {
-            properties
-                .get(*name)
-                .filter(|property| property.get("type").and_then(Value::as_str) == Some("array"))
-                .map(|property| (*name, property))
-        })
-        .or_else(|| single_array_payload_property(properties))
-}
-
-fn single_array_payload_property(properties: &Map<String, Value>) -> Option<(&str, &Value)> {
-    let array_properties = properties
-        .iter()
-        .filter(|(_, property)| property.get("type").and_then(Value::as_str) == Some("array"))
-        .filter(|(name, _)| !is_wrapper_metadata_property(name))
-        .collect::<Vec<_>>();
-    match array_properties.as_slice() {
-        [(name, property)] => Some((name.as_str(), *property)),
-        [] | [_, _, ..] => None,
-    }
-}
-
-fn is_wrapper_metadata_property(name: &str) -> bool {
-    matches!(
-        name,
-        "total_count" | "incomplete_results" | "has_more" | "next" | "previous"
-    )
 }
 
 fn entity_name_from_ref(reference: &str) -> String {

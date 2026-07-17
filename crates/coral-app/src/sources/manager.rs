@@ -15,6 +15,7 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
+use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -82,7 +83,7 @@ pub(crate) struct SourceOAuthCredentialRetrieval {
 }
 
 pub(crate) enum ImportSourceWithCredentialsEvent {
-    OAuthAuthorization {
+    Authorization {
         input_key: String,
         authorization_url: String,
         expires_in_seconds: u64,
@@ -90,7 +91,10 @@ pub(crate) enum ImportSourceWithCredentialsEvent {
         verification_uri: Option<String>,
         verification_uri_complete: Option<String>,
     },
-    OAuthCompleted {
+    CallbackReceived {
+        input_key: String,
+    },
+    Completed {
         input_key: String,
         metadata: BTreeMap<String, String>,
     },
@@ -502,7 +506,7 @@ impl SourceManager {
         let credential_guard = self
             .credential_manager
             .material_guard(workspace_name, &credential_set_id)?;
-        let _state_lock = self.config_store.state_lock_exclusive()?;
+        let state_lock = self.config_store.state_lock_exclusive()?;
         let stored = self
             .config_store
             .get_source_unlocked(workspace_name, source_name)?;
@@ -568,6 +572,8 @@ impl SourceManager {
             &self.layout.workspaces_root(),
             self.layout.workspace_dir(workspace_name).parent(),
         );
+        drop(state_lock);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
         Ok(removed)
     }
 
@@ -595,7 +601,7 @@ impl SourceManager {
         let credential_guard = self
             .credential_manager
             .material_guard(workspace_name, &credential_set_id)?;
-        let _state_lock = self.config_store.state_lock_exclusive()?;
+        let state_lock = self.config_store.state_lock_exclusive()?;
         let credential_storage = match self.source_persist_storage_with_state_lock_held(
             workspace_name,
             request.candidate,
@@ -738,7 +744,43 @@ impl SourceManager {
         cleanup_materialization_backup(materialization_backup);
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
+        drop(state_lock);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(
+            workspace_name,
+            &source_name,
+        );
         Ok(resolved)
+    }
+
+    fn clear_catalog_projection_for_source_lifecycle_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        let search_sqlite_file = self.layout.search_sqlite_file(workspace_name);
+        if !search_sqlite_file.exists() {
+            return;
+        }
+        match SqliteSearchStore::open_workspace(&self.layout, workspace_name)
+            .and_then(|store| store.clear_catalog_workspace())
+        {
+            Ok(result) => {
+                tracing::debug!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    deleted_document_count = result.deleted_document_count,
+                    "cleared SQLite catalog projection for source lifecycle change"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    search_sqlite_file = %search_sqlite_file.display(),
+                    "source lifecycle changed, but failed to clear SQLite catalog projection: {error}"
+                );
+            }
+        }
     }
 
     fn prepare_v4_materialization(
@@ -1000,9 +1042,11 @@ impl SourceManager {
                 .collect();
             let authorization_input_key = input_key.clone();
             let authorization_events = events.clone();
+            let callback_input_key = input_key.clone();
+            let callback_events = events.clone();
             let material = self
                 .oauth_credential_service
-                .authorize(
+                .authorize_with_callback(
                     StartOAuthCredentialRequest {
                         input_key: &input_key,
                         oauth: config.oauth,
@@ -1013,7 +1057,7 @@ impl SourceManager {
                         let events = authorization_events;
                         async move {
                             events
-                                .send(ImportSourceWithCredentialsEvent::OAuthAuthorization {
+                                .send(ImportSourceWithCredentialsEvent::Authorization {
                                     input_key: authorization_input_key,
                                     authorization_url: authorization.authorization_url,
                                     expires_in_seconds: authorization.expires_in_seconds,
@@ -1025,14 +1069,29 @@ impl SourceManager {
                                 .await
                         }
                     },
+                    move || {
+                        let events = callback_events;
+                        async move {
+                            events
+                                .send(ImportSourceWithCredentialsEvent::CallbackReceived {
+                                    input_key: callback_input_key,
+                                })
+                                .await?;
+                            tokio::task::yield_now().await;
+                            Ok(())
+                        }
+                    },
                 )
                 .await?;
             events
-                .send(ImportSourceWithCredentialsEvent::OAuthCompleted {
+                .send(ImportSourceWithCredentialsEvent::Completed {
                     input_key: material.input_key.clone(),
                     metadata: material.safe_metadata.clone(),
                 })
                 .await?;
+            // Let the streaming response flush the OAuth completion event before
+            // this task continues into synchronous source installation work.
+            tokio::task::yield_now().await;
             materials.push(material);
         }
         Ok(materials)
@@ -2168,6 +2227,57 @@ tables:
         (manifest, rendered_token_url)
     }
 
+    fn v4_manifest_with_templated_oauth_endpoints(
+        openapi_file: &std::path::Path,
+        token_url: &str,
+        redirect_port: u16,
+    ) -> (String, String) {
+        let token_url_template = token_url.replace("/token", "/{{input.OUTLOOK_TENANT_ID}}/token");
+        let rendered_token_url = token_url.replace("/token", "/organizations/token");
+        let manifest = format!(
+            r#"
+name: secured_messages
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    inputs:
+      API_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              label: Connect
+              description: Use OAuth.
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
+                endpoints:
+                  authorization_url: https://provider.example.com/{{{{input.OUTLOOK_TENANT_ID}}}}/oauth/authorize
+                  token_url: {token_url_template}
+                client:
+                  id:
+                    default: default-client
+      OUTLOOK_TENANT_ID:
+        kind: variable
+      API_BASE:
+        kind: variable
+    base_url: "{{{{input.API_BASE}}}}"
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{{{input.API_TOKEN}}}}
+"#,
+            openapi_file.display()
+        );
+        (manifest, rendered_token_url)
+    }
+
     fn oauth_import_bindings_with_tenant() -> SourceBindings {
         SourceBindings {
             variables: vec![
@@ -3210,37 +3320,93 @@ tables:
             },
             event_tx,
         );
-        let callback = async {
-            let event = event_rx
-                .recv()
-                .await
-                .expect("authorization event")
-                .into_event();
-            let ImportSourceWithCredentialsEvent::OAuthAuthorization {
-                input_key,
-                authorization_url,
-                ..
-            } = event
-            else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-            let parsed = Url::parse(&authorization_url).expect("authorization url");
-            assert_eq!(parsed.path(), "/organizations/oauth/authorize");
-            callback(&authorization_url, redirect_port).await;
-            let event = event_rx
-                .recv()
-                .await
-                .expect("completion event")
-                .into_event();
-            let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-        };
+        let callback = authorize_oauth_import(&mut event_rx, redirect_port);
 
         let (source, ()) = tokio::join!(import, callback);
         let source = source.expect("import source with OAuth");
+        assert_eq!(source.secrets, vec!["API_TOKEN"]);
+        let captured = fixture.token_server.await.expect("token server");
+        assert_eq!(
+            captured.form.get("code").map(String::as_str),
+            Some("test-code")
+        );
+        let material = credential_manager
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("access-token")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.method")
+                .map(String::as_str),
+            Some("oauth")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.token_url")
+                .map(String::as_str),
+            Some(rendered_token_url.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn import_v4_with_oauth_persists_retrieved_material() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write descriptor");
+
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let fixture = OAuthFixture::new();
+        let redirect_port = free_loopback_port();
+        let (manifest_yaml, rendered_token_url) = v4_manifest_with_templated_oauth_endpoints(
+            &openapi_file,
+            &fixture.token_url,
+            redirect_port,
+        );
+        assert!(
+            manifest_yaml
+                .find("      API_TOKEN:")
+                .expect("API_TOKEN input")
+                < manifest_yaml
+                    .find("      OUTLOOK_TENANT_ID:")
+                    .expect("tenant input"),
+            "tenant variable should exercise v4 surface input order after the OAuth secret"
+        );
+        let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let import = manager.import_source_with_credentials(
+            &workspace_name,
+            ImportSourceWithCredentialsCommand {
+                manifest_yaml,
+                bindings: oauth_import_bindings_with_tenant(),
+                oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
+                    input_key: "API_TOKEN".to_string(),
+                    method_index: 0,
+                    credential_inputs: Vec::new(),
+                }],
+            },
+            event_tx,
+        );
+        let callback = authorize_oauth_import(&mut event_rx, redirect_port);
+
+        let (source, ()) = tokio::join!(import, callback);
+        let source = source.expect("import v4 source with OAuth");
         assert_eq!(source.secrets, vec!["API_TOKEN"]);
         let captured = fixture.token_server.await.expect("token server");
         assert_eq!(
@@ -3414,6 +3580,49 @@ tables:
             .expect("callback response")
             .error_for_status()
             .expect("callback success");
+    }
+
+    async fn authorize_oauth_import(
+        event_rx: &mut mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
+        redirect_port: u16,
+    ) {
+        let event = event_rx
+            .recv()
+            .await
+            .expect("authorization event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::Authorization {
+            input_key,
+            authorization_url,
+            ..
+        } = event
+        else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
+        let parsed = Url::parse(&authorization_url).expect("authorization url");
+        assert_eq!(parsed.path(), "/organizations/oauth/authorize");
+        callback(&authorization_url, redirect_port).await;
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("callback received event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::CallbackReceived { input_key } = event else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("completion event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::Completed { input_key, .. } = event else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
     }
 
     fn import_event_channel() -> (

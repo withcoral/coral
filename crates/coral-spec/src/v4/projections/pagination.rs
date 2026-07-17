@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::PaginationSpec;
 
-pub(super) fn pagination_query_param_names(pagination: &PaginationSpec) -> HashSet<&str> {
+pub(in crate::v4) fn pagination_query_param_names(pagination: &PaginationSpec) -> HashSet<&str> {
     let mut names = HashSet::new();
     if let Some(name) = pagination.page_param.as_deref() {
         names.insert(name);

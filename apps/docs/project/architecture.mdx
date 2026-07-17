@@ -68,6 +68,7 @@ The local server and core orchestrator.
 | Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
 | Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
 | Catalog discovery | Lists/searches/describes query-visible tables and columns (`catalog/`) |
+| Universal Search | Owns the `SearchService` shell and app-domain search result contract (`search/`) |
 
 This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
 
@@ -103,7 +104,7 @@ The MCP stdio server.
 | --------------- | ------------------------------------------------------------------- |
 | MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
 | Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs`; discovery semantics come from `coral-app` |
-| Tools           | `sql`, `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, optional `feedback` |
+| Tools           | `sql`, `search`, `list_catalog`, `describe_table`, `list_columns`, optional `feedback` |
 | Resources       | `coral://guide`, `coral://tables`                                   |
 
 Uses `coral-client` to reach `coral-app`, same transport as the CLI.
@@ -117,7 +118,13 @@ The shared gRPC contract.
 | Protobuf definitions | `proto/coral/v1/` transport contracts for Coral services and messages |
 | Generated bindings   | Tonic-generated Rust types and service traits                                          |
 
-All inter-crate communication between `coral-client` and `coral-app` goes through these generated types.
+All inter-crate communication between `coral-client` and `coral-app` goes through these generated types. The active service contracts include source management, query execution, catalog discovery, workspaces, feedback, episodes, traces, and Universal Search.
+
+`SearchService` powers metadata search over Coral's catalog. It returns typed,
+bounded matches for tables, table functions, columns, and filters, plus status,
+coverage, and truncation metadata. It does not query source rows or answer data
+questions; use the returned SQL references with `coral sql` or the MCP `sql`
+tool to fetch data.
 
 ## Dependency graph
 

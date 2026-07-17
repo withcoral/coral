@@ -1,2 +1,3 @@
-export { Card, type CardProps } from './card'
-export { CardList, type CardItem, type CardListProps } from './card-list'
+export { Card, type CardHeaderPill, type CardProps } from './card'
+export { Container as List, Item } from './card-list'
+export type { ContainerProps as ListProps, ItemProps } from './card-list'

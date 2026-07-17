@@ -18,15 +18,16 @@ const PROVIDER_ICONS: Record<string, string> = {
   cloudwatch_metrics: '/images/providers/aws.svg',
   gcp: '/images/providers/gcp.svg',
   google: '/images/providers/google.svg',
-  google_calendar: '/images/providers/google.svg',
+  gmail: '/images/providers/gmail.svg',
+  google_calendar: '/images/providers/google_calendar.svg',
   google_contacts: '/images/providers/google.svg',
   google_drive: '/images/providers/google.svg',
 
   // Atlassian suite
   atlassian: '/images/providers/atlassian.svg',
   bitbucket: '/images/providers/atlassian.svg',
-  confluence: '/images/providers/atlassian.svg',
-  jira: '/images/providers/atlassian.svg',
+  confluence: '/images/providers/confluence.svg',
+  jira: '/images/providers/jira.svg',
 
   // Observability
   datadog: '/images/providers/datadog.svg',
@@ -35,16 +36,19 @@ const PROVIDER_ICONS: Record<string, string> = {
   honeycomb: '/images/providers/honeycomb.svg',
   new_relic: '/images/providers/new_relic.svg',
   opentelemetry: '/images/providers/opentelemetry.svg',
+  openobserve: '/images/providers/openobserve.svg',
   otel_metrics: '/images/providers/opentelemetry.svg',
   sentry: '/images/providers/sentry.svg',
   statusgator: '/images/providers/statusgator.png',
   statuspage: '/images/providers/statuspage.svg',
 
   // Incident / paging
-  pagerduty: '/images/providers/pagerduty.png',
+  incident_io: '/images/providers/incident_io.svg',
+  pagerduty: '/images/providers/pagerduty.svg',
 
   // Code hosts
   github: '/images/providers/github.svg',
+  gitlab: '/images/providers/gitlab.svg',
 
   // Databases & data
   clickhouse: '/images/providers/Clickhouse.png',
@@ -53,7 +57,8 @@ const PROVIDER_ICONS: Record<string, string> = {
   elasticsearch: '/images/providers/elastic.png',
 
   // LLM providers
-  anthropic: '/images/providers/anthropic.svg',
+  claude: '/images/providers/claude_code.svg',
+  codex: '/images/providers/openai.svg',
   openai: '/images/providers/openai.svg',
   xai: '/images/providers/xai.svg',
 
@@ -63,11 +68,20 @@ const PROVIDER_ICONS: Record<string, string> = {
   launchdarkly: '/images/providers/launchdarkly.svg',
   linear: '/images/providers/linear.svg',
   notion: '/images/providers/notion.svg',
-  slack: '/images/providers/slack.png',
+  posthog: '/images/providers/posthog.svg',
+  slack: '/images/providers/slack.svg',
   stripe: '/images/providers/stripe.svg',
   wandb: '/images/providers/wandb.svg',
 }
 
+// These icons need to be inverted to look nice in dark mode. Usually means they are all black (e.g. GitHub), so
+// inverting them makes them white.
+const DARK_MODE_INVERT_PROVIDER_ICONS = new Set(['codex', 'github', 'notion', 'openai'])
+
 export function providerIcon(key: string): string | null {
   return PROVIDER_ICONS[key.toLowerCase()] ?? null
+}
+
+export function providerIconNeedsDarkInvert(key: string): boolean {
+  return DARK_MODE_INVERT_PROVIDER_ICONS.has(key.toLowerCase())
 }

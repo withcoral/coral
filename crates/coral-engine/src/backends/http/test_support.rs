@@ -5,7 +5,6 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::backends::http::target::HttpFetchTarget;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::{BodySpec, RequestSpec, ValueSourceSpec, parse_source_manifest_value};
 
@@ -38,10 +37,6 @@ pub(super) fn test_http_table_spec(
     .into_iter()
     .next()
     .expect("table should exist")
-}
-
-pub(super) fn test_http_request_target(table: &HttpTableSpec) -> HttpFetchTarget {
-    HttpFetchTarget::from_resolved_table_request(table, table.request.clone())
 }
 
 fn request_json(request: &RequestSpec) -> serde_json::Value {

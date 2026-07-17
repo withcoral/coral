@@ -414,75 +414,157 @@ fn json_schema_property_schemas_conflict(
     depth: usize,
     max_depth: usize,
 ) -> Result<bool, JsonSchemaComparisonError> {
-    let Ok(left) = schema_without_annotation_metadata(existing, depth, max_depth) else {
+    let Ok(left) = schema_validation_fingerprint(existing, depth, max_depth) else {
         return Err(JsonSchemaComparisonError::DepthExceeded);
     };
-    let Ok(right) = schema_without_annotation_metadata(candidate, depth, max_depth) else {
+    let Ok(right) = schema_validation_fingerprint(candidate, depth, max_depth) else {
         return Err(JsonSchemaComparisonError::DepthExceeded);
     };
     Ok(left != right)
 }
 
-fn schema_without_annotation_metadata<'a>(
+fn schema_validation_fingerprint<'a>(
     schema: &Value,
     depth: usize,
     max_depth: usize,
 ) -> Result<Value, JsonSchemaWalkError<'a>> {
-    schema_without_annotation_metadata_at_key(None, schema, depth, max_depth)
-}
-
-fn schema_without_annotation_metadata_at_key<'a>(
-    key: Option<&str>,
-    schema: &Value,
-    depth: usize,
-    max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
-    // TODO: check depth against max_depth here!
     if depth > max_depth {
         return Err(JsonSchemaWalkError::DepthExceeded);
     }
     let next_depth = depth + 1;
 
-    match schema {
-        Value::Object(object) => {
-            let is_schema_name_map = matches!(
-                key,
-                Some("$defs" | "definitions" | "patternProperties" | "properties")
-            );
-            let mut out = serde_json::Map::new();
-            for (key, value) in object.iter().filter(|(key, _value)| {
-                is_schema_name_map || !ANNOTATION_KEYS.contains(&key.as_str())
-            }) {
-                match schema_without_annotation_metadata_at_key(
-                    Some(key),
-                    value,
-                    next_depth,
-                    max_depth,
-                ) {
-                    Ok(x) => {
-                        out.insert(key.clone(), x);
-                    }
-                    Err(err) => return Err(err),
-                }
+    let Some(object) = schema.as_object() else {
+        return Ok(schema.clone());
+    };
+
+    let mut out = serde_json::Map::new();
+    for (key, value) in object
+        .iter()
+        .filter(|(key, _value)| !ANNOTATION_KEYS.contains(&key.as_str()))
+    {
+        let value = match key.as_str() {
+            "$defs" | "definitions" | "dependentSchemas" | "patternProperties" | "properties" => {
+                schema_map_validation_fingerprint(value, next_depth, max_depth)?
             }
-            Ok(Value::Object(out))
-        }
-        Value::Array(values) => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                match schema_without_annotation_metadata_at_key(None, value, next_depth, max_depth)
-                {
-                    Ok(x) => out.push(x),
-                    Err(err) => return Err(err),
-                }
+            "dependencies" => {
+                schema_dependency_map_validation_fingerprint(value, next_depth, max_depth)?
             }
-            if key == Some("type") {
-                out.sort_by_key(Value::to_string);
+            "additionalItems"
+            | "additionalProperties"
+            | "contains"
+            | "contentSchema"
+            | "else"
+            | "if"
+            | "items"
+            | "not"
+            | "propertyNames"
+            | "then"
+            | "unevaluatedItems"
+            | "unevaluatedProperties" => {
+                schema_or_schema_array_validation_fingerprint(value, next_depth, max_depth)?
             }
-            Ok(Value::Array(out))
-        }
+            "allOf" | "anyOf" | "oneOf" | "prefixItems" => {
+                schema_array_validation_fingerprint(value, next_depth, max_depth)?
+            }
+            "type" => schema_type_validation_fingerprint(value),
+            _ => value.clone(),
+        };
+        out.insert(key.clone(), value);
+    }
+    Ok(Value::Object(out))
+}
+
+fn schema_map_validation_fingerprint<'a>(
+    schemas: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    if depth > max_depth {
+        return Err(JsonSchemaWalkError::DepthExceeded);
+    }
+    let next_depth = depth + 1;
+
+    let Some(object) = schemas.as_object() else {
+        return Ok(schemas.clone());
+    };
+
+    Ok(Value::Object(
+        object
+            .iter()
+            .map(|(name, schema)| {
+                schema_validation_fingerprint(schema, next_depth, max_depth)
+                    .map(|schema| (name.clone(), schema))
+            })
+            .collect::<Result<serde_json::Map<_, _>, _>>()?,
+    ))
+}
+
+fn schema_dependency_map_validation_fingerprint<'a>(
+    dependencies: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    if depth > max_depth {
+        return Err(JsonSchemaWalkError::DepthExceeded);
+    }
+    let next_depth = depth + 1;
+
+    let Some(object) = dependencies.as_object() else {
+        return Ok(dependencies.clone());
+    };
+
+    Ok(Value::Object(
+        object
+            .iter()
+            .map(|(name, dependency)| {
+                schema_or_schema_array_validation_fingerprint(dependency, next_depth, max_depth)
+                    .map(|dependency| (name.clone(), dependency))
+            })
+            .collect::<Result<serde_json::Map<_, _>, _>>()?,
+    ))
+}
+
+fn schema_or_schema_array_validation_fingerprint<'a>(
+    value: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    match value {
+        Value::Array(_values) => schema_array_validation_fingerprint(value, depth, max_depth),
+        Value::Object(_) | Value::Bool(_) => schema_validation_fingerprint(value, depth, max_depth),
         other => Ok(other.clone()),
     }
+}
+
+fn schema_array_validation_fingerprint<'a>(
+    schemas: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    if depth > max_depth {
+        return Err(JsonSchemaWalkError::DepthExceeded);
+    }
+    let next_depth = depth + 1;
+
+    let Some(values) = schemas.as_array() else {
+        return Ok(schemas.clone());
+    };
+
+    Ok(Value::Array(
+        values
+            .iter()
+            .map(|schema| schema_validation_fingerprint(schema, next_depth, max_depth))
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
+
+fn schema_type_validation_fingerprint(value: &Value) -> Value {
+    let Value::Array(values) = value else {
+        return value.clone();
+    };
+    let mut values = values.clone();
+    values.sort_by_key(Value::to_string);
+    Value::Array(values)
 }
 
 fn merge_json_schema_property_metadata(existing: &mut Value, candidate: &Value) {
@@ -700,6 +782,197 @@ mod tests {
             Some("Search query")
         );
         assert!(target.required.contains("query"));
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_ignores_nested_schema_annotations() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "description": "Public status"
+                        }
+                    }
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "description": "Internal workflow state"
+                        }
+                    }
+                }
+            }
+        }));
+
+        merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_keeps_const_values_opaque() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "const": {
+                                "description": "open"
+                            }
+                        }
+                    }
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "const": {}
+                        }
+                    }
+                }
+            }
+        }));
+
+        assert_eq!(
+            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
+            Err(JsonSchemaComparisonError::PropertyConflict(
+                "filter".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_keeps_enum_values_opaque() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "enum": [
+                                {"description": "open"}
+                            ]
+                        }
+                    }
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "enum": [
+                                {}
+                            ]
+                        }
+                    }
+                }
+            }
+        }));
+
+        assert_eq!(
+            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
+            Err(JsonSchemaComparisonError::PropertyConflict(
+                "filter".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_keeps_unknown_keyword_values_opaque() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "x-coral-metadata": {
+                        "description": "left"
+                    }
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "x-coral-metadata": {}
+                }
+            }
+        }));
+
+        assert_eq!(
+            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
+            Err(JsonSchemaComparisonError::PropertyConflict(
+                "filter".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_recurses_into_schema_dependencies() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "dependencies": {
+                        "status": {
+                            "type": "object",
+                            "properties": {
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Public reason"
+                                }
+                            }
+                        },
+                        "owner": ["team"]
+                    }
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "dependencies": {
+                        "status": {
+                            "type": "object",
+                            "properties": {
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Internal reason"
+                                }
+                            }
+                        },
+                        "owner": ["team"]
+                    }
+                }
+            }
+        }));
+
+        merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
     }
 
     #[test]

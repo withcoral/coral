@@ -66,6 +66,7 @@ impl McpImporter<'_> {
                     data_type,
                     default_value: property.get("default").map(json_schema_default_to_string),
                     description: schema_description(property),
+                    exclude_from_lookup_keys: false,
                 }
             })
             .collect();

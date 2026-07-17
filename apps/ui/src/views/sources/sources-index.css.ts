@@ -115,24 +115,6 @@ export const cardHeader = style({
   gap: 10,
 })
 
-export const cardLogo = style({
-  alignItems: 'center',
-  background: theme.surface.onMainContent,
-  borderRadius: '50%',
-  display: 'flex',
-  flexShrink: 0,
-  height: 28,
-  justifyContent: 'center',
-  overflow: 'hidden',
-  width: 28,
-})
-
-export const cardLogoImg = style({
-  height: '100%',
-  objectFit: 'cover',
-  width: '100%',
-})
-
 export const cardTitle = style({
   flexGrow: 1,
   textTransform: 'capitalize',

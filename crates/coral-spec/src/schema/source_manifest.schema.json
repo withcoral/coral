@@ -749,7 +749,7 @@
       "required": ["name", "tool_arg"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "type": { "type": "string", "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"] },
+        "type": { "$ref": "#/$defs/manifest_data_type" },
         "required": { "type": "boolean" },
         "mode": { "type": "string", "enum": ["equality", "search", "contains"] },
         "description": { "type": "string" },
@@ -863,6 +863,7 @@
       "required": ["name", "bind"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/manifest_data_type" },
         "required": { "type": "boolean" },
         "values": {
           "type": "array",
@@ -1269,6 +1270,7 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
+        "response_cursor_header": { "type": "string", "minLength": 1 },
         "page_param": { "type": "string", "minLength": 1 },
         "page_start": { "type": "integer" },
         "page_step": { "type": "integer", "minimum": 1 },
@@ -1276,6 +1278,7 @@
         "offset_start": { "type": "integer" },
         "offset_step": { "type": "integer", "minimum": 1 },
         "link_header_require_results": { "type": "boolean" },
+        "next_url_header": { "type": "string", "minLength": 1 },
         "max_pages": { "type": "integer", "minimum": 1 }
       }
     },

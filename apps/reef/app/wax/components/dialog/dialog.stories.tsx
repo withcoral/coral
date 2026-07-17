@@ -2,9 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
 
-import { Button } from '@/wax/components'
-
-import * as Dialog from './index'
+import { Button, Dialog } from '@/wax/components'
 
 const meta: Meta = {
   parameters: {

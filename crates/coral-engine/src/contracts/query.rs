@@ -369,6 +369,155 @@ impl QueryRuntimeContext {
     }
 }
 
+/// Named SQL query parameters, keyed by parameter name without the `$`
+/// prefix: binding `owner` supplies `$owner` in the statement.
+///
+/// Values are typed Coral scalar values. Callers should treat values as data,
+/// never SQL text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QueryParameters {
+    values: BTreeMap<String, QueryParameterValue>,
+}
+
+impl QueryParameters {
+    /// Builds an empty parameter set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns true when no parameters are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Inserts one named parameter value and returns the previous value.
+    pub fn insert(
+        &mut self,
+        name: impl Into<String>,
+        value: QueryParameterValue,
+    ) -> Option<QueryParameterValue> {
+        self.values.insert(name.into(), value)
+    }
+
+    /// Returns one parameter value by name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&QueryParameterValue> {
+        self.values.get(name)
+    }
+
+    /// Iterates over parameter names and values in deterministic order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &QueryParameterValue)> {
+        self.values.iter()
+    }
+
+    /// Iterates over parameter names in deterministic order.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.values.keys()
+    }
+}
+
+impl From<BTreeMap<String, QueryParameterValue>> for QueryParameters {
+    fn from(values: BTreeMap<String, QueryParameterValue>) -> Self {
+        Self { values }
+    }
+}
+
+impl<const N: usize> From<[(String, QueryParameterValue); N]> for QueryParameters {
+    fn from(values: [(String, QueryParameterValue); N]) -> Self {
+        Self {
+            values: BTreeMap::from(values),
+        }
+    }
+}
+
+impl FromIterator<(String, QueryParameterValue)> for QueryParameters {
+    fn from_iter<T: IntoIterator<Item = (String, QueryParameterValue)>>(iter: T) -> Self {
+        Self {
+            values: iter.into_iter().collect(),
+        }
+    }
+}
+
+/// One typed SQL query parameter value.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum QueryParameterValue {
+    /// UTF-8 string value, or a typed string NULL.
+    String(Option<String>),
+    /// 64-bit signed integer value, or a typed integer NULL.
+    Integer(Option<i64>),
+    /// 64-bit floating point value, or a typed float NULL.
+    Float(Option<f64>),
+    /// Boolean value, or a typed boolean NULL.
+    Boolean(Option<bool>),
+    /// UTC timestamp as microseconds since the Unix epoch, or a typed timestamp NULL.
+    Timestamp(Option<i64>),
+}
+
+impl QueryParameterValue {
+    /// Builds a non-null string parameter.
+    #[must_use]
+    pub fn string(value: impl Into<String>) -> Self {
+        Self::String(Some(value.into()))
+    }
+
+    /// Builds a typed string NULL parameter.
+    #[must_use]
+    pub fn null_string() -> Self {
+        Self::String(None)
+    }
+
+    /// Builds a non-null integer parameter.
+    #[must_use]
+    pub fn integer(value: i64) -> Self {
+        Self::Integer(Some(value))
+    }
+
+    /// Builds a typed integer NULL parameter.
+    #[must_use]
+    pub fn null_integer() -> Self {
+        Self::Integer(None)
+    }
+
+    /// Builds a non-null float parameter.
+    #[must_use]
+    pub fn float(value: f64) -> Self {
+        Self::Float(Some(value))
+    }
+
+    /// Builds a typed float NULL parameter.
+    #[must_use]
+    pub fn null_float() -> Self {
+        Self::Float(None)
+    }
+
+    /// Builds a non-null boolean parameter.
+    #[must_use]
+    pub fn boolean(value: bool) -> Self {
+        Self::Boolean(Some(value))
+    }
+
+    /// Builds a typed boolean NULL parameter.
+    #[must_use]
+    pub fn null_boolean() -> Self {
+        Self::Boolean(None)
+    }
+
+    /// Builds a non-null UTC timestamp from microseconds since the Unix epoch.
+    #[must_use]
+    pub fn timestamp_micros(value: i64) -> Self {
+        Self::Timestamp(Some(value))
+    }
+
+    /// Builds a typed timestamp NULL.
+    #[must_use]
+    pub fn null_timestamp() -> Self {
+        Self::Timestamp(None)
+    }
+}
+
 /// Owned runtime-build inputs needed while compiling and registering sources.
 #[derive(Default)]
 pub struct QueryRuntimeConfig {
@@ -380,6 +529,8 @@ pub struct QueryRuntimeConfig {
     pub memory: QueryMemoryConfig,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
+    /// Validated UDFs available in this runtime build.
+    pub udfs: Vec<super::UdfRuntimeDefinition>,
 }
 
 impl QueryRuntimeConfig {
@@ -391,7 +542,15 @@ impl QueryRuntimeConfig {
             extensions,
             memory: QueryMemoryConfig::default(),
             dependent_join: DependentJoinConfig::default(),
+            udfs: Vec::new(),
         }
+    }
+
+    /// Attaches validated UDFs to this runtime config.
+    #[must_use]
+    pub fn with_udfs(mut self, udfs: Vec<super::UdfRuntimeDefinition>) -> Self {
+        self.udfs = udfs;
+        self
     }
 }
 

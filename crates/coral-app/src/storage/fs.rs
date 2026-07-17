@@ -35,6 +35,29 @@ pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
     open_create_new_file_private(path)
 }
 
+pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+    match open_create_new_file_private(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            ensure_existing_file_private(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn ensure_existing_file_private(path: &Path) -> io::Result<()> {
+    if !fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("path exists and is not a regular file: {}", path.display()),
+        ));
+    }
+    set_file_permissions_private(path)
+}
+
 /// Write to a temp file then rename to avoid partial writes on crash.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp_path = temp_path_for(path);
@@ -265,7 +288,50 @@ fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::DirectoryBackup;
+    use super::{DirectoryBackup, ensure_file_private};
+
+    #[test]
+    fn ensure_file_private_rejects_existing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("coral.db");
+        std::fs::create_dir(&path).expect("create directory at file path");
+
+        let error = ensure_file_private(&path).expect_err("directory should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_file_private_rejects_symlink_without_chmoding_target() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target.db");
+        let link = temp.path().join("coral.db");
+        std::fs::write(&target, "existing database").expect("write target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))
+            .expect("set target permissions");
+        symlink(&target, &link).expect("create symlink");
+
+        let error = ensure_file_private(&link).expect_err("symlink should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "unexpected error: {error}"
+        );
+        let target_mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(target_mode, 0o644);
+    }
 
     #[test]
     fn directory_backup_moves_and_restores_delete_target() {

@@ -28,7 +28,6 @@ interface TableBodyProps {
 interface TableRowProps {
   children: React.ReactNode
   className?: string
-  onClick?: () => void
 }
 
 interface TableHeaderCellProps {
@@ -61,12 +60,8 @@ function Body({ children, className }: TableBodyProps) {
   return <tbody className={classNames(styles.tbody, className)}>{children}</tbody>
 }
 
-function Row({ children, className, onClick }: TableRowProps) {
-  return (
-    <tr className={classNames(styles.tr, className)} onClick={onClick}>
-      {children}
-    </tr>
-  )
+function Row({ children, className }: TableRowProps) {
+  return <tr className={classNames(styles.tr, className)}>{children}</tr>
 }
 
 function HeaderCell({ children, className, align = 'left' }: TableHeaderCellProps) {

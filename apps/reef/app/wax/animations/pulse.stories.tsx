@@ -1,15 +1,16 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
+import { animations } from '@/wax/animations'
+
 import { theme } from '../theme/theme.css'
-import { pulse } from './pulse.css'
 
 const PulseDemo = () => (
   <div
+    className={animations.pulseAnimation}
     style={{
       backgroundColor: theme.surface.floating,
       borderRadius: '8px',
       padding: 16,
-      ...pulse,
     }}
   >
     Pulse Animation

@@ -290,6 +290,26 @@ export const Destructive: Story = {
   ),
 }
 
+export const Loading: Story = {
+  render: () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {(['primary', 'secondary', 'bare', 'destructive'] as const).map((variant) => (
+        <div key={variant} style={{ alignItems: 'center', display: 'flex', gap: 12 }}>
+          {(['22', '32', '36'] as const).map((size) => (
+            <Button.Container disabled key={size} size={size} variant={variant}>
+              <Button.SpinningButtonIcon name="Loader" />
+              <Button.Text>Loading…</Button.Text>
+            </Button.Container>
+          ))}
+          <Button.Container ariaLabel="Loading" disabled variant={variant}>
+            <Button.SpinningButtonIcon name="Loader" />
+          </Button.Container>
+        </div>
+      ))}
+    </div>
+  ),
+}
+
 export const Text: Story = {
   render: () => <TextButton>Hello</TextButton>,
 }

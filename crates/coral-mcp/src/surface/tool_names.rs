@@ -3,11 +3,12 @@ use std::{fmt, str::FromStr};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ToolName {
     Sql,
+    Search,
     ListCatalog,
-    SearchCatalog,
     DescribeTable,
     ListColumns,
-    OpenEpisode,
+    StartTask,
+    EndTask,
     Feedback,
 }
 
@@ -15,11 +16,12 @@ impl ToolName {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Sql => "sql",
+            Self::Search => "search",
             Self::ListCatalog => "list_catalog",
-            Self::SearchCatalog => "search_catalog",
             Self::DescribeTable => "describe_table",
             Self::ListColumns => "list_columns",
-            Self::OpenEpisode => "open_episode",
+            Self::StartTask => "start_task",
+            Self::EndTask => "end_task",
             Self::Feedback => "feedback",
         }
     }
@@ -34,11 +36,12 @@ impl FromStr for ToolName {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "sql" => Ok(Self::Sql),
+            "search" => Ok(Self::Search),
             "list_catalog" => Ok(Self::ListCatalog),
-            "search_catalog" => Ok(Self::SearchCatalog),
             "describe_table" => Ok(Self::DescribeTable),
             "list_columns" => Ok(Self::ListColumns),
-            "open_episode" => Ok(Self::OpenEpisode),
+            "start_task" => Ok(Self::StartTask),
+            "end_task" => Ok(Self::EndTask),
             "feedback" => Ok(Self::Feedback),
             _ => Err(UnknownToolName),
         }

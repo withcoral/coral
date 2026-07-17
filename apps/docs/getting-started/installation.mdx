@@ -196,7 +196,7 @@ npx skills add withcoral/skills
 
 Available skills:
 
-- **`coral`** — teaches your agent the discovery-first MCP workflow for answering data questions through Coral, including how to use `list_catalog`, `search_catalog`, `coral.tables`, `coral.table_functions`, `coral.columns`, and `coral.inputs`.
+- **`coral`** — teaches your agent the discovery-first MCP workflow for answering data questions through Coral, including how to use `search`, `list_catalog`, `coral.tables`, `coral.table_functions`, `coral.columns`, and `coral.inputs`.
 - **`coral-create-source-spec`** — guides your agent through authoring or repairing a custom source spec YAML for `coral source add --file`, or adapting it into a bundled source.
 - **`coral-review-source-spec`** — guides source manifest and source PR reviews for correctness, query ergonomics, documentation quality, and consistency with existing Coral sources.
 
@@ -222,6 +222,7 @@ On Windows, the default local state path is
 Important files include:
 
 - `config.toml` for installed-source metadata, non-secret variables, and runtime settings. See [Configuration](/reference/configuration).
+- `coral.db` for Coral's internal [local database](/reference/configuration#database).
 - imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
 - source secrets stored separately within the same local trust boundary
 

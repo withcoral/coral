@@ -7,7 +7,7 @@ mod env;
 mod error;
 mod server;
 
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::AppStateLayout;
 use crate::telemetry::{
     TelemetryConfig, TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage,
 };
@@ -15,7 +15,7 @@ use crate::workspaces::WorkspaceName;
 
 #[cfg(test)]
 pub(crate) use error::MAX_STATUS_DETAIL_BYTES;
-pub(crate) use error::{app_status, core_status};
+pub(crate) use error::{app_status, core_status, status_with_bounded_detail};
 
 pub use error::AppError;
 pub use server::{RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider};
@@ -26,32 +26,27 @@ pub(crate) fn discover_app_state_layout(
     env::AppEnvironment::discover().app_state_layout(config_dir_override)
 }
 
-/// Loads installed source names for the default workspace from local config only.
-///
-/// This is intentionally narrower than starting the local server and calling
-/// `ListSources`: startup surfaces such as MCP initialize only need source
-/// identity, not enriched source records, manifest versions, or query runtime
-/// setup.
-///
-/// # Errors
-///
-/// Returns [`AppError`] when the app state layout cannot be discovered or
-/// created, or when local config cannot be read or decoded.
-pub fn default_workspace_source_names() -> Result<Vec<String>, AppError> {
-    let layout = discover_app_state_layout(None)?;
-    layout.ensure()?;
-    ConfigStore::new(layout).list_workspace_source_names(&WorkspaceName::default())
+#[cfg(test)]
+pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> {
+    env::AppEnvironment::env_var(name)
 }
 
-/// Startup context loaded from local state for default-workspace MCP sessions.
+/// Startup context for one workspace's MCP session.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DefaultWorkspaceMcpStartupContext {
+pub struct WorkspaceMcpStartupContext {
+    workspace_name: String,
     source_names: Vec<String>,
     query_history: Vec<McpQueryHistoryEntry>,
 }
 
-impl DefaultWorkspaceMcpStartupContext {
-    /// Installed source names in the default workspace.
+impl WorkspaceMcpStartupContext {
+    /// Workspace name used to load this startup context.
+    #[must_use]
+    pub fn workspace_name(&self) -> &str {
+        &self.workspace_name
+    }
+
+    /// Installed source names supplied by the caller for the selected workspace.
     #[must_use]
     pub fn source_names(&self) -> &[String] {
         &self.source_names
@@ -67,6 +62,7 @@ impl DefaultWorkspaceMcpStartupContext {
 /// One successful query-history entry for MCP startup context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpQueryHistoryEntry {
+    workspace_name: String,
     sql: String,
     sources: Vec<String>,
     tables: Vec<McpQueryTableUsage>,
@@ -75,6 +71,12 @@ pub struct McpQueryHistoryEntry {
 }
 
 impl McpQueryHistoryEntry {
+    /// Workspace that produced this query span.
+    #[must_use]
+    pub fn workspace_name(&self) -> &str {
+        &self.workspace_name
+    }
+
     /// SQL text recorded on the query span.
     #[must_use]
     pub fn sql(&self) -> &str {
@@ -107,6 +109,7 @@ impl McpQueryHistoryEntry {
 
     fn from_trace(entry: TraceQueryHistoryEntry) -> Self {
         Self {
+            workspace_name: entry.workspace,
             sql: entry.sql,
             sources: entry.sources,
             tables: entry
@@ -196,20 +199,24 @@ impl McpQueryTableFunctionUsage {
     }
 }
 
-/// Loads default-workspace source names and trace-backed query history without
-/// starting the local server.
+/// Builds MCP startup context for one workspace from caller-supplied source
+/// names and trace-backed query history, without starting another local server.
 ///
 /// # Errors
 ///
-/// Returns [`AppError`] when local app state, config, or trace history cannot
-/// be read. Older trace records that do not carry query provenance are ignored.
-pub fn default_workspace_mcp_startup_context(
+/// Returns [`AppError`] when local app state, telemetry config, or trace history
+/// cannot be read. Source names must already come from the normal source
+/// service path. Older trace records that do not carry workspace/query
+/// provenance are ignored.
+pub fn workspace_mcp_startup_context(
+    workspace_name: &str,
+    source_names: impl IntoIterator<Item = String>,
     query_history_limit: usize,
-) -> Result<DefaultWorkspaceMcpStartupContext, AppError> {
+) -> Result<WorkspaceMcpStartupContext, AppError> {
+    let workspace_name = WorkspaceName::parse(workspace_name)?;
+    let source_names = source_names.into_iter().collect();
     let layout = discover_app_state_layout(None)?;
     layout.ensure()?;
-    let source_names =
-        ConfigStore::new(layout.clone()).list_workspace_source_names(&WorkspaceName::default())?;
     let telemetry_config = TelemetryConfig::load(&layout)?;
     let query_history = if telemetry_config.trace_history.enabled {
         let query_history = crate::telemetry::list_local_query_history(
@@ -222,6 +229,7 @@ pub fn default_workspace_mcp_startup_context(
             ))
         })?
         .into_iter()
+        .filter(|entry| entry.workspace.as_str() == workspace_name.as_str())
         .map(McpQueryHistoryEntry::from_trace)
         .collect::<Vec<_>>();
         select_mcp_query_history(query_history, query_history_limit)
@@ -229,7 +237,8 @@ pub fn default_workspace_mcp_startup_context(
         Vec::new()
     };
 
-    Ok(DefaultWorkspaceMcpStartupContext {
+    Ok(WorkspaceMcpStartupContext {
+        workspace_name: workspace_name.as_str().to_string(),
         source_names,
         query_history,
     })
@@ -382,6 +391,7 @@ mod tests {
     ) -> McpQueryHistoryEntry {
         let table_source = sources.first().copied().unwrap_or("source");
         McpQueryHistoryEntry {
+            workspace_name: "default".to_string(),
             sql: sql.to_string(),
             sources: sources.iter().map(|source| (*source).to_string()).collect(),
             tables: (0..table_count)

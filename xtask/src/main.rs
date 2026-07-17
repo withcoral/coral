@@ -1,7 +1,7 @@
 //! Developer tooling for Coral repository automation.
 //!
-//! This binary exposes two subcommands that share workspace conventions but
-//! serve different workflows:
+//! This binary exposes subcommands that share workspace conventions but serve
+//! different workflows:
 //!   - `generate-docs` regenerates the generator-owned Mintlify pages and
 //!     nav from source manifests plus `CHANGELOG.md`.
 //!   - `detect-truncations` scans manifests for likely-truncated descriptions
@@ -12,6 +12,7 @@
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
 //!     artifacts.
+//!   - `openapi-hydrate` produces a self-contained JSON `OpenAPI` descriptor.
 
 #![allow(
     clippy::print_stderr,
@@ -25,9 +26,13 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+#[cfg(test)]
+use assert_cmd as _;
+
 mod detect;
 mod docs;
 mod env;
+mod openapi;
 mod perf;
 mod release;
 mod schemas;
@@ -58,6 +63,8 @@ enum Command {
     GenerateSchemas(schemas::Args),
     /// Sign, package, and notarize one macOS release binary.
     ReleaseMacosSignNotarize(release::MacosSignNotarizeArgs),
+    /// Hydrate reachable external `OpenAPI` references into JSON.
+    OpenapiHydrate(openapi::HydrateArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -107,5 +114,6 @@ fn run(command: &Command) -> Result<bool> {
         Command::PerfCheck(args) => perf::run(args),
         Command::GenerateSchemas(args) => schemas::run(args),
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
+        Command::OpenapiHydrate(args) => openapi::hydrate(args),
     }
 }

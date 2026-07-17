@@ -16,8 +16,18 @@ use crate::backends::RegisteredTableFunction;
 
 pub(crate) trait ScopedTableFunctionSignature {
     fn display_name(&self) -> &str;
-    fn arg_names(&self) -> &[String];
-    fn contains(&self, name: &str) -> bool;
+    fn arg_count(&self) -> usize;
+    fn arg_name(&self, index: usize) -> Option<&str>;
+
+    fn canonical_arg_name(&self, name: &str) -> Option<&str> {
+        for index in 0..self.arg_count() {
+            let candidate = self.arg_name(index)?;
+            if candidate == name {
+                return Some(candidate);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -27,6 +37,13 @@ pub(crate) struct ScopedTableFunctionName {
 }
 
 impl ScopedTableFunctionName {
+    pub(crate) fn from_parts(schema: &str, function: &str) -> Self {
+        Self {
+            schema: normalize_runtime_identifier(schema),
+            function: normalize_runtime_identifier(function),
+        }
+    }
+
     pub(crate) fn from_manifest(function: &RegisteredTableFunction) -> Self {
         Self {
             schema: function.schema_name.clone(),
@@ -40,6 +57,10 @@ impl ScopedTableFunctionName {
             function: context.normalize_ident(function),
         }
     }
+}
+
+fn normalize_runtime_identifier(identifier: &str) -> String {
+    identifier.to_ascii_lowercase()
 }
 
 #[derive(Debug)]
@@ -99,6 +120,38 @@ pub(crate) fn find_placeholder(expr: &Expr) -> Option<String> {
 
 pub(crate) fn qualified_name(schema: &str, function: &str) -> String {
     format!("{schema}.{function}")
+}
+
+pub(crate) fn available_functions_hint<'a>(
+    schema: &str,
+    functions: impl IntoIterator<Item = (&'a ScopedTableFunctionName, &'a str)>,
+) -> String {
+    let mut names: Vec<&str> = functions
+        .into_iter()
+        .filter_map(|(key, display_name)| (key.schema == schema).then_some(display_name))
+        .collect();
+    names.sort_unstable();
+
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("; available functions: {}", names.join(", "))
+    }
+}
+
+pub(crate) fn reject_unbound_parameters<'a>(
+    display_name: &str,
+    args: impl IntoIterator<Item = (&'a str, &'a Expr)>,
+) -> Result<()> {
+    for (name, arg) in args {
+        if let Some(placeholder) = find_placeholder(arg) {
+            return Err(DataFusionError::Plan(format!(
+                "{display_name} argument '{name}' is bound to parameter {placeholder}, \
+                 but no value was provided for it"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn original_relation(relation: TableFactor) -> RelationPlanning {
@@ -193,14 +246,69 @@ pub(crate) fn lower_named_args_to_positional_exprs(
 ) -> Result<Vec<Expr>> {
     let mut supplied = collect_named_args(function, args, context)?;
 
-    function
-        .arg_names()
-        .iter()
-        .map(|name| match supplied.remove(name) {
-            Some(sql_expr) => context.sql_to_expr(sql_expr, &DFSchema::empty()),
-            None => Ok(Expr::Literal(ScalarValue::Null, None)),
-        })
+    lower_supplied_args_to_positional_exprs(function, &mut supplied, context)
+}
+
+/// Lowers named call arguments when every declared argument must be present.
+/// Explicit NULL values still count as supplied and are interpreted by the
+/// function's type binder.
+pub(crate) fn lower_required_named_args_to_positional_exprs(
+    function: &dyn ScopedTableFunctionSignature,
+    args: &TableFunctionArgs,
+    context: &mut dyn RelationPlannerContext,
+) -> Result<Vec<Expr>> {
+    let mut supplied = collect_named_args(function, args, context)?;
+    reject_missing_args(function, &supplied)?;
+
+    lower_supplied_args_to_positional_exprs(function, &mut supplied, context)
+}
+
+fn lower_supplied_args_to_positional_exprs(
+    function: &dyn ScopedTableFunctionSignature,
+    supplied: &mut HashMap<String, SqlExpr>,
+    context: &mut dyn RelationPlannerContext,
+) -> Result<Vec<Expr>> {
+    (0..function.arg_count())
+        .map(|index| lower_positional_arg(function, index, supplied, context))
         .collect()
+}
+
+fn reject_missing_args(
+    function: &dyn ScopedTableFunctionSignature,
+    supplied: &HashMap<String, SqlExpr>,
+) -> Result<()> {
+    for index in 0..function.arg_count() {
+        let name = declared_arg_name(function, index)?;
+        if !supplied.contains_key(name) {
+            return Err(DataFusionError::Plan(format!(
+                "{} is missing argument '{name}'",
+                function.display_name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn lower_positional_arg(
+    function: &dyn ScopedTableFunctionSignature,
+    index: usize,
+    supplied: &mut HashMap<String, SqlExpr>,
+    context: &mut dyn RelationPlannerContext,
+) -> Result<Expr> {
+    let name = declared_arg_name(function, index)?;
+    match supplied.remove(name) {
+        Some(sql_expr) => context.sql_to_expr(sql_expr, &DFSchema::empty()),
+        None => Ok(Expr::Literal(ScalarValue::Null, None)),
+    }
+}
+
+fn declared_arg_name(function: &dyn ScopedTableFunctionSignature, index: usize) -> Result<&str> {
+    function.arg_name(index).ok_or_else(|| {
+        DataFusionError::Internal(format!(
+            "{} argument index {index} missing from signature",
+            function.display_name()
+        ))
+    })
 }
 
 fn collect_named_args(
@@ -230,16 +338,17 @@ fn insert_named_arg(
     context: &dyn RelationPlannerContext,
 ) -> Result<()> {
     let lookup_name = context.normalize_ident(name.clone());
-    if !seen.insert(lookup_name.clone()) {
+    let Some(canonical_name) = function.canonical_arg_name(&lookup_name) else {
         return Err(DataFusionError::Plan(format!(
-            "{} duplicate argument '{}'",
+            "{} unknown argument '{}'",
             function.display_name(),
             name.value
         )));
-    }
-    if !function.contains(&lookup_name) {
+    };
+    let canonical_name = canonical_name.to_string();
+    if !seen.insert(canonical_name.clone()) {
         return Err(DataFusionError::Plan(format!(
-            "{} unknown argument '{}'",
+            "{} duplicate argument '{}'",
             function.display_name(),
             name.value
         )));
@@ -251,7 +360,7 @@ fn insert_named_arg(
             name.value
         )));
     };
-    supplied.insert(lookup_name, sql_expr.clone());
+    supplied.insert(canonical_name, sql_expr.clone());
     Ok(())
 }
 

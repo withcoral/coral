@@ -1,21 +1,76 @@
-import { create } from '@bufbuild/protobuf'
-
 import {
-  CreateBundledSourceRequestSchema,
-  CreateBundledSourceWithOAuthRequestSchema,
-  DeleteSourceRequestSchema,
-  DiscoverSourcesRequestSchema,
-  GetSourceInfoRequestSchema,
-  GetSourceRequestSchema,
   SourceOrigin,
-  type OAuthCredentialRetrieval,
+  type OAuthCredentialMethod,
   type Source,
+  type SourceCredentialMethod,
   type SourceInfo,
+  type SourceInputSpec,
 } from '@/generated/coral/v1/sources_pb'
 
-import { getSourceClient, WORKSPACE } from './coral-clients'
-
 export type SourceOriginLabel = 'bundled' | 'imported' | 'unknown'
+
+export interface CatalogSourceBinding {
+  key: string
+  value: string
+}
+
+export interface CatalogSource {
+  name: string
+  origin: SourceOriginLabel
+  secrets: CatalogSourceBinding[]
+  variables: CatalogSourceBinding[]
+  version: string
+}
+
+export interface CatalogSourceInputSpec {
+  hint: string
+  input:
+    | {
+        case: 'variable'
+        value: {
+          defaultValue: string
+        }
+      }
+    | {
+        case: 'secret'
+        value: {
+          credential?: {
+            methods: CatalogSourceCredentialMethod[]
+          }
+        }
+      }
+    | { case: undefined; value?: undefined }
+  key: string
+  required: boolean
+}
+
+export interface CatalogSourceCredentialMethod {
+  description: string
+  hint: string
+  label: string
+  method:
+    | {
+        case: 'sourceConfig'
+        value: Record<string, never>
+      }
+    | {
+        case: 'oauth'
+        value: CatalogOAuthCredentialMethod
+      }
+    | { case: undefined; value?: undefined }
+}
+
+export interface CatalogOAuthCredentialMethod {
+  client?: {
+    id?: {
+      defaultValue: string
+      input: string
+    }
+    secret?: {
+      input: string
+    }
+  }
+}
 
 export interface CatalogEntry {
   name: string
@@ -23,22 +78,54 @@ export interface CatalogEntry {
   version: string
   installed: boolean
   origin: SourceOriginLabel
-}
-
-export interface ResolvedSourceInfo {
-  info: SourceInfo
-}
-
-export interface InstallInput {
-  key: string
-  value: string
-  secret: boolean
+  inputSpecs?: CatalogSourceInputSpec[]
+  source?: CatalogSource
 }
 
 export function originLabel(origin: SourceOrigin): SourceOriginLabel {
   if (origin === SourceOrigin.BUNDLED) return 'bundled'
   if (origin === SourceOrigin.IMPORTED) return 'imported'
   return 'unknown'
+}
+
+export function catalogEntries(discovered: SourceInfo[], installed: Source[]): CatalogEntry[] {
+  const entries = new Map<string, CatalogEntry>()
+  for (const info of discovered) {
+    entries.set(info.name, toCatalogEntry(info))
+  }
+  for (const source of installed) {
+    const existing = entries.get(source.name)
+    if (existing) {
+      existing.installed = true
+      const installedOrigin = originLabel(source.origin)
+      if (installedOrigin !== 'unknown') existing.origin = installedOrigin
+      existing.version = source.version || existing.version
+      continue
+    }
+    entries.set(source.name, {
+      description:
+        source.origin === SourceOrigin.IMPORTED ? 'Imported source' : 'Configured source',
+      installed: true,
+      name: source.name,
+      origin: originLabel(source.origin),
+      version: source.version,
+    })
+  }
+  return [...entries.values()]
+}
+
+export function toCatalogSource(source: Source): CatalogSource {
+  return {
+    name: source.name,
+    origin: originLabel(source.origin),
+    secrets: source.secrets.map(({ key, value }) => ({ key, value })),
+    variables: source.variables.map(({ key, value }) => ({ key, value })),
+    version: source.version,
+  }
+}
+
+export function toCatalogSourceInputSpecs(info: SourceInfo): CatalogSourceInputSpec[] {
+  return info.inputs.map(toCatalogSourceInputSpec)
 }
 
 function toCatalogEntry(s: SourceInfo): CatalogEntry {
@@ -48,115 +135,96 @@ function toCatalogEntry(s: SourceInfo): CatalogEntry {
     version: s.version,
     installed: s.installed,
     origin: originLabel(s.origin),
+    inputSpecs: toCatalogSourceInputSpecs(s),
   }
 }
 
-export async function discoverBundled(): Promise<CatalogEntry[]> {
-  const sourceClient = await getSourceClient()
-  const resp = await sourceClient.discoverSources(
-    create(DiscoverSourcesRequestSchema, { workspace: WORKSPACE }),
-  )
-  return resp.sources.map(toCatalogEntry)
-}
-
-export async function getSourceInfo(name: string): Promise<ResolvedSourceInfo> {
-  const sourceClient = await getSourceClient()
-  const resp = await sourceClient.getSourceInfo(
-    create(GetSourceInfoRequestSchema, { workspace: WORKSPACE, name }),
-  )
-  if (!resp.sourceInfo) {
-    throw new Error(`source '${name}' has no info`)
+function toCatalogSourceInputSpec(input: SourceInputSpec): CatalogSourceInputSpec {
+  const base = {
+    hint: input.hint,
+    key: input.key,
+    required: input.required,
   }
-  return { info: resp.sourceInfo }
-}
-
-export async function getInstalledSource(name: string): Promise<Source> {
-  const sourceClient = await getSourceClient()
-  const resp = await sourceClient.getSource(
-    create(GetSourceRequestSchema, { workspace: WORKSPACE, name }),
-  )
-  if (!resp.source) throw new Error(`source '${name}' not found`)
-  return resp.source
-}
-
-export async function deleteSource(name: string): Promise<void> {
-  const sourceClient = await getSourceClient()
-  await sourceClient.deleteSource(create(DeleteSourceRequestSchema, { workspace: WORKSPACE, name }))
-}
-
-function splitBindings(inputs: InstallInput[]) {
-  const variables = inputs.filter((i) => !i.secret).map((i) => ({ key: i.key, value: i.value }))
-  const secrets = inputs.filter((i) => i.secret).map((i) => ({ key: i.key, value: i.value }))
-  return { variables, secrets }
-}
-
-export async function createBundledSource(name: string, inputs: InstallInput[]): Promise<Source> {
-  const sourceClient = await getSourceClient()
-  const { variables, secrets } = splitBindings(inputs)
-  const resp = await sourceClient.createBundledSource(
-    create(CreateBundledSourceRequestSchema, {
-      workspace: WORKSPACE,
-      name,
-      variables,
-      secrets,
-    }),
-  )
-  if (!resp.source) throw new Error(`createBundledSource returned no source`)
-  return resp.source
-}
-
-export interface OAuthFlowCallbacks {
-  onAuthorization?: (event: {
-    inputKey: string
-    authorizationUrl: string
-    expiresInSeconds: bigint
-    userCode: string
-    verificationUri: string
-    verificationUriComplete: string
-  }) => void
-  onCompleted?: (event: { inputKey: string; metadata: Map<string, string> }) => void
-}
-
-/** Run the bundled-source OAuth install stream and deliver progress events. */
-export async function createBundledSourceWithOAuth(
-  name: string,
-  inputs: InstallInput[],
-  oauthRetrievals: OAuthCredentialRetrieval[],
-  callbacks: OAuthFlowCallbacks = {},
-): Promise<Source> {
-  const sourceClient = await getSourceClient()
-  const { variables, secrets } = splitBindings(inputs)
-  const stream = sourceClient.createBundledSourceWithOAuth(
-    create(CreateBundledSourceWithOAuthRequestSchema, {
-      workspace: WORKSPACE,
-      name,
-      variables,
-      secrets,
-      oauthCredentialRetrievals: oauthRetrievals,
-    }),
-  )
-  for await (const response of stream) {
-    const event = response.event
-    if (event.case === 'source') return event.value
-    if (event.case === 'oauthAuthorization') {
-      callbacks.onAuthorization?.({
-        inputKey: event.value.inputKey,
-        authorizationUrl: event.value.authorizationUrl,
-        expiresInSeconds: event.value.expiresInSeconds,
-        userCode: event.value.userCode,
-        verificationUri: event.value.verificationUri,
-        verificationUriComplete: event.value.verificationUriComplete,
-      })
-      // Keep the device-code prompt visible if a fast backend streams the
-      // completion event immediately after authorization starts.
-      if (event.value.userCode) {
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-      }
-    } else if (event.case === 'oauthCompleted') {
-      const metadata = new Map<string, string>()
-      for (const item of event.value.metadata) metadata.set(item.key, item.value)
-      callbacks.onCompleted?.({ inputKey: event.value.inputKey, metadata })
+  if (input.input.case === 'variable') {
+    return {
+      ...base,
+      input: {
+        case: 'variable',
+        value: {
+          defaultValue: input.input.value.defaultValue,
+        },
+      },
     }
   }
-  throw new Error(`install stream ended without a source event`)
+  if (input.input.case === 'secret') {
+    return {
+      ...base,
+      input: {
+        case: 'secret',
+        value: {
+          credential: input.input.value.credential
+            ? {
+                methods: input.input.value.credential.methods.map(toCatalogCredentialMethod),
+              }
+            : undefined,
+        },
+      },
+    }
+  }
+  return {
+    ...base,
+    input: { case: undefined },
+  }
+}
+
+function toCatalogCredentialMethod(method: SourceCredentialMethod): CatalogSourceCredentialMethod {
+  const base = {
+    description: method.description,
+    hint: method.hint,
+    label: method.label,
+  }
+  if (method.method.case === 'sourceConfig') {
+    return {
+      ...base,
+      method: {
+        case: 'sourceConfig',
+        value: {},
+      },
+    }
+  }
+  if (method.method.case === 'oauth') {
+    return {
+      ...base,
+      method: {
+        case: 'oauth',
+        value: toCatalogOAuthCredentialMethod(method.method.value),
+      },
+    }
+  }
+  return {
+    ...base,
+    method: { case: undefined },
+  }
+}
+
+function toCatalogOAuthCredentialMethod(
+  method: OAuthCredentialMethod,
+): CatalogOAuthCredentialMethod {
+  return {
+    client: method.client
+      ? {
+          id: method.client.id
+            ? {
+                defaultValue: method.client.id.defaultValue,
+                input: method.client.id.input,
+              }
+            : undefined,
+          secret: method.client.secret
+            ? {
+                input: method.client.secret.input,
+              }
+            : undefined,
+        }
+      : undefined,
+  }
 }

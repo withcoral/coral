@@ -21,7 +21,7 @@ use coral_api::v1::{
 };
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, default_workspace};
-use harness::{MockServer, MockServerConfig};
+use harness::{MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
@@ -60,12 +60,50 @@ origin = "bundled"
     )
 }
 
-fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
-    assert_eq!(
-        workspace.map(|workspace| workspace.name.as_str()),
-        Some(expected),
-        "expected workspace {expected:?}, got {workspace:?}"
-    );
+fn write_query_history_trace_records(
+    config_dir: &Path,
+    records: &[Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let trace_dir = config_dir.join("telemetry").join("traces");
+    fs::create_dir_all(&trace_dir)?;
+    let mut lines = String::new();
+    for record in records {
+        lines.push_str(&serde_json::to_string(record)?);
+        lines.push('\n');
+    }
+    fs::write(
+        trace_dir.join("spans-00000000000000000001-test-0000000000000000.jsonl"),
+        lines,
+    )?;
+    Ok(())
+}
+
+fn query_history_trace_record(
+    workspace: &str,
+    trace_id: &str,
+    sql: &str,
+    sources: &[&str],
+    row_count: u64,
+    end_time_unix_nanos: i64,
+) -> Value {
+    let attributes = json!({
+        "workspace": workspace,
+        "sql": sql,
+        "status": "ok",
+        "row_count": row_count,
+        "coral.query.sources": sources,
+        "coral.query.tables": [],
+        "coral.query.table_functions": [],
+    });
+
+    json!({
+        "trace_id": trace_id,
+        "span_id": format!("{trace_id}-span"),
+        "name": "coral.query",
+        "status": "ok",
+        "end_time_unix_nanos": end_time_unix_nanos,
+        "attributes_json": attributes.to_string(),
+    })
 }
 
 fn source_fixture(workspace_name: &str, source_name: &str) -> Source {
@@ -520,6 +558,27 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
     ))
     .await;
     write_workspace_scoped_source_config(&server)?;
+    write_query_history_trace_records(
+        server.config_dir(),
+        &[
+            query_history_trace_record(
+                "default",
+                "default-history",
+                "SELECT title FROM github.issues",
+                &["github"],
+                7,
+                10,
+            ),
+            query_history_trace_record(
+                "work",
+                "work-history",
+                "SELECT title FROM linear.issues",
+                &["linear"],
+                3,
+                20,
+            ),
+        ],
+    )?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .args(["--workspace", "work"])
@@ -534,44 +593,7 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
     let stdout = child.stdout.take().expect("mcp stdio stdout");
     let mut stdout = BufReader::new(stdout);
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "coral-cli-workspace-stdio-test",
-                    "version": "0.0.0"
-                }
-            }
-        }),
-    )
-    .await?;
-    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
-    let instructions = initialize
-        .pointer("/result/instructions")
-        .and_then(Value::as_str)
-        .expect("initialize response should include instructions");
-    assert!(
-        instructions.contains("Current Coral workspace: work."),
-        "initialize instructions should include selected workspace: {instructions}"
-    );
-    assert!(
-        instructions.contains("Connected Coral sources: linear."),
-        "initialize instructions should include app-provided source names: {instructions}"
-    );
-    assert!(
-        !instructions.contains("Connected Coral sources: jira."),
-        "initialize instructions should not use config-store source names: {instructions}"
-    );
-    assert!(
-        !instructions.contains("Recent successful Coral SQL examples"),
-        "non-default workspace initialize instructions should not use default-workspace query history: {instructions}"
-    );
+    assert_workspace_initialize_instructions(&mut stdin, &mut stdout).await?;
 
     write_jsonrpc_message(
         &mut stdin,
@@ -618,6 +640,61 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
     Ok(())
 }
 
+async fn assert_workspace_initialize_instructions(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_jsonrpc_message(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-workspace-stdio-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Current Coral workspace: work."),
+        "initialize instructions should include selected workspace: {instructions}"
+    );
+    assert!(
+        instructions.contains("Connected Coral sources: linear."),
+        "initialize instructions should include app-provided source names: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Connected Coral sources: jira."),
+        "initialize instructions should not use config-store source names: {instructions}"
+    );
+    assert!(
+        instructions.contains("Recent successful Coral SQL examples"),
+        "non-default workspace initialize instructions should include workspace query history: {instructions}"
+    );
+    assert!(
+        instructions.contains(
+            "1. sources: linear; row_count: 3\n```sql\nSELECT title FROM linear.issues\n```"
+        ),
+        "initialize instructions should include selected workspace query history: {instructions}"
+    );
+    assert!(
+        !instructions.contains("SELECT title FROM github.issues"),
+        "initialize instructions should not include default workspace query history: {instructions}"
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
@@ -631,8 +708,8 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "search",
             "list_catalog",
-            "search_catalog",
             "describe_table",
             "list_columns"
         ]
@@ -648,14 +725,14 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         tools[1]
             .description
             .as_deref()
-            .expect("list_catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .expect("search description")
+            .contains("Returns typed results plus provider statuses")
     );
     assert!(
         tools[2]
             .description
             .as_deref()
-            .expect("search_catalog description")
+            .expect("list_catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     let catalog_requests = server.list_catalog_requests();
@@ -714,8 +791,8 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "search",
             "list_catalog",
-            "search_catalog",
             "describe_table",
             "list_columns",
             "feedback"
@@ -728,10 +805,9 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
--> Result<(), Box<dyn std::error::Error>> {
+async fn mcp_stdio_enable_tasks_flag_lists_task_tools() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
-    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
+    let client = start_mcp_client_with_args(&server, &["--enable-tasks"]).await?;
 
     let tools = client.list_all_tools().await?;
     assert_eq!(
@@ -741,30 +817,70 @@ async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "search",
             "list_catalog",
-            "search_catalog",
             "describe_table",
             "list_columns",
-            "open_episode"
+            "start_task",
+            "end_task"
         ]
     );
     for tool in tools
         .iter()
-        .filter(|tool| tool.name.as_ref() != "open_episode")
+        .filter(|tool| !matches!(tool.name.as_ref(), "start_task" | "end_task"))
     {
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("tool '{}' should advertise required fields", tool.name));
         assert!(
-            tool_input_properties(tool).contains_key("episode_id"),
-            "tool '{}' should advertise optional episode_id",
+            tool_input_properties(tool).contains_key("task_id"),
+            "tool '{}' should advertise task_id",
+            tool.name
+        );
+        assert!(
+            tool_input_properties(tool).contains_key("intent"),
+            "tool '{}' should advertise intent",
+            tool.name
+        );
+        assert!(
+            required
+                .iter()
+                .any(|field| field.as_str() == Some("task_id")),
+            "tool '{}' should require task_id",
+            tool.name
+        );
+        assert!(
+            required
+                .iter()
+                .any(|field| field.as_str() == Some("intent")),
+            "tool '{}' should require intent",
             tool.name
         );
     }
-    let open_episode = tools
+    let start_task = tools
         .iter()
-        .find(|tool| tool.name.as_ref() == "open_episode")
-        .expect("open_episode tool should be listed");
+        .find(|tool| tool.name.as_ref() == "start_task")
+        .expect("start_task tool should be listed");
     assert!(
-        tool_input_properties(open_episode).contains_key("parent_episode_id"),
-        "open_episode should accept an optional parent_episode_id"
+        tool_input_properties(start_task).contains_key("intent"),
+        "start_task should accept intent"
+    );
+    assert!(
+        !tool_input_properties(start_task).contains_key("initialize_session"),
+        "start_task should not accept initialize_session"
+    );
+    let end_task = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "end_task")
+        .expect("end_task tool should be listed");
+    assert!(tool_input_properties(end_task).contains_key("task_id"));
+    assert!(!tool_input_properties(end_task).contains_key("intent"));
+    assert!(tool_input_properties(end_task).contains_key("task_status"));
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "end_task"),
+        "end_task tool should be listed"
     );
 
     client.cancel().await?;
@@ -797,24 +913,25 @@ feedback = true
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_feature_config_enables_open_episode_tool()
--> Result<(), Box<dyn std::error::Error>> {
+async fn mcp_stdio_feature_config_enables_task_tools() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     write_config(
         &server,
         r"
 [features]
-episodes = true
+tasks = true
 ",
     )?;
     let client = start_mcp_client(&server).await?;
 
     let tools = client.list_all_tools().await?;
     assert!(
-        tools
-            .iter()
-            .any(|tool| tool.name.as_ref() == "open_episode"),
-        "open_episode tool should be listed when [features].episodes is true"
+        tools.iter().any(|tool| tool.name.as_ref() == "start_task"),
+        "start_task tool should be listed when [features].tasks is true"
+    );
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "end_task"),
+        "end_task tool should be listed when [features].tasks is true"
     );
 
     client.cancel().await?;
@@ -1027,7 +1144,11 @@ async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
     let client = start_mcp_client(&server).await?;
 
     assert_list_catalog_tool(&client, &server).await?;
-    assert_search_catalog_tool(&client, &server).await?;
+    client
+        .call_tool(CallToolRequestParams::new("search_catalog"))
+        .await
+        .expect_err("removed search_catalog tool should not be callable");
+    assert_search_tool(&client, &server).await?;
     assert_describe_table_tool(&client, &server).await?;
     assert_list_columns_tool(&client).await?;
     assert_sql_tool(&client).await?;
@@ -1107,62 +1228,35 @@ async fn assert_list_catalog_tool(
     Ok(())
 }
 
-async fn assert_search_catalog_tool(
+async fn assert_search_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let search = structured_tool_content(
         client,
-        CallToolRequestParams::new("search_catalog").with_arguments(json_object(&json!({
-            "pattern": "fixture.*messages",
-            "schema": "local_messages",
-            "kind": "table",
-            "ignore_case": true
+        CallToolRequestParams::new("search").with_arguments(json_object(&json!({
+            "query": "messages",
+            "limit": 5
         }))),
     )
     .await?;
-    assert_eq!(search["total"], 1);
-    assert_eq!(search["items"][0]["name"], "local_messages.messages");
+    assert_eq!(search["results"][0]["kind"], "catalog_metadata");
     assert_eq!(
-        search["items"][0]["sql_reference"],
+        search["results"][0]["catalog_metadata"]["item"]["sql_reference"],
         "local_messages.messages"
     );
-    assert!(
-        search["items"][0]["matched_fields"]
-            .as_array()
-            .expect("matched fields")
-            .iter()
-            .any(|field| field == "description")
+    assert_eq!(
+        search["provider_statuses"][0]["provider"],
+        "catalog_metadata"
     );
-    let search_requests = server.search_catalog_requests();
-    let search_request = search_requests.last().expect("search catalog request");
-    assert_eq!(search_request.pattern, "fixture.*messages");
-    assert_eq!(search_request.schema_name, "local_messages");
-    assert_eq!(search_request.kind, 1);
-    let search_pagination = search_request
-        .pagination
-        .as_ref()
-        .expect("search pagination");
-    assert_eq!(search_pagination.limit, 20);
-    assert_eq!(search_pagination.offset, 0);
-    assert!(search_request.ignore_case);
+    assert_eq!(search["provider_statuses"][0]["state"], "results_found");
+    assert!(search["provider_statuses"][1]["coverage"].is_null());
 
-    let guide_search = structured_tool_content(
-        client,
-        CallToolRequestParams::new("search_catalog").with_arguments(json_object(&json!({
-            "pattern": "Query fixture messages",
-            "schema": "local_messages"
-        }))),
-    )
-    .await?;
-    assert_eq!(guide_search["total"], 1);
-    assert!(
-        guide_search["items"][0]["matched_fields"]
-            .as_array()
-            .expect("matched fields")
-            .iter()
-            .any(|field| field == "guide")
-    );
+    let search_requests = server.search_requests();
+    let request = search_requests.last().expect("search request");
+    assert_eq!(request.query, "messages");
+    assert_eq!(request.limit, 5);
+    assert_default_workspace(request.workspace.as_ref());
     Ok(())
 }
 
@@ -1343,10 +1437,10 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_sql_batch_propagates_episode_id_to_each_query()
+async fn mcp_stdio_sql_batch_propagates_task_id_to_each_query()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
-    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
+    let client = start_mcp_client_with_args(&server, &["--enable-tasks"]).await?;
 
     let sql = structured_tool_content(
         &client,
@@ -1355,20 +1449,21 @@ async fn mcp_stdio_sql_batch_propagates_episode_id_to_each_query()
                 "SELECT 'first' AS label",
                 "SELECT 'second' AS label"
             ],
-            "episode_id": "ep_batch"
+            "intent": "Run a task-scoped SQL batch",
+            "task_id": "550e8400-e29b-41d4-a716-446655440000"
         }))),
     )
     .await?;
     assert_eq!(sql["total_count"], 2);
     assert_eq!(sql["success_count"], 2);
 
-    let episode_ids = server.execute_sql_episode_ids();
-    assert_eq!(episode_ids.len(), 2);
+    let task_ids = server.execute_sql_task_ids();
+    assert_eq!(task_ids.len(), 2);
     assert!(
-        episode_ids
+        task_ids
             .iter()
-            .all(|episode_id| episode_id.as_deref() == Some("ep_batch")),
-        "expected every batch query to carry coral-episode-id, got {episode_ids:?}"
+            .all(|task_id| task_id.as_deref() == Some("550e8400-e29b-41d4-a716-446655440000")),
+        "expected every batch query to carry coral-task-id, got {task_ids:?}"
     );
 
     client.cancel().await?;

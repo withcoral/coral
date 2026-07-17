@@ -15,10 +15,9 @@ use crate::state::{
 pub enum Feature {
     /// Expose the optional MCP `feedback` tool.
     Feedback,
-    /// Experimental trajectory-memory episodes (in progress): exposes the MCP
-    /// `open_episode` tool and associates follow-up Coral MCP tool calls with
-    /// the intent they served via the `coral-episode-id` metadata key.
-    Episodes,
+    /// Expose MCP task lifecycle tools and task attribution for follow-up Coral
+    /// MCP tool calls via the `coral-task-id` metadata key.
+    Tasks,
 }
 
 impl Feature {
@@ -79,12 +78,12 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         disable_flag: "disable-feedback",
     },
     FeatureSpec {
-        feature: Feature::Episodes,
-        key: "episodes",
+        feature: Feature::Tasks,
+        key: "tasks",
         default_enabled: false,
-        description: "Experimental trajectory memory (in progress): exposes MCP open_episode and tags follow-up Coral tool calls with episode ids. Off by default.",
-        enable_flag: "enable-episodes",
-        disable_flag: "disable-episodes",
+        description: "Exposes MCP task lifecycle tools and tags follow-up Coral tool calls with task ids. Off by default.",
+        enable_flag: "enable-tasks",
+        disable_flag: "disable-tasks",
     },
 ];
 
