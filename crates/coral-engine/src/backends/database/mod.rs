@@ -1,5 +1,6 @@
 //! Relational database backend registration through `datafusion-table-providers`.
 
+mod columns;
 mod pool_cache;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -32,12 +33,15 @@ use datafusion_table_providers::sql::sql_provider_datafusion::SqlTable;
 use datafusion_table_providers::util::secrets::to_secret_map;
 use futures::TryStreamExt as _;
 
+use self::columns::{
+    MYSQL_COLUMNS_SQL, POSTGRES_COLUMNS_SQL, PooledColumnFetcher, SQLITE_COLUMNS_SQL,
+};
 use self::pool_cache::{PoolCache, PoolKey};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
-    BackendRegistrationContext, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    SourceQualifiedName, build_registered_inputs,
+    BackendRegistrationContext, CompiledBackendSource, DatabaseColumnFetcher, RegisteredSource,
+    RegisteredTable, SourceQualifiedName, build_registered_inputs,
 };
 
 const REMOTE_DATABASE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -123,6 +127,7 @@ impl CompiledBackendSource for CompiledDatabaseSource {
                 catalogs: vec![BackendCatalogRegistration {
                     catalog: database_catalog.provider,
                     source,
+                    column_fetcher: database_catalog.column_fetcher,
                 }],
             })
         };
@@ -194,7 +199,7 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
                             .with_unsupported_type_action(UnsupportedTypeAction::String))
                     }
                 },
-                |pool| database_catalog(pool, POSTGRES_RELATIONS_SQL),
+                |pool| database_catalog(pool, POSTGRES_RELATIONS_SQL, POSTGRES_COLUMNS_SQL),
             )
             .await
     }
@@ -241,7 +246,7 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
                             .map_err(provider_error)
                     }
                 },
-                |pool| database_catalog(pool, MYSQL_RELATIONS_SQL),
+                |pool| database_catalog(pool, MYSQL_RELATIONS_SQL, MYSQL_COLUMNS_SQL),
             )
             .await
     }
@@ -276,7 +281,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
             .build()
             .await
             .map_err(boxed_provider_error)?;
-        database_catalog(Arc::new(pool), SQLITE_RELATIONS_SQL).await
+        database_catalog(Arc::new(pool), SQLITE_RELATIONS_SQL, SQLITE_COLUMNS_SQL).await
     }
 }
 
@@ -312,6 +317,7 @@ static MYSQL_POOLS: LazyLock<PoolCache<MySQLConnectionPool>> = LazyLock::new(Poo
 struct DatabaseCatalog {
     provider: Arc<dyn CatalogProvider>,
     relations: Vec<DatabaseRelation>,
+    column_fetcher: Arc<dyn DatabaseColumnFetcher>,
 }
 
 #[derive(Clone, Debug)]
@@ -324,13 +330,16 @@ struct DatabaseRelation {
 async fn database_catalog<T: 'static, P: 'static>(
     pool: Pool<T, P>,
     inventory_sql: &str,
+    columns_sql: &'static str,
 ) -> DataFusionResult<DatabaseCatalog> {
     let relations = load_database_inventory(&pool, inventory_sql).await?;
     let provider =
         Arc::new(CoralDatabaseCatalogProvider::new(&pool, &relations)) as Arc<dyn CatalogProvider>;
+    let column_fetcher = PooledColumnFetcher::new(&pool, columns_sql);
     Ok(DatabaseCatalog {
         provider,
         relations,
+        column_fetcher,
     })
 }
 

@@ -487,9 +487,13 @@ async fn register_test_sources_with_catalog(
     sources: Vec<CompiledQuerySource>,
 ) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
-    catalog::register(ctx, &registration.active_sources, &[])
-        .await
-        .expect("catalog should register");
+    catalog::register(
+        ctx,
+        &registration.active_sources,
+        &registration.column_fetchers,
+        &[],
+    )
+    .expect("catalog should register");
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources

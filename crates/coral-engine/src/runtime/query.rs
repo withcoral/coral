@@ -20,7 +20,7 @@ use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::{RegisteredSource, compile_query_source};
+use crate::backends::{CatalogColumnFetcher, RegisteredSource, compile_query_source};
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
@@ -58,6 +58,7 @@ pub(crate) struct QueryRuntimeAdapter {
     fallback_runtime: Option<FallbackRuntime>,
     memory: QueryMemoryConfig,
     active_sources: Vec<RegisteredSource>,
+    column_fetchers: Vec<CatalogColumnFetcher>,
     source_function_names: HashSet<ScopedTableFunctionName>,
     udfs_installed: bool,
     tables: Vec<TableInfo>,
@@ -100,6 +101,7 @@ struct FallbackRuntimeConfig {
 struct RegisteredRuntime {
     ctx: Arc<SessionContext>,
     active_sources: Vec<RegisteredSource>,
+    column_fetchers: Vec<CatalogColumnFetcher>,
     source_function_names: HashSet<ScopedTableFunctionName>,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
@@ -181,6 +183,7 @@ async fn build_runtime_inner(
         fallback_runtime,
         memory,
         active_sources: primary.active_sources,
+        column_fetchers: primary.column_fetchers,
         source_function_names: primary.source_function_names,
         udfs_installed,
         tables: primary.tables,
@@ -212,9 +215,13 @@ async fn build_registered_runtime(
     let source_function_names = source_functions.names();
     let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
-    catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
-        .await
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    catalog::register(
+        &ctx,
+        &registration.active_sources,
+        &registration.column_fetchers,
+        &udf_table_functions,
+    )
+    .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_static_tables(&registration.active_sources);
     let table_functions =
         catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
@@ -237,6 +244,7 @@ async fn build_registered_runtime(
     Ok(RegisteredRuntime {
         ctx,
         active_sources: registration.active_sources,
+        column_fetchers: registration.column_fetchers,
         source_function_names,
         tables,
         table_functions,
@@ -403,9 +411,13 @@ impl QueryRuntimeAdapter {
         ))
         .await
         .map_err(|err| datafusion_to_core(&err, &self.tables))?;
-        catalog::register(&self.ctx, &self.active_sources, &udf_table_functions)
-            .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        catalog::register(
+            &self.ctx,
+            &self.active_sources,
+            &self.column_fetchers,
+            &udf_table_functions,
+        )
+        .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         udf_calls
             .install(&self.ctx)
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
@@ -1320,15 +1332,14 @@ mod tests {
             inputs: Vec::new(),
         }];
         let ctx = Arc::new(SessionContext::new());
-        catalog::register(&ctx, &active_sources, &[])
-            .await
-            .expect("catalog should register");
+        catalog::register(&ctx, &active_sources, &[], &[]).expect("catalog should register");
         let tables = catalog::collect_static_tables(&active_sources);
         QueryRuntimeAdapter {
             ctx,
             fallback_runtime: None,
             memory: QueryMemoryConfig::default(),
             active_sources,
+            column_fetchers: Vec::new(),
             source_function_names: HashSet::new(),
             udfs_installed: false,
             tables,
