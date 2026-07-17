@@ -460,10 +460,14 @@ impl QueryRuntimeAdapter {
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, CoreError> {
+        // Catalog summaries never surface columns, so skip the coral.columns
+        // expansion (and the remote database inventory fetches behind it).
+        let tables =
+            catalog::collect_table_metadata(&self.ctx, catalog_filter, schema_filter, None)
+                .await
+                .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         Ok(CatalogInfo {
-            tables: self
-                .list_tables(catalog_filter, schema_filter, None)
-                .await?,
+            tables,
             table_functions: if catalog_filter.is_none() {
                 self.list_table_functions(schema_filter, None)
             } else {
