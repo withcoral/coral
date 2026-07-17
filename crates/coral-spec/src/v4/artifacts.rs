@@ -110,7 +110,9 @@ mod tests {
 
     use crate::parse_source_manifest_yaml;
     use crate::v4::ir::SemanticIr;
-    use crate::v4::projections::ProjectionCatalog;
+    use crate::v4::projections::{
+        Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility,
+    };
     use crate::v4::{
         MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
         SURFACE_IMPORTER_VERSION, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceManifest,
@@ -174,6 +176,22 @@ surface:
                 projections: Vec::new(),
                 diagnostics: Vec::new(),
             },
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn projection(name: &str) -> Projection {
+        Projection {
+            name: name.to_string(),
+            kind: ProjectionKind::Table,
+            description: String::new(),
+            guide: String::new(),
+            operation_id: "items/list".to_string(),
+            visibility: ProjectionVisibility::Published,
+            inputs: Vec::new(),
+            columns: Vec::new(),
+            search_limits: None,
+            detail_hints: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -263,6 +281,17 @@ surface:
     fn structural_validation_accepts_zero_projections() {
         validate_materialized_source_structure(&manifest(), &materialized_source())
             .expect("a singular source may publish no projections");
+    }
+
+    #[test]
+    fn structural_validation_rejects_duplicate_projection_names() {
+        let mut materialized = materialized_source();
+        materialized.projections.projections = vec![projection("items"), projection("items")];
+
+        let error = validate_materialized_source_structure(&manifest(), &materialized)
+            .expect_err("duplicate projection names should fail validation");
+
+        assert_eq!(error.to_string(), "DSL v4 projection 'items' is repeated");
     }
 
     #[test]
