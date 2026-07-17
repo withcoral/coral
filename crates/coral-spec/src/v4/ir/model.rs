@@ -6,7 +6,6 @@ use crate::v4::ir::rest::RestExecutionAttachment;
 use crate::v4::manifest::SurfaceType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SemanticIr {
     pub artifact_schema_version: u32,
     pub source_name: String,
@@ -323,7 +322,7 @@ mod tests {
             r#"
 artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
 source_name: demo
-surface_type: openapi
+surface_type: open_api
 importer_version: {OPENAPI_IMPORTER_VERSION}
 operations: []
 types:
@@ -342,6 +341,28 @@ diagnostics: []
             error.to_string().contains("shape") || error.to_string().contains("type"),
             "unexpected legacy local tag error: {error}"
         );
+    }
+
+    #[test]
+    fn semantic_ir_ignores_unknown_future_fields() {
+        let raw = format!(
+            r#"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+surface_type: open_api
+importer_version: {OPENAPI_IMPORTER_VERSION}
+operations: []
+types: []
+diagnostics: []
+future_generator_metadata:
+  revision: 2
+"#
+        );
+
+        let ir: SemanticIr =
+            serde_yaml::from_str(&raw).expect("unknown future fields should be advisory");
+
+        assert_eq!(ir.source_name, "demo");
     }
 
     #[test]

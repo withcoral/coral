@@ -15,7 +15,6 @@ pub struct ProjectionCatalog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Projection {
     pub name: String,
     pub kind: ProjectionKind,
@@ -180,6 +179,40 @@ diagnostics: []
             serde_yaml::from_str(&raw).expect("projection override catalog should deserialize");
 
         assert_eq!(catalog.generator_version, None);
+    }
+
+    #[test]
+    fn projection_ignores_unknown_future_fields() {
+        let raw = format!(
+            r#"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+projections:
+  - name: items
+    kind:
+      type: table
+    description: ""
+    guide: ""
+    operation_id: items/list
+    visibility: published
+    inputs: []
+    columns: []
+    search_limits: null
+    detail_hints: []
+    diagnostics: []
+    future_sql_metadata:
+      revision: 2
+diagnostics: []
+"#
+        );
+
+        let catalog: ProjectionCatalog =
+            serde_yaml::from_str(&raw).expect("unknown future fields should be advisory");
+
+        assert_eq!(
+            catalog.projections.first().expect("projection").name,
+            "items"
+        );
     }
 
     #[test]
