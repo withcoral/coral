@@ -1,21 +1,2 @@
-# Ownership policy, CI, release, build, and repo automation.
-/.github/ @withcoral/core-maintainers
-/.github/CODEOWNERS @withcoral/core-maintainers
-/release-please-config.json @withcoral/core-maintainers
-/.release-please-manifest.json @withcoral/core-maintainers
-/Makefile @withcoral/core-maintainers
-/rust-toolchain.toml @withcoral/core-maintainers
-/Cargo.toml @withcoral/core-maintainers
-
-# Project docs.
-/CONTRIBUTING.md @withcoral/core-maintainers
-/LICENSE @withcoral/core-maintainers
-/README.md @withcoral/core-maintainers
-/SECURITY.md @withcoral/core-maintainers
-AGENTS.md @withcoral/core-maintainers
-
-# User docs.
-/apps/docs/ @withcoral/docs
-
-# Sources
+# Community sources
 /sources/community/ @jsummerfield

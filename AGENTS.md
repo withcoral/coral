@@ -119,6 +119,10 @@
   See `apps/docs/AGENTS.md` for the full publishing model.
 - Keep checked-in generated files marked in `.gitattributes` with
   `linguist-generated` so GitHub collapses them by default in PR diffs.
+- Keep `.github/CODEOWNERS` limited to paths that intentionally require
+  automatic review assignment. The community source catalog is explicitly
+  owned by `@jsummerfield`; do not infer broad ownership from crate or team
+  boundaries.
 - Source inputs that carry credentials must be `kind: secret`, never
   `kind: variable`. This includes API keys, bearer tokens, access tokens,
   passwords, private keys, authorization header values, and admin/read keys,
