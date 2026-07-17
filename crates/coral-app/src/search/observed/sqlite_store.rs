@@ -146,8 +146,7 @@ impl SqliteObservedValuesStore {
         result.stale_rows_purged = governance.stale_rows_purged;
         result.evicted_rows = governance.evicted_rows;
         result.storage_limit_reached = governance.storage_limit_reached;
-        result.budget_exhausted |= maintenance_budget.is_zero()
-            && (governance.storage_limit_reached || result.remaining_queue_depth > 0);
+        result.budget_exhausted |= governance.budget_exhausted;
         Ok(result)
     }
 
@@ -980,6 +979,155 @@ mod tests {
     }
 
     #[test]
+    fn zero_soft_budget_reports_unfinished_stale_row_governance() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let initial_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = initial_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        initial_store
+            .enqueue_if_current(&workspace, &test_job(), generation)
+            .expect("enqueue");
+        initial_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("initial drain");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        connection
+            .execute(
+                "UPDATE observed_values SET last_observed_at = '2020-01-01T00:00:00.000Z' WHERE workspace = ?1",
+                params![workspace.as_str()],
+            )
+            .expect("age observed row");
+        drop(connection);
+        drop(backing);
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                stale_after_days: 30,
+                maintenance_batch_rows: 0,
+                ..ObservedValuesStoragePolicy::default()
+            },
+        );
+
+        let result = governed_store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::ZERO),
+            )
+            .expect("zero-budget governance drain");
+
+        assert!(result.budget_exhausted);
+        assert_eq!(result.stale_rows_purged, 0);
+        assert_eq!(
+            governed_store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            1
+        );
+    }
+
+    #[test]
+    fn zero_soft_budget_without_governance_work_is_not_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout);
+
+        let result = store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::ZERO),
+            )
+            .expect("zero-budget empty drain");
+
+        assert!(!result.budget_exhausted);
+        assert_eq!(result.remaining_queue_depth, 0);
+        assert!(!result.storage_limit_reached);
+    }
+
+    #[test]
+    fn zero_soft_budget_with_catalog_only_storage_pressure_is_not_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: 1,
+                wal_headroom_bytes: 0,
+                ..ObservedValuesStoragePolicy::default()
+            },
+        );
+
+        let result = store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::ZERO),
+            )
+            .expect("zero-budget catalog-only drain");
+
+        assert!(result.storage_limit_reached);
+        assert!(!result.budget_exhausted);
+        assert_eq!(result.evicted_rows, 0);
+        assert_eq!(
+            store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            0
+        );
+    }
+
+    #[test]
+    fn zero_soft_budget_reports_unfinished_storage_governance() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let initial_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = initial_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        initial_store
+            .enqueue_if_current(&workspace, &test_job(), generation)
+            .expect("enqueue");
+        initial_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("initial drain");
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: 1,
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 0,
+            },
+        );
+
+        let result = governed_store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::ZERO),
+            )
+            .expect("zero-budget governance drain");
+
+        assert!(result.budget_exhausted);
+        assert!(result.storage_limit_reached);
+        assert_eq!(result.evicted_rows, 0);
+        assert_eq!(
+            governed_store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            1
+        );
+    }
+
+    #[test]
     fn ordinary_drain_bounds_eviction_when_workspace_is_over_limit() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -1006,11 +1154,15 @@ mod tests {
         );
 
         let result = governed_store
-            .drain_queue(&workspace, drain_budget())
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::from_mins(1)),
+            )
             .expect("governance drain");
 
         assert_eq!(result.evicted_rows, 1);
         assert!(result.storage_limit_reached);
+        assert!(!result.budget_exhausted);
         assert_eq!(
             governed_store
                 .projected_value_count(&workspace)

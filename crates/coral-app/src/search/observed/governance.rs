@@ -37,7 +37,14 @@ impl Default for ObservedValuesStoragePolicy {
 pub(super) struct ObservedValuesGovernanceResult {
     pub(super) stale_rows_purged: u32,
     pub(super) evicted_rows: u32,
+    pub(super) budget_exhausted: bool,
     pub(super) storage_limit_reached: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DeleteObservedValueKeysResult {
+    deleted_rows: u32,
+    budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -67,28 +74,35 @@ pub(super) fn maintain_observed_values(
     policy: ObservedValuesStoragePolicy,
     time_budget: Duration,
 ) -> Result<ObservedValuesGovernanceResult, SqliteSearchError> {
-    if time_budget.is_zero() {
-        return Ok(ObservedValuesGovernanceResult {
-            storage_limit_reached: storage_limit_reached(connection, policy)?,
-            ..ObservedValuesGovernanceResult::default()
-        });
-    }
-    let deadline = (!time_budget.is_zero()).then(|| Instant::now() + time_budget);
+    let deadline = Instant::now() + time_budget;
     let mut result = ObservedValuesGovernanceResult::default();
 
-    let stale_keys = select_observed_value_keys(
+    let stale_limit = policy.maintenance_batch_rows.saturating_add(1);
+    let mut stale_keys = select_observed_value_keys(
         connection,
         workspace_name,
         Some(policy.stale_after_days),
-        policy.maintenance_batch_rows,
+        stale_limit,
     )?;
-    result.stale_rows_purged =
+    let has_more_stale = stale_keys.len() > policy.maintenance_batch_rows;
+    stale_keys.truncate(policy.maintenance_batch_rows);
+    let stale_deletion =
         delete_observed_value_keys(connection, workspace_name, stale_keys, deadline)?;
+    result.stale_rows_purged = stale_deletion.deleted_rows;
+    result.budget_exhausted = stale_deletion.budget_exhausted;
+    if !result.budget_exhausted && has_more_stale && deadline_expired(deadline) {
+        result.budget_exhausted = true;
+    }
 
-    while !deadline_expired(deadline)
-        && result.evicted_rows < u32::try_from(policy.maintenance_batch_rows).unwrap_or(u32::MAX)
-        && storage_limit_reached(connection, policy)?
-    {
+    let eviction_limit = u32::try_from(policy.maintenance_batch_rows).unwrap_or(u32::MAX);
+    while !result.budget_exhausted && result.evicted_rows < eviction_limit {
+        if !storage_limit_reached(connection, policy)? {
+            break;
+        }
+        if deadline_expired(deadline) {
+            result.budget_exhausted = observed_values_exist(connection, workspace_name)?;
+            break;
+        }
         let remaining = policy
             .maintenance_batch_rows
             .saturating_sub(usize::try_from(result.evicted_rows).unwrap_or(usize::MAX));
@@ -96,15 +110,36 @@ pub(super) fn maintain_observed_values(
         if keys.is_empty() {
             break;
         }
-        let deleted = delete_observed_value_keys(connection, workspace_name, keys, deadline)?;
-        result.evicted_rows = result.evicted_rows.saturating_add(deleted);
-        if deleted == 0 {
+        let deletion = delete_observed_value_keys(connection, workspace_name, keys, deadline)?;
+        result.evicted_rows = result.evicted_rows.saturating_add(deletion.deleted_rows);
+        result.budget_exhausted = deletion.budget_exhausted;
+        if deletion.deleted_rows == 0 {
             break;
         }
     }
 
     result.storage_limit_reached = storage_limit_reached(connection, policy)?;
+    if !result.budget_exhausted
+        && deadline_expired(deadline)
+        && result.storage_limit_reached
+        && observed_values_exist(connection, workspace_name)?
+    {
+        result.budget_exhausted = true;
+    }
     Ok(result)
+}
+
+fn observed_values_exist(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<bool, SqliteSearchError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM observed_values WHERE workspace = ?1 LIMIT 1)",
+            params![workspace_name.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
 }
 
 fn workspace_storage_bytes(connection: &Connection) -> Result<u64, SqliteSearchError> {
@@ -194,12 +229,22 @@ fn delete_observed_value_keys(
     connection: &mut Connection,
     workspace_name: &WorkspaceName,
     keys: Vec<ObservedValueKey>,
-    deadline: Option<Instant>,
-) -> Result<u32, SqliteSearchError> {
+    deadline: Instant,
+) -> Result<DeleteObservedValueKeysResult, SqliteSearchError> {
+    if keys.is_empty() {
+        return Ok(DeleteObservedValueKeysResult::default());
+    }
+    if deadline_expired(deadline) {
+        return Ok(DeleteObservedValueKeysResult {
+            budget_exhausted: true,
+            ..DeleteObservedValueKeysResult::default()
+        });
+    }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let mut deleted = 0_u32;
+    let mut result = DeleteObservedValueKeysResult::default();
     for key in keys {
         if deadline_expired(deadline) {
+            result.budget_exhausted = true;
             break;
         }
         let key_params = params![
@@ -249,12 +294,14 @@ fn delete_observed_value_keys(
                 key.value_key,
             ],
         )?;
-        deleted = deleted.saturating_add(u32::try_from(canonical_deleted).unwrap_or(u32::MAX));
+        result.deleted_rows = result
+            .deleted_rows
+            .saturating_add(u32::try_from(canonical_deleted).unwrap_or(u32::MAX));
     }
     transaction.commit()?;
-    Ok(deleted)
+    Ok(result)
 }
 
-fn deadline_expired(deadline: Option<Instant>) -> bool {
-    deadline.is_some_and(|deadline| Instant::now() >= deadline)
+fn deadline_expired(deadline: Instant) -> bool {
+    Instant::now() >= deadline
 }
