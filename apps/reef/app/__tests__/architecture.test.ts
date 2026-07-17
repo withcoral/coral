@@ -642,6 +642,28 @@ describe('Architectural Tests', () => {
       expect(refreshIndex).toBeLessThan(handlerIndex)
     })
 
+    it('derives shared-render and browser Desktop behavior from one build marker', () => {
+      const desktopRoot = path.resolve(DESKTOP_SRC_DIR, '..')
+      const viteConfig = fs.readFileSync(path.join(REEF_ROOT, 'vite.config.ts'), 'utf-8')
+      const desktopHelper = fs.readFileSync(path.join(APP_SRC, 'lib', 'coral-desktop.ts'), 'utf-8')
+      const devScript = fs.readFileSync(path.join(desktopRoot, 'scripts', 'dev.mjs'), 'utf-8')
+      const stageScript = fs.readFileSync(
+        path.join(desktopRoot, 'scripts', 'stage-coral.mjs'),
+        'utf-8',
+      )
+      const desktopBuildSources = [viteConfig, desktopHelper, devScript, stageScript]
+
+      for (const source of desktopBuildSources) {
+        expect(source).not.toContain('VITE_CORAL_DESKTOP_APP')
+      }
+      expect(viteConfig).toMatch(
+        /'import\.meta\.env\.CORAL_DESKTOP_APP':\s*JSON\.stringify\(\s*process\.env\.CORAL_DESKTOP_APP === '1',?\s*\)/,
+      )
+      expect(desktopHelper).toMatch(/return import\.meta\.env\.CORAL_DESKTOP_APP/)
+      expect(devScript.match(/CORAL_DESKTOP_APP:\s*'1'/g)).toHaveLength(1)
+      expect(stageScript.match(/CORAL_DESKTOP_APP:\s*'1'/g)).toHaveLength(1)
+    })
+
     it('does not expose Coral transport through the renderer or Desktop preload', () => {
       const appRenderer = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'app-renderer.ts'), 'utf-8')
       const desktopIndex = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'index.ts'), 'utf-8')

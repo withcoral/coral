@@ -89,6 +89,12 @@
   Electron app. Keep every `apps/reef` production dependency represented in
   `apps/desktop` production dependencies; the desktop config tests enforce this
   packaging contract.
+- Use `CORAL_DESKTOP_APP=1` as Reef's single external desktop build marker.
+  React Router route composition may read it from `process.env`, while
+  `apps/reef/vite.config.ts` exposes only its compiled boolean value as
+  `import.meta.env.CORAL_DESKTOP_APP`. Do not add a parallel
+  `VITE_CORAL_DESKTOP_APP` marker or expose broader `CORAL_*` values to browser
+  code.
 - For DSL v4 materialization, the user owns when a source is generated or
   regenerated. Coral materializes at source add, queries only from the
   installed materialized package, and never silently refreshes descriptors,

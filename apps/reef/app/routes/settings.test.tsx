@@ -10,7 +10,7 @@ afterEach(() => {
 
 describe('SettingsRoute', () => {
   it('does not show desktop-only MCP clients on the web', async () => {
-    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '')
+    vi.stubEnv('CORAL_DESKTOP_APP', '')
 
     const screen = await render(<SettingsRoute />)
 
@@ -22,7 +22,7 @@ describe('SettingsRoute', () => {
   })
 
   it('shows MCP clients in the desktop build', async () => {
-    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
+    vi.stubEnv('CORAL_DESKTOP_APP', 'true')
     const listMcpClients = vi
       .fn()
       .mockResolvedValue([

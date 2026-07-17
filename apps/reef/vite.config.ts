@@ -17,6 +17,9 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    define: {
+      'import.meta.env.CORAL_DESKTOP_APP': JSON.stringify(process.env.CORAL_DESKTOP_APP === '1'),
+    },
     plugins: [vanillaExtractPlugin(), reactRouter()],
     resolve: {
       tsconfigPaths: true,

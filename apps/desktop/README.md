@@ -46,8 +46,10 @@ npm run dev --prefix apps/desktop
 
 The desktop dev command starts the Reef dev server first, then launches Electron
 with `ELECTRON_RENDERER_URL` pointed at that server, so Reef's dependencies must
-be installed too. The dev server receives `VITE_CORAL_DESKTOP_APP=1` and a fixed
-`CORAL_ENDPOINT` for server-side loaders; Electron waits for the sidecar before
+be installed too. The dev server receives `CORAL_DESKTOP_APP=1` as the single
+desktop build marker and a fixed `CORAL_ENDPOINT` for server-side loaders. Reef
+uses the marker directly for server-side route composition, while Vite compiles
+only its boolean value into browser code. Electron waits for the sidecar before
 loading the first document so initial SSR does not race the local Coral process.
 
 In development, the sidecar is started through Cargo so the app uses the local

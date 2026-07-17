@@ -226,7 +226,7 @@ describe('Sidebar', () => {
   })
 
   it('shows MCP Clients in desktop settings navigation', async () => {
-    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
+    vi.stubEnv('CORAL_DESKTOP_APP', 'true')
     const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
 
     await expect.element(screen.getByRole('link', { name: 'MCP Clients' })).toBeVisible()

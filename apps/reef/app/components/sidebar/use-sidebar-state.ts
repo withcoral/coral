@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { coralDesktopApi } from '@/lib/coral-desktop'
+import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 
 import { readSidebarCollapsedCookiePreference, SIDEBAR_COOKIE_NAME } from './sidebar-state'
 
@@ -10,7 +10,7 @@ const COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60
 // is inert in the packaged desktop shell. Persist via localStorage there; the web
 // build keeps cookies for SSR seeding.
 function isDesktopShell(): boolean {
-  return coralDesktopApi() !== null
+  return isCoralDesktopBuild()
 }
 
 function saveSidebarState(isMinimized: boolean) {
