@@ -3,3 +3,6 @@ pub(crate) mod state_migrations;
 pub(crate) mod task_queries;
 pub(crate) mod tasks;
 pub(crate) mod workspaces;
+
+#[cfg(test)]
+mod identity_specs_contract_tests;
