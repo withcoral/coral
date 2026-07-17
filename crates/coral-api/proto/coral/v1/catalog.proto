@@ -31,7 +31,8 @@ message PaginationResponse {
 message Column {
   // The column name as exposed by the query engine.
   string name = 1;
-  // The DataFusion/Arrow data type rendered as text.
+  // The column data type rendered as text: DataFusion/Arrow form for static
+  // sources, the provider-native type name for database catalogs.
   string data_type = 2;
   // Whether the column can contain null values.
   bool nullable = 3;
