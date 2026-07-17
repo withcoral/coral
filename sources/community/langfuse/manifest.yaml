@@ -1,10 +1,12 @@
 name: langfuse
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-
   Query traces, observations, scores, sessions, and projects from Langfuse
-  (Cloud or self-hosted).
+  (Cloud or self-hosted). Join with Linear, GitHub, and Sentry for cross-source
+  AI cost attribution — link every dollar of LLM spend to the feature it shipped.
+
 inputs:
   LANGFUSE_BASE_URL:
     kind: variable
@@ -21,27 +23,36 @@ inputs:
     hint: |
       Your Langfuse project public key. Find it in your project settings
       under API Keys. Used as the HTTP Basic Auth username.
-      See [Langfuse API docs](https://langfuse.com/docs/api).
+      See https://langfuse.com/docs/api
   LANGFUSE_SECRET_KEY:
     kind: secret
     hint: |
       Your Langfuse project secret key. Find it in your project settings
       under API Keys. Used as the HTTP Basic Auth password.
-      See [Langfuse API docs](https://langfuse.com/docs/api).
+      See https://langfuse.com/docs/api
+
 base_url: "{{input.LANGFUSE_BASE_URL}}"
+
 auth:
   type: BasicAuth
   username: "{{input.LANGFUSE_PUBLIC_KEY}}"
   password: "{{input.LANGFUSE_SECRET_KEY}}"
+
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+
 test_queries:
-  - SELECT * FROM langfuse.projects LIMIT 1
-  - SELECT * FROM langfuse.traces LIMIT 1
+  - SELECT id, name FROM langfuse.projects LIMIT 1
+  - SELECT id, name, total_cost FROM langfuse.traces ORDER BY timestamp DESC LIMIT 1
+
 tables:
   - name: projects
-    description: Langfuse projects accessible with the API keys
+    description: Langfuse projects accessible with the API keys.
     guide: |
       Start here to confirm connectivity and inspect project metadata.
-      Each row is one Langfuse project. The `id` field can be used to
+      Each row is one Langfuse project. The id field can be used to
       scope downstream queries.
     request:
       method: GET
@@ -73,19 +84,32 @@ tables:
       - name: created_at
         type: Utf8
         nullable: true
-        description: Timestamp when the project was created
+        description: Timestamp when the project was created (ISO 8601)
         expr:
           kind: path
           path:
             - createdAt
+
   - name: traces
-    description: LLM application traces recorded in the project
+    description: >-
+      LLM application traces recorded in the project. Each row is one trace —
+      a top-level request through your LLM application. Includes token cost,
+      latency, user, session, release, environment, and the custom metadata
+      your app attaches to each trace. Use metadata to link traces to Linear
+      tickets, GitHub PRs, or other business context.
     guide: |
-      Each row is one trace — a top-level request through your LLM
-      application. Use `name` to filter by trace type, `user_id` to
-      scope to a specific user, and `session_id` to group multi-turn
-      conversations. Join `id` to `observations.trace_id` to drill into
-      individual spans and generations. Results are ordered newest-first.
+      Each row is one trace. Join id to observations.trace_id to get
+      individual spans and generations. Use from_timestamp / to_timestamp
+      to limit the time window for large projects.
+
+      To attribute AI spend to Linear tickets, instrument your app to set
+      trace metadata before querying:
+        langfuse.trace({ metadata: { linearId: "LIN-123", featureTag: "billing-agent" } })
+      Then query:
+        SELECT name, total_cost, json_get_str(metadata, 'linearId') AS ticket
+        FROM langfuse.traces
+
+    fetch_limit_default: 500
     filters:
       - name: user_id
         required: false
@@ -96,6 +120,10 @@ tables:
       - name: tags
         required: false
       - name: environment
+        required: false
+      - name: from_timestamp
+        required: false
+      - name: to_timestamp
         required: false
     request:
       method: GET
@@ -116,6 +144,12 @@ tables:
         - name: environment
           from: filter
           key: environment
+        - name: fromTimestamp
+          from: filter
+          key: from_timestamp
+        - name: toTimestamp
+          from: filter
+          key: to_timestamp
     response:
       rows_path:
         - data
@@ -144,7 +178,7 @@ tables:
       - name: name
         type: Utf8
         nullable: true
-        description: Trace name (identifies the use case or feature)
+        description: Trace name — identifies the use case or feature (e.g. customer-rag-pipeline)
         expr:
           kind: path
           path:
@@ -200,7 +234,7 @@ tables:
       - name: timestamp
         type: Utf8
         nullable: true
-        description: Timestamp when the trace was recorded
+        description: Timestamp when the trace was recorded (ISO 8601)
         expr:
           kind: path
           path:
@@ -221,6 +255,33 @@ tables:
           kind: path
           path:
             - totalCost
+      - name: metadata
+        type: Json
+        nullable: true
+        description: >-
+          Custom metadata attached by your application (JSON object). Use
+          json_get_str(metadata, 'linearId') to extract fields. Instrument
+          your app with langfuse.trace({ metadata: { linearId: '...' } }).
+        expr:
+          kind: path
+          path:
+            - metadata
+      - name: input
+        type: Json
+        nullable: true
+        description: Input payload sent to the LLM application for this trace (JSON)
+        expr:
+          kind: path
+          path:
+            - input
+      - name: output
+        type: Json
+        nullable: true
+        description: Output returned by the LLM application for this trace (JSON)
+        expr:
+          kind: path
+          path:
+            - output
       - name: project_id
         type: Utf8
         nullable: true
@@ -232,7 +293,7 @@ tables:
       - name: created_at
         type: Utf8
         nullable: true
-        description: Timestamp when the trace record was created
+        description: Timestamp when the trace record was created (ISO 8601)
         expr:
           kind: path
           path:
@@ -240,19 +301,29 @@ tables:
       - name: updated_at
         type: Utf8
         nullable: true
-        description: Timestamp when the trace record was last updated
+        description: Timestamp when the trace record was last updated (ISO 8601)
         expr:
           kind: path
           path:
             - updatedAt
+
   - name: observations
-    description: Spans, generations, and events within traces
+    description: >-
+      Spans, generations, and events within traces. Each row is one observation —
+      a span, generation, or event inside a trace. Use type = 'GENERATION' to focus
+      on individual LLM calls with model name, token counts, and cost per call.
     guide: |
-      Each row is one observation — a span, generation, or event inside a
-      trace. Use `type = 'GENERATION'` to focus on LLM calls with token
-      usage and cost. Filter by `trace_id` to get all observations for a
-      specific trace. `model` shows which LLM was called. `latency` and
-      `total_cost` are the most useful columns for performance analysis.
+      Filter by type = 'GENERATION' to get only LLM calls. Filter by trace_id
+      to get all observations for a specific trace. Use from_start_time /
+      to_start_time to limit the time window. Join trace_id to traces.id to get
+      trace-level metadata such as the linked Linear ticket or feature tag.
+
+      model values include: claude-opus-4, claude-sonnet-4, claude-haiku-4,
+      gpt-4o, gpt-4-turbo, gpt-3.5-turbo, gemini-2.0-flash, and others.
+
+      total_cost is the USD cost for this single LLM call. High total_tokens
+      on a low-complexity task suggests model mismatch waste.
+    fetch_limit_default: 1000
     filters:
       - name: trace_id
         required: false
@@ -263,6 +334,10 @@ tables:
       - name: user_id
         required: false
       - name: environment
+        required: false
+      - name: from_start_time
+        required: false
+      - name: to_start_time
         required: false
     request:
       method: GET
@@ -283,6 +358,12 @@ tables:
         - name: environment
           from: filter
           key: environment
+        - name: fromStartTime
+          from: filter
+          key: from_start_time
+        - name: toStartTime
+          from: filter
+          key: to_start_time
     response:
       rows_path:
         - data
@@ -311,7 +392,7 @@ tables:
       - name: trace_id
         type: Utf8
         nullable: true
-        description: Parent trace ID
+        description: Parent trace ID — join to langfuse.traces on id
         expr:
           kind: path
           path:
@@ -335,7 +416,7 @@ tables:
       - name: model
         type: Utf8
         nullable: true
-        description: Model name used for this generation
+        description: Model name used for this generation (e.g. claude-opus-4, gpt-4o)
         expr:
           kind: path
           path:
@@ -343,7 +424,7 @@ tables:
       - name: model_parameters
         type: Utf8
         nullable: true
-        description: Model parameters as a JSON object
+        description: Model parameters as a JSON object (temperature, max_tokens, etc.)
         expr:
           kind: path
           path:
@@ -351,7 +432,7 @@ tables:
       - name: start_time
         type: Utf8
         nullable: true
-        description: Observation start timestamp
+        description: Observation start timestamp (ISO 8601)
         expr:
           kind: path
           path:
@@ -359,7 +440,7 @@ tables:
       - name: end_time
         type: Utf8
         nullable: true
-        description: Observation end timestamp
+        description: Observation end timestamp (ISO 8601)
         expr:
           kind: path
           path:
@@ -375,7 +456,7 @@ tables:
       - name: input_tokens
         type: Int64
         nullable: true
-        description: Number of input tokens
+        description: Number of input (prompt) tokens
         expr:
           kind: path
           path:
@@ -384,7 +465,7 @@ tables:
       - name: output_tokens
         type: Int64
         nullable: true
-        description: Number of output tokens
+        description: Number of output (completion) tokens
         expr:
           kind: path
           path:
@@ -418,7 +499,7 @@ tables:
       - name: total_cost
         type: Float64
         nullable: true
-        description: Calculated total cost in USD
+        description: Calculated total cost in USD for this single LLM call
         expr:
           kind: path
           path:
@@ -458,7 +539,7 @@ tables:
       - name: created_at
         type: Utf8
         nullable: true
-        description: Timestamp when the observation was created
+        description: Timestamp when the observation was created (ISO 8601)
         expr:
           kind: path
           path:
@@ -466,19 +547,26 @@ tables:
       - name: updated_at
         type: Utf8
         nullable: true
-        description: Timestamp when the observation was last updated
+        description: Timestamp when the observation was last updated (ISO 8601)
         expr:
           kind: path
           path:
             - updatedAt
+
   - name: scores
-    description: Evaluation scores attached to traces or observations
+    description: >-
+      Evaluation scores attached to traces or observations. Each row is one score —
+      a numeric or categorical evaluation from human annotation, LLM judges, or
+      custom SDK calls. Use to track quality, relevance, hallucination rate, and
+      other LLM evaluation metrics over time.
     guide: |
-      Each row is one score — a numeric or categorical evaluation attached
-      to a trace or observation. Scores come from human annotation, LLM
-      judges, or custom SDK calls. Use `data_type = 'NUMERIC'` for
-      numeric scores and `data_type = 'CATEGORICAL'` for label-based
-      scores. Filter by `trace_id` to see all scores for a specific trace.
+      Use data_type = 'NUMERIC' for numeric scores and 'CATEGORICAL' for label-based
+      scores. Filter by trace_id to see all scores for a specific trace. Filter by
+      name to track a specific evaluation dimension across all traces. Use
+      from_timestamp / to_timestamp to limit the time window for large projects.
+
+      source values: API (SDK calls), ANNOTATION (human), EVAL (LLM judge)
+    fetch_limit_default: 500
     filters:
       - name: trace_id
         required: false
@@ -489,6 +577,10 @@ tables:
       - name: data_type
         required: false
       - name: environment
+        required: false
+      - name: from_timestamp
+        required: false
+      - name: to_timestamp
         required: false
     request:
       method: GET
@@ -509,6 +601,12 @@ tables:
         - name: environment
           from: filter
           key: environment
+        - name: fromTimestamp
+          from: filter
+          key: from_timestamp
+        - name: toTimestamp
+          from: filter
+          key: to_timestamp
     response:
       rows_path:
         - data
@@ -609,7 +707,7 @@ tables:
       - name: created_at
         type: Utf8
         nullable: true
-        description: Timestamp when the score was created
+        description: Timestamp when the score was created (ISO 8601)
         expr:
           kind: path
           path:
@@ -617,19 +715,28 @@ tables:
       - name: updated_at
         type: Utf8
         nullable: true
-        description: Timestamp when the score was last updated
+        description: Timestamp when the score was last updated (ISO 8601)
         expr:
           kind: path
           path:
             - updatedAt
+
   - name: sessions
-    description: Multi-turn conversation sessions grouping related traces
+    description: >-
+      Multi-turn conversation sessions grouping related traces. Each row is one
+      session — a group of traces from the same user interaction or workflow.
     guide: |
-      Each row is one session — a group of traces that belong to the same
-      multi-turn conversation or workflow. Use `id` to filter traces by
-      session via `WHERE session_id = '<id>'` on the `traces` table.
+      Use id to filter traces by session: WHERE session_id = '<id>' on the traces
+      table. Sessions are useful for tracking multi-turn conversations and
+      computing per-session cost and latency aggregates. Use from_timestamp /
+      to_timestamp to limit the time window for large projects.
+    fetch_limit_default: 200
     filters:
       - name: environment
+        required: false
+      - name: from_timestamp
+        required: false
+      - name: to_timestamp
         required: false
     request:
       method: GET
@@ -638,6 +745,12 @@ tables:
         - name: environment
           from: filter
           key: environment
+        - name: fromTimestamp
+          from: filter
+          key: from_timestamp
+        - name: toTimestamp
+          from: filter
+          key: to_timestamp
     response:
       rows_path:
         - data
@@ -666,7 +779,7 @@ tables:
       - name: created_at
         type: Utf8
         nullable: true
-        description: Timestamp when the session was created
+        description: Timestamp when the session was created (ISO 8601)
         expr:
           kind: path
           path:
@@ -674,7 +787,7 @@ tables:
       - name: updated_at
         type: Utf8
         nullable: true
-        description: Timestamp when the session was last updated
+        description: Timestamp when the session was last updated (ISO 8601)
         expr:
           kind: path
           path:
