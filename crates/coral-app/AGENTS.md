@@ -84,11 +84,13 @@ root.
 - Treat DSL v4 materialization as a user-chosen lifecycle event: generate at
   source add and never re-fetch descriptors, recompute projections, or rewrite
   artifacts implicitly during query/list/validate. Fingerprints, producer
-  versions, identity metadata, and raw-document hashes are tracing diagnostics,
-  not runtime gates. Load readable, structurally compatible artifacts and
-  isolate source-local compatibility failures while preserving fail-closed
-  behavior for operational errors. RDBMS migration machinery must not turn
-  load-time compatibility into silent regeneration.
+  versions and identity metadata are tracing diagnostics, not runtime gates.
+  Raw-document hashes remain advisory at load time, but a raw document used to
+  derive an OpenAPI base URL must match its recorded hash before it can control
+  runtime request routing. Load readable, structurally compatible artifacts,
+  degrade per surface, and isolate source-local compatibility failures while
+  preserving fail-closed behavior for operational errors. RDBMS migration
+  machinery must not turn load-time compatibility into silent regeneration.
 - Treat `projections.yaml` as an immutable materialized snapshot. Effective
   operation-metadata overrides never reconcile projection exposure or lookup
   keys at runtime. Reject incompatible selected artifact combinations instead

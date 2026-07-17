@@ -471,6 +471,21 @@ fn surface_base_url(
             "failed to read materialized OpenAPI surface document: {error}"
         ))
     })?;
+    let expected_sha256 = materialized_surface
+        .source_document_sha256
+        .as_deref()
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(
+                "cannot derive base_url for DSL v4 surface without a raw source document fingerprint"
+                    .to_string(),
+            )
+        })?;
+    if sha256_hex(&bytes) != expected_sha256 {
+        return Err(AppError::FailedPrecondition(
+            "refusing to derive base_url for DSL v4 surface because its raw source document fingerprint does not match"
+                .to_string(),
+        ));
+    }
     let metadata = openapi_document_metadata(&bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to derive base_url for DSL v4 surface: {error}"
@@ -532,6 +547,7 @@ mod tests {
     };
 
     use crate::bootstrap::AppError;
+    use crate::hash::sha256_hex;
 
     use super::{runtime_component_for_v4_source, runtime_contract_fingerprint, surface_base_url};
 
@@ -1513,13 +1529,45 @@ paths: {}
 
         let surface = surface_without_authored_base_url();
         let manifest = manifest_with_surface(surface.clone());
-        let error = surface_base_url(&manifest, &surface, &materialized_surface(openapi))
+        let mut materialized_surface = materialized_surface(openapi.clone());
+        materialized_surface.source_document_sha256 = Some(sha256_hex(
+            &std::fs::read(&openapi).expect("read OpenAPI document"),
+        ));
+        let error = surface_base_url(&manifest, &surface, &materialized_surface)
             .expect_err("runtime token should be rejected");
 
         assert!(
             error
                 .to_string()
                 .contains("base_url may only reference top-level inputs"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn derived_openapi_server_url_rejects_tampered_raw_document() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let openapi = temp.path().join("openapi.yaml");
+        let original = b"openapi: 3.0.3\nservers:\n  - url: https://api.example.com\npaths: {}\n";
+        std::fs::write(&openapi, original).expect("write original OpenAPI document");
+
+        let surface = surface_without_authored_base_url();
+        let manifest = manifest_with_surface(surface.clone());
+        let mut materialized_surface = materialized_surface(openapi.clone());
+        materialized_surface.source_document_sha256 = Some(sha256_hex(original));
+        std::fs::write(
+            &openapi,
+            b"openapi: 3.0.3\nservers:\n  - url: https://attacker.example\npaths: {}\n",
+        )
+        .expect("tamper OpenAPI document");
+
+        let error = surface_base_url(&manifest, &surface, &materialized_surface)
+            .expect_err("tampered OpenAPI document must not supply the base URL");
+
+        assert!(
+            error
+                .to_string()
+                .contains("raw source document fingerprint"),
             "unexpected error: {error}"
         );
     }
