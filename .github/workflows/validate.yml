@@ -100,14 +100,15 @@ jobs:
             desktop-package-macos:
               - '.github/workflows/validate.yml'
               - '.github/workflows/release.yml'
+              - '.github/workflows/desktop-package.yml'
+              - '.cargo/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'rust-toolchain'
-              - 'crates/**'
+              - 'crates/**/Cargo.toml'
+              - 'crates/**/build.rs'
               - 'apps/desktop/**'
-              - 'apps/reef/**'
-              - 'apps/ui/**'
             proto-lint:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -364,14 +365,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           cache: npm
@@ -408,14 +409,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           cache: npm
@@ -455,14 +456,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/reef/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/reef/.node-version
           cache: npm
@@ -498,14 +499,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version
           cache: npm
@@ -521,55 +522,11 @@ jobs:
 
   desktop-package-macos:
     name: Desktop macOS package
-    runs-on: macos-latest
     needs: changes
-    if: ${{ needs.changes.outputs.desktop-package-macos == 'true' }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - name: Set up Node
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version-file: apps/desktop/.node-version
-          package-manager-cache: false
-
-      - name: Set up Node with trusted npm cache
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version-file: apps/desktop/.node-version
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - name: Install desktop dependencies
-        run: npm ci --prefix apps/desktop
-
-      - name: Package desktop app
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run package:mac --prefix apps/desktop
-
-      - name: Verify desktop package artifacts
-        run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist
-
-      # Unsigned build for manual inspection; the run page serves it for a week.
-      - name: Upload desktop package artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: coral-desktop-macos-unsigned
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            apps/desktop/dist/coral-desktop-*.dmg
-            apps/desktop/dist/coral-desktop-*.zip
-            apps/desktop/dist/coral-desktop-*.blockmap
-            apps/desktop/dist/latest-mac.yml
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop-package-macos == 'true' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-package.yml
 
   proto-lint:
     name: Lint protobuf API
@@ -682,7 +639,7 @@ jobs:
         run: make docs-check
 
       - name: Set up Node for Mintlify validation
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           package-manager-cache: false

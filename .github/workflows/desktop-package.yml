@@ -1,0 +1,75 @@
+name: Desktop macOS package
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-package-macos-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  package:
+    name: Build unsigned package
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-desktop-macos-universal
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Set up Node without npm cache
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/desktop/.node-version
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      - name: Package desktop app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run package:mac --prefix apps/desktop
+
+      - name: Verify desktop package artifacts
+        run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist
+
+      # PR and manual builds are available for inspection for one week.
+      - name: Upload desktop package artifact
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-desktop-macos-unsigned
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            apps/desktop/dist/coral-desktop-*.dmg
+            apps/desktop/dist/coral-desktop-*.zip
+            apps/desktop/dist/coral-desktop-*.blockmap
+            apps/desktop/dist/latest-mac.yml
