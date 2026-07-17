@@ -97,10 +97,10 @@ surface:
 "
         );
         let error = parse_source_manifest_yaml(&raw).expect_err("invalid v4 name should fail");
+        let message = error.to_string();
         assert!(
-            error.to_string().contains("^[a-z][a-z0-9_]*$")
-                || error.to_string().contains("must match [a-z][a-z0-9_]*"),
-            "unexpected error for {name}: {error}"
+            message.contains("/name") && message.contains("^[a-z][a-z0-9_]*$"),
+            "unexpected error for {name}: {message}"
         );
     }
 }
@@ -119,9 +119,10 @@ surfaces:
     )
     .expect_err("plural surfaces should be rejected");
 
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("surfaces"),
-        "unexpected error: {error}"
+        message.contains("/: Additional properties are not allowed ('surfaces' was unexpected)"),
+        "unexpected error: {message}"
     );
 }
 
@@ -139,9 +140,12 @@ surface:
     )
     .expect_err("surface id should be rejected");
 
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("id"),
-        "unexpected error: {error}"
+        message.contains("/surface:")
+            && message.contains(r#"{"id":"rest","type":"openapi","file":"/tmp/openapi.yaml"}"#)
+            && message.contains("not valid under any of the schemas listed in the 'oneOf' keyword"),
+        "unexpected error: {message}"
     );
 }
 
@@ -159,9 +163,14 @@ surface:
     )
     .expect_err("namespace suffix should be rejected");
 
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("namespace_suffix"),
-        "unexpected error: {error}"
+        message.contains("/surface:")
+            && message.contains(
+                r#"{"namespace_suffix":"api","type":"openapi","file":"/tmp/openapi.yaml"}"#
+            )
+            && message.contains("not valid under any of the schemas listed in the 'oneOf' keyword"),
+        "unexpected error: {message}"
     );
 }
 
@@ -181,9 +190,14 @@ surface:
     )
     .expect_err("surface inputs should be rejected");
 
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("inputs"),
-        "unexpected error: {error}"
+        message.contains("/surface:")
+            && message.contains(
+                r#"{"type":"openapi","file":"/tmp/openapi.yaml","inputs":{"GITHUB_TOKEN":{"kind":"secret"}}}"#
+            )
+            && message.contains("not valid under any of the schemas listed in the 'oneOf' keyword"),
+        "unexpected error: {message}"
     );
 }
 
