@@ -72,7 +72,6 @@ pub(super) fn resolve_projection_name_collisions(
                 severity: DiagnosticSeverity::Warning,
                 message: format!("projection name collision resolved as '{name}'"),
                 operation_id: Some(projection.operation_id.clone()),
-                projection_name: Some(name),
             };
             projection.diagnostics.push(diagnostic.clone());
             diagnostics.push(diagnostic);

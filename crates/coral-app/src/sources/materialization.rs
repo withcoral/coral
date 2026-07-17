@@ -218,7 +218,6 @@ impl SourceDiagnosticReporter {
                 workspace = %workspace_name,
                 source = %source_name,
                 operation = diagnostic.operation_id.as_deref().unwrap_or(""),
-                projection = diagnostic.projection_name.as_deref().unwrap_or(""),
                 detail = %diagnostic.message,
                 "DSL v4 source load diagnostic"
             );
@@ -668,7 +667,6 @@ fn materialization_warning(code: &str, message: impl Into<String>) -> Diagnostic
         severity: DiagnosticSeverity::Warning,
         message: message.into(),
         operation_id: None,
-        projection_name: None,
     }
 }
 

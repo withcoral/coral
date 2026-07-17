@@ -6,7 +6,6 @@ pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub message: String,
     pub operation_id: Option<String>,
-    pub projection_name: Option<String>,
 }
 
 impl Diagnostic {
@@ -20,7 +19,6 @@ impl Diagnostic {
             severity: DiagnosticSeverity::Warning,
             message: message.into(),
             operation_id,
-            projection_name: None,
         }
     }
 }
