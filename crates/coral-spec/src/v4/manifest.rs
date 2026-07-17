@@ -108,6 +108,8 @@ impl V4Surface {
 struct RawV4SourceManifest {
     dsl_version: u32,
     name: String,
+    // Keep this placeholder so `deny_unknown_fields` accepts `inputs`; the
+    // declarations are parsed from the preserved raw value to retain ordering.
     #[serde(default, rename = "inputs")]
     _inputs: Option<Value>,
     #[serde(default)]
