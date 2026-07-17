@@ -116,6 +116,16 @@ impl IdentitySpecKey {
         &self.name
     }
 
+    /// Canonical exact key fields authenticated by setup-document encryption.
+    pub(crate) fn document_aad_parts(&self) -> (&str, &str, &str) {
+        match &self.scope {
+            IdentitySpecScope::Global => ("global", "__global__", self.name()),
+            IdentitySpecScope::Workspace(workspace_name) => {
+                ("workspace", workspace_name.as_str(), self.name())
+            }
+        }
+    }
+
     pub(super) fn from_spec_storage_parts(
         workspace_id: Option<&str>,
         name: &str,
