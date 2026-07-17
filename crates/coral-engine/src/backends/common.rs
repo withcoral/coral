@@ -132,6 +132,48 @@ pub(crate) struct BackendCatalogRegistration {
     pub(crate) catalog_name: String,
     pub(crate) catalog: Arc<dyn CatalogProvider>,
     pub(crate) source: RegisteredSource,
+    pub(crate) column_fetcher: Arc<dyn DatabaseColumnFetcher>,
+}
+
+/// Row-set restriction for one lazy database column-metadata fetch.
+///
+/// `None` means "no restriction on this dimension"; `Some` restricts the
+/// remote query to the listed values. An empty list matches nothing.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ColumnInventoryFilter {
+    pub(crate) schemas: Option<Vec<String>>,
+    pub(crate) tables: Option<Vec<String>>,
+}
+
+/// One column described by a remote database's own catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DatabaseColumnRow {
+    pub(crate) schema_name: String,
+    pub(crate) table_name: String,
+    pub(crate) ordinal_position: i32,
+    pub(crate) column_name: String,
+    pub(crate) data_type: String,
+    pub(crate) is_nullable: bool,
+}
+
+/// Query-time source of column metadata for one registered database catalog.
+///
+/// Fetches answer from the remote database's catalog (`information_schema`,
+/// `pragma_table_info`) in one round trip per call, so `coral.columns` cost
+/// scales with source count instead of table count.
+#[async_trait]
+pub(crate) trait DatabaseColumnFetcher: std::fmt::Debug + Send + Sync {
+    async fn fetch_columns(
+        &self,
+        filter: &ColumnInventoryFilter,
+    ) -> datafusion::error::Result<Vec<DatabaseColumnRow>>;
+}
+
+/// Pairs a registered catalog name with its lazy column fetcher.
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogColumnFetcher {
+    pub(crate) catalog_name: String,
+    pub(crate) fetcher: Arc<dyn DatabaseColumnFetcher>,
 }
 
 pub(crate) struct BackendCompileRequest<'a> {

@@ -9,7 +9,7 @@ use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
     BackendCatalogRegistration, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
+    BackendSchemaRegistration, CatalogColumnFetcher, CompiledBackendSource, RegisteredSource,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
@@ -57,6 +57,9 @@ pub(crate) struct SourceRegistrationFailure {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SourceRegistrationResult {
     pub(crate) active_sources: Vec<RegisteredSource>,
+    /// Lazy column-metadata fetchers for registered database catalogs, in
+    /// registration order.
+    pub(crate) column_fetchers: Vec<CatalogColumnFetcher>,
     pub(crate) failures: Vec<SourceRegistrationFailure>,
 }
 
@@ -307,8 +310,9 @@ fn register_backend_registration(
             catalog_name,
             catalog,
             source,
+            column_fetcher,
         } = catalog_registration;
-        catalog_staged.push((catalog_name, catalog, source));
+        catalog_staged.push((catalog_name, catalog, source, column_fetcher));
     }
 
     for schema_registration in registration.schemas {
@@ -343,15 +347,19 @@ fn register_backend_registration(
         }
     }
 
-    for (catalog_name, registered_catalog, _registered_source) in &catalog_staged {
+    for (catalog_name, registered_catalog, _registered_source, _column_fetcher) in &catalog_staged {
         ctx.register_catalog(catalog_name, Arc::clone(registered_catalog));
     }
 
     for (_schema_name, _decorated_tables, registered_source) in staged {
         result.active_sources.push(registered_source);
     }
-    for (_catalog_name, _registered_catalog, registered_source) in catalog_staged {
+    for (catalog_name, _registered_catalog, registered_source, column_fetcher) in catalog_staged {
         result.active_sources.push(registered_source);
+        result.column_fetchers.push(CatalogColumnFetcher {
+            catalog_name,
+            fetcher: column_fetcher,
+        });
     }
     Ok(())
 }

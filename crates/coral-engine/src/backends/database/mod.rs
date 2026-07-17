@@ -1,5 +1,6 @@
 //! Relational database backend registration through `datafusion-table-providers`.
 
+mod columns;
 mod pool_cache;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -31,12 +32,15 @@ use datafusion_table_providers::sql::sql_provider_datafusion::SqlTable;
 use datafusion_table_providers::util::secrets::to_secret_map;
 use futures::TryStreamExt as _;
 
+use crate::backends::database::columns::{
+    MYSQL_COLUMNS_SQL, POSTGRES_COLUMNS_SQL, PooledColumnFetcher, SQLITE_COLUMNS_SQL,
+};
 use crate::backends::database::pool_cache::{PoolCache, PoolKey};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
-    BackendRegistrationContext, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    build_registered_inputs,
+    BackendRegistrationContext, CompiledBackendSource, DatabaseColumnFetcher, RegisteredSource,
+    RegisteredTable, build_registered_inputs,
 };
 
 pub(crate) fn compile_manifest(
@@ -97,6 +101,7 @@ impl CompiledBackendSource for CompiledDatabaseSource {
                 catalog_name: self.manifest.common.name.clone(),
                 catalog: database_catalog.provider,
                 source,
+                column_fetcher: database_catalog.column_fetcher,
             }],
         })
     }
@@ -155,7 +160,7 @@ async fn postgres_catalog(
                         .with_unsupported_type_action(UnsupportedTypeAction::String))
                 }
             },
-            |pool| database_catalog(pool, POSTGRES_RELATIONS_SQL),
+            |pool| database_catalog(pool, POSTGRES_RELATIONS_SQL, POSTGRES_COLUMNS_SQL),
         )
         .await
 }
@@ -195,7 +200,7 @@ async fn mysql_catalog(
                         .map_err(provider_error)
                 }
             },
-            |pool| database_catalog(pool, MYSQL_RELATIONS_SQL),
+            |pool| database_catalog(pool, MYSQL_RELATIONS_SQL, MYSQL_COLUMNS_SQL),
         )
         .await
 }
@@ -219,7 +224,7 @@ async fn sqlite_catalog(
         .build()
         .await
         .map_err(boxed_provider_error)?;
-    database_catalog(Arc::new(pool), SQLITE_RELATIONS_SQL).await
+    database_catalog(Arc::new(pool), SQLITE_RELATIONS_SQL, SQLITE_COLUMNS_SQL).await
 }
 
 const POSTGRES_RELATIONS_SQL: &str = "
@@ -254,6 +259,7 @@ static MYSQL_POOLS: LazyLock<PoolCache<MySQLConnectionPool>> = LazyLock::new(Poo
 struct DatabaseCatalog {
     provider: Arc<dyn CatalogProvider>,
     relations: Vec<DatabaseRelation>,
+    column_fetcher: Arc<dyn DatabaseColumnFetcher>,
 }
 
 #[derive(Clone, Debug)]
@@ -266,13 +272,16 @@ struct DatabaseRelation {
 async fn database_catalog<T: 'static, P: 'static>(
     pool: Pool<T, P>,
     inventory_sql: &str,
+    columns_sql: &'static str,
 ) -> DataFusionResult<DatabaseCatalog> {
     let relations = load_database_inventory(&pool, inventory_sql).await?;
     let provider =
         Arc::new(CoralDatabaseCatalogProvider::new(&pool, &relations)) as Arc<dyn CatalogProvider>;
+    let column_fetcher = PooledColumnFetcher::new(&pool, columns_sql);
     Ok(DatabaseCatalog {
         provider,
         relations,
+        column_fetcher,
     })
 }
 
@@ -541,8 +550,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn sqlite_database_source_registers_catalog_and_queries_three_part_table() {
+    /// Builds a sqlite-backed database source. The returned tempdir must stay
+    /// alive for as long as the sources are queried.
+    fn sqlite_test_sources() -> (tempfile::TempDir, Vec<QuerySource>) {
         let temp = tempfile::tempdir().expect("temp dir");
         let db_path = temp.path().join("coral.sqlite");
         let conn = rusqlite::Connection::open(&db_path).expect("sqlite db");
@@ -583,7 +593,12 @@ mod tests {
             BTreeMap::new(),
         )
         .expect("database runtime source");
-        let sources = vec![source];
+        (temp, vec![source])
+    }
+
+    #[tokio::test]
+    async fn sqlite_database_source_registers_catalog_and_queries_three_part_table() {
+        let (_temp, sources) = sqlite_test_sources();
 
         let tables = CoralQuery::list_tables(
             &sources,
@@ -630,6 +645,16 @@ mod tests {
         .expect("query coral tables");
         assert_eq!(catalog_result.row_count(), 1);
 
+        let source = sources.first().expect("source");
+        CoralQuery::validate_source(source, QueryRuntimeConfig::default(), &[])
+            .await
+            .expect("database source validates");
+    }
+
+    #[tokio::test]
+    async fn sqlite_database_source_exposes_lazy_column_metadata() {
+        let (_temp, sources) = sqlite_test_sources();
+
         let tables = CoralQuery::list_tables(
             &sources,
             QueryRuntimeConfig::default(),
@@ -638,12 +663,36 @@ mod tests {
             Some("users"),
         )
         .await
-        .expect("list tables by catalog and schema");
-        assert_eq!(tables.len(), 1);
+        .expect("list tables");
+        let table = tables.first().expect("table metadata");
+        assert_eq!(
+            table
+                .columns
+                .iter()
+                .map(|column| (column.name.as_str(), column.data_type.as_str()))
+                .collect::<Vec<_>>(),
+            [("id", "INTEGER"), ("name", "TEXT")],
+            "lazy column inventory populates listed table metadata"
+        );
 
-        let source = sources.first().expect("source");
-        CoralQuery::validate_source(source, QueryRuntimeConfig::default(), &[])
-            .await
-            .expect("database source validates");
+        let pinned_columns = CoralQuery::execute_sql(
+            &sources,
+            QueryRuntimeConfig::default(),
+            "SELECT column_name, data_type, is_nullable FROM coral.columns \
+             WHERE catalog_name = 'coral_db' AND schema_name = 'main' AND table_name = 'users' \
+             ORDER BY ordinal_position",
+        )
+        .await
+        .expect("query pinned coral columns");
+        assert_eq!(pinned_columns.row_count(), 2);
+
+        let all_database_columns = CoralQuery::execute_sql(
+            &sources,
+            QueryRuntimeConfig::default(),
+            "SELECT column_name FROM coral.columns WHERE catalog_name <> ''",
+        )
+        .await
+        .expect("query all database columns");
+        assert_eq!(all_database_columns.row_count(), 2);
     }
 }

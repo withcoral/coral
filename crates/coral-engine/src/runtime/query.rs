@@ -162,9 +162,12 @@ async fn build_registered_runtime(
         source_decorators,
     )
     .await?;
-    catalog::register(&ctx, &registration.active_sources)
-        .await
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    catalog::register(
+        &ctx,
+        &registration.active_sources,
+        &registration.column_fetchers,
+    )
+    .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_static_tables(&registration.active_sources);
     let table_functions = catalog::collect_table_functions(&registration.active_sources);
     let source_functions = SourceFunctionRegistry::new(
@@ -949,7 +952,7 @@ mod tests {
     use crate::backends::{RegisteredSource, RegisteredTable};
     use crate::{DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext};
 
-    async fn adapter_with_table() -> QueryRuntimeAdapter {
+    fn adapter_with_table() -> QueryRuntimeAdapter {
         let active_sources = vec![RegisteredSource {
             catalog_name: None,
             schema_name: "demo".to_string(),
@@ -975,9 +978,7 @@ mod tests {
             inputs: Vec::new(),
         }];
         let ctx = Arc::new(SessionContext::new());
-        catalog::register(&ctx, &active_sources)
-            .await
-            .expect("catalog should register");
+        catalog::register(&ctx, &active_sources, &[]).expect("catalog should register");
         let tables = catalog::collect_static_tables(&active_sources);
         QueryRuntimeAdapter {
             ctx,
@@ -994,7 +995,6 @@ mod tests {
     #[tokio::test]
     async fn describe_table_hit_returns_full_table_without_missing_context() {
         let result = adapter_with_table()
-            .await
             .describe_table(None, "demo", "events")
             .await
             .expect("describe table");
@@ -1007,7 +1007,6 @@ mod tests {
     #[tokio::test]
     async fn describe_table_miss_returns_columnless_context_tables() {
         let result = adapter_with_table()
-            .await
             .describe_table(None, "demo", "missing")
             .await
             .expect("describe table miss");

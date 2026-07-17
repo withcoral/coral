@@ -1,31 +1,39 @@
 //! Registers the `coral` system schema for discoverable source metadata.
 
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use coral_spec::ManifestInputKind;
 use datafusion::arrow::array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::catalog::{MemorySchemaProvider, SchemaProvider};
-use datafusion::datasource::{MemTable, ViewTable};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::catalog::Session;
+use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
+use futures::future::join_all;
 use serde::Serialize;
 
 use crate::backends::common::{
     RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
 };
-use crate::backends::{RegisteredSource, RegisteredTableFunction};
+use crate::backends::shared::filter_expr::literal_to_string;
+use crate::backends::{
+    CatalogColumnFetcher, ColumnInventoryFilter, DatabaseColumnRow, RegisteredSource,
+    RegisteredTableFunction,
+};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
     TableInfo,
 };
+use datafusion::datasource::TableProvider;
 
 /// Schema name for source metadata tables such as `coral.tables`.
 pub(crate) const SYSTEM_SCHEMA: &str = "coral";
-const STATIC_TABLES_TABLE: &str = "_tables_static";
-const STATIC_COLUMNS_TABLE: &str = "_columns_static";
 
 /// Register `coral.tables` and `coral.columns` for the active source set.
 ///
@@ -33,24 +41,21 @@ const STATIC_COLUMNS_TABLE: &str = "_columns_static";
 ///
 /// Returns a `DataFusionError` if the catalog is missing or the metadata
 /// tables cannot be materialized.
-pub(crate) async fn register(
+pub(crate) fn register(
     ctx: &SessionContext,
     active_sources: &[RegisteredSource],
+    column_fetchers: &[CatalogColumnFetcher],
 ) -> Result<()> {
     let tables_table = build_tables_table(active_sources)?;
-    let columns_table = build_columns_table(active_sources)?;
+    let columns_table = build_columns_table(active_sources, column_fetchers)?;
     let filters_table = build_filters_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
     let table_functions_table = build_table_functions_table(active_sources)?;
-    let catalog_names = active_sources
-        .iter()
-        .filter_map(|source| source.catalog_name.as_deref())
-        .collect::<Vec<_>>();
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
-    meta_tables.insert(STATIC_TABLES_TABLE.to_string(), Arc::new(tables_table));
-    meta_tables.insert(STATIC_COLUMNS_TABLE.to_string(), Arc::new(columns_table));
+    meta_tables.insert("tables".to_string(), Arc::new(tables_table));
+    meta_tables.insert("columns".to_string(), Arc::new(columns_table));
     meta_tables.insert("filters".to_string(), Arc::new(filters_table));
     meta_tables.insert("inputs".to_string(), Arc::new(inputs_table));
     meta_tables.insert(
@@ -61,69 +66,12 @@ pub(crate) async fn register(
     let catalog = ctx
         .catalog("datafusion")
         .ok_or_else(|| DataFusionError::Plan("catalog 'datafusion' not found".to_string()))?;
-    let planning_schema = Arc::new(MemorySchemaProvider::new());
-    for (name, table) in &meta_tables {
-        planning_schema.register_table(name.clone(), table.clone())?;
-    }
-    catalog.register_schema(SYSTEM_SCHEMA, planning_schema)?;
-
-    let tables_sql = tables_view_sql();
-    let tables_view = view_table_for_sql(ctx, &tables_sql).await?;
-    meta_tables.insert("tables".to_string(), Arc::new(tables_view));
-
-    let columns_sql = columns_view_sql(&catalog_names);
-    let columns_view = view_table_for_sql(ctx, &columns_sql).await?;
-    meta_tables.insert("columns".to_string(), Arc::new(columns_view));
-
     catalog.register_schema(
         SYSTEM_SCHEMA,
         Arc::new(StaticSchemaProvider::new(meta_tables)),
     )?;
 
     Ok(())
-}
-
-async fn view_table_for_sql(ctx: &SessionContext, sql: &str) -> Result<ViewTable> {
-    let df = ctx.sql(sql).await?;
-    let (_state, plan) = df.into_parts();
-    Ok(ViewTable::new(plan, Some(sql.to_string())))
-}
-
-fn tables_view_sql() -> String {
-    format!(
-        "SELECT schema_name, table_name, description, guide, required_filters, \
-         search_limits_json, catalog_name FROM {SYSTEM_SCHEMA}.{STATIC_TABLES_TABLE}"
-    )
-}
-
-fn columns_view_sql(catalog_names: &[&str]) -> String {
-    let static_sql = format!(
-        "SELECT schema_name, table_name, ordinal_position, column_name, data_type, \
-         is_nullable, is_virtual, is_required_filter, description, filter_mode, catalog_name \
-         FROM {SYSTEM_SCHEMA}.{STATIC_COLUMNS_TABLE}"
-    );
-    if catalog_names.is_empty() {
-        return static_sql;
-    }
-    format!(
-        "{static_sql} UNION ALL \
-         SELECT table_schema AS schema_name, table_name, \
-         CAST(ordinal_position AS INT) AS ordinal_position, column_name, data_type, \
-         is_nullable = 'YES' AS is_nullable, false AS is_virtual, \
-         false AS is_required_filter, '' AS description, '' AS filter_mode, \
-         table_catalog AS catalog_name \
-         FROM information_schema.columns \
-         WHERE table_catalog IN ({}) AND table_schema <> 'information_schema'",
-        sql_string_list(catalog_names)
-    )
-}
-
-fn sql_string_list(values: &[&str]) -> String {
-    values
-        .iter()
-        .map(|value| sql_string_literal(value))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn sql_string_literal(value: &str) -> String {
@@ -1246,7 +1194,10 @@ struct CatalogColumn {
     ordinal_position: usize,
 }
 
-fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+fn build_columns_table(
+    active_sources: &[RegisteredSource],
+    column_fetchers: &[CatalogColumnFetcher],
+) -> Result<CoralColumnsTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
@@ -1262,9 +1213,233 @@ fn build_columns_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
     ]));
 
     let rows = catalog_column_rows(active_sources);
-    let batch = catalog_columns_batch(schema.clone(), &rows)?;
+    let static_batch = catalog_columns_batch(schema.clone(), &rows)?;
 
-    MemTable::try_new(schema, vec![vec![batch]])
+    Ok(CoralColumnsTable {
+        schema,
+        static_batch,
+        fetchers: column_fetchers.to_vec(),
+    })
+}
+
+/// `coral.columns`: static source metadata unioned, at scan time, with column
+/// metadata fetched lazily from registered database catalogs.
+///
+/// Recognized pushed-down pins prune which databases are contacted and narrow
+/// each remote fetch to the pinned schemas/tables. Pushdown is Inexact, so
+/// `DataFusion` re-applies every predicate above the scan: an unrecognized
+/// filter shape only costs extra fetching, never correctness.
+#[derive(Debug)]
+struct CoralColumnsTable {
+    schema: Arc<Schema>,
+    static_batch: RecordBatch,
+    fetchers: Vec<CatalogColumnFetcher>,
+}
+
+#[async_trait]
+impl TableProvider for CoralColumnsTable {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> Result<Vec<TableProviderFilterPushDown>> {
+        Ok(filters
+            .iter()
+            .map(|filter| {
+                if column_pin(filter).is_some() {
+                    TableProviderFilterPushDown::Inexact
+                } else {
+                    TableProviderFilterPushDown::Unsupported
+                }
+            })
+            .collect())
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let pins = ColumnPins::from_filters(filters);
+        let inventory_filter = pins.inventory_filter();
+        let relevant = self
+            .fetchers
+            .iter()
+            .filter(|fetcher| pins.includes_catalog(&fetcher.catalog_name))
+            .collect::<Vec<_>>();
+        let outcomes = join_all(
+            relevant
+                .iter()
+                .map(|fetcher| fetcher.fetcher.fetch_columns(&inventory_filter)),
+        )
+        .await;
+
+        let mut batches = vec![self.static_batch.clone()];
+        for (fetcher, outcome) in relevant.iter().zip(outcomes) {
+            match outcome {
+                Ok(rows) => {
+                    let rows = database_catalog_columns(&fetcher.catalog_name, rows);
+                    batches.push(catalog_columns_batch(Arc::clone(&self.schema), &rows)?);
+                }
+                Err(error) => {
+                    // Keep metadata browsing available when one of several
+                    // databases is unreachable; its rows are simply absent.
+                    tracing::warn!(
+                        catalog = fetcher.catalog_name.as_str(),
+                        detail = %error,
+                        "failed to fetch database column metadata; omitting catalog from coral.columns"
+                    );
+                }
+            }
+        }
+
+        let table = MemTable::try_new(Arc::clone(&self.schema), vec![batches])?;
+        table.scan(state, projection, &[], limit).await
+    }
+}
+
+fn database_catalog_columns(
+    catalog_name: &str,
+    rows: Vec<DatabaseColumnRow>,
+) -> Vec<CatalogColumn> {
+    rows.into_iter()
+        .map(|row| CatalogColumn {
+            catalog_name: catalog_name.to_string(),
+            schema_name: row.schema_name,
+            table_name: row.table_name,
+            column_name: row.column_name,
+            data_type: row.data_type,
+            is_nullable: row.is_nullable,
+            is_virtual: false,
+            is_required_filter: false,
+            filter_mode: None,
+            description: String::new(),
+            ordinal_position: usize::try_from(row.ordinal_position).unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Per-column value restrictions recognized in pushed-down predicates.
+/// `None` means the column is unrestricted.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ColumnPins {
+    catalogs: Option<BTreeSet<String>>,
+    schemas: Option<BTreeSet<String>>,
+    tables: Option<BTreeSet<String>>,
+}
+
+impl ColumnPins {
+    fn from_filters(filters: &[Expr]) -> Self {
+        let mut pins = Self::default();
+        for filter in filters {
+            if let Some((column, values)) = column_pin(filter) {
+                pins.restrict(column, values);
+            }
+        }
+        pins
+    }
+
+    fn restrict(&mut self, column: PinColumn, values: BTreeSet<String>) {
+        let slot = match column {
+            PinColumn::Catalog => &mut self.catalogs,
+            PinColumn::Schema => &mut self.schemas,
+            PinColumn::Table => &mut self.tables,
+        };
+        *slot = Some(match slot.take() {
+            None => values,
+            Some(existing) => existing.intersection(&values).cloned().collect(),
+        });
+    }
+
+    fn includes_catalog(&self, catalog_name: &str) -> bool {
+        self.catalogs
+            .as_ref()
+            .is_none_or(|catalogs| catalogs.contains(catalog_name))
+    }
+
+    fn inventory_filter(&self) -> ColumnInventoryFilter {
+        ColumnInventoryFilter {
+            schemas: self
+                .schemas
+                .as_ref()
+                .map(|values| values.iter().cloned().collect()),
+            tables: self
+                .tables
+                .as_ref()
+                .map(|values| values.iter().cloned().collect()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinColumn {
+    Catalog,
+    Schema,
+    Table,
+}
+
+fn pin_column(name: &str) -> Option<PinColumn> {
+    match name {
+        "catalog_name" => Some(PinColumn::Catalog),
+        "schema_name" => Some(PinColumn::Schema),
+        "table_name" => Some(PinColumn::Table),
+        _ => None,
+    }
+}
+
+/// Recognizes one pushed-down conjunct as a single-column string restriction:
+/// `col = 'x'`, `col IN (...)`, or an OR chain of same-column equalities.
+fn column_pin(expr: &Expr) -> Option<(PinColumn, BTreeSet<String>)> {
+    match expr {
+        Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
+            let (column, value) = column_equality(binary.left.as_ref(), binary.right.as_ref())
+                .or_else(|| column_equality(binary.right.as_ref(), binary.left.as_ref()))?;
+            Some((column, BTreeSet::from([value])))
+        }
+        Expr::BinaryExpr(binary) if binary.op == Operator::Or => {
+            let (column, mut values) = column_pin(binary.left.as_ref())?;
+            let (right_column, right_values) = column_pin(binary.right.as_ref())?;
+            if column != right_column {
+                return None;
+            }
+            values.extend(right_values);
+            Some((column, values))
+        }
+        Expr::InList(in_list) if !in_list.negated => {
+            let Expr::Column(column) = in_list.expr.as_ref() else {
+                return None;
+            };
+            let column = pin_column(column.name())?;
+            let values = in_list
+                .list
+                .iter()
+                .map(literal_to_string)
+                .collect::<Option<BTreeSet<_>>>()?;
+            Some((column, values))
+        }
+        _ => None,
+    }
+}
+
+fn column_equality(column_side: &Expr, literal_side: &Expr) -> Option<(PinColumn, String)> {
+    let Expr::Column(column) = column_side else {
+        return None;
+    };
+    let column = pin_column(column.name())?;
+    Some((column, literal_to_string(literal_side)?))
 }
 
 fn catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn> {
@@ -1406,12 +1581,195 @@ fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+
+    use datafusion::prelude::{col, lit};
 
     use crate::backends::common::test_support::StubSourceFunctionFactory;
     use crate::backends::{RegisteredSource, RegisteredTableFunction};
 
     use super::collect_table_functions;
+    use super::*;
+
+    fn pins(filters: &[Expr]) -> ColumnPins {
+        ColumnPins::from_filters(filters)
+    }
+
+    fn set(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn column_pin_recognizes_equality_on_either_side() {
+        let left = pins(&[col("catalog_name").eq(lit("db"))]);
+        let right = pins(&[lit("db").eq(col("catalog_name"))]);
+        assert_eq!(left.catalogs, Some(set(&["db"])));
+        assert_eq!(left, right);
+        assert_eq!(left.schemas, None);
+        assert_eq!(left.tables, None);
+    }
+
+    #[test]
+    fn column_pin_recognizes_in_list_and_or_chains() {
+        let in_list = pins(&[col("table_name").in_list(vec![lit("users"), lit("orders")], false)]);
+        assert_eq!(in_list.tables, Some(set(&["orders", "users"])));
+
+        let or_chain = pins(&[col("schema_name")
+            .eq(lit("main"))
+            .or(col("schema_name").eq(lit("sales")))]);
+        assert_eq!(or_chain.schemas, Some(set(&["main", "sales"])));
+    }
+
+    #[test]
+    fn column_pin_conjuncts_intersect_per_column() {
+        let intersected = pins(&[
+            col("table_name").in_list(vec![lit("users"), lit("orders")], false),
+            col("table_name").eq(lit("users")),
+        ]);
+        assert_eq!(intersected.tables, Some(set(&["users"])));
+    }
+
+    #[test]
+    fn column_pin_rejects_unprunable_shapes() {
+        let unpinned = pins(&[
+            // Disjunction across different columns restricts neither column.
+            col("catalog_name")
+                .eq(lit("db"))
+                .or(col("schema_name").eq(lit("main"))),
+            // Negated membership is not a value restriction.
+            col("table_name").in_list(vec![lit("users")], true),
+            // Unknown column.
+            col("column_name").eq(lit("id")),
+            // Column-to-column comparison has no literal to pin.
+            col("table_name").eq(col("schema_name")),
+        ]);
+        assert_eq!(unpinned, ColumnPins::default());
+    }
+
+    #[derive(Debug, Default)]
+    struct StubColumnFetcher {
+        rows: Vec<DatabaseColumnRow>,
+        calls: Mutex<Vec<ColumnInventoryFilter>>,
+    }
+
+    #[async_trait]
+    impl crate::backends::DatabaseColumnFetcher for StubColumnFetcher {
+        async fn fetch_columns(
+            &self,
+            filter: &ColumnInventoryFilter,
+        ) -> Result<Vec<DatabaseColumnRow>> {
+            self.calls.lock().expect("stub lock").push(filter.clone());
+            Ok(self.rows.clone())
+        }
+    }
+
+    fn stub_row(table_name: &str, column_name: &str) -> DatabaseColumnRow {
+        DatabaseColumnRow {
+            schema_name: "main".to_string(),
+            table_name: table_name.to_string(),
+            ordinal_position: 1,
+            column_name: column_name.to_string(),
+            data_type: "integer".to_string(),
+            is_nullable: false,
+        }
+    }
+
+    fn columns_ctx(fetchers: &[CatalogColumnFetcher]) -> SessionContext {
+        let ctx = SessionContext::new();
+        let table = build_columns_table(&[], fetchers).expect("columns table");
+        ctx.register_table("columns", Arc::new(table))
+            .expect("register columns table");
+        ctx
+    }
+
+    #[tokio::test]
+    async fn columns_scan_prunes_fetchers_and_narrows_remote_fetch() {
+        let pinned = Arc::new(StubColumnFetcher {
+            rows: vec![stub_row("users", "id")],
+            calls: Mutex::default(),
+        });
+        let pruned = Arc::new(StubColumnFetcher::default());
+        let ctx = columns_ctx(&[
+            CatalogColumnFetcher {
+                catalog_name: "db1".to_string(),
+                fetcher: Arc::clone(&pinned) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
+            },
+            CatalogColumnFetcher {
+                catalog_name: "db2".to_string(),
+                fetcher: Arc::clone(&pruned) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
+            },
+        ]);
+
+        let batches = ctx
+            .sql(
+                "SELECT column_name FROM columns \
+                 WHERE catalog_name = 'db1' AND schema_name = 'main' AND table_name = 'users'",
+            )
+            .await
+            .expect("plan pinned query")
+            .collect()
+            .await
+            .expect("run pinned query");
+        let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+        assert_eq!(rows, 1, "pinned scan returns the stubbed users.id row");
+
+        let calls = pinned.calls.lock().expect("stub lock");
+        assert_eq!(calls.len(), 1, "pinned catalog fetches exactly once");
+        let filter = calls.first().expect("recorded filter");
+        assert_eq!(
+            filter.schemas.as_deref(),
+            Some(["main".to_string()].as_slice())
+        );
+        assert_eq!(
+            filter.tables.as_deref(),
+            Some(["users".to_string()].as_slice())
+        );
+        assert!(
+            pruned.calls.lock().expect("stub lock").is_empty(),
+            "catalog pin must prevent contacting other databases"
+        );
+    }
+
+    #[tokio::test]
+    async fn columns_scan_without_pins_fetches_all_catalogs_unfiltered() {
+        let first = Arc::new(StubColumnFetcher {
+            rows: vec![stub_row("users", "id")],
+            calls: Mutex::default(),
+        });
+        let second = Arc::new(StubColumnFetcher {
+            rows: vec![stub_row("orders", "order_id")],
+            calls: Mutex::default(),
+        });
+        let ctx = columns_ctx(&[
+            CatalogColumnFetcher {
+                catalog_name: "db1".to_string(),
+                fetcher: Arc::clone(&first) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
+            },
+            CatalogColumnFetcher {
+                catalog_name: "db2".to_string(),
+                fetcher: Arc::clone(&second) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
+            },
+        ]);
+
+        // `<>` is deliberately not a recognizable pin: the scan stays
+        // unpruned while the predicate hides the static system-table rows.
+        let batches = ctx
+            .sql("SELECT column_name FROM columns WHERE catalog_name <> '' ORDER BY column_name")
+            .await
+            .expect("plan unpinned query")
+            .collect()
+            .await
+            .expect("run unpinned query");
+        let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+        assert_eq!(rows, 2, "both catalogs contribute rows");
+
+        for fetcher in [&first, &second] {
+            let calls = fetcher.calls.lock().expect("stub lock");
+            assert_eq!(calls.len(), 1, "each catalog fetches exactly once");
+            let filter = calls.first().expect("recorded filter");
+            assert!(filter.schemas.is_none() && filter.tables.is_none());
+        }
+    }
 
     #[test]
     fn collect_table_functions_preserves_registered_function_schema() {
