@@ -10,6 +10,7 @@ export interface TextInputProps {
   className?: string
   disabled?: boolean
   icon?: IconName
+  id?: string
   name?: string
   onBlur?: () => void
   onChange?: (value: string) => void
@@ -26,6 +27,7 @@ export function TextInput({
   className,
   disabled,
   icon,
+  id,
   name,
   onBlur,
   onChange,
@@ -54,6 +56,7 @@ export function TextInput({
         <Field.Control
           autoFocus={autoFocus}
           className={classNames(styles.input, { [styles.inputWithIcon]: !!icon }, className)}
+          id={id}
           name={name}
           onBlur={onBlur}
           onChange={handleChange}
