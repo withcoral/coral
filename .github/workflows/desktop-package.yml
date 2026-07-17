@@ -52,6 +52,12 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
+      - name: Validate macOS entitlements
+        run: |
+          plutil -lint \
+            apps/desktop/resources/entitlements.mac.plist \
+            apps/desktop/resources/entitlements.mac.inherit.plist
+
       - name: Package desktop app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
