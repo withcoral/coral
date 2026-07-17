@@ -106,16 +106,15 @@ struct RawIdentityManifest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawIdentityAudience {
     host: String,
     #[serde(default)]
     port: Option<u16>,
-    #[serde(flatten)]
-    constraints: BTreeMap<String, Value>,
 }
 
 impl RawIdentityAudience {
-    fn validate_and_normalize(mut self, name: &str) -> Result<BTreeMap<String, Value>> {
+    fn validate_and_normalize(self, name: &str) -> Result<BTreeMap<String, Value>> {
         if self.host.trim().is_empty() {
             return Err(ManifestError::validation(format!(
                 "identity '{name}' audience.host must be a non-empty string"
@@ -131,13 +130,12 @@ impl RawIdentityAudience {
                 "identity '{name}' audience.port must be an integer from 1 through 65535"
             )));
         }
-        self.constraints
-            .insert("host".to_string(), Value::String(host.to_string()));
+        let mut audience = BTreeMap::new();
+        audience.insert("host".to_string(), Value::String(host.to_string()));
         if let Some(port) = self.port {
-            self.constraints
-                .insert("port".to_string(), Value::from(port));
+            audience.insert("port".to_string(), Value::from(port));
         }
-        Ok(self.constraints)
+        Ok(audience)
     }
 }
 
@@ -548,10 +546,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_typed_audience_with_provider_constraints() {
+    fn parses_typed_audience() {
         let parsed = parse_identity_manifest_yaml(&identity_with_audience(
             "fixed_token",
-            "{host: PROVIDER.EXAMPLE.COM, port: 8443, tenant: demo}",
+            "{host: PROVIDER.EXAMPLE.COM, port: 8443}",
             "",
         ))
         .expect("typed audience");
@@ -566,13 +564,6 @@ mod tests {
                 .get("port")
                 .and_then(serde_json::Value::as_u64),
             Some(8443)
-        );
-        assert_eq!(
-            parsed
-                .audience
-                .get("tenant")
-                .and_then(|value| value.as_str()),
-            Some("demo")
         );
     }
 
@@ -644,6 +635,14 @@ oauth:
             (
                 identity_with_audience("fixed_token", "{host: provider.example.com, port: 0}", ""),
                 "audience.port must be an integer from 1 through 65535",
+            ),
+            (
+                identity_with_audience(
+                    "fixed_token",
+                    "{host: provider.example.com, tenant: demo}",
+                    "",
+                ),
+                "unknown field `tenant`",
             ),
             (
                 identity_with_audience(

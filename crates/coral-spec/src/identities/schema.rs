@@ -36,8 +36,7 @@ enum IdentityManifestSchema {
         description: Option<String>,
         #[schemars(pattern(r"^[A-Za-z_][A-Za-z0-9_]*$"))]
         issuer: String,
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        audience: BTreeMap<String, Value>,
+        audience: IdentityAudienceSchema,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(required)]
         inputs: Option<BTreeMap<String, IdentityInputSchema>>,
@@ -59,12 +58,21 @@ enum IdentityManifestSchema {
         description: Option<String>,
         #[schemars(pattern(r"^[A-Za-z_][A-Za-z0-9_]*$"))]
         issuer: String,
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        audience: BTreeMap<String, Value>,
+        audience: IdentityAudienceSchema,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(required)]
         inputs: Option<EmptyIdentityInputsSchema>,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct IdentityAudienceSchema {
+    #[schemars(length(min = 1))]
+    host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = u16::MAX))]
+    port: Option<u16>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -366,6 +374,7 @@ name: demo_token
 version: 0.1.0
 issuer: demo
 type: fixed_token
+audience: {host: api.example.com}
 inputs: {}
 ";
 
@@ -376,6 +385,7 @@ name: demo_device
 version: 0.1.0
 issuer: demo
 type: oauth
+audience: {host: api.example.com}
 inputs:
   UNUSED:
     kind: variable
@@ -530,6 +540,13 @@ oauth:
         ] {
             assert_schema_and_parser_reject(name, rename_input(valid.clone(), name));
         }
+
+        let mut missing_audience = manifest(FIXED_TOKEN);
+        missing_audience
+            .as_object_mut()
+            .expect("fixed-token fixture")
+            .remove("audience");
+        assert_schema_and_parser_reject("missing audience", missing_audience);
     }
 
     #[test]
@@ -537,6 +554,7 @@ oauth:
         let valid = manifest(AUTHORIZATION_CODE);
         for pointer in [
             "",
+            "/audience",
             "/inputs/CLIENT_SECRET",
             "/oauth",
             "/oauth/method",
