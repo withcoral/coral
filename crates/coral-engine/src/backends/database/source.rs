@@ -22,6 +22,7 @@ use datafusion_table_providers::util::secrets::to_secret_map;
 use super::catalog::{
     DatabaseCatalog, DatabaseRelation, boxed_provider_error, build_database_catalog, provider_error,
 };
+use super::columns::{MYSQL_COLUMNS_SQL, POSTGRES_COLUMNS_SQL, SQLITE_COLUMNS_SQL};
 use super::registry::{DatabasePool, DatabasePoolRegistry};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
@@ -147,6 +148,7 @@ impl CompiledBackendSource for CompiledDatabaseSource {
             catalogs: vec![BackendCatalogRegistration {
                 catalog: database_catalog.provider,
                 source,
+                column_fetcher: database_catalog.column_fetcher,
             }],
         })
     }
@@ -193,7 +195,13 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-Postgres pool"
             )));
         };
-        build_database_catalog(pool, POSTGRES_RELATIONS_SQL, Arc::new(PostgreSqlDialect {})).await
+        build_database_catalog(
+            pool,
+            POSTGRES_RELATIONS_SQL,
+            POSTGRES_COLUMNS_SQL,
+            Arc::new(PostgreSqlDialect {}),
+        )
+        .await
     }
 }
 
@@ -243,7 +251,13 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-MySQL pool"
             )));
         };
-        build_database_catalog(pool, MYSQL_RELATIONS_SQL, Arc::new(MySqlDialect {})).await
+        build_database_catalog(
+            pool,
+            MYSQL_RELATIONS_SQL,
+            MYSQL_COLUMNS_SQL,
+            Arc::new(MySqlDialect {}),
+        )
+        .await
     }
 }
 
@@ -281,6 +295,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
         build_database_catalog(
             Arc::new(pool),
             SQLITE_RELATIONS_SQL,
+            SQLITE_COLUMNS_SQL,
             Arc::new(SqliteDialect {}),
         )
         .await

@@ -9,7 +9,7 @@ use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
     BackendCatalogRegistration, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
+    BackendSchemaRegistration, CatalogColumnFetcher, CompiledBackendSource, RegisteredSource,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
@@ -57,6 +57,7 @@ pub(crate) struct SourceRegistrationFailure {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SourceRegistrationResult {
     pub(crate) active_sources: Vec<RegisteredSource>,
+    pub(crate) column_fetchers: Vec<CatalogColumnFetcher>,
     pub(crate) failures: Vec<SourceRegistrationFailure>,
 }
 
@@ -318,9 +319,13 @@ fn register_backend_registration(
     let mut staged = Vec::with_capacity(registration.schemas.len());
     let mut catalog_staged = Vec::with_capacity(registration.catalogs.len());
     for catalog_registration in registration.catalogs {
-        let BackendCatalogRegistration { catalog, source } = catalog_registration;
+        let BackendCatalogRegistration {
+            catalog,
+            source,
+            column_fetcher,
+        } = catalog_registration;
         let catalog_name = source.qualified_name.name().to_string();
-        catalog_staged.push((catalog_name, catalog, source));
+        catalog_staged.push((catalog_name, catalog, source, column_fetcher));
     }
 
     for schema_registration in registration.schemas {
@@ -355,14 +360,28 @@ fn register_backend_registration(
         }
     }
 
-    for (catalog_name, registered_catalog, _registered_source) in &catalog_staged {
+    for (catalog_name, registered_catalog, _registered_source, _column_fetcher) in &catalog_staged {
         ctx.register_catalog(catalog_name, Arc::clone(registered_catalog));
     }
 
     for (_schema_name, _decorated_tables, registered_source) in staged {
         result.active_sources.push(registered_source);
     }
-    for (_catalog_name, _registered_catalog, registered_source) in catalog_staged {
+    for (catalog_name, _registered_catalog, registered_source, column_fetcher) in catalog_staged {
+        result.column_fetchers.push(CatalogColumnFetcher {
+            catalog_name,
+            schema_names: registered_source
+                .tables
+                .iter()
+                .filter_map(|table| table.schema_name.clone())
+                .collect(),
+            table_names: registered_source
+                .tables
+                .iter()
+                .map(|table| table.table_name.clone())
+                .collect(),
+            fetcher: column_fetcher,
+        });
         result.active_sources.push(registered_source);
     }
     Ok(())

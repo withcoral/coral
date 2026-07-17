@@ -1,6 +1,7 @@
 //! Relational database backend registration through `datafusion-table-providers`.
 
 mod catalog;
+mod columns;
 mod registry;
 mod source;
 
