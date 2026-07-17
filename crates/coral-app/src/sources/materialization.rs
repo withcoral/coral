@@ -645,22 +645,25 @@ fn apply_parameter_metadata_override_file(
     }
 
     let raw = std::fs::read_to_string(&path).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to read DSL v4 parameter metadata override '{}': {error}",
-            path.display()
-        ))
+        invalid_parameter_metadata_override_error(
+            source_name,
+            &path,
+            format!("failed to read override: {error}"),
+        )
     })?;
     let overrides = parse_parameter_metadata_overrides_yaml(&raw).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to parse DSL v4 parameter metadata override '{}': {error}",
-            path.display()
-        ))
+        invalid_parameter_metadata_override_error(
+            source_name,
+            &path,
+            format!("failed to parse override: {error}"),
+        )
     })?;
     apply_parameter_metadata_overrides(semantic_ir, &overrides).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to apply DSL v4 parameter metadata override '{}': {error}",
-            path.display()
-        ))
+        invalid_parameter_metadata_override_error(
+            source_name,
+            &path,
+            format!("failed to apply override: {error}"),
+        )
     })?;
     Ok(())
 }
@@ -1272,6 +1275,18 @@ fn invalid_projection_override_error(
     detail: impl AsRef<str>,
 ) -> AppError {
     AppError::InvalidV4ProjectionOverride {
+        source_name: source_name.to_string(),
+        override_path: path.display().to_string(),
+        detail: detail.as_ref().to_string(),
+    }
+}
+
+fn invalid_parameter_metadata_override_error(
+    source_name: &SourceName,
+    path: &Path,
+    detail: impl AsRef<str>,
+) -> AppError {
+    AppError::InvalidV4ParameterMetadataOverride {
         source_name: source_name.to_string(),
         override_path: path.display().to_string(),
         detail: detail.as_ref().to_string(),
@@ -2102,6 +2117,40 @@ operation_overrides:
         assert!(artifact_input_excluded("order_by"));
         assert!(artifact_input_excluded("q"));
         assert!(!artifact_input_excluded("state"));
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_invalid_parameter_metadata_override_with_override_guidance()
+    {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let override_path =
+            layout.v4_parameter_metadata_override_file(&workspace_name(), &source_name());
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(&override_path, b": not yaml").expect("write corrupt override");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("corrupt parameter metadata override should fail");
+        let message = error.to_string();
+
+        assert!(
+            matches!(error, AppError::InvalidV4ParameterMetadataOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            message.contains("failed to parse override"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("Edit or remove the override file"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]

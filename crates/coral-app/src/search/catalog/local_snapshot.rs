@@ -92,7 +92,8 @@ impl CatalogSnapshotLoader {
                 }
                 Err(
                     error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
-                    | AppError::InvalidV4ProjectionOverride { .. }),
+                    | AppError::InvalidV4ProjectionOverride { .. }
+                    | AppError::InvalidV4ParameterMetadataOverride { .. }),
                 ) => {
                     self.diagnostic_reporter.report_source_load_failure(
                         SourceLoadDiagnosticStage::Catalog,

@@ -997,6 +997,9 @@ fn app_error_type(error: &AppError) -> &'static str {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
         AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
+        AppError::InvalidV4ParameterMetadataOverride { .. } => {
+            "INVALID_V4_PARAMETER_METADATA_OVERRIDE"
+        }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
