@@ -5,7 +5,8 @@
 pub struct ColumnInfo {
     /// Column name.
     pub name: String,
-    /// Data type rendered in `Arrow`/`DataFusion` string form.
+    /// Data type rendered as text: `Arrow`/`DataFusion` string form for
+    /// static sources, the provider-native type name for database catalogs.
     pub data_type: String,
     /// Whether the column can contain null values.
     pub nullable: bool,
