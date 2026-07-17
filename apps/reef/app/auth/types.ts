@@ -20,3 +20,7 @@ export interface AuthSession {
   expiresAt: number
   tokenType: string
 }
+
+export type RequestAuth =
+  | { accessToken: null; mode: 'disabled' }
+  | { accessToken: string; mode: 'required'; session: AuthSession }
