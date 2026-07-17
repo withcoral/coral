@@ -22,6 +22,7 @@ use coral_spec::{
     UniversalSearchResultMappingSpec, ValidatedSourceManifest,
 };
 use serde_json::Value;
+use uuid::Uuid;
 
 use super::runtime_package::RuntimeContractFingerprint;
 
@@ -113,6 +114,7 @@ impl UniversalSearchResolution {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedUniversalSearchRoute {
     pub(crate) source_name: String,
+    pub(crate) installation_revision: Uuid,
     pub(crate) authored_route_id: Option<String>,
     pub(crate) target: ResolvedUniversalSearchTarget,
     pub(crate) locator: UniversalSearchFunctionLocator,
@@ -206,6 +208,25 @@ struct RouteResolutionFailure {
 
 /// Resolves one installed source without performing provider I/O.
 pub(crate) fn resolve_universal_search(
+    source_name: &str,
+    installation_revision: Uuid,
+    manifest: &ValidatedSourceManifest,
+    materialized: Option<&V4MaterializedSource>,
+    runtime_contract_fingerprint: &RuntimeContractFingerprint,
+) -> UniversalSearchResolution {
+    let mut resolution = resolve_universal_search_without_installation_revision(
+        source_name,
+        manifest,
+        materialized,
+        runtime_contract_fingerprint,
+    );
+    for route in &mut resolution.eligible_routes {
+        route.installation_revision = installation_revision;
+    }
+    resolution
+}
+
+fn resolve_universal_search_without_installation_revision(
     source_name: &str,
     manifest: &ValidatedSourceManifest,
     materialized: Option<&V4MaterializedSource>,
@@ -570,6 +591,7 @@ fn resolve_v4_route(
         })?;
     Ok(ResolvedUniversalSearchRoute {
         source_name: source_name.to_string(),
+        installation_revision: Uuid::nil(),
         authored_route_id: route_id,
         target: v4_target(route),
         locator: parts.locator,
@@ -918,6 +940,7 @@ mod tests {
         SourceTableFunctionKind, ValidatedSourceManifest, parse_source_manifest_yaml,
     };
     use serde_json::json;
+    use uuid::Uuid;
 
     use super::{
         ResolvedUniversalSearchTarget, UniversalSearchResolution, UniversalSearchResolutionOrigin,
@@ -1761,6 +1784,7 @@ surface:
         let fingerprint = RuntimeContractFingerprint::for_test("v1:mcp-defaults");
         let resolution = resolve_universal_search(
             "installed_mcp",
+            Uuid::nil(),
             &manifest,
             Some(&materialized),
             &fingerprint,
@@ -1874,6 +1898,7 @@ surface:
         let fingerprint = RuntimeContractFingerprint::for_test("v1:stale-route");
         let resolution = resolve_universal_search(
             "installed_stale",
+            Uuid::nil(),
             &manifest,
             Some(&materialized),
             &fingerprint,

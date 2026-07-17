@@ -202,6 +202,8 @@ struct PersistedInstalledSource {
     credential_storage: Option<CredentialStorageKind>,
     #[serde(default, skip_serializing_if = "Uuid::is_nil")]
     credential_revision: Uuid,
+    #[serde(default, skip_serializing_if = "Uuid::is_nil")]
+    installation_revision: Uuid,
     origin: SourceOrigin,
 }
 
@@ -214,6 +216,7 @@ impl PersistedInstalledSource {
             secrets: self.secrets,
             credential_storage: self.credential_storage,
             credential_revision: self.credential_revision,
+            installation_revision: self.installation_revision,
             origin: self.origin,
         }
     }
@@ -227,6 +230,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             secrets: value.secrets.clone(),
             credential_storage: value.credential_storage,
             credential_revision: value.credential_revision,
+            installation_revision: value.installation_revision,
             origin: value.origin,
         }
     }
@@ -539,6 +543,11 @@ impl ConfigStore {
 
     pub(crate) fn state_lock_shared(&self) -> Result<FileLock, AppError> {
         FileLock::shared(self.layout.state_lock()).map_err(Into::into)
+    }
+
+    /// Attempts to acquire the app state lock in shared mode without waiting.
+    pub(crate) fn try_state_lock_shared(&self) -> Result<Option<FileLock>, AppError> {
+        FileLock::try_shared(self.layout.state_lock()).map_err(Into::into)
     }
 
     pub(crate) fn state_lock_exclusive(&self) -> Result<FileLock, AppError> {
@@ -893,6 +902,15 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                 source_table.remove("credential_revision");
             } else {
                 source_item["credential_revision"] = value(source.credential_revision.to_string());
+            }
+            if source.installation_revision.is_nil() {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("installation_revision");
+            } else {
+                source_item["installation_revision"] =
+                    value(source.installation_revision.to_string());
             }
             source_item["origin"] = value(source.origin.as_config_value());
         }
@@ -1255,6 +1273,7 @@ mod tests {
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
             credential_revision: uuid::Uuid::default(),
+            installation_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         }
     }
@@ -1979,6 +1998,61 @@ origin = "imported"
         let sources = loaded.catalog.workspace_sources(&default_workspace());
 
         assert!(sources[0].credential_revision.is_nil());
+    }
+
+    #[test]
+    fn round_trips_non_nil_source_installation_revision() {
+        let workspace_name = default_workspace();
+        let mut source = installed_source("github");
+        source.installation_revision =
+            uuid::Uuid::parse_str("4fae914d-2a57-4bd3-98b6-b033dd6db441")
+                .expect("installation revision");
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, source.clone());
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog,
+            functions: FunctionCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+        assert!(raw.contains(&format!(
+            "installation_revision = \"{}\"",
+            source.installation_revision
+        )));
+
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        assert_eq!(
+            sources[0].installation_revision,
+            source.installation_revision
+        );
+    }
+
+    #[test]
+    fn source_config_without_installation_revision_defaults_to_nil() {
+        let raw = r#"
+version = 1
+
+[workspaces.default]
+
+[workspaces.default.sources.github]
+variables = {}
+secrets = []
+origin = "imported"
+"#;
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("legacy config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&default_workspace());
+
+        assert!(sources[0].installation_revision.is_nil());
     }
 
     #[test]

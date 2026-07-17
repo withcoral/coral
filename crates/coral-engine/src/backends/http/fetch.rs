@@ -47,7 +47,7 @@ pub(super) async fn fetch_rows(
     client: &HttpSourceClient,
     target: &HttpFetchTarget,
     filter_values: &HashMap<String, String>,
-    arg_values: &HashMap<String, String>,
+    arg_values: &HashMap<String, Value>,
     row_limit: Option<usize>,
     page_hint: Option<usize>,
     completeness: FetchCompleteness,

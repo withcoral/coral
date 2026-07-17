@@ -150,6 +150,7 @@ pub(crate) fn query_source_from_installed_manifest(
         )?;
         let universal_search_resolution = resolve_universal_search(
             source.name.as_str(),
+            source.installation_revision,
             source_spec,
             Some(&materialized),
             &runtime_contract_fingerprint,

@@ -10,12 +10,14 @@ use coral_spec::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken,
 
 /// Shared empty filter/state map for source-scoped rendering.
 pub(crate) static EMPTY_MAP: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+/// Shared empty typed function-argument map.
+pub(crate) static EMPTY_ARG_MAP: LazyLock<HashMap<String, Value>> = LazyLock::new(HashMap::new);
 
 /// Runtime values available while rendering one backend request.
 #[derive(Clone, Copy)]
 pub(crate) struct RenderContext<'a> {
     pub(crate) filters: &'a HashMap<String, String>,
-    pub(crate) args: &'a HashMap<String, String>,
+    pub(crate) args: &'a HashMap<String, Value>,
     pub(crate) state: &'a HashMap<String, String>,
     pub(crate) resolved_inputs: &'a BTreeMap<String, String>,
 }
@@ -23,7 +25,7 @@ pub(crate) struct RenderContext<'a> {
 impl<'a> RenderContext<'a> {
     pub(crate) fn new(
         filters: &'a HashMap<String, String>,
-        args: &'a HashMap<String, String>,
+        args: &'a HashMap<String, Value>,
         state: &'a HashMap<String, String>,
         resolved_inputs: &'a BTreeMap<String, String>,
     ) -> Self {
@@ -36,7 +38,7 @@ impl<'a> RenderContext<'a> {
     }
 
     pub(crate) fn source_scoped(resolved_inputs: &'a BTreeMap<String, String>) -> Self {
-        Self::new(&EMPTY_MAP, &EMPTY_MAP, &EMPTY_MAP, resolved_inputs)
+        Self::new(&EMPTY_MAP, &EMPTY_ARG_MAP, &EMPTY_MAP, resolved_inputs)
     }
 }
 
@@ -47,11 +49,16 @@ enum RuntimeValueNamespace {
 }
 
 impl RuntimeValueNamespace {
-    fn values<'a>(self, context: &'a RenderContext<'_>) -> &'a HashMap<String, String> {
+    fn value(self, context: &RenderContext<'_>, key: &str) -> Option<Value> {
         match self {
-            Self::Filter => context.filters,
-            Self::FunctionArgument => context.args,
+            Self::Filter => context.filters.get(key).cloned().map(Value::String),
+            Self::FunctionArgument => context.args.get(key).cloned(),
         }
+    }
+
+    fn text(self, context: &RenderContext<'_>, key: &str) -> Option<String> {
+        self.value(context, key)
+            .map(|value| value_to_string(&value))
     }
 
     fn label(self) -> &'static str {
@@ -74,13 +81,13 @@ pub(crate) fn resolve_value_source(
         }
         ValueSourceSpec::OneOf { values } => resolve_one_of(values, context),
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
-        ValueSourceSpec::Filter { key, default } => Ok(string_runtime_value(
+        ValueSourceSpec::Filter { key, default } => Ok(runtime_value(
             context,
             RuntimeValueNamespace::Filter,
             key,
             default.as_ref(),
         )),
-        ValueSourceSpec::Arg { key, default } => Ok(string_runtime_value(
+        ValueSourceSpec::Arg { key, default } => Ok(runtime_value(
             context,
             RuntimeValueNamespace::FunctionArgument,
             key,
@@ -183,17 +190,13 @@ fn resolve_one_of(
     Ok(None)
 }
 
-fn string_runtime_value(
+fn runtime_value(
     context: &RenderContext<'_>,
     namespace: RuntimeValueNamespace,
     key: &str,
     default: Option<&Value>,
 ) -> Option<Value> {
-    namespace
-        .values(context)
-        .get(key)
-        .map(|value| Value::String(value.clone()))
-        .or_else(|| default.cloned())
+    namespace.value(context, key).or_else(|| default.cloned())
 }
 
 fn now_minus_seconds(seconds: i64) -> Value {
@@ -214,14 +217,18 @@ fn parse_i64_value(
     key: &str,
     default: Option<i64>,
 ) -> Result<Option<Value>> {
-    let Some(raw) = namespace.values(context).get(key) else {
+    let Some(raw) = namespace.value(context, key) else {
         return Ok(default.map(|value| json!(value)));
     };
-    let parsed = raw.parse::<i64>().map_err(|error| {
+    let parsed = match &raw {
+        Value::Number(number) => number.as_i64(),
+        Value::String(value) => value.parse::<i64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
         let label = namespace.label();
-        DataFusionError::Execution(format!(
-            "{label} '{key}' value '{raw}' is not a valid i64: {error}"
-        ))
+        let raw = value_to_string(&raw);
+        DataFusionError::Execution(format!("{label} '{key}' value '{raw}' is not a valid i64"))
     })?;
     Ok(Some(json!(parsed)))
 }
@@ -232,14 +239,18 @@ fn parse_bool_value(
     key: &str,
     default: Option<bool>,
 ) -> Result<Option<Value>> {
-    let Some(raw) = namespace.values(context).get(key) else {
+    let Some(raw) = namespace.value(context, key) else {
         return Ok(default.map(|value| json!(value)));
     };
-    let parsed = raw.parse::<bool>().map_err(|error| {
+    let parsed = match &raw {
+        Value::Bool(value) => Some(*value),
+        Value::String(value) => value.parse::<bool>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
         let label = namespace.label();
-        DataFusionError::Execution(format!(
-            "{label} '{key}' value '{raw}' is not a valid bool: {error}"
-        ))
+        let raw = value_to_string(&raw);
+        DataFusionError::Execution(format!("{label} '{key}' value '{raw}' is not a valid bool"))
     })?;
     Ok(Some(json!(parsed)))
 }
@@ -250,13 +261,22 @@ fn parse_string_array_value(
     key: &str,
     default: Option<&[String]>,
 ) -> Result<Option<Value>> {
-    let Some(raw) = namespace.values(context).get(key) else {
+    let Some(raw) = namespace.value(context, key) else {
         return Ok(default.map(|values| json!(values)));
     };
-    let parsed = serde_json::from_str::<Vec<String>>(raw).map_err(|error| {
+    let parsed = match &raw {
+        Value::String(value) => serde_json::from_str::<Vec<String>>(value).ok(),
+        Value::Array(values) => values
+            .iter()
+            .map(|value| value.as_str().map(ToString::to_string))
+            .collect(),
+        _ => None,
+    }
+    .ok_or_else(|| {
         let label = namespace.label();
+        let raw = value_to_string(&raw);
         DataFusionError::Execution(format!(
-            "{label} '{key}' value '{raw}' is not a valid JSON array of strings: {error}"
+            "{label} '{key}' value '{raw}' is not a valid JSON array of strings"
         ))
     })?;
     Ok(Some(json!(parsed)))
@@ -296,7 +316,7 @@ fn split_value_part(
     separator: &str,
     part: usize,
 ) -> Result<Option<String>> {
-    let Some(value) = namespace.values(context).get(key) else {
+    let Some(value) = namespace.text(context, key) else {
         return Ok(None);
     };
     value
@@ -359,7 +379,7 @@ fn resolve_template_token(token: &TemplateToken, context: &RenderContext<'_>) ->
         return context
             .args
             .get(token.key())
-            .cloned()
+            .map(value_to_string)
             .or(default)
             .ok_or_else(|| {
                 DataFusionError::Execution(format!("missing request argument '{}'", token.key()))
@@ -475,7 +495,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use coral_spec::ValueSourceSpec;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{EMPTY_MAP, RenderContext, resolve_value_source, validate_value_source_inputs};
 
@@ -488,7 +508,7 @@ mod tests {
 
     fn test_render_context<'a>(
         filters: &'a HashMap<String, String>,
-        args: &'a HashMap<String, String>,
+        args: &'a HashMap<String, Value>,
         resolved_inputs: &'a BTreeMap<String, String>,
     ) -> RenderContext<'a> {
         RenderContext::new(filters, args, &EMPTY_MAP, resolved_inputs)
@@ -589,7 +609,7 @@ mod tests {
 
     #[test]
     fn resolve_value_source_splits_function_argument_parts() {
-        let args = HashMap::from([("issue".to_string(), "SOURCE-496".to_string())]);
+        let args = HashMap::from([("issue".to_string(), json!("SOURCE-496"))]);
 
         let team = resolve_value_source(
             &ValueSourceSpec::ArgSplit {
@@ -637,7 +657,7 @@ mod tests {
 
     #[test]
     fn resolve_value_source_rejects_missing_function_argument_split_part() {
-        let args = HashMap::from([("issue".to_string(), "SOURCE496".to_string())]);
+        let args = HashMap::from([("issue".to_string(), json!("SOURCE496"))]);
 
         let error = resolve_value_source(
             &ValueSourceSpec::ArgSplit {
@@ -679,7 +699,7 @@ mod tests {
 
     #[test]
     fn resolve_value_source_rejects_invalid_function_argument_split_int_part() {
-        let args = HashMap::from([("issue".to_string(), "SOURCE-abc".to_string())]);
+        let args = HashMap::from([("issue".to_string(), json!("SOURCE-abc"))]);
 
         let error = resolve_value_source(
             &ValueSourceSpec::ArgSplitInt {

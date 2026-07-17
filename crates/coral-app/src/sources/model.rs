@@ -51,6 +51,14 @@ pub(crate) struct InstalledSource {
     /// OAuth access-token refreshes do not mutate this value.
     #[serde(default)]
     pub(crate) credential_revision: Uuid,
+    /// Non-secret identity for this exact installed-source incarnation.
+    ///
+    /// Reinstalling or reimporting a source rotates this value even when its
+    /// manifest and variables are byte-for-byte identical. Existing source
+    /// configurations deserialize to the nil UUID and receive a real revision
+    /// the next time they are persisted.
+    #[serde(default)]
+    pub(crate) installation_revision: Uuid,
     /// Where this installed source came from.
     pub(crate) origin: SourceOrigin,
 }

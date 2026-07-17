@@ -256,7 +256,7 @@ impl HttpSourceClient {
         &self,
         target: &HttpFetchTarget,
         filter_values: &HashMap<String, String>,
-        arg_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, Value>,
         sql_limit: Option<usize>,
         controls: &QueryExecutionControls,
     ) -> Result<Vec<Value>> {
@@ -277,7 +277,7 @@ impl HttpSourceClient {
         &self,
         target: &HttpFetchTarget,
         filter_values: &HashMap<String, String>,
-        arg_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, Value>,
         row_limit: Option<usize>,
         page_hint: Option<usize>,
         controls: &QueryExecutionControls,

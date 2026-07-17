@@ -17,6 +17,7 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
+use serde_json::Value;
 
 use crate::SourceObservationSurfaceKind;
 use crate::backends::http::HttpSourceClient;
@@ -100,7 +101,7 @@ impl SourceFunctionProviderFactory for HttpSourceTableFunction {
 /// already bound into HTTP request values.
 struct HttpSourceFunctionCallTableProvider {
     state: Arc<HttpSourceFunctionState>,
-    arg_values: HashMap<String, String>,
+    arg_values: HashMap<String, Value>,
 }
 
 impl fmt::Debug for HttpSourceFunctionCallTableProvider {
@@ -164,7 +165,7 @@ fn bind_function_args(
     source_schema: &str,
     function: &SourceTableFunctionSpec,
     args: &[BoundSourceFunctionArg],
-) -> Result<HashMap<String, String>> {
+) -> Result<HashMap<String, Value>> {
     let context = FunctionCallContext {
         source_schema,
         function_name: function.name.as_str(),
@@ -187,12 +188,7 @@ fn bind_function_args(
             &value.source_text,
             &spec.values,
         )?;
-        let value = match (spec.data_type, &value.value) {
-            (ManifestDataType::Json, value) => value.to_string(),
-            (_, serde_json::Value::String(value)) => value.clone(),
-            (_, value) => value.to_string(),
-        };
-        arg_values.insert(spec.bind.arg.clone(), value);
+        arg_values.insert(spec.bind.arg.clone(), value.value.clone());
     }
 
     if !required_missing.is_empty() {

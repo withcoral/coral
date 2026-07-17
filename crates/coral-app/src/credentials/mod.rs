@@ -189,6 +189,28 @@ impl CredentialManager {
         .map_err(credential_refresh_error)
     }
 
+    /// Refreshes and persists provider-managed credentials without acquiring
+    /// either lifecycle lock. The caller must hold the credential refresh lock
+    /// and the shared or exclusive state lock for this credential set.
+    pub(crate) async fn refresh_and_persist_material_for_inputs_with_refresh_and_state_locks_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        inputs: &[ManifestInputSpec],
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        self.refresh_and_persist_oauth_material_with_state_lock_held(
+            workspace_name,
+            credential_set_id,
+            storage,
+            inputs,
+            material,
+        )
+        .await
+        .map_err(credential_refresh_error)
+    }
+
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, AppError> {
         self.store.default_write_storage().map_err(Into::into)
     }
@@ -256,6 +278,28 @@ impl CredentialManager {
         Ok(())
     }
 
+    async fn refresh_and_persist_oauth_material_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        inputs: &[ManifestInputSpec],
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        for input in inputs {
+            if self.refresh_oauth_input_material(input, material).await? {
+                *material = self.persist_refreshed_oauth_material_with_state_lock_held(
+                    workspace_name,
+                    credential_set_id,
+                    storage,
+                    &input.key,
+                    material,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn persist_refreshed_oauth_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -265,6 +309,30 @@ impl CredentialManager {
         refreshed_material: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
         self.store.update_material(
+            workspace_name,
+            credential_set_id,
+            storage,
+            |mut current_material| {
+                replace_provider_input_material(
+                    &mut current_material,
+                    refreshed_material,
+                    input_key,
+                );
+                let next_material = current_material;
+                Ok((next_material.clone(), next_material))
+            },
+        )
+    }
+
+    fn persist_refreshed_oauth_material_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        input_key: &str,
+        refreshed_material: &BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        self.store.update_material_with_state_lock_held(
             workspace_name,
             credential_set_id,
             storage,

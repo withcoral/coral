@@ -3,16 +3,18 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use chrono::DateTime;
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
-    QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    ResolvedQueryResources, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceInputResolver, SourceTables, SourceValidationReport, StatusCode, TableInfo,
-    UdfRuntimeDefinition,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime,
+    QueryCancellationToken, QueryExecution, QueryExecutionControls, QueryExecutionFailureKind,
+    QueryExecutionProvenance, QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, ResolvedQueryResources, SourceDecorator,
+    SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
+    SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
-use coral_spec::{ManifestInputKind, ManifestInputSpec};
+use coral_spec::{ManifestDataType, ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
 use serde_json::json;
 use tracing::Instrument as _;
@@ -39,7 +41,9 @@ use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
 };
-use crate::sources::universal_search::UniversalSearchResolution;
+use crate::sources::universal_search::{
+    ResolvedUniversalSearchDefaultArgument, ResolvedUniversalSearchRoute, UniversalSearchResolution,
+};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
@@ -64,6 +68,88 @@ pub(crate) struct RequiredQueryGuide {
 pub(crate) enum ExecuteSqlOutcome {
     Executed(QueryExecution),
     GuideRequired(Vec<RequiredQueryGuide>),
+}
+
+/// App-owned command for one pre-resolved Universal Search function call.
+///
+/// The caller supplies typed route metadata rather than arbitrary SQL. The
+/// manager re-resolves that route against the current installed source before
+/// any upstream work starts.
+#[derive(Debug, Clone)]
+pub(crate) struct ExecuteSelectedTableFunction {
+    pub(crate) workspace_name: WorkspaceName,
+    pub(crate) route: ResolvedUniversalSearchRoute,
+    pub(crate) query: String,
+    pub(crate) deadline: tokio::time::Instant,
+    pub(crate) cancellation: QueryCancellationToken,
+    pub(crate) row_limit: usize,
+}
+
+/// Successful selected-function execution plus safe transport provenance.
+#[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "native fanout calls this seam in the next stacked PR"
+    )
+)]
+pub(crate) struct SelectedTableFunctionExecution {
+    pub(crate) execution: QueryExecution,
+    pub(crate) has_more: bool,
+    pub(crate) upstream_started: bool,
+}
+
+/// Stable internal failure categories consumed by native fanout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectedTableFunctionFailureKind {
+    RouteStale,
+    Execution(QueryExecutionFailureKind),
+}
+
+impl SelectedTableFunctionFailureKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RouteStale => "route_stale",
+            Self::Execution(QueryExecutionFailureKind::Timeout) => "timeout",
+            Self::Execution(QueryExecutionFailureKind::Cancelled) => "cancelled",
+            Self::Execution(QueryExecutionFailureKind::RateLimited) => "rate_limited",
+            Self::Execution(QueryExecutionFailureKind::Authentication) => "authentication",
+            Self::Execution(QueryExecutionFailureKind::PermissionDenied) => "permission_denied",
+            Self::Execution(QueryExecutionFailureKind::UpstreamUnavailable) => {
+                "upstream_unavailable"
+            }
+            Self::Execution(QueryExecutionFailureKind::InvalidResponse) => "invalid_response",
+            Self::Execution(_) => "execution",
+        }
+    }
+}
+
+/// Failure of one selected function without provider-controlled detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SelectedTableFunctionExecutionError {
+    pub(crate) kind: SelectedTableFunctionFailureKind,
+    pub(crate) upstream_started: bool,
+}
+
+impl SelectedTableFunctionExecutionError {
+    fn route_stale(controls: &QueryExecutionControls) -> Self {
+        Self {
+            kind: SelectedTableFunctionFailureKind::RouteStale,
+            upstream_started: controls.upstream_started(),
+        }
+    }
+
+    fn execution(kind: QueryExecutionFailureKind, controls: &QueryExecutionControls) -> Self {
+        Self {
+            kind: SelectedTableFunctionFailureKind::Execution(kind),
+            upstream_started: controls.upstream_started(),
+        }
+    }
+
+    fn internal(controls: &QueryExecutionControls) -> Self {
+        Self::execution(QueryExecutionFailureKind::Execution, controls)
+    }
 }
 
 pub(crate) struct ValidatedSource {
@@ -480,6 +566,238 @@ impl QueryManager {
         .await
     }
 
+    /// Executes one previously resolved source table function under fanout
+    /// controls without accepting caller-authored SQL.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "native fanout calls this seam in the next stacked PR"
+        )
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the audited freshness, credential, runtime, and telemetry ordering stays linear"
+    )]
+    pub(crate) async fn execute_selected_table_function(
+        &self,
+        command: ExecuteSelectedTableFunction,
+    ) -> Result<SelectedTableFunctionExecution, SelectedTableFunctionExecutionError> {
+        let started_at = Instant::now();
+        let controls =
+            QueryExecutionControls::for_fanout(command.deadline, command.cancellation.clone());
+        let span = tracing::info_span!(
+            "coral.query.selected_table_function",
+            otel.name = "coral.query.selected_table_function",
+            operation = "execute_selected_table_function",
+            workspace = %command.workspace_name,
+            source = %command.route.source_name,
+            schema = %command.route.locator.schema_name,
+            function = %command.route.locator.function_name,
+            route_id = command.route.authored_route_id.as_deref().unwrap_or(""),
+            query_len_bytes = command.query.len(),
+            requested_rows = command.row_limit,
+            row_count = tracing::field::Empty,
+            has_more = tracing::field::Empty,
+            upstream_started = tracing::field::Empty,
+            status = tracing::field::Empty,
+            failure_kind = tracing::field::Empty,
+        );
+
+        let result = async {
+            controls
+                .check_active()
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, &controls))?;
+            if command.row_limit == 0
+                || command.query.trim().is_empty()
+                || command.route.query_argument.data_type != ManifestDataType::Utf8
+            {
+                return Err(SelectedTableFunctionExecutionError::route_stale(&controls));
+            }
+
+            let source_name = SourceName::parse(&command.route.source_name)
+                .map_err(|_error| SelectedTableFunctionExecutionError::route_stale(&controls))?;
+            let credential_set_id = CredentialSetId::for_source(&source_name);
+
+            // Source lifecycle writes take the credential refresh lock before
+            // the exclusive state lock. Match that order, then hold both locks
+            // through execution so an exact route check cannot race a reinstall.
+            let _credential_refresh_lock = controls
+                .run_until_stopped(
+                    self.credential_manager
+                        .credential_refresh_lock(&command.workspace_name, &credential_set_id),
+                )
+                .await
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, &controls))?
+                .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
+            controls
+                .check_active()
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, &controls))?;
+
+            let _state_lock =
+                acquire_selected_execution_state_lock(&self.config_store, &controls).await?;
+            controls
+                .check_active()
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, &controls))?;
+            let config = self
+                .config_store
+                .load_config_unlocked()
+                .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
+            let source = config
+                .get_source(&command.workspace_name, &source_name)
+                .ok_or_else(|| SelectedTableFunctionExecutionError::route_stale(&controls))?;
+            let installed =
+                resolve_installed_manifest(&command.workspace_name, &source, &self.layout)
+                    .map_err(|_error| {
+                        SelectedTableFunctionExecutionError::route_stale(&controls)
+                    })?;
+            validate_required_variables(&source, installed.source_spec.declared_inputs())
+                .map_err(|_error| SelectedTableFunctionExecutionError::route_stale(&controls))?;
+
+            let current_contract = query_source_from_installed_manifest(
+                &self.layout,
+                &command.workspace_name,
+                &source,
+                &installed,
+                &self.diagnostic_reporter,
+                BTreeMap::new(),
+            )
+            .map_err(|_error| SelectedTableFunctionExecutionError::route_stale(&controls))?;
+            if !current_contract
+                .universal_search_resolution
+                .eligible_routes
+                .iter()
+                .any(|current| current == &command.route)
+            {
+                return Err(SelectedTableFunctionExecutionError::route_stale(&controls));
+            }
+
+            // Credential refresh is deliberately after exact route equality.
+            // A stale route must make no OAuth or provider request.
+            let credential_storage = source.credential_storage_for_material();
+            let mut credential_material = if let Some(storage) = credential_storage {
+                self.credential_manager
+                    .read_material(&command.workspace_name, &credential_set_id, storage)
+                    .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?
+            } else {
+                BTreeMap::new()
+            };
+            if let Some(storage) = credential_storage {
+                controls
+                    .run_until_stopped(
+                        self.credential_manager
+                            .refresh_and_persist_material_for_inputs_with_refresh_and_state_locks_held(
+                                &command.workspace_name,
+                                &credential_set_id,
+                                storage,
+                                installed.source_spec.declared_inputs(),
+                                &mut credential_material,
+                            ),
+                    )
+                    .await
+                    .map_err(|kind| {
+                        SelectedTableFunctionExecutionError::execution(kind, &controls)
+                    })?
+                    .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
+            } else {
+                controls
+                    .run_until_stopped(self.credential_manager.refresh_material_for_inputs(
+                        installed.source_spec.declared_inputs(),
+                        &mut credential_material,
+                    ))
+                    .await
+                    .map_err(|kind| {
+                        SelectedTableFunctionExecutionError::execution(kind, &controls)
+                    })?
+                    .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
+            }
+            controls
+                .check_active()
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, &controls))?;
+            let resolved_secrets =
+                resolved_declared_secrets(&source, &installed.source_spec, &credential_material)
+                    .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
+            let loaded_runtime = query_source_from_installed_manifest(
+                &self.layout,
+                &command.workspace_name,
+                &source,
+                &installed,
+                &self.diagnostic_reporter,
+                resolved_secrets,
+            )
+            .map_err(|_error| SelectedTableFunctionExecutionError::route_stale(&controls))?;
+            let selected_source = LoadedQuerySource {
+                source,
+                query_source: loaded_runtime.query_source,
+                runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
+                credential_material,
+                universal_search_resolution: loaded_runtime.universal_search_resolution,
+            };
+            let runtime_config = self
+                .runtime_config_with_credential_mode(
+                    &command.workspace_name,
+                    std::slice::from_ref(&selected_source),
+                    &config,
+                    CredentialResolutionMode::StoredOnly,
+                    SourceObservationMode::Enabled,
+                )
+                .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
+            let runtime = controls
+                .run_until_stopped(CoralQuery::prepare(
+                    std::slice::from_ref(&selected_source.query_source),
+                    runtime_config,
+                ))
+                .await
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, &controls))?
+                .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
+            let (sql, parameters) =
+                selected_function_statement(&command.route, &command.query, command.row_limit)
+                    .ok_or_else(|| SelectedTableFunctionExecutionError::route_stale(&controls))?;
+            let execution = runtime
+                .execute_sql_with_controls(&sql, parameters, controls.clone())
+                .await
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, &controls))?;
+
+            Ok(SelectedTableFunctionExecution {
+                execution,
+                has_more: controls.has_more(),
+                upstream_started: controls.upstream_started(),
+            })
+        }
+        .instrument(span.clone())
+        .await;
+
+        let row_count = result
+            .as_ref()
+            .ok()
+            .map(|result| u64::try_from(result.execution.row_count()).unwrap_or(u64::MAX));
+        crate::telemetry::metrics::metrics().record_query(
+            "execute_selected_table_function",
+            started_at.elapsed(),
+            row_count,
+            result.is_ok(),
+        );
+        span.record("upstream_started", controls.upstream_started());
+        match &result {
+            Ok(execution) => {
+                span.record("status", "ok");
+                span.record("has_more", execution.has_more);
+                span.record(
+                    "row_count",
+                    u64::try_from(execution.execution.row_count()).unwrap_or(u64::MAX),
+                );
+                span.set_status(OtelStatus::Ok);
+            }
+            Err(error) => {
+                let failure_kind = error.kind.as_str();
+                span.record("status", "error");
+                span.record("failure_kind", failure_kind);
+                span.set_status(OtelStatus::error(failure_kind));
+            }
+        }
+        result
+    }
+
     pub(crate) async fn explain_sql(
         &self,
         workspace_name: &WorkspaceName,
@@ -640,28 +958,7 @@ impl QueryManager {
             } else {
                 BTreeMap::new()
             };
-        let mut resolved_secrets = BTreeMap::new();
-        let missing_secrets: Vec<String> = source_spec
-            .required_secret_names()
-            .into_iter()
-            .filter(|name| !stored_secrets.contains_key(name))
-            .collect();
-        if let Some((first, rest)) = missing_secrets.split_first() {
-            let detail = if rest.is_empty() {
-                format!("secret '{first}'")
-            } else {
-                format!("secret '{first}' and {} other(s)", rest.len())
-            };
-            return Err(AppError::MissingSourceInputs {
-                source_name: source.name.to_string(),
-                detail,
-            });
-        }
-        for secret_name in source_spec.declared_secret_names() {
-            if let Some(value) = stored_secrets.get(&secret_name) {
-                resolved_secrets.insert(secret_name, value.clone());
-            }
-        }
+        let resolved_secrets = resolved_declared_secrets(source, source_spec, &stored_secrets)?;
         let loaded_runtime = query_source_from_installed_manifest(
             &self.layout,
             workspace_name,
@@ -1051,6 +1348,138 @@ fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QueryS
         .collect()
 }
 
+fn resolved_declared_secrets(
+    source: &InstalledSource,
+    source_spec: &coral_spec::ValidatedSourceManifest,
+    credential_material: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let missing_secrets: Vec<String> = source_spec
+        .required_secret_names()
+        .into_iter()
+        .filter(|name| !credential_material.contains_key(name))
+        .collect();
+    if let Some((first, rest)) = missing_secrets.split_first() {
+        let detail = if rest.is_empty() {
+            format!("secret '{first}'")
+        } else {
+            format!("secret '{first}' and {} other(s)", rest.len())
+        };
+        return Err(AppError::MissingSourceInputs {
+            source_name: source.name.to_string(),
+            detail,
+        });
+    }
+
+    Ok(source_spec
+        .declared_secret_names()
+        .into_iter()
+        .filter_map(|name| {
+            credential_material
+                .get(&name)
+                .cloned()
+                .map(|value| (name, value))
+        })
+        .collect())
+}
+
+const SELECTED_QUERY_PARAMETER: &str = "coral_search_query";
+const SELECTED_DEFAULT_PARAMETER_PREFIX: &str = "coral_search_default_";
+const MAX_SELECTED_FUNCTION_ROWS: usize = 5;
+const SELECTED_STATE_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+async fn acquire_selected_execution_state_lock(
+    config_store: &ConfigStore,
+    controls: &QueryExecutionControls,
+) -> Result<crate::storage::fs::FileLock, SelectedTableFunctionExecutionError> {
+    loop {
+        controls
+            .check_active()
+            .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, controls))?;
+        match config_store.try_state_lock_shared() {
+            Ok(Some(state_lock)) => return Ok(state_lock),
+            Ok(None) => controls
+                .sleep(SELECTED_STATE_LOCK_POLL_INTERVAL)
+                .await
+                .map_err(|kind| SelectedTableFunctionExecutionError::execution(kind, controls))?,
+            Err(_error) => {
+                return Err(SelectedTableFunctionExecutionError::internal(controls));
+            }
+        }
+    }
+}
+
+fn selected_function_statement(
+    route: &ResolvedUniversalSearchRoute,
+    query: &str,
+    requested_rows: usize,
+) -> Option<(String, QueryParameters)> {
+    let top_k = requested_rows
+        .min(route.search_limits.max_top_k)
+        .min(MAX_SELECTED_FUNCTION_ROWS);
+    if top_k == 0 {
+        return None;
+    }
+
+    let mut parameters = QueryParameters::new();
+    parameters.insert(
+        SELECTED_QUERY_PARAMETER,
+        QueryParameterValue::string(query.to_string()),
+    );
+    let mut arguments = vec![format!(
+        "{} => ${SELECTED_QUERY_PARAMETER}",
+        quote_sql_identifier(&route.query_argument.name)
+    )];
+    for (index, argument) in route.default_arguments.iter().enumerate() {
+        let parameter_name = format!("{SELECTED_DEFAULT_PARAMETER_PREFIX}{index}");
+        parameters.insert(
+            parameter_name.clone(),
+            selected_default_parameter(argument)?,
+        );
+        arguments.push(format!(
+            "{} => ${parameter_name}",
+            quote_sql_identifier(&argument.name)
+        ));
+    }
+
+    Some((
+        format!(
+            "SELECT * FROM {}.{}({}) LIMIT {top_k}",
+            quote_sql_identifier(&route.locator.schema_name),
+            quote_sql_identifier(&route.locator.function_name),
+            arguments.join(", ")
+        ),
+        parameters,
+    ))
+}
+
+fn selected_default_parameter(
+    argument: &ResolvedUniversalSearchDefaultArgument,
+) -> Option<QueryParameterValue> {
+    match argument.data_type {
+        ManifestDataType::Utf8 => argument
+            .value
+            .as_str()
+            .map(|value| QueryParameterValue::string(value.to_string())),
+        ManifestDataType::Json => Some(QueryParameterValue::json(argument.value.clone())),
+        ManifestDataType::Int64 => argument.value.as_i64().map(QueryParameterValue::integer),
+        ManifestDataType::Float64 => argument
+            .value
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .map(QueryParameterValue::float),
+        ManifestDataType::Boolean => argument.value.as_bool().map(QueryParameterValue::boolean),
+        ManifestDataType::Timestamp => argument.value.as_str().and_then(|value| {
+            DateTime::parse_from_rfc3339(value).ok().map(|timestamp| {
+                QueryParameterValue::timestamp_micros(timestamp.timestamp_micros())
+            })
+        }),
+    }
+}
+
+fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
 #[derive(Clone, Copy)]
 enum QueryOperation {
     ExecuteSql,
@@ -1361,8 +1790,8 @@ mod tests {
         ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
         SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
     };
-    use coral_spec::parse_source_manifest_yaml;
     use coral_spec::v4::ProjectionCatalog;
+    use coral_spec::{SearchLimitsSpec, parse_source_manifest_yaml};
     use serde_json::{Value, json};
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
@@ -1372,8 +1801,14 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::identity::Principal;
     use crate::request_context::RequestContext;
+    use crate::search::observed::SqliteObservedValuesStore;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
+    use crate::sources::universal_search::{
+        ResolvedUniversalSearchArgument, ResolvedUniversalSearchResultMapping,
+        ResolvedUniversalSearchTarget, UniversalSearchFunctionLocator,
+        UniversalSearchResolutionOrigin,
+    };
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
@@ -1462,6 +1897,7 @@ mod tests {
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
                     credential_revision: uuid::Uuid::default(),
+                    installation_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -2034,6 +2470,7 @@ tables:
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
             credential_revision: uuid::Uuid::default(),
+            installation_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         };
         fixture
@@ -2864,6 +3301,7 @@ surface:
                     secrets: Vec::new(),
                     credential_storage: None,
                     credential_revision: uuid::Uuid::default(),
+                    installation_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -2914,6 +3352,7 @@ tables:
                     secrets: Vec::new(),
                     credential_storage: None,
                     credential_revision: uuid::Uuid::default(),
+                    installation_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -3213,6 +3652,7 @@ select 1 as value
             secrets: vec!["API_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
             credential_revision: uuid::Uuid::default(),
+            installation_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Bundled,
         };
         fixture
@@ -3313,6 +3753,7 @@ tables:
             secrets: vec!["API_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
             credential_revision: uuid::Uuid::new_v4(),
+            installation_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         };
         std::fs::create_dir_all(fixture.manager.layout.source_dir(&workspace, &source_name))
@@ -3431,6 +3872,7 @@ tables:
                 secrets: vec!["API_TOKEN".to_string()],
                 credential_storage: None,
                 credential_revision: uuid::Uuid::default(),
+                installation_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
@@ -3510,6 +3952,7 @@ tables:
                 secrets: Vec::new(),
                 credential_storage: None,
                 credential_revision: uuid::Uuid::default(),
+                installation_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
@@ -3517,5 +3960,1013 @@ tables:
             universal_search_resolution: UniversalSearchResolution::empty("github"),
             credential_material: BTreeMap::new(),
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one manifest keeps all selected-only and limit cases on the same installed source"
+    )]
+    fn selected_http_manifest(server_uri: &str) -> String {
+        format!(
+            r"
+name: selected_http
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: {server_uri}
+inputs:
+  API_TOKEN:
+    kind: secret
+    required: false
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: {server_uri}/oauth/authorize
+              token_url: {server_uri}/oauth/token
+            client:
+              id:
+                default: selected-client
+functions:
+  - name: search_default_ignored
+    kind: search
+    universal_search:
+      id: default_ignored
+      execute: true
+      query_arg: q
+    search_limits:
+      default_top_k: 2
+      max_top_k: 50
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind: {{arg: q}}
+      - name: exact
+        type: Boolean
+        default: false
+        bind: {{arg: exact}}
+      - name: options
+        type: Json
+        default: {{sort: recent, tags: [bug, docs]}}
+        bind: {{arg: options}}
+    request:
+      method: GET
+      path: /search/default
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: exact
+          from: arg_bool
+          key: exact
+        - name: options
+          from: arg
+          key: options
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 2
+        max: 50
+        query_param: per_page
+    columns:
+      - name: title
+        type: Utf8
+  - name: search_route_cap
+    kind: search
+    universal_search:
+      id: route_cap
+      execute: true
+      query_arg: q
+    search_limits:
+      default_top_k: 2
+      max_top_k: 3
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind: {{arg: q}}
+    request:
+      method: GET
+      path: /search/route-cap
+      query:
+        - name: q
+          from: arg
+          key: q
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 2
+        max: 50
+        query_param: per_page
+    columns:
+      - name: title
+        type: Utf8
+  - name: search_global_cap
+    kind: search
+    universal_search:
+      id: global_cap
+      execute: true
+      query_arg: q
+    search_limits:
+      default_top_k: 10
+      max_top_k: 50
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind: {{arg: q}}
+    request:
+      method: GET
+      path: /search/global-cap
+      query:
+        - name: q
+          from: arg
+          key: q
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 2
+        max: 50
+        query_param: per_page
+    columns:
+      - name: title
+        type: Utf8
+  - name: search_not_selected
+    kind: search
+    universal_search:
+      id: not_selected
+      execute: true
+      query_arg: q
+    search_limits:
+      default_top_k: 2
+      max_top_k: 50
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind: {{arg: q}}
+    request:
+      method: GET
+      path: /search/not-selected
+      query:
+        - name: q
+          from: arg
+          key: q
+    columns:
+      - name: title
+        type: Utf8
+"
+        )
+    }
+
+    async fn install_selected_http_source(
+        fixture: &QueryManagerFixture,
+        server_uri: &str,
+    ) -> Vec<ResolvedUniversalSearchRoute> {
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace = WorkspaceName::default();
+        source_manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: selected_http_manifest(server_uri),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import selected HTTP source");
+        load_selected_http_routes(fixture).await
+    }
+
+    async fn load_selected_http_routes(
+        fixture: &QueryManagerFixture,
+    ) -> Vec<ResolvedUniversalSearchRoute> {
+        let workspace = WorkspaceName::default();
+        let (loaded, _config) = fixture
+            .manager
+            .load_query_sources(&workspace)
+            .await
+            .expect("load selected HTTP source");
+        loaded
+            .loaded
+            .into_iter()
+            .find(|source| source.source.name.as_str() == "selected_http")
+            .expect("selected HTTP source")
+            .universal_search_resolution
+            .eligible_routes
+    }
+
+    fn attach_expired_selected_oauth_material(
+        fixture: &QueryManagerFixture,
+        token_server_uri: &str,
+    ) {
+        let workspace = WorkspaceName::default();
+        let source_name = SourceName::parse("selected_http").expect("source name");
+        let mut installed = fixture
+            .manager
+            .config_store
+            .get_source(&workspace, &source_name)
+            .expect("installed source");
+        installed.secrets = vec!["API_TOKEN".to_string()];
+        installed.credential_storage = Some(CredentialStorageKind::File);
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace, installed)
+            .expect("attach expired OAuth material");
+        let oauth_prefix = "__coral_oauth.QVBJX1RPS0VO.";
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([
+                    ("API_TOKEN".to_string(), "expired-token".to_string()),
+                    (format!("{oauth_prefix}method"), "oauth".to_string()),
+                    (
+                        format!("{oauth_prefix}access_token_expires_at"),
+                        (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+                    ),
+                    (
+                        format!("{oauth_prefix}refresh_token"),
+                        "stored-refresh-token".to_string(),
+                    ),
+                    (
+                        format!("{oauth_prefix}client_id"),
+                        "selected-client".to_string(),
+                    ),
+                    (
+                        format!("{oauth_prefix}token_url"),
+                        format!("{token_server_uri}/oauth/token"),
+                    ),
+                ]),
+            )
+            .expect("persist expired OAuth material");
+    }
+
+    async fn execute_selected_route(
+        manager: &QueryManager,
+        route: ResolvedUniversalSearchRoute,
+        query: &str,
+        row_limit: usize,
+    ) -> Result<SelectedTableFunctionExecution, SelectedTableFunctionExecutionError> {
+        manager
+            .execute_selected_table_function(ExecuteSelectedTableFunction {
+                workspace_name: WorkspaceName::default(),
+                route,
+                query: query.to_string(),
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation: QueryCancellationToken::new(),
+                row_limit,
+            })
+            .await
+    }
+
+    fn route_named(
+        routes: &[ResolvedUniversalSearchRoute],
+        function_name: &str,
+    ) -> ResolvedUniversalSearchRoute {
+        routes
+            .iter()
+            .find(|route| route.locator.function_name == function_name)
+            .unwrap_or_else(|| panic!("missing route {function_name}"))
+            .clone()
+    }
+
+    fn request_query_value(request: &wiremock::Request, key: &str) -> Option<String> {
+        request
+            .url
+            .query_pairs()
+            .find_map(|(name, value)| (name == key).then(|| value.into_owned()))
+    }
+
+    #[tokio::test]
+    async fn selected_http_execution_calls_only_chosen_function_and_preserves_limits_and_types() {
+        let server = MockServer::start().await;
+        for endpoint in ["default", "route-cap", "global-cap", "not-selected"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/search/{endpoint}")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!([{"title": "selected result"}])),
+                )
+                .mount(&server)
+                .await;
+        }
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let routes = install_selected_http_source(&fixture, &server.uri()).await;
+        let query = "x'); DROP TABLE secrets; --";
+
+        for (function, requested_rows) in [
+            ("search_default_ignored", 5),
+            ("search_route_cap", 8),
+            ("search_global_cap", 20),
+        ] {
+            let selected = execute_selected_route(
+                &fixture.manager,
+                route_named(&routes, function),
+                query,
+                requested_rows,
+            )
+            .await
+            .expect("selected HTTP execution");
+            assert_eq!(selected.execution.row_count(), 1);
+            assert!(selected.upstream_started);
+            assert!(!selected.has_more);
+        }
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("record HTTP requests");
+        assert_eq!(requests.len(), 3);
+        let by_path = requests
+            .iter()
+            .map(|request| (request.url.path().to_string(), request))
+            .collect::<BTreeMap<_, _>>();
+        assert!(!by_path.contains_key("/search/not-selected"));
+        for (path, expected_page_size) in [
+            ("/search/default", "5"),
+            ("/search/route-cap", "3"),
+            ("/search/global-cap", "5"),
+        ] {
+            let request = by_path.get(path).expect("selected endpoint request");
+            assert_eq!(request_query_value(request, "q").as_deref(), Some(query));
+            assert_eq!(
+                request_query_value(request, "per_page").as_deref(),
+                Some(expected_page_size)
+            );
+            assert_eq!(request_query_value(request, "page").as_deref(), Some("1"));
+        }
+        let typed_request = by_path
+            .get("/search/default")
+            .expect("typed default request");
+        assert_eq!(
+            request_query_value(typed_request, "exact").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            request_query_value(typed_request, "options").as_deref(),
+            Some(r#"{"sort":"recent","tags":["bug","docs"]}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_http_execution_refreshes_file_oauth_with_state_lock_held() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "refreshed-token",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search/default"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([{"title": "refreshed result"}])),
+            )
+            .mount(&server)
+            .await;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        install_selected_http_source(&fixture, &server.uri()).await;
+        attach_expired_selected_oauth_material(&fixture, &server.uri());
+        let route = route_named(
+            &load_selected_http_routes(&fixture).await,
+            "search_default_ignored",
+        );
+
+        // A regression here blocks synchronously while upgrading the shared
+        // state lock, so isolate the call on a raw thread and bound the result.
+        let manager = fixture.manager.clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let execution_thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("selected execution runtime");
+            let result = runtime.block_on(execute_selected_route(&manager, route, "query", 5));
+            assert!(
+                result_tx.send(result).is_ok(),
+                "selected execution receiver must remain available"
+            );
+        });
+        let selected = tokio::time::timeout(Duration::from_secs(3), result_rx)
+            .await
+            .expect("selected execution must not deadlock while persisting refreshed OAuth")
+            .expect("selected execution thread must return a result")
+            .expect("selected execution with refreshed OAuth");
+        execution_thread
+            .join()
+            .expect("selected execution thread must not panic");
+
+        assert_eq!(selected.execution.row_count(), 1);
+        assert!(selected.upstream_started);
+        let workspace = WorkspaceName::default();
+        let source_name = SourceName::parse("selected_http").expect("source name");
+        let persisted = fixture
+            .manager
+            .credential_manager
+            .read_material(
+                &workspace,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+            )
+            .expect("read refreshed OAuth material");
+        assert_eq!(
+            persisted.get("API_TOKEN").map(String::as_str),
+            Some("refreshed-token")
+        );
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("record refresh and provider requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path() == "/oauth/token")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path() == "/search/default")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_selected_installation_stops_before_oauth_or_provider_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "refreshed-token",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search/default"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([{"title": "should not run"}])),
+            )
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let stale_route = route_named(
+            &install_selected_http_source(&fixture, &server.uri()).await,
+            "search_default_ignored",
+        );
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace = WorkspaceName::default();
+        source_manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: selected_http_manifest(&server.uri()),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("reinstall source to rotate installation revision");
+        attach_expired_selected_oauth_material(&fixture, &server.uri());
+
+        let error = execute_selected_route(&fixture.manager, stale_route, "query", 5)
+            .await
+            .expect_err("stale installation must fail closed");
+
+        assert_eq!(error.kind, SelectedTableFunctionFailureKind::RouteStale);
+        assert!(!error.upstream_started);
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("record requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_selected_target_and_fingerprint_stop_before_provider_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search/default"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([{"title": "should not run"}])),
+            )
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let current = route_named(
+            &install_selected_http_source(&fixture, &server.uri()).await,
+            "search_default_ignored",
+        );
+        let mut stale_target = current.clone();
+        stale_target.target = ResolvedUniversalSearchTarget::V3 {
+            function_name: "search_not_selected".to_string(),
+        };
+        let mut stale_fingerprint = current;
+        stale_fingerprint.runtime_contract_fingerprint =
+            RuntimeContractFingerprint::for_test("stale-contract");
+
+        for route in [stale_target, stale_fingerprint] {
+            let error = execute_selected_route(&fixture.manager, route, "query", 5)
+                .await
+                .expect_err("stale route must fail closed");
+            assert_eq!(error.kind, SelectedTableFunctionFailureKind::RouteStale);
+            assert!(!error.upstream_started);
+        }
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("record requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_execution_honors_preexisting_cancellation_and_elapsed_deadline() {
+        let server = MockServer::start().await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let route = route_named(
+            &install_selected_http_source(&fixture, &server.uri()).await,
+            "search_default_ignored",
+        );
+        let cancellation = QueryCancellationToken::new();
+        cancellation.cancel();
+        let cancelled = fixture
+            .manager
+            .execute_selected_table_function(ExecuteSelectedTableFunction {
+                workspace_name: WorkspaceName::default(),
+                route: route.clone(),
+                query: "query".to_string(),
+                deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+                cancellation,
+                row_limit: 5,
+            })
+            .await
+            .expect_err("cancelled selection");
+        assert_eq!(
+            cancelled.kind,
+            SelectedTableFunctionFailureKind::Execution(QueryExecutionFailureKind::Cancelled)
+        );
+        assert!(!cancelled.upstream_started);
+
+        let timed_out = fixture
+            .manager
+            .execute_selected_table_function(ExecuteSelectedTableFunction {
+                workspace_name: WorkspaceName::default(),
+                route,
+                query: "query".to_string(),
+                deadline: tokio::time::Instant::now(),
+                cancellation: QueryCancellationToken::new(),
+                row_limit: 5,
+            })
+            .await
+            .expect_err("expired selection");
+        assert_eq!(
+            timed_out.kind,
+            SelectedTableFunctionFailureKind::Execution(QueryExecutionFailureKind::Timeout)
+        );
+        assert!(!timed_out.upstream_started);
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("record requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_sql_function_execution_remains_unchanged() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search/default"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([{"title": "ordinary result"}])),
+            )
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let _routes = install_selected_http_source(&fixture, &server.uri()).await;
+
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &WorkspaceName::default(),
+                r#"SELECT title FROM selected_http.search_default_ignored(
+                    q => 'ordinary',
+                    exact => false,
+                    options => '{"sort":"recent","tags":["bug","docs"]}'
+                ) LIMIT 1"#,
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("ordinary SQL function execution");
+
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"title": "ordinary result"})]
+        );
+        let requests = server.received_requests().await.expect("record requests");
+        assert_eq!(requests.len(), 1);
+        let request = requests.first().expect("ordinary SQL request");
+        assert_eq!(
+            request_query_value(request, "per_page").as_deref(),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "v4 materialization and selected execution form one end-to-end contract test"
+    )]
+    async fn selected_v4_rest_route_executes_its_materialized_function() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"title": "v4 result"}])))
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("selected-v4-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            format!(
+                r"
+openapi: 3.0.3
+info:
+  title: Selected v4
+  version: 1.0.0
+servers:
+  - url: {}
+paths:
+  /search/items:
+    get:
+      operationId: search_items
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: {{type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    title: {{type: string}}
+                  required: [title]
+",
+                server.uri()
+            ),
+        )
+        .expect("write v4 OpenAPI fixture");
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace = WorkspaceName::default();
+        source_manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: selected_v4
+dsl_version: 4
+universal_search:
+  routes:
+    primary:
+      execute: true
+      target:
+        operation_id: search_items
+      query_input:
+        location: query
+        name: q
+surface:
+  type: openapi
+  file: {}
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import selected v4 source");
+        let (loaded, _config) = fixture
+            .manager
+            .load_query_sources(&workspace)
+            .await
+            .expect("load selected v4 source");
+        let route = loaded
+            .loaded
+            .into_iter()
+            .find(|source| source.source.name.as_str() == "selected_v4")
+            .expect("selected v4 source")
+            .universal_search_resolution
+            .eligible_routes
+            .into_iter()
+            .next()
+            .expect("selected v4 route");
+        assert!(matches!(
+            &route.target,
+            ResolvedUniversalSearchTarget::V4 { .. }
+        ));
+
+        let execution = execute_selected_route(&fixture.manager, route, "v4 needle", 5)
+            .await
+            .expect("execute selected v4 route");
+
+        assert_eq!(
+            execution_to_rows(&execution.execution),
+            vec![json!({"title": "v4 result"})]
+        );
+        assert!(execution.upstream_started);
+        let requests = server.received_requests().await.expect("record requests");
+        assert_eq!(requests.len(), 1);
+        let request = requests.first().expect("selected v4 request");
+        assert_eq!(
+            request_query_value(request, "q").as_deref(),
+            Some("v4 needle")
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_execution_publishes_source_observations() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search/default"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{"title": "observable selected value"}])),
+            )
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let route = route_named(
+            &install_selected_http_source(&fixture, &server.uri()).await,
+            "search_default_ignored",
+        );
+        let observation_handle = SearchObservationHandle::new(fixture.manager.layout.clone());
+        let manager = fixture
+            .manager
+            .clone()
+            .with_search_observation_handle(observation_handle.clone());
+
+        execute_selected_route(&manager, route, "query", 5)
+            .await
+            .expect("selected execution");
+
+        let store = SqliteObservedValuesStore::new(manager.layout.clone());
+        let workspace = WorkspaceName::default();
+        let mut payloads = Vec::new();
+        for _attempt in 0..100 {
+            payloads = store.queue_payloads(&workspace).expect("queue payloads");
+            if !payloads.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        observation_handle
+            .shutdown()
+            .expect("stop observation writer");
+        assert!(
+            payloads.join("\n").contains("observable selected value"),
+            "selected function rows should flow through source observations"
+        );
+    }
+
+    fn selected_route_with_defaults(
+        default_arguments: Vec<ResolvedUniversalSearchDefaultArgument>,
+        default_top_k: usize,
+        max_top_k: usize,
+    ) -> ResolvedUniversalSearchRoute {
+        ResolvedUniversalSearchRoute {
+            owner_source_name: "selected_source".to_string(),
+            installation_revision: uuid::Uuid::new_v4(),
+            authored_route_id: Some("selected-route".to_string()),
+            target: ResolvedUniversalSearchTarget::V3 {
+                function_name: "search\"records".to_string(),
+            },
+            locator: UniversalSearchFunctionLocator {
+                schema_name: "selected\"schema".to_string(),
+                function_name: "search\"records".to_string(),
+            },
+            query_argument: ResolvedUniversalSearchArgument {
+                name: "query\"text".to_string(),
+                data_type: ManifestDataType::Utf8,
+            },
+            default_arguments,
+            search_limits: SearchLimitsSpec {
+                default_top_k,
+                max_top_k,
+                max_calls_per_query: 1,
+            },
+            result: ResolvedUniversalSearchResultMapping::default(),
+            origin: UniversalSearchResolutionOrigin::Explicit,
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("selected-contract"),
+        }
+    }
+
+    #[test]
+    fn selected_function_statement_quotes_identifiers_and_binds_all_values_as_typed_data() {
+        let timestamp = "2026-07-16T09:10:11.123456Z";
+        let route = selected_route_with_defaults(
+            vec![
+                ResolvedUniversalSearchDefaultArgument {
+                    name: "scope".to_string(),
+                    data_type: ManifestDataType::Utf8,
+                    value: json!("all"),
+                },
+                ResolvedUniversalSearchDefaultArgument {
+                    name: "minimum".to_string(),
+                    data_type: ManifestDataType::Int64,
+                    value: json!(7),
+                },
+                ResolvedUniversalSearchDefaultArgument {
+                    name: "threshold".to_string(),
+                    data_type: ManifestDataType::Float64,
+                    value: json!(0.75),
+                },
+                ResolvedUniversalSearchDefaultArgument {
+                    name: "exact".to_string(),
+                    data_type: ManifestDataType::Boolean,
+                    value: json!(false),
+                },
+                ResolvedUniversalSearchDefaultArgument {
+                    name: "options".to_string(),
+                    data_type: ManifestDataType::Json,
+                    value: json!({"sort": "recent", "tags": ["bug", "docs"]}),
+                },
+                ResolvedUniversalSearchDefaultArgument {
+                    name: "since".to_string(),
+                    data_type: ManifestDataType::Timestamp,
+                    value: json!(timestamp),
+                },
+            ],
+            1,
+            10,
+        );
+        let query = "x'); DROP TABLE secrets; --";
+
+        let (sql, parameters) =
+            selected_function_statement(&route, query, 4).expect("selected statement");
+
+        assert_eq!(
+            sql,
+            concat!(
+                "SELECT * FROM \"selected\"\"schema\".\"search\"\"records\"(",
+                "\"query\"\"text\" => $coral_search_query, ",
+                "\"scope\" => $coral_search_default_0, ",
+                "\"minimum\" => $coral_search_default_1, ",
+                "\"threshold\" => $coral_search_default_2, ",
+                "\"exact\" => $coral_search_default_3, ",
+                "\"options\" => $coral_search_default_4, ",
+                "\"since\" => $coral_search_default_5) LIMIT 4"
+            )
+        );
+        assert!(!sql.contains(query));
+        assert_eq!(
+            parameters.get(SELECTED_QUERY_PARAMETER),
+            Some(&QueryParameterValue::string(query))
+        );
+        assert_eq!(
+            parameters.get("coral_search_default_0"),
+            Some(&QueryParameterValue::string("all"))
+        );
+        assert_eq!(
+            parameters.get("coral_search_default_1"),
+            Some(&QueryParameterValue::integer(7))
+        );
+        assert_eq!(
+            parameters.get("coral_search_default_2"),
+            Some(&QueryParameterValue::float(0.75))
+        );
+        assert_eq!(
+            parameters.get("coral_search_default_3"),
+            Some(&QueryParameterValue::boolean(false))
+        );
+        assert_eq!(
+            parameters.get("coral_search_default_4"),
+            Some(&QueryParameterValue::json(json!({
+                "sort": "recent",
+                "tags": ["bug", "docs"]
+            })))
+        );
+        assert_eq!(
+            parameters.get("coral_search_default_5"),
+            Some(&QueryParameterValue::timestamp_micros(
+                DateTime::parse_from_rfc3339(timestamp)
+                    .expect("timestamp")
+                    .timestamp_micros()
+            ))
+        );
+    }
+
+    #[test]
+    fn selected_function_statement_uses_request_limit_then_route_and_global_caps() {
+        let route = selected_route_with_defaults(Vec::new(), 1, 3);
+        let (below_cap, _) = selected_function_statement(&route, "query", 2).expect("below cap");
+        let (route_capped, _) =
+            selected_function_statement(&route, "query", 9).expect("route capped");
+        let global_route = selected_route_with_defaults(Vec::new(), 1, 20);
+        let (globally_capped, _) =
+            selected_function_statement(&global_route, "query", 9).expect("global cap");
+
+        assert!(below_cap.ends_with("LIMIT 2"));
+        assert!(route_capped.ends_with("LIMIT 3"));
+        assert!(globally_capped.ends_with("LIMIT 5"));
+        assert!(selected_function_statement(&route, "query", 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn selected_state_lock_contention_honors_cancellation_and_deadline() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout);
+
+        let exclusive = config_store
+            .state_lock_exclusive()
+            .expect("exclusive state lock");
+        let cancellation = QueryCancellationToken::new();
+        let controls = QueryExecutionControls::for_fanout(
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            cancellation.clone(),
+        );
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancellation.cancel();
+        });
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(1),
+            acquire_selected_execution_state_lock(&config_store, &controls),
+        )
+        .await
+        .expect("lock acquisition must remain cancellable")
+        .expect_err("exclusive holder should prevent acquisition");
+        cancel_task.await.expect("cancellation task");
+        assert_eq!(
+            cancelled.kind,
+            SelectedTableFunctionFailureKind::Execution(QueryExecutionFailureKind::Cancelled)
+        );
+        assert!(!cancelled.upstream_started);
+        drop(exclusive);
+
+        let exclusive = config_store
+            .state_lock_exclusive()
+            .expect("second exclusive state lock");
+        let controls = QueryExecutionControls::for_fanout(
+            tokio::time::Instant::now() + Duration::from_millis(20),
+            QueryCancellationToken::new(),
+        );
+        let timed_out = tokio::time::timeout(
+            Duration::from_secs(1),
+            acquire_selected_execution_state_lock(&config_store, &controls),
+        )
+        .await
+        .expect("lock acquisition must remain deadline bounded")
+        .expect_err("exclusive holder should prevent acquisition");
+        assert_eq!(
+            timed_out.kind,
+            SelectedTableFunctionFailureKind::Execution(QueryExecutionFailureKind::Timeout)
+        );
+        assert!(!timed_out.upstream_started);
+        drop(exclusive);
     }
 }

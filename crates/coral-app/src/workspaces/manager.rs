@@ -327,6 +327,7 @@ mod tests {
             secrets: vec!["TOKEN".to_string()],
             credential_storage: None,
             credential_revision: uuid::Uuid::default(),
+            installation_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         }
     }

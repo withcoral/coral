@@ -170,6 +170,20 @@ impl FileLock {
         Ok(Self { _file: file })
     }
 
+    /// Attempts to acquire a shared lock without waiting.
+    ///
+    /// `Ok(None)` means another holder currently prevents acquisition. Other
+    /// I/O failures remain errors so callers cannot confuse a broken lock file
+    /// with ordinary contention.
+    pub(crate) fn try_shared(path: &Path) -> io::Result<Option<Self>> {
+        let file = open_lock_file(path)?;
+        match FileExt::try_lock_shared(&file) {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn exclusive(path: &Path) -> io::Result<Self> {
         let file = open_lock_file(path)?;
         file.lock_exclusive()?;
