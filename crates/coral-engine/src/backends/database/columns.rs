@@ -18,13 +18,14 @@ use crate::backends::{ColumnInventoryFilter, DatabaseColumnFetcher, DatabaseColu
 
 /// Normalized inventory queries. Every provider projects the same six Utf8
 /// columns so one Arrow schema and one row parser serve all of them:
-/// `schema_name`, `table_name`, `ordinal_position` (1-based, as text),
+/// `schema_name`, `table_name`, `ordinal_position` (zero-based, as text,
+/// matching the `coral.columns` contract),
 /// `column_name`, `data_type` (provider-native name), `is_nullable`
 /// ('true'/'false').
 pub(super) const POSTGRES_COLUMNS_SQL: &str = "
 SELECT table_schema AS schema_name,
        table_name,
-       CAST(ordinal_position AS TEXT) AS ordinal_position,
+       CAST(ordinal_position - 1 AS TEXT) AS ordinal_position,
        column_name,
        data_type,
        CASE WHEN is_nullable = 'YES' THEN 'true' ELSE 'false' END AS is_nullable
@@ -34,7 +35,7 @@ WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
 pub(super) const MYSQL_COLUMNS_SQL: &str = "
 SELECT TABLE_SCHEMA AS schema_name,
        TABLE_NAME AS table_name,
-       CAST(ORDINAL_POSITION AS CHAR) AS ordinal_position,
+       CAST(ORDINAL_POSITION - 1 AS CHAR) AS ordinal_position,
        COLUMN_NAME AS column_name,
        DATA_TYPE AS data_type,
        CASE WHEN IS_NULLABLE = 'YES' THEN 'true' ELSE 'false' END AS is_nullable
@@ -44,7 +45,7 @@ WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 
 pub(super) const SQLITE_COLUMNS_SQL: &str = "
 SELECT 'main' AS schema_name,
        m.name AS table_name,
-       CAST(p.cid + 1 AS TEXT) AS ordinal_position,
+       CAST(p.cid AS TEXT) AS ordinal_position,
        p.name AS column_name,
        CASE WHEN p.type = '' THEN 'unknown' ELSE p.type END AS data_type,
        CASE WHEN p.\"notnull\" = 0 THEN 'true' ELSE 'false' END AS is_nullable
@@ -305,14 +306,14 @@ mod tests {
         assert_eq!(
             described,
             [
-                "main.named_users.name:1",
-                "main.orders.order_id:1",
-                "main.orders.user_id:2",
-                "main.orders.note:3",
-                "main.users.id:1",
-                "main.users.name:2",
+                "main.named_users.name:0",
+                "main.orders.order_id:0",
+                "main.orders.user_id:1",
+                "main.orders.note:2",
+                "main.users.id:0",
+                "main.users.name:1",
             ],
-            "inventory should cover tables and views with 1-based ordinals"
+            "inventory should cover tables and views with zero-based ordinals"
         );
 
         let name = rows
