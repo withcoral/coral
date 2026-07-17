@@ -134,8 +134,12 @@ impl SqliteObservedValuesStore {
         let mut connection = store.connect()?;
         configure_drain_busy_timeout(&connection, budget)?;
         let started_at = Instant::now();
-        let mut result =
-            sqlite_projection::drain_observed_queue(&mut connection, workspace_name, budget)?;
+        let mut result = sqlite_projection::drain_observed_queue(
+            &mut connection,
+            workspace_name,
+            budget,
+            |connection| storage_limit_reached(connection, self.policy),
+        )?;
         let maintenance_budget = budget.time_budget.saturating_sub(started_at.elapsed());
         let governance = maintain_observed_values(
             &mut connection,
@@ -930,6 +934,64 @@ mod tests {
                 .projected_value_count(&workspace)
                 .expect("projected value count"),
             1
+        );
+    }
+
+    #[test]
+    fn storage_pressure_stops_between_atomic_jobs_and_later_drain_resumes() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = ordinary_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        for (scope, value) in [("scope-1", "One"), ("scope-2", "Two")] {
+            ordinary_store
+                .enqueue_if_current(
+                    &workspace,
+                    &test_job_with(scope, "issues", value),
+                    generation,
+                )
+                .expect("enqueue");
+        }
+        let pressure_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: 1,
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 0,
+            },
+        );
+
+        let stopped = pressure_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("pressure-limited drain");
+
+        assert_eq!(stopped.queue_jobs_processed, 1);
+        assert_eq!(stopped.remaining_queue_depth, 1);
+        assert!(stopped.budget_exhausted);
+        assert!(stopped.storage_limit_reached);
+        assert_eq!(
+            pressure_store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            1
+        );
+
+        let resumed = ordinary_store
+            .drain_queue(&workspace, drain_budget())
+            .expect("resumed drain");
+
+        assert_eq!(resumed.queue_jobs_processed, 1);
+        assert_eq!(resumed.remaining_queue_depth, 0);
+        assert_eq!(
+            ordinary_store
+                .projected_value_count(&workspace)
+                .expect("projected value count"),
+            2
         );
     }
 

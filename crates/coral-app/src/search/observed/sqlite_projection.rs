@@ -126,6 +126,7 @@ pub(crate) fn drain_observed_queue(
     connection: &mut Connection,
     workspace_name: &WorkspaceName,
     budget: ObservedValuesDrainBudget,
+    mut should_stop_after_job: impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
 ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
     let mut result = ObservedValuesDrainResult::default();
     let Some(deadline) = deadline_for(budget.time_budget) else {
@@ -135,6 +136,7 @@ pub(crate) fn drain_observed_queue(
     };
 
     let mut last_seen_job_id = 0_i64;
+    let mut stopped_after_job = false;
     for _ in 0..budget.max_jobs {
         if Instant::now() >= deadline {
             result.budget_exhausted = true;
@@ -164,15 +166,23 @@ pub(crate) fn drain_observed_queue(
                 result.failed_jobs = result.failed_jobs.saturating_add(1);
             }
         }
+
+        // Queue jobs are atomic, so storage and other cooperative limits can
+        // only stop the drain safely between committed jobs.
+        if should_stop_after_job(connection)? {
+            stopped_after_job = true;
+            break;
+        }
     }
 
     result.remaining_queue_depth = pending_queue_job_count(connection, workspace_name)?;
+    let jobs_attempted = result
+        .queue_jobs_processed
+        .saturating_add(result.stale_jobs_skipped)
+        .saturating_add(result.failed_jobs);
     if result.remaining_queue_depth > 0
-        && result
-            .queue_jobs_processed
-            .saturating_add(result.stale_jobs_skipped)
-            .saturating_add(result.failed_jobs)
-            >= u32::try_from(budget.max_jobs).unwrap_or(u32::MAX)
+        && (stopped_after_job
+            || jobs_attempted >= u32::try_from(budget.max_jobs).unwrap_or(u32::MAX))
     {
         result.budget_exhausted = true;
     }
@@ -605,6 +615,7 @@ mod tests {
             &mut connection,
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            |_| Ok(false),
         )
         .expect("drain");
 
@@ -662,6 +673,7 @@ mod tests {
             &mut connection,
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            |_| Ok(false),
         )
         .expect("drain");
 
@@ -722,6 +734,7 @@ mod tests {
             &mut connection,
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            |_| Ok(false),
         )
         .expect("drain");
         assert_eq!(result.queue_jobs_processed, 2);
