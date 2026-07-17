@@ -402,47 +402,27 @@ pub(crate) fn load_v4_materialization_with_reporter(
     let raw_source_document_path = materialized_dir.join("source-document.raw");
     let normalized_source_document_path = materialized_dir.join("source-document.yaml");
     let semantic_ir_path = materialized_dir.join("semantic-ir.yaml");
-    let mut semantic_ir: SemanticIr =
-        match read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path) {
-            Ok(semantic_ir) => semantic_ir,
-            Err(error) => {
-                load_diagnostics.push(materialization_warning(
-                    "V4_SEMANTIC_IR_UNAVAILABLE",
-                    error.to_string(),
-                ));
-                diagnostic_reporter.report_source_diagnostics(
-                    workspace_name,
-                    source_name,
-                    "materialization",
-                    load_diagnostics.iter(),
-                );
-                return Err(error);
-            }
-        };
+    let mut semantic_ir = read_semantic_ir_with_reporter(
+        workspace_name,
+        source_name,
+        &semantic_ir_path,
+        &mut load_diagnostics,
+        diagnostic_reporter,
+    )?;
     if let Err(error) = validate_semantic_ir(manifest, &semantic_ir) {
         load_diagnostics.push(materialization_warning(
             "V4_SEMANTIC_IR_PROVENANCE_MISMATCH",
             error,
         ));
     }
-    if let Err(error) = apply_parameter_metadata_override_file(
+    apply_parameter_metadata_override_with_reporter(
         layout,
         workspace_name,
         source_name,
         &mut semantic_ir,
-    ) {
-        load_diagnostics.push(materialization_warning(
-            "V4_PARAMETER_METADATA_OVERRIDE_FAILED",
-            error.to_string(),
-        ));
-        diagnostic_reporter.report_source_diagnostics(
-            workspace_name,
-            source_name,
-            "materialization",
-            load_diagnostics.iter(),
-        );
-        return Err(error);
-    }
+        &mut load_diagnostics,
+        diagnostic_reporter,
+    )?;
     if let Some(fingerprint) = fingerprint.as_ref()
         && let Some(diagnostic) = diagnostic_reporter.validate_raw_document_fingerprint(
             workspace_name,
@@ -485,6 +465,63 @@ pub(crate) fn load_v4_materialization_with_reporter(
     };
     validate_loaded_materialization(source_name, manifest, &projections_file, &materialized)?;
     Ok(materialized)
+}
+
+fn report_materialization_failure(
+    diagnostic_reporter: &SourceDiagnosticReporter,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    load_diagnostics: &mut Vec<Diagnostic>,
+    code: &str,
+    error: &AppError,
+) {
+    load_diagnostics.push(materialization_warning(code, error.to_string()));
+    diagnostic_reporter.report_source_diagnostics(
+        workspace_name,
+        source_name,
+        "materialization",
+        load_diagnostics.iter(),
+    );
+}
+
+fn read_semantic_ir_with_reporter(
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    path: &Path,
+    load_diagnostics: &mut Vec<Diagnostic>,
+    diagnostic_reporter: &SourceDiagnosticReporter,
+) -> Result<SemanticIr, AppError> {
+    read_artifact_yaml(source_name, "semantic IR", path).inspect_err(|error| {
+        report_materialization_failure(
+            diagnostic_reporter,
+            workspace_name,
+            source_name,
+            load_diagnostics,
+            "V4_SEMANTIC_IR_UNAVAILABLE",
+            error,
+        );
+    })
+}
+
+fn apply_parameter_metadata_override_with_reporter(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    semantic_ir: &mut SemanticIr,
+    load_diagnostics: &mut Vec<Diagnostic>,
+    diagnostic_reporter: &SourceDiagnosticReporter,
+) -> Result<(), AppError> {
+    apply_parameter_metadata_override_file(layout, workspace_name, source_name, semantic_ir)
+        .inspect_err(|error| {
+            report_materialization_failure(
+                diagnostic_reporter,
+                workspace_name,
+                source_name,
+                load_diagnostics,
+                "V4_PARAMETER_METADATA_OVERRIDE_FAILED",
+                error,
+            );
+        })
 }
 
 #[cfg(test)]
