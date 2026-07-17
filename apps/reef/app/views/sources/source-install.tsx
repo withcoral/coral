@@ -158,6 +158,15 @@ function SourceInstallDialogContent({
     onCancel()
   }
 
+  function changeMethod(input: CatalogSourceInputSpec, index: number) {
+    const previousIndex = effectiveChoice(input)
+    if (index === previousIndex) return
+
+    const keys = credentialMethodValueKeys(input, previousIndex)
+    setValues((previous) => clearValues(previous, keys))
+    setMethodChoices((previous) => ({ ...previous, [input.key]: index }))
+  }
+
   async function submitOAuthInstall() {
     if (!formRef.current || oauthBusy) return
     setStreamError(null)
@@ -255,7 +264,7 @@ function SourceInstallDialogContent({
               values={values}
               disabled={busy}
               onValueChange={(key, value) => setValues((p) => ({ ...p, [key]: value }))}
-              onMethodChange={(key, index) => setMethodChoices((p) => ({ ...p, [key]: index }))}
+              onMethodChange={(index) => changeMethod(input, index)}
             />
           ))}
         </div>
@@ -341,7 +350,7 @@ function InputRow({
   values: Record<string, string>
   disabled: boolean
   onValueChange: (key: string, value: string) => void
-  onMethodChange: (key: string, index: number) => void
+  onMethodChange: (index: number) => void
 }) {
   if (input.input.case === 'variable') {
     const def = input.input.value.defaultValue
@@ -378,7 +387,7 @@ function InputRow({
       {methods.length > 1 ? (
         <Tabs.Root
           className={styles.methodTabsRoot}
-          onValueChange={(value) => onMethodChange(input.key, Number(value))}
+          onValueChange={(value) => onMethodChange(Number(value))}
           value={methodIndex}
         >
           <Tabs.List
@@ -406,7 +415,7 @@ function InputRow({
               </div>
             ))}
             {methods.map((method, index) => (
-              <Tabs.Panel className={styles.methodPanel} keepMounted key={index} value={index}>
+              <Tabs.Panel className={styles.methodPanel} key={index} value={index}>
                 <CredentialMethodContent
                   disabled={disabled || index !== methodIndex}
                   hint={input.hint}
@@ -559,6 +568,25 @@ function oauthMethodReady(
     if (!input.required) return true
     return (values[input.key] ?? input.defaultValue ?? '').trim().length > 0
   })
+}
+
+function credentialMethodValueKeys(input: CatalogSourceInputSpec, methodIndex: number): string[] {
+  if (input.input.case !== 'secret') return []
+
+  const method = input.input.value.credential?.methods[methodIndex]
+  if (!method || method.method.case === 'sourceConfig') return [input.key]
+  if (method.method.case === 'oauth') {
+    return oauthInputs(method.method.value).map((field) => field.key)
+  }
+  return []
+}
+
+function clearValues(values: Record<string, string>, keys: string[]): Record<string, string> {
+  if (!keys.some((key) => key in values)) return values
+
+  const next = { ...values }
+  for (const key of keys) delete next[key]
+  return next
 }
 
 function oauthInstallEndpoint(workspaceId: string, name: string): string {
