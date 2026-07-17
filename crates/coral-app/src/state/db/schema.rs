@@ -26,10 +26,6 @@ pub(in crate::state::db) enum Tasks {
     CompletedAtUnixNanos,
 }
 
-#[expect(
-    dead_code,
-    reason = "identity schema lands before repository behavior in the B1 stack"
-)]
 #[derive(Iden)]
 pub(in crate::state::db) enum IdentitySpecs {
     Table,
