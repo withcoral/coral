@@ -3,8 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query team knowledge bases, documents, and user directories from
-  Outline.
+  Query Outline collections, published documents plus the current user's
+  drafts, and workspace users.
 base_url: "{{input.OUTLINE_URL}}/api"
 
 inputs:
