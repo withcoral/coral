@@ -190,13 +190,7 @@ impl V4SourceManifest {
             surface,
             ..
         } = raw;
-        if dsl_version != 4 {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' declares dsl_version {dsl_version}; expected 4"
-            )));
-        }
-        validate_v4_source_name(&name)?;
-        validate_test_queries(&name, &test_queries)?;
+        validate_manifest_header(&name, dsl_version, &test_queries)?;
         let common = V4SourceCommon {
             dsl_version,
             name: name.clone(),
@@ -224,6 +218,20 @@ impl V4SourceManifest {
             declared_inputs,
         })
     }
+}
+
+fn validate_manifest_header(
+    source_name: &str,
+    dsl_version: u32,
+    test_queries: &[String],
+) -> Result<()> {
+    if dsl_version != 4 {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' declares dsl_version {dsl_version}; expected 4"
+        )));
+    }
+    validate_v4_source_name(source_name)?;
+    validate_test_queries(source_name, test_queries)
 }
 
 fn parse_surface(
