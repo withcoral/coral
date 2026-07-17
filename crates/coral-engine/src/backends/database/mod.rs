@@ -23,6 +23,7 @@ use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::TableType;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
+use datafusion::sql::unparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SqliteDialect};
 use datafusion_table_providers::UnsupportedTypeAction;
 use datafusion_table_providers::sql::db_connection_pool::dbconnection::query_arrow;
 use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnectionPool;
@@ -199,7 +200,14 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
                             .with_unsupported_type_action(UnsupportedTypeAction::String))
                     }
                 },
-                |pool| database_catalog(pool, POSTGRES_RELATIONS_SQL, POSTGRES_COLUMNS_SQL),
+                |pool| {
+                    database_catalog(
+                        pool,
+                        POSTGRES_RELATIONS_SQL,
+                        POSTGRES_COLUMNS_SQL,
+                        Arc::new(PostgreSqlDialect {}),
+                    )
+                },
             )
             .await
     }
@@ -246,7 +254,14 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
                             .map_err(provider_error)
                     }
                 },
-                |pool| database_catalog(pool, MYSQL_RELATIONS_SQL, MYSQL_COLUMNS_SQL),
+                |pool| {
+                    database_catalog(
+                        pool,
+                        MYSQL_RELATIONS_SQL,
+                        MYSQL_COLUMNS_SQL,
+                        Arc::new(MySqlDialect {}),
+                    )
+                },
             )
             .await
     }
@@ -281,7 +296,13 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
             .build()
             .await
             .map_err(boxed_provider_error)?;
-        database_catalog(Arc::new(pool), SQLITE_RELATIONS_SQL, SQLITE_COLUMNS_SQL).await
+        database_catalog(
+            Arc::new(pool),
+            SQLITE_RELATIONS_SQL,
+            SQLITE_COLUMNS_SQL,
+            Arc::new(SqliteDialect {}),
+        )
+        .await
     }
 }
 
@@ -327,14 +348,18 @@ struct DatabaseRelation {
     table_type: TableType,
 }
 
+type SqlDialect = Arc<dyn Dialect + Send + Sync>;
+
 async fn database_catalog<T: 'static, P: 'static>(
     pool: Pool<T, P>,
     inventory_sql: &str,
     columns_sql: &'static str,
+    dialect: SqlDialect,
 ) -> DataFusionResult<DatabaseCatalog> {
     let relations = load_database_inventory(&pool, inventory_sql).await?;
-    let provider =
-        Arc::new(CoralDatabaseCatalogProvider::new(&pool, &relations)) as Arc<dyn CatalogProvider>;
+    let provider = Arc::new(CoralDatabaseCatalogProvider::new(
+        &pool, &relations, &dialect,
+    )) as Arc<dyn CatalogProvider>;
     let column_fetcher = PooledColumnFetcher::new(&pool, columns_sql);
     Ok(DatabaseCatalog {
         provider,
@@ -405,7 +430,11 @@ struct CoralDatabaseCatalogProvider {
 }
 
 impl CoralDatabaseCatalogProvider {
-    fn new<T: 'static, P: 'static>(pool: &Pool<T, P>, relations: &[DatabaseRelation]) -> Self {
+    fn new<T: 'static, P: 'static>(
+        pool: &Pool<T, P>,
+        relations: &[DatabaseRelation],
+        dialect: &SqlDialect,
+    ) -> Self {
         let mut by_schema = BTreeMap::<String, BTreeMap<String, TableType>>::new();
         for relation in relations {
             by_schema
@@ -420,6 +449,7 @@ impl CoralDatabaseCatalogProvider {
                     schema_name: schema_name.clone(),
                     tables,
                     pool: Arc::clone(pool),
+                    dialect: Arc::clone(dialect),
                 };
                 (schema_name, Arc::new(provider) as Arc<dyn SchemaProvider>)
             })
@@ -451,6 +481,7 @@ struct CoralDatabaseSchemaProvider<T: 'static, P: 'static> {
     schema_name: String,
     tables: BTreeMap<String, TableType>,
     pool: Pool<T, P>,
+    dialect: SqlDialect,
 }
 
 impl<T: 'static, P: 'static> fmt::Debug for CoralDatabaseSchemaProvider<T, P> {
@@ -479,7 +510,10 @@ impl<T: 'static, P: 'static> SchemaProvider for CoralDatabaseSchemaProvider<T, P
             TableReference::partial(self.schema_name.clone(), name.to_string()),
         )
         .await
-        .map(|table| Some(Arc::new(table) as Arc<dyn TableProvider>))
+        .map(|table| {
+            let table = table.with_dialect(Arc::clone(&self.dialect));
+            Some(Arc::new(table) as Arc<dyn TableProvider>)
+        })
         .map_err(provider_error)
     }
 
