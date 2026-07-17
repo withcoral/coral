@@ -1,10 +1,11 @@
 //! Relational database backend registration through `datafusion-table-providers`.
 
 mod catalog;
+mod pool_cache;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -26,6 +27,7 @@ use datafusion_table_providers::util::secrets::to_secret_map;
 use self::catalog::{
     DatabaseCatalog, DatabaseRelation, boxed_provider_error, build_database_catalog, provider_error,
 };
+use self::pool_cache::{PoolCache, PoolKey};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
@@ -174,17 +176,28 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
         if let Some(sslmode) = self.sslmode.as_ref() {
             params.insert("sslmode".to_string(), render_template(sslmode, context)?);
         }
-        let pool = PostgresConnectionPool::new(to_secret_map(params))
+        POSTGRES_POOLS
+            .run(
+                PoolKey::new(self.provider_name(), &params),
+                || {
+                    let params = params.clone();
+                    async move {
+                        Ok(PostgresConnectionPool::new(to_secret_map(params))
+                            .await
+                            .map_err(provider_error)?
+                            // The MySQL adapter has no equivalent unsupported-type policy.
+                            .with_unsupported_type_action(UnsupportedTypeAction::String))
+                    }
+                },
+                |pool| {
+                    build_database_catalog(
+                        pool,
+                        POSTGRES_RELATIONS_SQL,
+                        Arc::new(PostgreSqlDialect {}),
+                    )
+                },
+            )
             .await
-            .map_err(provider_error)?
-            // The MySQL adapter has no equivalent unsupported-type policy.
-            .with_unsupported_type_action(UnsupportedTypeAction::String);
-        build_database_catalog(
-            Arc::new(pool),
-            POSTGRES_RELATIONS_SQL,
-            Arc::new(PostgreSqlDialect {}),
-        )
-        .await
     }
 }
 
@@ -218,15 +231,20 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
             }
         };
         params.insert("tcp_port".to_string(), tcp_port.to_string());
-        let pool = MySQLConnectionPool::new(to_secret_map(params))
+        MYSQL_POOLS
+            .run(
+                PoolKey::new(self.provider_name(), &params),
+                || {
+                    let params = params.clone();
+                    async move {
+                        MySQLConnectionPool::new(to_secret_map(params))
+                            .await
+                            .map_err(provider_error)
+                    }
+                },
+                |pool| build_database_catalog(pool, MYSQL_RELATIONS_SQL, Arc::new(MySqlDialect {})),
+            )
             .await
-            .map_err(provider_error)?;
-        build_database_catalog(
-            Arc::new(pool),
-            MYSQL_RELATIONS_SQL,
-            Arc::new(MySqlDialect {}),
-        )
-        .await
     }
 }
 
@@ -289,6 +307,12 @@ SELECT 'main' AS schema_name,
        CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type
 FROM sqlite_master
 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
+
+/// Remote database pools cached across query runtime builds. `SQLite` pools are
+/// deliberately not cached: building one is a local file open, and caching
+/// would pin deleted or replaced database files.
+static POSTGRES_POOLS: LazyLock<PoolCache<PostgresConnectionPool>> = LazyLock::new(PoolCache::new);
+static MYSQL_POOLS: LazyLock<PoolCache<MySQLConnectionPool>> = LazyLock::new(PoolCache::new);
 
 fn registered_source_for_catalog(
     common: &SourceManifestCommon,
