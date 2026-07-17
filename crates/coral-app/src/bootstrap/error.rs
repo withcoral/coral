@@ -54,6 +54,16 @@ pub enum AppError {
         /// Specific materialization mismatch or missing-artifact detail.
         detail: String,
     },
+    /// An installed DSL v4 manifest uses a no-longer-supported schema shape.
+    #[error(
+        "failed precondition: source '{source_name}' has an incompatible installed DSL v4 manifest: {detail}. Re-add the source with a current manifest."
+    )]
+    IncompatibleInstalledV4Manifest {
+        /// Source whose installed manifest is incompatible.
+        source_name: String,
+        /// Specific manifest incompatibility.
+        detail: String,
+    },
     /// A user-maintained DSL v4 projection override is malformed or stale.
     #[error(
         "failed precondition: source '{source_name}' has invalid DSL v4 projection override '{override_path}': {detail}. Edit or remove the override file."
@@ -281,6 +291,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::FailedPrecondition(_)
         | AppError::MissingSourceInputs { .. }
         | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::IncompatibleInstalledV4Manifest { .. }
         | AppError::InvalidV4ProjectionOverride { .. }
         | AppError::InvalidV4ParameterMetadataOverride { .. }
         | AppError::CredentialRefresh(_)

@@ -996,6 +996,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
+        AppError::IncompatibleInstalledV4Manifest { .. } => "INCOMPATIBLE_INSTALLED_V4_MANIFEST",
         AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
         AppError::InvalidV4ParameterMetadataOverride { .. } => {
             "INVALID_V4_PARAMETER_METADATA_OVERRIDE"

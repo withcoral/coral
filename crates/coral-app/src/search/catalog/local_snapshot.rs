@@ -92,6 +92,7 @@ impl CatalogSnapshotLoader {
                 }
                 Err(
                     error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
+                    | AppError::IncompatibleInstalledV4Manifest { .. }
                     | AppError::InvalidV4ProjectionOverride { .. }
                     | AppError::InvalidV4ParameterMetadataOverride { .. }),
                 ) => {
