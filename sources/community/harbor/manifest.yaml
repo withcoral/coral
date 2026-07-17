@@ -3,7 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query Harbor projects, image repositories, and artifacts through the Harbor REST API v2.0.
+  Query Harbor projects, image repositories, and artifacts through the
+  Harbor REST API v2.0.
 base_url: "{{input.HARBOR_BASE_URL}}/api/v2.0"
 
 inputs:
@@ -14,7 +15,11 @@ inputs:
       for example `https://harbor.example.com`.
   HARBOR_USERNAME:
     kind: variable
-    hint: Username for the Harbor account or robot account name.
+    hint: |
+      Harbor username, or a robot account name. Project robots use
+      `<prefix><project_name>+<account_name>` (e.g.
+      `robot$production-apps+coral-auditor`); system robots use
+      `<prefix><account_name>`. Default prefix is `robot$`.
   HARBOR_PASSWORD:
     kind: secret
     hint: Password or secret token for the Harbor account or robot account.
@@ -72,7 +77,7 @@ tables:
       - name: public
         type: Utf8
         nullable: false
-        description: Whether the project is public or private ("true"/"false").
+        description: Whether the project is public ("true"/"false").
         expr: {kind: path, path: [metadata, public]}
       - name: content_trust
         type: Utf8
@@ -89,7 +94,7 @@ tables:
           expr: {kind: path, path: [creation_time]}
 
   - name: repositories
-    description: Container image repositories grouped within a specific Harbor project.
+    description: Image repositories grouped within a Harbor project.
     filters:
       - name: project_name
         required: true
@@ -150,7 +155,7 @@ tables:
           expr: {kind: path, path: [update_time]}
 
   - name: artifacts
-    description: Specific image manifests, tags, and build layers within a project repository.
+    description: Image manifests, tags, and layers within a repository.
     filters:
       - name: project_name
         required: true
@@ -179,7 +184,7 @@ tables:
         type: Utf8
         nullable: false
         virtual: true
-        description: Manual filter column holding the double URL-encoded repository path identifier.
+        description: Double URL-encoded repository path identifier.
         expr: {kind: from_filter, key: encoded_repository_name}
       - name: id
         type: Int64
@@ -205,9 +210,11 @@ tables:
           input: iso8601
           expr: {kind: path, path: [pull_time]}
       - name: tags
-        type: Utf8
+        type: Json
         nullable: true
-        description: JSON list string of tags associated with this artifact.
+        description: >-
+          Array of tag objects attached to the artifact, as returned by
+          Harbor. Inspect with JSON functions.
         expr: {kind: path, path: [tags]}
       - name: push_time
         type: Timestamp
