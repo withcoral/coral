@@ -1,3 +1,4 @@
+import { ScrollArea as BaseScrollArea } from '@base-ui/react/scroll-area'
 import { Tabs as BaseTabs } from '@base-ui/react/tabs'
 import classNames from 'classnames'
 import { useEffect, useRef } from 'react'
@@ -34,5 +35,13 @@ export function List({
     }
   }, [])
 
-  return <BaseTabs.List className={classNames(styles.list, className)} ref={listRef} {...props} />
+  return (
+    <BaseScrollArea.Root className={styles.listRoot}>
+      <BaseScrollArea.Viewport className={styles.listViewport}>
+        <BaseScrollArea.Content>
+          <BaseTabs.List className={classNames(styles.list, className)} ref={listRef} {...props} />
+        </BaseScrollArea.Content>
+      </BaseScrollArea.Viewport>
+    </BaseScrollArea.Root>
+  )
 }
