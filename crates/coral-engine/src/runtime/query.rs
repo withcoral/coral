@@ -588,10 +588,14 @@ impl QueryRuntimeAdapter {
     ) -> Result<CatalogInfo, CoreError> {
         let includes_schema_sources =
             catalog_filter.is_none_or(|value| normalize_catalog_name(Some(value)).is_none());
+        // Catalog summaries never surface columns, so skip the coral.columns
+        // expansion (and the remote database inventory fetches behind it).
+        let tables =
+            catalog::collect_table_metadata(&self.ctx, catalog_filter, schema_filter, None)
+                .await
+                .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         Ok(CatalogInfo {
-            tables: self
-                .list_tables(catalog_filter, schema_filter, None)
-                .await?,
+            tables,
             table_functions: if includes_schema_sources {
                 self.list_table_functions(schema_filter, None)
             } else {
