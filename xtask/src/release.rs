@@ -117,22 +117,18 @@ pub(crate) struct DesktopMacosPackageArgs {
     work_dir: PathBuf,
 }
 
-/// Build, sign, notarize, and verify the universal macOS desktop app.
+/// Package, sign, notarize, and verify the prepared universal macOS desktop app.
 ///
 /// Owns everything the release workflow needs beyond providing secrets:
 /// version/tag agreement, credential preflight, decoding the App Store
-/// Connect key to the file path `@electron/notarize` expects, driving
-/// `npm run package:mac`, and post-build verification.
+/// Connect key to the file path `@electron/notarize` expects, packaging the
+/// prepared desktop build, and post-build verification.
 pub(crate) fn desktop_macos_package(args: &DesktopMacosPackageArgs) -> Result<bool> {
     if !cfg!(target_os = "macos") {
         bail!("release-desktop-macos-package must run on macOS");
     }
 
     let env = DesktopReleaseEnv::read()?;
-    let team_id = resolve_team_id(
-        env.apple_team_id.as_deref(),
-        env.apple_codesign_identity.as_deref(),
-    )?;
 
     // The updater compares the app's embedded version against release tags;
     // a manual tag on a commit whose desktop version was never bumped would
@@ -159,11 +155,10 @@ pub(crate) fn desktop_macos_package(args: &DesktopMacosPackageArgs) -> Result<bo
     run_command(
         Command::new("npm")
             .arg("run")
-            .arg("package:mac")
+            .arg("package:mac:prepared")
             .arg("--prefix")
             .arg("apps/desktop")
             .env("CORAL_DESKTOP_RELEASE", "1")
-            .env("APPLE_TEAM_ID", &team_id)
             .env("APPLE_API_KEY", &key_path),
         "packaging desktop app",
     )?;
@@ -200,8 +195,6 @@ pub(crate) fn desktop_macos_package(args: &DesktopMacosPackageArgs) -> Result<bo
 #[derive(Debug)]
 struct DesktopReleaseEnv {
     app_store_connect_api_key_p8_base64: String,
-    apple_codesign_identity: Option<String>,
-    apple_team_id: Option<String>,
 }
 
 impl DesktopReleaseEnv {
@@ -223,8 +216,6 @@ impl DesktopReleaseEnv {
             app_store_connect_api_key_p8_base64: required_non_empty_env(
                 "APP_STORE_CONNECT_API_KEY_P8_BASE64",
             )?,
-            apple_codesign_identity: env::optional_var("CSC_NAME"),
-            apple_team_id: env::optional_var("APPLE_TEAM_ID"),
         })
     }
 }
@@ -235,28 +226,6 @@ fn required_non_empty_env(name: &str) -> Result<String> {
         bail!("{name} is empty");
     }
     Ok(value)
-}
-
-fn resolve_team_id(explicit: Option<&str>, identity: Option<&str>) -> Result<String> {
-    if let Some(team_id) = explicit {
-        return Ok(team_id.to_string());
-    }
-    identity.and_then(extract_team_id).context(
-        "APPLE_TEAM_ID must be set as a release environment variable \
-         or be present in APPLE_CODESIGN_IDENTITY (as '(TEAMID9XY0)')",
-    )
-}
-
-/// Extract the ten-character team ID from a codesign identity like
-/// `Developer ID Application: With Coral (TEAMID9XY0)`.
-fn extract_team_id(identity: &str) -> Option<String> {
-    let (_, rest) = identity.rsplit_once('(')?;
-    let (candidate, _) = rest.split_once(')')?;
-    (candidate.len() == 10
-        && candidate
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
-    .then(|| candidate.to_string())
 }
 
 fn desktop_package_version(manifest: &str) -> Result<String> {
@@ -885,47 +854,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        NotarySubmission, desktop_package_version, ensure_version_matches_tag, extract_team_id,
-        macos_zip_args, output_path, parse_keychain_list, parse_notary_submission,
-        remove_dir_all_if_present, resolve_team_id, write_base64_secret,
+        NotarySubmission, desktop_package_version, ensure_version_matches_tag, macos_zip_args,
+        output_path, parse_keychain_list, parse_notary_submission, remove_dir_all_if_present,
+        write_base64_secret,
     };
-
-    #[test]
-    fn extract_team_id_reads_codesign_identity_suffix() {
-        assert_eq!(
-            extract_team_id("Developer ID Application: With Coral (TEAMID9XY0)"),
-            Some("TEAMID9XY0".to_string())
-        );
-        assert_eq!(
-            extract_team_id("Developer ID Application: With Coral"),
-            None
-        );
-        assert_eq!(
-            extract_team_id("With Coral (lowercase00)"),
-            None,
-            "team IDs are uppercase alphanumeric"
-        );
-        assert_eq!(
-            extract_team_id("With Coral (SHORT)"),
-            None,
-            "team IDs are exactly ten characters"
-        );
-    }
-
-    #[test]
-    fn resolve_team_id_prefers_explicit_value() {
-        assert_eq!(
-            resolve_team_id(Some("EXPLICIT00"), Some("With Coral (TEAMID9XY0)"))
-                .expect("resolve team id"),
-            "EXPLICIT00"
-        );
-        assert_eq!(
-            resolve_team_id(None, Some("With Coral (TEAMID9XY0)")).expect("resolve team id"),
-            "TEAMID9XY0"
-        );
-        resolve_team_id(None, None).expect_err("no team id source");
-        resolve_team_id(None, Some("With Coral")).expect_err("identity without team id");
-    }
 
     #[test]
     fn desktop_package_version_reads_manifest() {

@@ -12,8 +12,8 @@
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
 //!     artifacts.
-//!   - `release-desktop-macos-package` builds, signs, notarizes, and verifies
-//!     the macOS desktop app package.
+//!   - `release-desktop-macos-package` packages, signs, notarizes, and verifies
+//!     the prepared macOS desktop app.
 //!   - `openapi-hydrate` produces a self-contained JSON `OpenAPI` descriptor.
 
 #![allow(
@@ -65,7 +65,7 @@ enum Command {
     GenerateSchemas(schemas::Args),
     /// Sign, package, and notarize one macOS release binary.
     ReleaseMacosSignNotarize(release::MacosSignNotarizeArgs),
-    /// Build, sign, notarize, and verify the macOS desktop app package.
+    /// Package, sign, notarize, and verify the prepared macOS desktop app.
     ReleaseDesktopMacosPackage(release::DesktopMacosPackageArgs),
     /// Hydrate reachable external `OpenAPI` references into JSON.
     OpenapiHydrate(openapi::HydrateArgs),
