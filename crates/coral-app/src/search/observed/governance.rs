@@ -133,10 +133,7 @@ pub(super) fn maintain_observed_values(
     let stale_deletion =
         delete_observed_value_keys(connection, workspace_name, stale_keys, deadline)?;
     result.stale_rows_purged = stale_deletion.deleted_rows;
-    result.budget_exhausted = stale_deletion.budget_exhausted;
-    if !result.budget_exhausted && has_more_stale && deadline_expired(deadline) {
-        result.budget_exhausted = true;
-    }
+    result.budget_exhausted = stale_deletion.budget_exhausted || has_more_stale;
 
     let eviction_limit = u32::try_from(policy.maintenance_batch_rows).unwrap_or(u32::MAX);
     while !result.budget_exhausted && result.evicted_rows < eviction_limit {
@@ -164,8 +161,8 @@ pub(super) fn maintain_observed_values(
 
     result.storage_limit_reached = storage_limit_reached(connection, policy)?;
     if !result.budget_exhausted
-        && deadline_expired(deadline)
         && result.storage_limit_reached
+        && (deadline_expired(deadline) || result.evicted_rows >= eviction_limit)
         && observed_values_exist(connection, workspace_name)?
     {
         result.budget_exhausted = true;
@@ -404,8 +401,8 @@ mod tests {
 
     use super::{
         ObservedValuesStoragePolicy, SELECT_STALE_OBSERVED_VALUE_KEYS_SQL,
-        delete_observed_value_keys, select_observed_value_keys, storage_limit_reached,
-        workspace_live_database_bytes,
+        delete_observed_value_keys, maintain_observed_values, select_observed_value_keys,
+        storage_limit_reached, workspace_live_database_bytes,
     };
     use crate::workspaces::WorkspaceName;
 
@@ -491,6 +488,96 @@ mod tests {
             !details.contains("TEMP B-TREE"),
             "retention selection should not sort the workspace: {details}"
         );
+    }
+
+    #[test]
+    fn stale_row_cap_reports_budget_exhaustion_with_time_remaining() {
+        let mut connection = observed_values_connection();
+        let workspace = WorkspaceName::default();
+        for (owner, value_key, last_observed_at) in [
+            ("owner-a", "first", "2000-01-01T00:00:00.000Z"),
+            ("owner-b", "second", "2001-01-01T00:00:00.000Z"),
+            ("owner-c", "third", "2002-01-01T00:00:00.000Z"),
+        ] {
+            insert_observed_value(
+                &connection,
+                &workspace,
+                owner,
+                value_key,
+                last_observed_at,
+                1,
+            );
+        }
+        let policy = ObservedValuesStoragePolicy {
+            max_storage_bytes: u64::MAX,
+            wal_headroom_bytes: 0,
+            stale_after_days: 365,
+            maintenance_batch_rows: 2,
+        };
+
+        let result =
+            maintain_observed_values(&mut connection, &workspace, policy, Duration::from_secs(1))
+                .expect("maintain observed values");
+
+        assert_eq!(result.stale_rows_purged, 2);
+        assert!(result.budget_exhausted);
+        assert!(!result.storage_limit_reached);
+        assert_eq!(table_value_keys(&connection, "observed_values"), ["third"]);
+    }
+
+    #[test]
+    fn eviction_row_cap_reports_budget_exhaustion_while_observed_work_remains() {
+        let mut connection = observed_values_connection();
+        let workspace = WorkspaceName::default();
+        for (owner, value_key) in [
+            ("owner-a", "first"),
+            ("owner-b", "second"),
+            ("owner-c", "third"),
+        ] {
+            insert_observed_value(
+                &connection,
+                &workspace,
+                owner,
+                value_key,
+                "9999-01-01T00:00:00.000Z",
+                1,
+            );
+        }
+        let policy = ObservedValuesStoragePolicy {
+            max_storage_bytes: 0,
+            wal_headroom_bytes: 0,
+            stale_after_days: 365,
+            maintenance_batch_rows: 2,
+        };
+
+        let result =
+            maintain_observed_values(&mut connection, &workspace, policy, Duration::from_secs(1))
+                .expect("maintain observed values");
+
+        assert_eq!(result.evicted_rows, 2);
+        assert!(result.storage_limit_reached);
+        assert!(result.budget_exhausted);
+        assert_eq!(table_value_keys(&connection, "observed_values"), ["third"]);
+    }
+
+    #[test]
+    fn catalog_only_pressure_does_not_exhaust_the_eviction_row_cap() {
+        let mut connection = observed_values_connection();
+        let workspace = WorkspaceName::default();
+        let policy = ObservedValuesStoragePolicy {
+            max_storage_bytes: 0,
+            wal_headroom_bytes: 0,
+            stale_after_days: 365,
+            maintenance_batch_rows: 0,
+        };
+
+        let result =
+            maintain_observed_values(&mut connection, &workspace, policy, Duration::from_secs(1))
+                .expect("maintain observed values");
+
+        assert_eq!(result.evicted_rows, 0);
+        assert!(result.storage_limit_reached);
+        assert!(!result.budget_exhausted);
     }
 
     #[test]
