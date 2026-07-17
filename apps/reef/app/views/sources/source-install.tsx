@@ -1,4 +1,3 @@
-import classNames from 'classnames'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Form, useNavigate, useRevalidator } from 'react-router'
 
@@ -26,7 +25,8 @@ import { routePath } from '@/routing/routemap'
 import * as styles from './source-install.css'
 import {
   formatFieldName,
-  SourceHeader,
+  SourceError,
+  SourceIdentityHeader,
   SourceInputField,
   SourceNoConfiguration,
 } from './source-presentation'
@@ -234,7 +234,7 @@ function SourceInstallDialogContent({
       <input type="hidden" name="_intent" value="install" />
       <input type="hidden" name="name" value={entry.name} />
 
-      <SourceHeader
+      <SourceIdentityHeader
         description={entry.description}
         name={entry.name}
         origin={entry.origin}
@@ -242,10 +242,7 @@ function SourceInstallDialogContent({
       />
 
       {!inputSpecs ? (
-        <div className={classNames(styles.alertBox, styles.alertError)}>
-          <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>Source metadata is unavailable.</Typography.BodySmall>
-        </div>
+        <SourceError>Source metadata is unavailable.</SourceError>
       ) : inputs.length === 0 ? (
         <SourceNoConfiguration />
       ) : (
@@ -298,19 +295,9 @@ function SourceInstallDialogContent({
         </div>
       ) : null}
 
-      {streamError ? (
-        <div className={classNames(styles.alertBox, styles.alertError)}>
-          <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>{streamError}</Typography.BodySmall>
-        </div>
-      ) : null}
+      {streamError ? <SourceError>{streamError}</SourceError> : null}
 
-      {actionError ? (
-        <div className={classNames(styles.alertBox, styles.alertError)}>
-          <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>{actionError}</Typography.BodySmall>
-        </div>
-      ) : null}
+      {actionError ? <SourceError>{actionError}</SourceError> : null}
 
       <Dialog.Actions>
         <ButtonContainer disabled={submitting} onClick={cancel} size="32" variant="bare">

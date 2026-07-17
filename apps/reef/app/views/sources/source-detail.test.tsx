@@ -121,6 +121,29 @@ describe('SourceDetailView', () => {
     await expect.element(screen.getByLabelText('Github token')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Save changes' }).query()).toBeNull()
   })
+
+  it('submits an imported source canonical name when removing it', async () => {
+    const name = 'spotify_web_api_with_fixes_and_improvements_from_sonallux'
+    const entry: CatalogEntry = {
+      ...installedEntry,
+      name,
+      origin: 'imported',
+      source: { ...installedEntry.source!, name, origin: 'imported' },
+    }
+    const screen = await renderSourceDetail(entry)
+
+    await screen.getByRole('button', { name: 'Remove' }).click()
+    await expect
+      .element(screen.getByRole('heading', { name: /Remove spotify web api/ }))
+      .toBeVisible()
+
+    const dialogs = document.querySelectorAll<HTMLElement>(
+      '[role="dialog"]:not([data-ending-style])',
+    )
+    const confirmation = dialogs.item(dialogs.length - 1)
+    const nameInput = confirmation?.querySelector<HTMLInputElement>('input[name="name"]')
+    expect(nameInput?.value).toBe(name)
+  })
 })
 
 async function renderSourceDetail(entry: CatalogEntry) {
@@ -138,7 +161,7 @@ async function renderSourceDetail(entry: CatalogEntry) {
         path: '/workspaces/:workspaceId/sources/:sourceName',
       },
     ],
-    { initialEntries: ['/workspaces/default/sources/github'] },
+    { initialEntries: [`/workspaces/default/sources/${entry.name}`] },
   )
 
   return render(<RouterProvider router={router} />)

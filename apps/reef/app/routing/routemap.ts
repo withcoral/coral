@@ -5,6 +5,8 @@ const HOME_PATH = '/'
 const WORKSPACES_PATH = '/workspaces'
 const WORKSPACE_SCHEMA_PATH = '/workspaces/:workspaceId/schema'
 const WORKSPACE_SCHEMA_TABLE_PATH = '/workspaces/:workspaceId/schema/:schemaName/:tableName'
+const WORKSPACE_SOURCE_DISCOVERY_PATH = '/workspaces/:workspaceId/sources/discover'
+const WORKSPACE_SOURCE_INSTALL_PATH = '/workspaces/:workspaceId/sources/install'
 const WORKSPACE_SOURCES_PATH = '/workspaces/:workspaceId/sources'
 const WORKSPACE_SOURCE_PATH = '/workspaces/:workspaceId/sources/:sourceName'
 const WORKSPACE_TRACES_PATH = '/workspaces/:workspaceId/traces'
@@ -45,6 +47,20 @@ export const routeDefinitions = {
     toPath: (params: { sourceName: string; workspaceId: string }) =>
       generatePath(WORKSPACE_SOURCE_PATH, {
         sourceName: params.sourceName,
+        workspaceId: params.workspaceId,
+      }),
+  },
+  workspaceSourceDiscovery: {
+    path: WORKSPACE_SOURCE_DISCOVERY_PATH,
+    toPath: (params: { workspaceId: string }) =>
+      generatePath(WORKSPACE_SOURCE_DISCOVERY_PATH, {
+        workspaceId: params.workspaceId,
+      }),
+  },
+  workspaceSourceInstall: {
+    path: WORKSPACE_SOURCE_INSTALL_PATH,
+    toPath: (params: { workspaceId: string }) =>
+      generatePath(WORKSPACE_SOURCE_INSTALL_PATH, {
         workspaceId: params.workspaceId,
       }),
   },

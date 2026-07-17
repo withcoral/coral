@@ -5,7 +5,6 @@ import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
 
@@ -17,8 +16,9 @@ import * as styles from './source-detail.css'
 import { SourceInstallDialog } from './source-install'
 import {
   formatFieldName,
+  SourceError,
   SourceField,
-  SourceHeader,
+  SourceIdentityHeader,
   SourceInputField,
   SourceNoConfiguration,
 } from './source-presentation'
@@ -177,26 +177,16 @@ function SourceDetailDialogContent({
         <input type="hidden" name="_intent" value="edit" />
         <input type="hidden" name="name" value={entry.name} />
 
-        <SourceHeader
+        <SourceIdentityHeader
           description={entry.description}
           name={entry.name}
           origin={source?.origin ?? entry.origin}
           version={source?.version || entry.version}
         />
 
-        {!source ? (
-          <div className={styles.alertError}>
-            <Icon name="CircleAlert" size="14" color="inherit" />
-            <Typography.BodySmall>Installed source details are unavailable.</Typography.BodySmall>
-          </div>
-        ) : null}
+        {!source ? <SourceError>Installed source details are unavailable.</SourceError> : null}
 
-        {actionError ? (
-          <div className={styles.alertError}>
-            <Icon name="CircleAlert" size="14" color="inherit" />
-            <Typography.BodySmall>{actionError}</Typography.BodySmall>
-          </div>
-        ) : null}
+        {actionError ? <SourceError>{actionError}</SourceError> : null}
 
         {!source ? null : inputSpecs ? (
           <SourceInputBindings
@@ -268,8 +258,9 @@ function SourceDetailDialogContent({
           <Dialog.Popup size="m">
             <RemoveConfirmation
               deleting={deleting}
+              displayName={sourceDisplayName}
               error={removeError}
-              name={sourceDisplayName}
+              name={entry.name}
               onCancel={() => setConfirmingRemove(false)}
             />
           </Dialog.Popup>
@@ -281,11 +272,13 @@ function SourceDetailDialogContent({
 
 function RemoveConfirmation({
   deleting,
+  displayName,
   error,
   name,
   onCancel,
 }: {
   deleting: boolean
+  displayName: string
   error?: string | null
   name: string
   onCancel: () => void
@@ -296,18 +289,13 @@ function RemoveConfirmation({
       <input type="hidden" name="name" value={name} />
 
       <div className={styles.removeConfirmText}>
-        <Dialog.Title>Remove {name}?</Dialog.Title>
+        <Dialog.Title>Remove {displayName}?</Dialog.Title>
         <Dialog.Description>
           This deletes the source configuration and stored credentials from this workspace. You can
           reinstall later, but you'll need to re-supply any secrets.
         </Dialog.Description>
       </div>
-      {error ? (
-        <div className={styles.alertError}>
-          <Icon name="CircleAlert" size="14" color="inherit" />
-          <Typography.BodySmall>{error}</Typography.BodySmall>
-        </div>
-      ) : null}
+      {error ? <SourceError>{error}</SourceError> : null}
       <Dialog.Actions className={styles.removeConfirmActions}>
         <ButtonContainer variant="secondary" size="32" onClick={onCancel} disabled={deleting}>
           <ButtonText>Cancel</ButtonText>

@@ -10,6 +10,8 @@ const CANONICAL_PATTERNS = {
   workspaceSchema: '/workspaces/:workspaceId/schema',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
   workspaceSource: '/workspaces/:workspaceId/sources/:sourceName',
+  workspaceSourceDiscovery: '/workspaces/:workspaceId/sources/discover',
+  workspaceSourceInstall: '/workspaces/:workspaceId/sources/install',
   workspaceSources: '/workspaces/:workspaceId/sources',
   workspaceTrace: '/workspaces/:workspaceId/traces/:traceId',
   workspaceTraces: '/workspaces/:workspaceId/traces',
@@ -44,6 +46,10 @@ describe('route map', () => {
         sourceName: 'github',
         workspaceId: 'analytics',
       }),
+      workspaceSourceDiscovery: routePath('workspaceSourceDiscovery', {
+        workspaceId: 'analytics',
+      }),
+      workspaceSourceInstall: routePath('workspaceSourceInstall', { workspaceId: 'analytics' }),
       workspaceSources: routePath('workspaceSources', { workspaceId: 'analytics' }),
       workspaceTrace: routePath('workspaceTrace', {
         traceId: 'trace_123',
@@ -59,6 +65,8 @@ describe('route map', () => {
       workspaceSchema: '/workspaces/analytics/schema',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
       workspaceSource: '/workspaces/analytics/sources/github',
+      workspaceSourceDiscovery: '/workspaces/analytics/sources/discover',
+      workspaceSourceInstall: '/workspaces/analytics/sources/install',
       workspaceSources: '/workspaces/analytics/sources',
       workspaceTrace: '/workspaces/analytics/traces/trace_123',
       workspaceTraces: '/workspaces/analytics/traces',

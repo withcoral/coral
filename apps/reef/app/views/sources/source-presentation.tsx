@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
+import classNames from 'classnames'
 
 import { Dialog } from '@/wax/components'
+import { Icon } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
@@ -11,7 +13,45 @@ import { toSentenceCase } from '@/utils/to-sentence-case'
 
 import * as styles from './source-presentation.css'
 
+export function SourceError({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={classNames(styles.error, className)}>
+      <Icon color="inherit" name="CircleAlert" size="14" />
+      <Typography.BodySmall>{children}</Typography.BodySmall>
+    </div>
+  )
+}
+
 export function SourceHeader({
+  className,
+  description,
+  leading,
+  pill,
+  title,
+}: {
+  className?: string
+  description?: ReactNode
+  leading?: ReactNode
+  pill?: ReactNode
+  title: ReactNode
+}) {
+  return (
+    <div className={classNames(styles.header, className)}>
+      {leading}
+      <div className={styles.headerText}>
+        <Dialog.Title className={styles.headerTitleRow}>
+          {title}
+          {pill}
+        </Dialog.Title>
+        {description ? (
+          <Dialog.Description render={<div />}>{description}</Dialog.Description>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+export function SourceIdentityHeader({
   description,
   name,
   origin,
@@ -25,27 +65,23 @@ export function SourceHeader({
   const originLabel = sourceOriginLabel(origin)
 
   return (
-    <div className={styles.header}>
-      <ProviderLogo name={name} size="large" />
-      <div className={styles.headerText}>
-        <Dialog.Title className={styles.headerTitleRow}>
-          <span className={styles.headerIdentity}>
-            <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-              {formatSourceName(name)}
-            </Typography.HeadingMedium>
-            {version ? (
-              <Typography.BodySmall as="span" variant="tertiary">
-                {version}
-              </Typography.BodySmall>
-            ) : null}
-          </span>
-          {originLabel ? <Pill color="graySubtle">{originLabel}</Pill> : null}
-        </Dialog.Title>
-        <Dialog.Description render={<div />}>
-          <Markdown>{description}</Markdown>
-        </Dialog.Description>
-      </div>
-    </div>
+    <SourceHeader
+      description={<Markdown>{description}</Markdown>}
+      leading={<ProviderLogo name={name} size="large" />}
+      pill={originLabel ? <Pill color="graySubtle">{originLabel}</Pill> : null}
+      title={
+        <span className={styles.headerIdentity}>
+          <Typography.HeadingMedium as="span" className={styles.headerTitle}>
+            {formatSourceName(name)}
+          </Typography.HeadingMedium>
+          {version ? (
+            <Typography.BodySmall as="span" variant="tertiary">
+              {version}
+            </Typography.BodySmall>
+          ) : null}
+        </span>
+      }
+    />
   )
 }
 
@@ -86,17 +122,19 @@ export function SourceNoConfiguration() {
 
 export function SourceField({
   children,
+  className,
   hint,
   htmlFor,
   label,
 }: {
   children: ReactNode
-  hint?: string
+  className?: string
+  hint?: ReactNode
   htmlFor?: string
-  label?: string
+  label?: ReactNode
 }) {
   return (
-    <div className={styles.fieldItem}>
+    <div className={classNames(styles.fieldItem, className)}>
       {label ? (
         htmlFor ? (
           <Typography.BodyStrong as="label" htmlFor={htmlFor} variant="primary">
@@ -107,7 +145,7 @@ export function SourceField({
         )
       ) : null}
       {children}
-      {hint ? <Markdown>{hint}</Markdown> : null}
+      {typeof hint === 'string' ? <Markdown>{hint}</Markdown> : hint}
     </div>
   )
 }

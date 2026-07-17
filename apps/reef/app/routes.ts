@@ -12,6 +12,8 @@ export default [
     index('routes/index.tsx'),
     route(routePattern('workspaces'), 'routes/workspaces-action.ts'),
     route(routePattern('workspaceSources'), 'routes/sources.tsx', [
+      route('discover', 'routes/source-discovery.ts'),
+      route('install', 'routes/source-install.tsx'),
       route(':sourceName', 'routes/source-detail.tsx'),
     ]),
     route(routePattern('workspaceSchema'), 'routes/schema.tsx', [

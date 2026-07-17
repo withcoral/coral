@@ -6,6 +6,7 @@ import {
   DeleteSourceRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
+  ImportSourceRequestSchema,
 } from '@/generated/coral/v1/sources_pb'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
@@ -32,7 +33,7 @@ export {
   type InstallInput,
 } from '@/lib/source-install-form'
 
-export type SourceActionIntent = 'delete' | 'edit' | 'install'
+export type SourceActionIntent = 'delete' | 'edit' | 'import' | 'install'
 
 export type SourcesActionData =
   | {
@@ -113,10 +114,21 @@ export async function runSourcesAction(
       await sourceClient.deleteSource(create(DeleteSourceRequestSchema, { name, workspace }))
       return actionSuccess('delete', name)
     }
+    if (intent === 'import') {
+      const manifestYaml = formData.get('manifest_yaml')
+      if (typeof manifestYaml !== 'string' || manifestYaml.trim().length === 0) {
+        return actionError('import', name, 'Missing source manifest')
+      }
+      const secretKey = formValue(formData, 'secret_key')
+      const secretValue = formValue(formData, 'secret_value')
+      const secrets = secretKey && secretValue ? [{ key: secretKey, value: secretValue }] : []
+      await importSourceManifest(sourceClient, workspace, manifestYaml, secrets)
+      return actionSuccess('import', name)
+    }
     return actionError('install', name, 'Unknown source action')
   } catch (error) {
     return actionError(
-      intent === 'edit' || intent === 'delete' ? intent : 'install',
+      intent === 'edit' || intent === 'delete' || intent === 'import' ? intent : 'install',
       name,
       errorMessage(error),
     )
@@ -162,6 +174,23 @@ async function createBundledSource(
   )
   if (!response.source) throw new Error(`Coral did not return installed source ${name}`)
   return response.source
+}
+
+async function importSourceManifest(
+  sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
+  manifestYaml: string,
+  secrets: { key: string; value: string }[],
+) {
+  const stream = sourceClient.importSource(
+    create(ImportSourceRequestSchema, { manifestYaml, secrets, workspace }),
+  )
+  // The import wizard has no OAuth inputs, so the stream only carries the
+  // terminal source event.
+  for await (const response of stream) {
+    if (response.event.case === 'source') return response.event.value
+  }
+  throw new Error('Coral did not return the imported source')
 }
 
 function actionError(
