@@ -311,6 +311,12 @@ fn without_default_catalog(parts: &[String]) -> &[String] {
     }
 }
 
+/// Drops `DataFusion`'s implicit default catalog from an explicit reference:
+/// `datafusion.schema.table` addresses the same relation as `schema.table`.
+pub(crate) fn strip_default_catalog(catalog: Option<&str>) -> Option<&str> {
+    catalog.filter(|name| !name.eq_ignore_ascii_case(DATAFUSION_DEFAULT_CATALOG))
+}
+
 struct SchemaQualifiedName {
     schema: String,
     name: String,

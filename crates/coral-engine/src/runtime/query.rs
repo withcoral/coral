@@ -24,7 +24,7 @@ use crate::runtime::dependent_join::optimizer;
 use crate::runtime::dependent_join::planner::DependentJoinExtensionPlanner;
 use crate::runtime::error::{
     datafusion_to_core, datafusion_to_core_with_sql_and_table_functions, missing_table_reference,
-    query_result_observer_error_to_core,
+    query_result_observer_error_to_core, strip_default_catalog,
 };
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
@@ -351,12 +351,23 @@ impl QueryRuntimeAdapter {
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, CoreError> {
-        if let Some(table) = self
+        let matches = self
             .list_tables(catalog_name, Some(schema_name), Some(table_name))
-            .await?
-            .into_iter()
-            .next()
-        {
+            .await?;
+        // An omitted catalog is a wildcard; refuse to guess when the same
+        // schema.table pair exists in more than one catalog.
+        if matches.len() > 1 {
+            let candidates = matches
+                .iter()
+                .map(Self::qualified_table_reference)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CoreError::InvalidInput(format!(
+                "table reference `{schema_name}.{table_name}` is ambiguous; \
+                 qualify the catalog: {candidates}"
+            )));
+        }
+        if let Some(table) = matches.into_iter().next() {
             return Ok(DescribeTableInfo {
                 table: Some(table),
                 missing_context_tables: Vec::new(),
@@ -551,6 +562,17 @@ impl QueryRuntimeAdapter {
         Ok(tables)
     }
 
+    fn qualified_table_reference(table: &TableInfo) -> String {
+        if table.catalog_name.is_empty() {
+            format!("`{}.{}`", table.schema_name, table.table_name)
+        } else {
+            format!(
+                "`{}.{}.{}`",
+                table.catalog_name, table.schema_name, table.table_name
+            )
+        }
+    }
+
     async fn table_metadata_for_describe_miss(&self) -> Result<Vec<TableInfo>, CoreError> {
         catalog::collect_table_metadata(&self.ctx, None, None, None)
             .await
@@ -623,7 +645,10 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, table_name)) = relation_parts(table_reference) else {
             return;
         };
-        let catalog_name = table_reference.catalog();
+        // `datafusion.schema.table` is the same relation as `schema.table`;
+        // without stripping, explicit default-catalog references match no
+        // registered table and drop out of provenance.
+        let catalog_name = strip_default_catalog(table_reference.catalog());
         if let Some(catalog) = catalog_name
             && self.schema_to_source.contains_key(catalog)
         {
@@ -1040,6 +1065,24 @@ mod tests {
             failures: Vec::new(),
             schema_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
             query_result_observers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn table_scan_usage_keeps_explicit_default_catalog_references() {
+        let adapter = adapter_with_table();
+
+        for reference in [
+            TableReference::partial("demo", "events"),
+            TableReference::full("datafusion", "demo", "events"),
+            TableReference::full("DataFusion", "demo", "events"),
+        ] {
+            let mut tables = std::collections::BTreeSet::new();
+            adapter.collect_table_scan_usage(&reference, &mut tables);
+            let usage = tables
+                .first()
+                .unwrap_or_else(|| panic!("reference {reference} must record provenance"));
+            assert_eq!(usage.source_name(), "demo");
         }
     }
 

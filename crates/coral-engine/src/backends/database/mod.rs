@@ -291,7 +291,7 @@ struct DatabaseRelation {
 }
 
 /// Unparser dialect for the remote SQL sent to one provider. Without it,
-/// `SqlTable` falls back to ANSI double-quoted identifiers, which MySQL
+/// `SqlTable` falls back to ANSI double-quoted identifiers, which `MySQL`
 /// (without `ANSI_QUOTES`) reads as string literals — silently returning the
 /// column name instead of column values.
 type SqlDialect = Arc<dyn Dialect + Send + Sync>;
@@ -588,11 +588,8 @@ mod tests {
         }
     }
 
-    /// Builds a sqlite-backed database source. The returned tempdir must stay
-    /// alive for as long as the sources are queried.
-    fn sqlite_test_sources() -> (tempfile::TempDir, Vec<QuerySource>) {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let db_path = temp.path().join("coral.sqlite");
+    fn sqlite_fixture_db(dir: &std::path::Path, file_name: &str) -> std::path::PathBuf {
+        let db_path = dir.join(file_name);
         let conn = rusqlite::Connection::open(&db_path).expect("sqlite db");
         conn.execute_batch(
             "
@@ -604,12 +601,14 @@ mod tests {
             ",
         )
         .expect("sqlite fixture");
-        drop(conn);
+        db_path
+    }
 
+    fn sqlite_source(db_path: &std::path::Path, source_name: &str) -> QuerySource {
         let database = DatabaseSourceManifest {
             common: SourceManifestCommon {
                 dsl_version: 4,
-                name: "coral_db".to_string(),
+                name: source_name.to_string(),
                 version: String::new(),
                 description: "Coral test database".to_string(),
                 test_queries: Vec::new(),
@@ -621,9 +620,9 @@ mod tests {
             }),
             declared_inputs: Vec::new(),
         };
-        let source = QuerySource::from_runtime_components(
+        QuerySource::from_runtime_components(
             RuntimeSourcePackage {
-                source_name: "coral_db".to_string(),
+                source_name: source_name.to_string(),
                 authored_version: None,
                 description: String::new(),
                 declared_inputs: Vec::new(),
@@ -633,8 +632,15 @@ mod tests {
             BTreeMap::new(),
             BTreeMap::new(),
         )
-        .expect("database runtime source");
-        (temp, vec![source])
+        .expect("database runtime source")
+    }
+
+    /// Builds a sqlite-backed database source. The returned tempdir must stay
+    /// alive for as long as the sources are queried.
+    fn sqlite_test_sources() -> (tempfile::TempDir, Vec<QuerySource>) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let db_path = sqlite_fixture_db(temp.path(), "coral.sqlite");
+        (temp, vec![sqlite_source(&db_path, "coral_db")])
     }
 
     #[tokio::test]
@@ -753,6 +759,66 @@ mod tests {
         .await
         .expect("query all database columns");
         assert_eq!(all_database_columns.row_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn describe_table_replays_advertised_compound_schema() {
+        let (_temp, sources) = sqlite_test_sources();
+
+        // Miss-hints advertise `coral_db.main`; that string must work as the
+        // schema argument without a catalog.
+        let described = CoralQuery::describe_table(
+            &sources,
+            QueryRuntimeConfig::default(),
+            None,
+            "coral_db.main",
+            "users",
+        )
+        .await
+        .expect("compound schema describe succeeds");
+        let table = described.table.expect("described table");
+        assert_eq!(table.catalog_name, "coral_db");
+        assert_eq!(table.schema_name, "main");
+    }
+
+    #[tokio::test]
+    async fn describe_table_rejects_ambiguous_wildcard_catalog() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let first = sqlite_fixture_db(temp.path(), "first.sqlite");
+        let second = sqlite_fixture_db(temp.path(), "second.sqlite");
+        let sources = vec![
+            sqlite_source(&first, "coral_db"),
+            sqlite_source(&second, "coral_db2"),
+        ];
+
+        let error = CoralQuery::describe_table(
+            &sources,
+            QueryRuntimeConfig::default(),
+            None,
+            "main",
+            "users",
+        )
+        .await
+        .expect_err("wildcard catalog over two matches must not guess");
+        let message = error.to_string();
+        assert!(
+            message.contains("ambiguous")
+                && message.contains("coral_db.main.users")
+                && message.contains("coral_db2.main.users"),
+            "ambiguity error should list every candidate, got: {message}"
+        );
+
+        let described = CoralQuery::describe_table(
+            &sources,
+            QueryRuntimeConfig::default(),
+            Some("coral_db2"),
+            "main",
+            "users",
+        )
+        .await
+        .expect("qualified describe succeeds");
+        let table = described.table.expect("described table");
+        assert_eq!(table.catalog_name, "coral_db2");
     }
 
     /// The remote scan SQL is unparsed with the provider's dialect; a

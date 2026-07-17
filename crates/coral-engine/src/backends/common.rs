@@ -173,6 +173,12 @@ pub(crate) trait DatabaseColumnFetcher: std::fmt::Debug + Send + Sync {
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogColumnFetcher {
     pub(crate) catalog_name: String,
+    /// Schema and table names captured from the registration-time relation
+    /// snapshot. Used only to prune fetches whose pins cannot match this
+    /// catalog (e.g. a static-table describe never contacts a database);
+    /// answers always come from the live fetch, never from these sets.
+    pub(crate) schema_names: BTreeSet<String>,
+    pub(crate) table_names: BTreeSet<String>,
     pub(crate) fetcher: Arc<dyn DatabaseColumnFetcher>,
 }
 

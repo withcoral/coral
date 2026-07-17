@@ -355,11 +355,21 @@ fn register_backend_registration(
         result.active_sources.push(registered_source);
     }
     for (catalog_name, _registered_catalog, registered_source, column_fetcher) in catalog_staged {
-        result.active_sources.push(registered_source);
         result.column_fetchers.push(CatalogColumnFetcher {
             catalog_name,
+            schema_names: registered_source
+                .tables
+                .iter()
+                .filter_map(|table| table.schema_name.clone())
+                .collect(),
+            table_names: registered_source
+                .tables
+                .iter()
+                .map(|table| table.table_name.clone())
+                .collect(),
             fetcher: column_fetcher,
         });
+        result.active_sources.push(registered_source);
     }
     Ok(())
 }

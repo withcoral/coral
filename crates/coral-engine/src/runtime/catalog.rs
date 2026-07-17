@@ -713,10 +713,7 @@ fn append_catalog_filter(
         ));
     }
     if let Some(schema_filter) = schema_filter {
-        predicates.push(format!(
-            "schema_name = {}",
-            sql_string_literal(schema_filter)
-        ));
+        predicates.push(schema_filter_predicate(catalog_filter, schema_filter));
     }
     if !qualifier_filters.is_empty() {
         let qualifier_predicates = qualifier_filters
@@ -886,12 +883,44 @@ fn table_matches_query_filter(
     table_filter: Option<&str>,
 ) -> bool {
     catalog_filter.is_none_or(|value| catalog_name == value)
-        && schema_filter.is_none_or(|value| schema_name == value)
+        && schema_filter.is_none_or(|value| {
+            schema_matches_filter(catalog_name, schema_name, catalog_filter, value)
+        })
         && (qualifier_filters.is_empty()
             || qualifier_filters
                 .iter()
                 .any(|value| catalog_name == *value || schema_name == *value))
         && table_filter.is_none_or(|value| table_name == value)
+}
+
+/// Without an explicit catalog, a dotted schema filter also matches its
+/// `catalog.schema` reading, so agents can replay advertised compound schema
+/// hints like `coral_db.main` verbatim instead of dead-ending.
+fn schema_matches_filter(
+    catalog_name: &str,
+    schema_name: &str,
+    catalog_filter: Option<&str>,
+    schema_filter: &str,
+) -> bool {
+    if schema_name == schema_filter {
+        return true;
+    }
+    catalog_filter.is_none()
+        && !catalog_name.is_empty()
+        && format!("{catalog_name}.{schema_name}") == schema_filter
+}
+
+/// SQL twin of [`schema_matches_filter`] for the `coral.tables` /
+/// `coral.columns` queries.
+fn schema_filter_predicate(catalog_filter: Option<&str>, schema_filter: &str) -> String {
+    let literal = sql_string_literal(schema_filter);
+    if catalog_filter.is_some() || !schema_filter.contains('.') {
+        return format!("schema_name = {literal}");
+    }
+    format!(
+        "(schema_name = {literal} OR (catalog_name <> '' AND \
+         catalog_name || '.' || schema_name = {literal}))"
+    )
 }
 
 /// Collect typed source-scoped table function metadata for the active source set.
@@ -1275,10 +1304,17 @@ impl TableProvider for CoralColumnsTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let pins = ColumnPins::from_filters(filters);
         let inventory_filter = pins.inventory_filter();
+        // Registration-time name snapshots prune catalogs the pins cannot
+        // match, so e.g. describing a static table never contacts (or waits
+        // on) any database source.
         let relevant = self
             .fetchers
             .iter()
-            .filter(|fetcher| pins.includes_catalog(&fetcher.catalog_name))
+            .filter(|fetcher| {
+                pins.includes_catalog(&fetcher.catalog_name)
+                    && pins.intersects_schemas(&fetcher.schema_names)
+                    && pins.intersects_tables(&fetcher.table_names)
+            })
             .collect::<Vec<_>>();
         let outcomes = join_all(
             relevant
@@ -1368,6 +1404,18 @@ impl ColumnPins {
         self.catalogs
             .as_ref()
             .is_none_or(|catalogs| catalogs.contains(catalog_name))
+    }
+
+    fn intersects_schemas(&self, known: &BTreeSet<String>) -> bool {
+        Self::pin_intersects(self.schemas.as_ref(), known)
+    }
+
+    fn intersects_tables(&self, known: &BTreeSet<String>) -> bool {
+        Self::pin_intersects(self.tables.as_ref(), known)
+    }
+
+    fn pin_intersects(pinned: Option<&BTreeSet<String>>, known: &BTreeSet<String>) -> bool {
+        pinned.is_none_or(|values| values.iter().any(|value| known.contains(value)))
     }
 
     fn inventory_filter(&self) -> ColumnInventoryFilter {
@@ -1682,6 +1730,20 @@ mod tests {
         ctx
     }
 
+    fn stub_fetcher(
+        catalog_name: &str,
+        stub: &Arc<StubColumnFetcher>,
+        schemas: &[&str],
+        tables: &[&str],
+    ) -> CatalogColumnFetcher {
+        CatalogColumnFetcher {
+            catalog_name: catalog_name.to_string(),
+            schema_names: schemas.iter().map(ToString::to_string).collect(),
+            table_names: tables.iter().map(ToString::to_string).collect(),
+            fetcher: Arc::clone(stub) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
+        }
+    }
+
     #[tokio::test]
     async fn columns_scan_prunes_fetchers_and_narrows_remote_fetch() {
         let pinned = Arc::new(StubColumnFetcher {
@@ -1690,14 +1752,8 @@ mod tests {
         });
         let pruned = Arc::new(StubColumnFetcher::default());
         let ctx = columns_ctx(&[
-            CatalogColumnFetcher {
-                catalog_name: "db1".to_string(),
-                fetcher: Arc::clone(&pinned) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
-            },
-            CatalogColumnFetcher {
-                catalog_name: "db2".to_string(),
-                fetcher: Arc::clone(&pruned) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
-            },
+            stub_fetcher("db1", &pinned, &["main"], &["users"]),
+            stub_fetcher("db2", &pruned, &["main"], &["users"]),
         ]);
 
         let batches = ctx
@@ -1731,6 +1787,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn columns_scan_skips_catalogs_whose_snapshot_cannot_match_pins() {
+        let database = Arc::new(StubColumnFetcher::default());
+        let ctx = columns_ctx(&[stub_fetcher("db1", &database, &["main"], &["users"])]);
+
+        // A static-table describe: the schema pin names no database schema,
+        // so the database must not be contacted at all.
+        let batches = ctx
+            .sql(
+                "SELECT column_name FROM columns \
+                 WHERE schema_name = 'github' AND table_name = 'pulls'",
+            )
+            .await
+            .expect("plan static-schema query")
+            .collect()
+            .await
+            .expect("run static-schema query");
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+        assert!(
+            database.calls.lock().expect("stub lock").is_empty(),
+            "schema pin outside the snapshot must skip the fetcher"
+        );
+
+        // Same for a table pin that names no known table.
+        ctx.sql("SELECT column_name FROM columns WHERE table_name = 'pulls'")
+            .await
+            .expect("plan unknown-table query")
+            .collect()
+            .await
+            .expect("run unknown-table query");
+        assert!(
+            database.calls.lock().expect("stub lock").is_empty(),
+            "table pin outside the snapshot must skip the fetcher"
+        );
+    }
+
+    #[tokio::test]
     async fn columns_scan_without_pins_fetches_all_catalogs_unfiltered() {
         let first = Arc::new(StubColumnFetcher {
             rows: vec![stub_row("users", "id")],
@@ -1741,14 +1833,8 @@ mod tests {
             calls: Mutex::default(),
         });
         let ctx = columns_ctx(&[
-            CatalogColumnFetcher {
-                catalog_name: "db1".to_string(),
-                fetcher: Arc::clone(&first) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
-            },
-            CatalogColumnFetcher {
-                catalog_name: "db2".to_string(),
-                fetcher: Arc::clone(&second) as Arc<dyn crate::backends::DatabaseColumnFetcher>,
-            },
+            stub_fetcher("db1", &first, &["main"], &["users"]),
+            stub_fetcher("db2", &second, &["main"], &["orders"]),
         ]);
 
         // `<>` is deliberately not a recognizable pin: the scan stays
