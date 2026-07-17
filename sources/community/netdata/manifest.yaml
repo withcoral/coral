@@ -1,10 +1,10 @@
 name: netdata
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-
-  Query real-time infrastructure agent topology, active health alerts, and
-  metric context metadata from a Netdata Agent.
+  Query node topology, health alerts, and metric context metadata from a
+  Netdata Agent using the current v3 API.
 base_url: "{{input.NETDATA_URL}}"
 
 inputs:
@@ -14,7 +14,8 @@ inputs:
       Netdata Agent base URL with port and without a trailing slash,
       for example `http://localhost:19999` or `https://netdata.infra.local`.
       Point this at the Agent's own HTTP endpoint (the one that serves
-      `/api/v1` and `/api/v3`), not at Netdata Cloud.
+      `/api/v3`), not at Netdata Cloud. Requires Netdata v2.0 or newer,
+      which is when the v3 API was introduced.
 
 request_headers:
   - name: Accept
@@ -22,96 +23,240 @@ request_headers:
     value: application/json
 
 test_queries:
-  - SELECT os_name, kernel_version FROM netdata.nodes LIMIT 1
+  - SELECT hostname, os_name FROM netdata.nodes LIMIT 1
 
 tables:
   - name: nodes
-    description: Runtime parameters, operating system footprint, and hardware specs of the target agent host.
+    description: Nodes monitored by the agent, with OS and hardware details.
+    guide: |
+      Rows come from `GET /api/v3/nodes`, the current (non-deprecated) node
+      endpoint. Each row is one monitored node; a standalone Agent reports
+      itself as a single node, while a parent reports its children too.
+
+      The `long-keys` option is requested so the response uses readable
+      member names instead of the short-key defaults.
     request:
       method: GET
-      path: /api/v1/info
+      path: /api/v3/nodes
+      query:
+        - name: options
+          from: literal
+          value: long-keys
     response:
       row_strategy: direct
-      rows_path: []
+      rows_path: [nodes]
     pagination:
       mode: none
     columns:
-      - name: version
+      - name: node_index
+        type: Int64
+        nullable: false
+        description: Index that uniquely identifies this node for this query.
+        expr: {kind: path, path: [nodes_array_index]}
+      - name: hostname
         type: Utf8
         nullable: false
-        description: Release version string of the running Netdata agent.
-        expr: {kind: path, path: [version]}
+        description: Name (hostname) of the node.
+        expr: {kind: path, path: [hostname]}
+      - name: node_id
+        type: Utf8
+        nullable: true
+        description: Node id; absent unless the node is registered to Cloud.
+        expr: {kind: path, path: [node_id]}
+      - name: machine_guid
+        type: Utf8
+        nullable: true
+        description: Machine GUID of the node.
+        expr: {kind: path, path: [machine_guid]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Node state on this Agent (reachable or stale).
+        expr: {kind: path, path: [state]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Version of the Netdata Agent the node runs.
+        expr: {kind: path, path: [v]}
       - name: os_name
         type: Utf8
         nullable: true
-        description: Operating system distribution name reported by the host (e.g., ubuntu, debian).
-        expr: {kind: path, path: [os_name]}
+        description: Operating system name of the node host.
+        expr: {kind: path, path: [os, nm]}
+      - name: os_id
+        type: Utf8
+        nullable: true
+        description: Operating system id of the node host.
+        expr: {kind: path, path: [os, id]}
       - name: os_version
         type: Utf8
         nullable: true
-        description: OS distribution version release string.
-        expr: {kind: path, path: [os_version]}
+        description: Operating system version of the node host.
+        expr: {kind: path, path: [os, v]}
+      - name: kernel_name
+        type: Utf8
+        nullable: true
+        description: Kernel name of the node host.
+        expr: {kind: path, path: [os, kernel, nm]}
       - name: kernel_version
         type: Utf8
         nullable: true
-        description: Version identifier of the running operating system kernel.
-        expr: {kind: path, path: [kernel_version]}
-      - name: cpu_cores
-        type: Int64
+        description: Kernel version of the node host.
+        expr: {kind: path, path: [os, kernel, v]}
+      - name: architecture
+        type: Utf8
         nullable: true
-        description: Number of CPU cores monitored on the host.
-        expr: {kind: path, path: [monitored_cpus]}
+        description: CPU architecture of the node host.
+        expr: {kind: path, path: [hw, architecture]}
+      - name: cpu_cores
+        type: Utf8
+        nullable: true
+        description: Number of CPU cores; the API reports this as a string.
+        expr: {kind: path, path: [hw, cpus]}
+      - name: memory_total
+        type: Utf8
+        nullable: true
+        description: Total host RAM as reported by the Agent.
+        expr: {kind: path, path: [hw, memory]}
+      - name: virtualization
+        type: Utf8
+        nullable: true
+        description: Virtualization technology detected on the host.
+        expr: {kind: path, path: [hw, virtualization]}
+      - name: container
+        type: Utf8
+        nullable: true
+        description: Container technology detected on the host.
+        expr: {kind: path, path: [hw, container]}
 
   - name: alarms
-    description: Active and configured health alarm states reported by the agent.
+    description: Health alert instances currently known to the agent.
+    guide: |
+      Rows come from `GET /api/v3/alerts`, the current (non-deprecated)
+      alert endpoint, which returns an `alert_instances` array.
+
+      Three options are requested: `instances` (adds status, context,
+      family, units, and transition fields), `values` (adds the last
+      evaluated value and timestamp), and `long-keys` (readable member
+      names). Without `instances` the response carries only names and
+      indexes; without `values` there is no current value.
+
+      Key values for `status`: WARNING, CRITICAL, CLEAR, UNDEFINED,
+      UNINITIALIZED, REMOVED.
     request:
       method: GET
-      path: /api/v1/alarms
+      path: /api/v3/alerts
       query:
-        - name: all
+        - name: options
           from: literal
-          value: "true"
+          value: instances,values,long-keys,rfc3339
     response:
-      row_strategy: dict_entries
-      rows_path: [alarms]
+      row_strategy: direct
+      rows_path: [alert_instances]
     pagination:
       mode: none
     columns:
-      - name: alarm_id
-        type: Utf8
-        nullable: false
-        description: Dictionary key identifying the alarm entry.
-        expr: {kind: path, path: [_key]}
       - name: alarm_name
         type: Utf8
         nullable: false
         description: Name of the health alert rule.
-        expr: {kind: path, path: [name]}
-      - name: chart
+        expr: {kind: path, path: [alert]}
+      - name: node_index
+        type: Int64
+        nullable: true
+        description: Index of the node this alert belongs to.
+        expr: {kind: path, path: [nodes_array_index]}
+      - name: instance_name
         type: Utf8
-        nullable: false
-        description: Chart the alarm rule is attached to.
-        expr: {kind: path, path: [chart]}
+        nullable: true
+        description: Chart (instance) the alert is attached to.
+        expr: {kind: path, path: [instance]}
+      - name: instance_id
+        type: Utf8
+        nullable: true
+        description: Chart id the alert is attached to.
+        expr: {kind: path, path: [instance_id]}
+      - name: context
+        type: Utf8
+        nullable: true
+        description: Metric context the alert is attached to.
+        expr: {kind: path, path: [context]}
       - name: status
         type: Utf8
         nullable: true
-        description: Current evaluation state of the alarm (e.g., WARNING, CRITICAL, CLEAR).
+        description: Alert state (e.g., WARNING, CRITICAL, CLEAR).
         expr: {kind: path, path: [status]}
       - name: value
         type: Float64
         nullable: true
-        description: Most recent value evaluated by the alarm.
-        expr: {kind: path, path: [value]}
+        description: Most recent value evaluated by the alert.
+        expr: {kind: path, path: [last_updated_value]}
+      - name: last_updated
+        type: Timestamp
+        nullable: true
+        description: When the alert was last evaluated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_updated_timestamp]}
+      - name: last_transition_value
+        type: Float64
+        nullable: true
+        description: Value at the last status change.
+        expr: {kind: path, path: [last_transition_value]}
+      - name: last_transition
+        type: Timestamp
+        nullable: true
+        description: When the alert last changed status.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_transition_timestamp]}
       - name: family
         type: Utf8
         nullable: true
-        description: Subsystem group classification (e.g., cpu, disk, network).
+        description: Subsystem group classification (e.g., cpu, disk).
         expr: {kind: path, path: [family]}
+      - name: info
+        type: Utf8
+        nullable: true
+        description: Human-readable description of the alert.
+        expr: {kind: path, path: [info]}
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short summary of the alert.
+        expr: {kind: path, path: [summary]}
+      - name: units
+        type: Utf8
+        nullable: true
+        description: Measurement units of the evaluated value.
+        expr: {kind: path, path: [units]}
       - name: recipient
         type: Utf8
         nullable: true
-        description: Notification routing target for the alarm.
-        expr: {kind: path, path: [recipient]}
+        description: Notification routing target for the alert.
+        expr: {kind: path, path: [recipients]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Alert type as declared in its configuration.
+        expr: {kind: path, path: [type]}
+      - name: component
+        type: Utf8
+        nullable: true
+        description: Alert component as declared in its configuration.
+        expr: {kind: path, path: [component]}
+      - name: classification
+        type: Utf8
+        nullable: true
+        description: Alert classification as declared in its configuration.
+        expr: {kind: path, path: [classification]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Configuration file the alert was defined in.
+        expr: {kind: path, path: [source]}
 
   - name: metrics_metadata
     description: >-
@@ -138,22 +283,22 @@ tables:
       - name: title
         type: Utf8
         nullable: true
-        description: Human-readable title of the context (included via the `titles` option).
+        description: Context title (included via the `titles` option).
         expr: {kind: path, path: [title]}
       - name: units
         type: Utf8
         nullable: true
-        description: Measurement units for the context (e.g., percentage, MiB/s).
+        description: Measurement units (e.g., percentage, MiB/s).
         expr: {kind: path, path: [units]}
       - name: family
         type: Utf8
         nullable: true
-        description: Subsystem family the context belongs to (e.g., cpu, disk, network).
+        description: Subsystem family (e.g., cpu, disk, network).
         expr: {kind: path, path: [family]}
       - name: priority
         type: Int64
         nullable: true
-        description: Relative display priority of the context (lower sorts higher).
+        description: Display priority of the context (lower sorts higher).
         expr: {kind: path, path: [priority]}
       - name: live
         type: Boolean

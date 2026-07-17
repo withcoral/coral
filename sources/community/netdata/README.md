@@ -1,13 +1,13 @@
 # Netdata (Community)
 
-**Version:** 0.1.0
-**Backend:** HTTP (Netdata Agent REST API)
+**Version:** 0.2.0
+**Backend:** HTTP (Netdata Agent REST API v3)
 **Tables:** 3
 **Base URL:** `{{input.NETDATA_URL}}`
 
-Query Netdata host metadata, active alarms, and the metric context catalog through Coral SQL using the Netdata **Agent** API. Read-only access for infrastructure observability and operational auditing.
+Query Netdata node topology, health alerts, and the metric context catalog through Coral SQL using the Netdata **Agent** v3 API. Read-only access for infrastructure observability and operational auditing.
 
-Coral exposes read-only `GET` tables. Modifying alarm definitions, collector configuration, or telemetry pipelines, and querying raw historical timeseries, are out of scope.
+Coral exposes read-only `GET` tables. Modifying alert definitions, collector configuration, or telemetry pipelines, and querying raw historical timeseries, are out of scope.
 
 ## Install
 
@@ -15,6 +15,8 @@ Coral exposes read-only `GET` tables. Modifying alarm definitions, collector con
 export NETDATA_URL=http://localhost:19999
 coral source add --file sources/community/netdata/manifest.yaml
 ```
+
+Requires **Netdata v2.0 or newer** — the v3 API does not exist on older agents.
 
 ## Authentication
 
@@ -24,7 +26,7 @@ coral source add --file sources/community/netdata/manifest.yaml
 | --- | --- | --- | --- |
 | `NETDATA_URL` | variable | yes | Netdata **Agent** base URL with port, no trailing slash (e.g. `http://localhost:19999`). Point it at the Agent's HTTP endpoint, not at Netdata Cloud. |
 
-This source targets a Netdata **Agent**. Its data APIs (`/api/v1`, `/api/v3`) are public by default — governed by IP-based access control (`allow dashboard from` in `netdata.conf`), not by a token.
+This source targets a Netdata **Agent**. Its v3 data APIs are public by default — governed by IP-based access control (`allow dashboard from` in `netdata.conf`), not by a token.
 
 Two things that are easy to get wrong:
 
@@ -37,64 +39,104 @@ Docs: [Netdata Agent REST API](https://learn.netdata.cloud/api) · [Securing Age
 
 | Table | Endpoint | Pagination |
 | --- | --- | --- |
-| `netdata.nodes` | `GET /api/v1/info` | None (single object) |
-| `netdata.alarms` | `GET /api/v1/alarms?all=true` | None (iterates the alarms dictionary) |
+| `netdata.nodes` | `GET /api/v3/nodes?options=long-keys` | None (iterates the `nodes` array) |
+| `netdata.alarms` | `GET /api/v3/alerts?options=instances,values,long-keys,rfc3339` | None (iterates `alert_instances`) |
 | `netdata.metrics_metadata` | `GET /api/v3/contexts?options=titles` | None (iterates the contexts dictionary) |
 
-Netdata's current API is **v3**. `metrics_metadata` uses `/api/v3/contexts`, which replaces the deprecated `/api/v1/charts` for context metadata. `nodes` and `alarms` still use their `/api/v1` endpoints, which remain functional.
+All three tables use **v3** endpoints. Netdata's OpenAPI marks v1 and v2 as deprecated and back-compat only, and states new integrations should use v3 exclusively.
 
-`alarms` and `metrics_metadata` come from JSON **dictionaries** (keyed objects), so Coral uses the `dict_entries` row strategy: each entry's fields are read directly and the dictionary key is exposed via `_key` (surfaced as `alarm_id` / `context_id`).
+### Request options
+
+The v3 contexts/nodes/alerts endpoints share an options parameter that materially changes the response:
+
+- **`long-keys`** — v3 emits short member names by default (`nm`, `ni`, `st`). This source requests long keys so the mapping is readable and stable.
+- **`instances`** (alerts) — without it the response carries only alert names and indexes; it adds `status`, `context`, `family`, `units`, `info`, `summary`, and the transition fields.
+- **`values`** (alerts) — adds `last_updated_value` and `last_updated_timestamp`.
+- **`rfc3339`** (alerts) — emits timestamps as ISO-8601 strings rather than epoch seconds.
 
 ### `netdata.nodes`
 
-Runtime parameters, OS footprint, and hardware specs of the agent host (`/api/v1/info`).
+Nodes monitored by the agent (`/api/v3/nodes`). A standalone Agent reports itself as a single node; a parent also reports its children.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `version` | Utf8 | Netdata agent version |
-| `os_name` | Utf8 | OS distribution name (e.g. ubuntu, debian) |
-| `os_version` | Utf8 | OS distribution version |
-| `kernel_version` | Utf8 | Running kernel version |
-| `cpu_cores` | Int64 | Number of CPU cores monitored on the host |
+| `node_index` | Int64 | Index uniquely identifying this node for the query |
+| `hostname` | Utf8 | Node hostname |
+| `node_id` | Utf8 | Node id (absent unless registered to Netdata Cloud) |
+| `machine_guid` | Utf8 | Machine GUID |
+| `state` | Utf8 | Node state on this Agent (`reachable`, `stale`) |
+| `version` | Utf8 | Netdata Agent version the node runs |
+| `os_name` | Utf8 | Operating system name |
+| `os_id` | Utf8 | Operating system id |
+| `os_version` | Utf8 | Operating system version |
+| `kernel_name` | Utf8 | Kernel name |
+| `kernel_version` | Utf8 | Kernel version |
+| `architecture` | Utf8 | CPU architecture |
+| `cpu_cores` | Utf8 | CPU core count — the API reports this as a **string**, not a number |
+| `memory_total` | Utf8 | Total host RAM as reported by the Agent |
+| `virtualization` | Utf8 | Detected virtualization technology |
+| `container` | Utf8 | Detected container technology |
+
+OS and hardware fields arrive nested (`os.nm`, `os.kernel.v`, `hw.cpus`) and are flattened into the columns above.
 
 ### `netdata.alarms`
 
-Active and configured health alarm states (`/api/v1/alarms?all=true`).
+Health alert instances (`/api/v3/alerts`), one row per alert instance.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `alarm_id` | Utf8 | Alarm dictionary key |
 | `alarm_name` | Utf8 | Health alert rule name |
-| `chart` | Utf8 | Chart the alarm is attached to |
-| `status` | Utf8 | Current alarm state (e.g. WARNING, CRITICAL, CLEAR) |
+| `node_index` | Int64 | Index of the node the alert belongs to |
+| `instance_name` | Utf8 | Chart the alert is attached to |
+| `instance_id` | Utf8 | Chart id the alert is attached to |
+| `context` | Utf8 | Metric context the alert is attached to |
+| `status` | Utf8 | Alert state (WARNING, CRITICAL, CLEAR, UNDEFINED, UNINITIALIZED, REMOVED) |
 | `value` | Float64 | Most recent evaluated value |
-| `family` | Utf8 | Subsystem group (e.g. cpu, disk, network) |
+| `last_updated` | Timestamp | When the alert was last evaluated |
+| `last_transition_value` | Float64 | Value at the last status change |
+| `last_transition` | Timestamp | When the alert last changed status |
+| `family` | Utf8 | Subsystem group (e.g. cpu, disk) |
+| `info` | Utf8 | Human-readable description |
+| `summary` | Utf8 | Short summary |
+| `units` | Utf8 | Units of the evaluated value |
 | `recipient` | Utf8 | Notification routing target |
+| `type` | Utf8 | Alert type from its configuration |
+| `component` | Utf8 | Alert component from its configuration |
+| `classification` | Utf8 | Alert classification from its configuration |
+| `source` | Utf8 | Configuration file the alert was defined in |
 
 ### `netdata.metrics_metadata`
 
-Metric context catalog from the v3 contexts API (`/api/v3/contexts?options=titles`).
+Metric context catalog (`/api/v3/contexts?options=titles`). Returned as a keyed dictionary, so Coral uses the `dict_entries` row strategy and exposes the key via `_key` as `context_id`.
 
 | Column | Type | Description |
 | --- | --- | --- |
 | `context_id` | Utf8 | Unique context identifier (e.g. `system.cpu`, `disk.io`) |
-| `title` | Utf8 | Context title (included via the `titles` option) |
+| `title` | Utf8 | Context title (via the `titles` option) |
 | `units` | Utf8 | Measurement units (e.g. percentage, MiB/s) |
 | `family` | Utf8 | Subsystem family (e.g. cpu, disk, network) |
-| `priority` | Int64 | Relative display priority (lower sorts higher) |
+| `priority` | Int64 | Display priority (lower sorts higher) |
 | `live` | Boolean | Whether the context is currently collecting |
 
 Per-context dimensions are available from the same endpoint via the `dimensions` option but are not modeled as a separate table in this revision.
 
 ## Example queries
 
-Active warning or critical alarms:
+Active warning or critical alerts:
 
 ```sql
-SELECT alarm_id, alarm_name, chart, family, status, value
+SELECT alarm_name, instance_name, context, status, value, units
 FROM netdata.alarms
 WHERE status IN ('WARNING', 'CRITICAL')
-ORDER BY value DESC;
+ORDER BY last_transition DESC;
+```
+
+Node inventory:
+
+```sql
+SELECT hostname, state, version, os_name, os_version, kernel_version
+FROM netdata.nodes
+ORDER BY hostname;
 ```
 
 Percentage-based metric contexts:
@@ -104,13 +146,6 @@ SELECT context_id, title, family, priority
 FROM netdata.metrics_metadata
 WHERE units = 'percentage'
 ORDER BY context_id ASC;
-```
-
-Host runtime overview:
-
-```sql
-SELECT version, os_name, os_version, kernel_version, cpu_cores
-FROM netdata.nodes;
 ```
 
 ## Validation
@@ -124,25 +159,28 @@ coral source test netdata
 Live output:
 
 ```text
-✓ netdata connected successfully
+<PASTE: coral source test netdata>
+```
 
-netdata (3 tables)
-├─ nodes
-├─ alarms
-└─ metrics_metadata
+`netdata.nodes`:
 
-Query tests
-1 declared · 1 passed · 0 failed
+```text
+<PASTE: coral sql "SELECT hostname, state, os_name, kernel_version FROM netdata.nodes LIMIT 3">
+```
 
-✓ SELECT os_name, kernel_version FROM netdata.nodes LIMIT 1
-  1 row
+`netdata.alarms`:
+
+```text
+<PASTE: coral sql "SELECT alarm_name, instance_name, status, value FROM netdata.alarms LIMIT 3">
 ```
 
 ## Limitations
 
 - Read-only retrieval scope.
 - No credentials are sent; the Agent API must be reachable under its IP-based ACL. Agent bearer protection and authenticating proxies are not supported.
+- Requires Netdata v2.0+; the v3 API is absent on older agents.
 - Does not expose raw historical timeseries data (`/api/v3/data`).
-- `metrics_metadata` uses `/api/v3/contexts`; `nodes` and `alarms` use `/api/v1` endpoints, which Netdata marks deprecated but still serves.
-- `alarms` and `metrics_metadata` use Coral's `dict_entries` strategy because Netdata returns keyed dictionaries rather than arrays.
+- `nodes.cpu_cores` and `memory_total` are strings because the Agent reports them as strings.
+- `alarms` depends on the `instances` and `values` options; several columns are null without them.
+- `metrics_metadata` uses the `dict_entries` strategy because contexts are returned as a keyed dictionary rather than an array.
 - Large context catalogs may need targeted SQL filtering.
