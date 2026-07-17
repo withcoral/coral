@@ -191,14 +191,14 @@ mod tests {
 
     #[test]
     fn installed_plural_v4_manifest_reports_re_add_guidance() {
-        let manifest = r#"
+        let manifest = r"
 name: legacy_v4
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
-"#;
+";
 
         let error = parse_installed_source_manifest(
             &SourceName::parse("legacy_v4").expect("source"),

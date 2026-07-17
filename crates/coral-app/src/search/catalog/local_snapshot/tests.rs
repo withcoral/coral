@@ -432,7 +432,7 @@ tables:
 }
 
 fn minimal_openapi_fixture() -> &'static str {
-    r#"
+    r"
 openapi: 3.0.3
 info:
   title: Metadata API
@@ -453,7 +453,7 @@ paths:
                   properties:
                     id:
                       type: string
-"#
+"
 }
 
 fn install_imported_source(
