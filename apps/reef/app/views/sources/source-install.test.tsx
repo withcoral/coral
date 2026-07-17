@@ -1,4 +1,10 @@
-import { Outlet, RouterProvider, createMemoryRouter, useRouteLoaderData } from 'react-router'
+import {
+  Outlet,
+  RouterProvider,
+  createMemoryRouter,
+  createRoutesStub,
+  useRouteLoaderData,
+} from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 
@@ -82,22 +88,20 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('SourceInstallDialog', () => {
   it('uses Wax tabs to switch between source setup methods', async () => {
-    const router = createMemoryRouter(
-      [
-        {
-          element: (
-            <SourceInstallDialog
-              entry={entryWithMultipleSetupMethods}
-              open
-              onOpenChange={() => undefined}
-            />
-          ),
-          path: '/',
-        },
-      ],
-      { initialEntries: ['/'] },
-    )
-    const screen = await render(<RouterProvider router={router} />)
+    const RoutesStub = createRoutesStub([
+      {
+        Component: () => (
+          <SourceInstallDialog
+            entry={entryWithMultipleSetupMethods}
+            open
+            onOpenChange={() => undefined}
+            workspaceId="test"
+          />
+        ),
+        path: '/',
+      },
+    ])
+    const screen = await render(<RoutesStub />)
     const tokenTab = screen.getByRole('tab', { name: 'Personal access token' })
     const oauthTab = screen.getByRole('tab', { name: 'OAuth' })
     const dialog = screen.getByRole('dialog')
@@ -130,22 +134,26 @@ describe('SourceInstallDialog', () => {
     expect(dialog.element().getBoundingClientRect().height).toBe(initialDialogHeight)
 
     const panels = dialog.element().querySelectorAll<HTMLElement>('[role="tabpanel"]')
-    expect(panels).toHaveLength(2)
-    expect(panels[0]).toHaveAttribute('hidden')
-    expect(panels[0].querySelector('input')).toBeDisabled()
+    expect(panels).toHaveLength(1)
+    expect(panels[0]).not.toHaveAttribute('hidden')
+    expect(panels[0].querySelector('input')).toBeEnabled()
   })
 
   it('keeps the field label when there is only one setup method', async () => {
-    const router = createMemoryRouter(
-      [
-        {
-          element: <SourceInstallDialog entry={entry} open onOpenChange={() => undefined} />,
-          path: '/',
-        },
-      ],
-      { initialEntries: ['/'] },
-    )
-    const screen = await render(<RouterProvider router={router} />)
+    const RoutesStub = createRoutesStub([
+      {
+        Component: () => (
+          <SourceInstallDialog
+            entry={entry}
+            open
+            onOpenChange={() => undefined}
+            workspaceId="test"
+          />
+        ),
+        path: '/',
+      },
+    ])
+    const screen = await render(<RoutesStub />)
 
     await expect.element(screen.getByText('Github token')).toBeVisible()
   })
