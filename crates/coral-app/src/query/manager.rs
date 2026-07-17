@@ -506,6 +506,7 @@ impl QueryManager {
         ))
     }
 
+    #[cfg(test)]
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
@@ -618,7 +619,11 @@ impl QueryManager {
         let sources = query_sources_from_loaded(&loaded_sources);
         self.function_manager
             .list_functions(workspace_name, &sources, || {
-                self.runtime_config(workspace_name, &loaded_sources, &config)
+                self.runtime_config_without_source_observations(
+                    workspace_name,
+                    &loaded_sources,
+                    &config,
+                )
             })
             .await
             .map_err(QueryManagerError::App)
@@ -730,7 +735,13 @@ impl QueryManager {
             .validate_user_function_sql(
                 workspace_name,
                 &sources,
-                || self.runtime_config(workspace_name, loaded_sources, config),
+                || {
+                    self.runtime_config_without_source_observations(
+                        workspace_name,
+                        loaded_sources,
+                        config,
+                    )
+                },
                 raw_sql,
             )
             .await
@@ -1568,6 +1579,66 @@ mod tests {
         assert!(
             manager.layout.search_sqlite_file(&workspace_name).exists(),
             "execution runtime config should open the observed-values SQLite store"
+        );
+    }
+
+    #[tokio::test]
+    async fn function_metadata_runtimes_do_not_open_observed_values_store() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let workspace_name = WorkspaceName::default();
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        let function_sql = r"/*
+name: demo_items
+schema: functions
+description: Returns demo messages
+*/
+
+select text from function_demo.messages
+";
+        let validated = fixture
+            .manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate function without observations");
+        fixture
+            .manager
+            .function_manager
+            .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .expect("install function");
+
+        let manager =
+            fixture
+                .manager
+                .clone()
+                .with_search_observation_handle(SearchObservationHandle::new(
+                    fixture.manager.layout.clone(),
+                ));
+        let observed_values_path = manager.layout.search_sqlite_file(&workspace_name);
+        manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate function with observations enabled");
+        assert!(
+            !observed_values_path.exists(),
+            "function validation should not open the observed-values SQLite store"
+        );
+
+        let functions = manager
+            .list_functions(&workspace_name)
+            .await
+            .expect("list functions with observations enabled");
+        assert_eq!(functions.len(), 1);
+        assert!(
+            !observed_values_path.exists(),
+            "function listing should not open the observed-values SQLite store"
         );
     }
 
