@@ -702,7 +702,7 @@ fn append_catalog_filter(
         predicates.push(format!("catalog_name = {}", sql_string_literal(value)));
     }
     if let Some(value) = schema_filter {
-        predicates.push(format!("schema_name = {}", sql_string_literal(value)));
+        predicates.push(schema_filter_predicate(catalog_filter, value));
     }
     if let Some(value) = table_filter {
         predicates.push(format!("table_name = {}", sql_string_literal(value)));
@@ -711,6 +711,17 @@ fn append_catalog_filter(
         sql.push_str(" WHERE ");
         sql.push_str(&predicates.join(" AND "));
     }
+}
+
+fn schema_filter_predicate(catalog_filter: Option<&str>, schema_filter: &str) -> String {
+    let literal = sql_string_literal(schema_filter);
+    if catalog_filter.is_some() || !schema_filter.contains('.') {
+        return format!("schema_name = {literal}");
+    }
+    format!(
+        "(schema_name = {literal} OR (catalog_name <> '' AND \
+         catalog_name || '.' || schema_name = {literal}))"
+    )
 }
 
 fn collect_table_infos_from_batches(batches: &[RecordBatch]) -> Result<Vec<TableInfo>> {
