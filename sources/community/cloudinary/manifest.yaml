@@ -1,0 +1,548 @@
+name: cloudinary
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query assets, folders, upload presets, usage, and metadata fields
+  from Cloudinary.
+base_url: https://api.cloudinary.com/v1_1/{{input.CLOUDINARY_CLOUD_NAME}}
+
+inputs:
+  CLOUDINARY_CLOUD_NAME:
+    kind: variable
+    hint: |
+      Your Cloudinary cloud name. Found in the Cloudinary Console dashboard
+      at the top of the Account Details section.
+      Example: "mycompany" (not the full URL).
+  CLOUDINARY_BASIC_AUTH:
+    kind: secret
+    hint: |
+      Base64-encoded "api_key:api_secret" Basic auth token.
+      Generate from your API Key and API Secret (found in Cloudinary Console
+      under Settings > Access Keys):
+        printf '%s:%s' YOUR_API_KEY YOUR_API_SECRET | base64
+      The result will be a string like "MTIzNDU2Nzg5MDEyMzQ1Njo3N0FCY2Rl..."
+      Paste that full string as the value.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Basic {{input.CLOUDINARY_BASIC_AUTH}}"
+
+test_queries:
+  - SELECT public_id, resource_type, type, bytes, created_at FROM cloudinary.resources WHERE resource_type = 'image' AND type = 'upload' LIMIT 5
+  - SELECT name FROM cloudinary.folders LIMIT 5
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # cloudinary.resources — List assets by resource type and delivery type
+  # GET /resources/:resource_type/:type
+  # Paginated array at response.resources. Cursor pagination (next_cursor).
+  # Both resource_type and type are required as URL path segments.
+  # --------------------------------------------------------------------------
+  - name: resources
+    description: >-
+      Assets (images, videos, raw files, etc.) stored in your Cloudinary
+      product environment. Returns metadata such as public ID, format,
+      dimensions, file size, tags, and context.
+    guide: |
+      resource_type (image, raw, video) and type (upload, private,
+      authenticated, etc.) are both required. Start with:
+        SELECT public_id, resource_type, type, format, bytes, created_at
+        FROM cloudinary.resources
+        WHERE resource_type = 'image' AND type = 'upload' LIMIT 10
+      Use WHERE prefix = 'my_public_id_prefix' to filter by public ID prefix.
+      Both resource_type and type are URL path segments and must be
+      URL-encoded if they contain
+      reserved characters. Accepted resource_type values: image, raw, video.
+      Accepted type values: upload, private, authenticated, etc.
+      Use WHERE tags = true to include tag data (JSON array).
+      Use WHERE context = true to include context metadata (JSON object).
+      The `tags` column is a JSON array when returned; `context` is JSON.
+    filters:
+      - name: resource_type
+        required: true
+      - name: type
+        required: true
+      - name: prefix
+      - name: start_at
+      - name: direction
+      - name: tags
+      - name: context
+      - name: metadata
+    request:
+      method: GET
+      path: /resources/{{filter.resource_type}}/{{filter.type}}
+      query:
+        - name: prefix
+          from: filter
+          key: prefix
+        - name: start_at
+          from: filter
+          key: start_at
+        - name: direction
+          from: filter
+          key: direction
+        - name: tags
+          from: filter_bool
+          key: tags
+        - name: context
+          from: filter_bool
+          key: context
+        - name: metadata
+          from: filter_bool
+          key: metadata
+    response:
+      rows_path:
+        - resources
+    pagination:
+      mode: cursor_query
+      cursor_param: next_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 500
+        query_param: max_results
+    fetch_limit_default: 100
+    columns:
+      - name: public_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the asset.
+        expr:
+          kind: path
+          path:
+            - public_id
+      - name: asset_id
+        type: Utf8
+        nullable: false
+        description: Immutable asset identifier.
+        expr:
+          kind: path
+          path:
+            - asset_id
+      - name: format
+        type: Utf8
+        nullable: true
+        description: File format extension (e.g. jpg, png, mp4).
+        expr:
+          kind: path
+          path:
+            - format
+      - name: version
+        type: Int64
+        nullable: false
+        description: Version number of the asset.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: resource_type
+        type: Utf8
+        nullable: false
+        description: Type of resource (image, raw, video).
+        expr:
+          kind: path
+          path:
+            - resource_type
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Delivery type (upload, private, authenticated, etc.).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the asset was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: bytes
+        type: Int64
+        nullable: false
+        description: File size in bytes.
+        expr:
+          kind: path
+          path:
+            - bytes
+      - name: width
+        type: Int64
+        nullable: true
+        description: Width of the asset in pixels.
+        expr:
+          kind: path
+          path:
+            - width
+      - name: height
+        type: Int64
+        nullable: true
+        description: Height of the asset in pixels.
+        expr:
+          kind: path
+          path:
+            - height
+      - name: url
+        type: Utf8
+        nullable: true
+        description: HTTP URL of the asset.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: secure_url
+        type: Utf8
+        nullable: true
+        description: HTTPS URL of the asset.
+        expr:
+          kind: path
+          path:
+            - secure_url
+      - name: tags
+        type: Json
+        nullable: true
+        description: JSON array of tag strings assigned to the asset. Populated when tags=true filter is set.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: context
+        type: Json
+        nullable: true
+        description: JSON object of custom context metadata. Populated when context=true filter is set.
+        expr:
+          kind: path
+          path:
+            - context
+      - name: metadata_fields
+        type: Json
+        nullable: true
+        description: JSON object of structured metadata field values. Populated when metadata=true filter is set.
+        expr:
+          kind: path
+          path:
+            - metadata
+      - name: etag
+        type: Utf8
+        nullable: true
+        description: ETag of the uploaded file.
+        expr:
+          kind: path
+          path:
+            - etag
+      - name: placeholder
+        type: Boolean
+        nullable: true
+        description: Whether the asset is a placeholder.
+        expr:
+          kind: path
+          path:
+            - placeholder
+
+  # --------------------------------------------------------------------------
+  # cloudinary.folders — List root folders
+  # GET /folders
+  # Array at response.folders. No pagination (single response, up to 2000).
+  # --------------------------------------------------------------------------
+  - name: folders
+    description: >-
+      Top-level asset folders in your Cloudinary product environment.
+      The prefix filter on the resources table filters by public ID
+      prefix, not by asset folder. Dynamic asset-folder content lookup
+      is not supported in this version.
+    guide: |
+      No required filters. Start with:
+        SELECT name, path FROM cloudinary.folders
+      Use WHERE prefix on the resources table to filter by public ID
+      prefix (not by asset folder).
+    request:
+      method: GET
+      path: /folders
+    response:
+      rows_path:
+        - folders
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the folder.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Full path of the folder.
+        expr:
+          kind: path
+          path:
+            - path
+
+  # --------------------------------------------------------------------------
+  # cloudinary.upload_presets — List upload presets
+  # GET /upload_presets
+  # Paginated array at response.presets. Cursor pagination.
+  # --------------------------------------------------------------------------
+  - name: upload_presets
+    description: >-
+      Upload presets configured in your Cloudinary product environment.
+      Each preset defines default settings for uploaded assets such as
+      transformation, folder, tags, and access control.
+    guide: |
+      No required filters. Start with:
+        SELECT name, unsigned FROM cloudinary.upload_presets
+      Use the preset name with the Upload API to apply preset settings
+      to new uploads.
+    request:
+      method: GET
+      path: /upload_presets
+    response:
+      rows_path:
+        - presets
+    pagination:
+      mode: cursor_query
+      cursor_param: next_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 500
+        query_param: max_results
+    fetch_limit_default: 100
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the upload preset.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: unsigned
+        type: Boolean
+        nullable: false
+        description: Whether the preset allows unsigned uploads.
+        expr:
+          kind: path
+          path:
+            - unsigned
+      - name: settings
+        type: Json
+        nullable: true
+        description: JSON object of preset settings (folder, tags, transformations, etc.).
+        expr:
+          kind: path
+          path:
+            - settings
+
+  # --------------------------------------------------------------------------
+  # cloudinary.usage — Usage details
+  # GET /usage
+  # Single response object (no array). Returns plan, credits, storage, etc.
+  # --------------------------------------------------------------------------
+  - name: usage
+    description: >-
+      Current usage details for the Cloudinary product environment,
+      including plan type, credits consumption, storage usage,
+      bandwidth, and transformations performed.
+    guide: |
+      Returns exactly one row. Start with:
+        SELECT plan, credits_usage, credits_limit, storage_bytes,
+               bandwidth_bytes FROM cloudinary.usage
+    request:
+      method: GET
+      path: /usage
+    response: {}
+    columns:
+      - name: plan
+        type: Utf8
+        nullable: false
+        description: Cloudinary plan name (e.g. Free, Advanced, Enterprise).
+        expr:
+          kind: path
+          path:
+            - plan
+      - name: credits_usage
+        type: Int64
+        nullable: true
+        description: Credits consumed in the current billing period.
+        expr:
+          kind: path
+          path:
+            - credits
+            - usage
+      - name: credits_limit
+        type: Int64
+        nullable: true
+        description: Total credits available in the current billing period.
+        expr:
+          kind: path
+          path:
+            - credits
+            - limit
+      - name: credits_used_percentage
+        type: Float64
+        nullable: true
+        description: Percentage of credits used.
+        expr:
+          kind: path
+          path:
+            - credits
+            - used_percent
+      - name: storage_bytes
+        type: Int64
+        nullable: true
+        description: Total storage used in bytes.
+        expr:
+          kind: path
+          path:
+            - storage
+            - usage
+      - name: storage_limit_bytes
+        type: Int64
+        nullable: true
+        description: Storage limit in bytes.
+        expr:
+          kind: path
+          path:
+            - storage
+            - limit
+      - name: bandwidth_bytes
+        type: Int64
+        nullable: true
+        description: Bandwidth used in bytes.
+        expr:
+          kind: path
+          path:
+            - bandwidth
+            - usage
+      - name: bandwidth_limit_bytes
+        type: Int64
+        nullable: true
+        description: Bandwidth limit in bytes.
+        expr:
+          kind: path
+          path:
+            - bandwidth
+            - limit
+      - name: transformations_used
+        type: Int64
+        nullable: true
+        description: Number of transformations performed.
+        expr:
+          kind: path
+          path:
+            - transformations
+            - usage
+      - name: transformations_limit
+        type: Int64
+        nullable: true
+        description: Transformation limit.
+        expr:
+          kind: path
+          path:
+            - transformations
+            - limit
+      - name: objects_count
+        type: Int64
+        nullable: true
+        description: Total number of assets stored.
+        expr:
+          kind: path
+          path:
+            - objects
+            - usage
+      - name: objects_limit
+        type: Int64
+        nullable: true
+        description: Asset count limit.
+        expr:
+          kind: path
+          path:
+            - objects
+            - limit
+
+  # --------------------------------------------------------------------------
+  # cloudinary.metadata_fields — List structured metadata fields
+  # GET /metadata_fields
+  # Array at response.metadata_fields (no pagination).
+  # --------------------------------------------------------------------------
+  - name: metadata_fields
+    description: >-
+      Structured metadata field definitions configured in the Cloudinary
+      product environment. Includes field type, label, default value,
+      validation rules, and mandatory status.
+    guide: |
+      No required filters. Start with:
+        SELECT external_id, label, type, mandatory
+        FROM cloudinary.metadata_fields
+      Use the external_id to reference metadata fields when querying
+      the resources table with metadata=true.
+    request:
+      method: GET
+      path: /metadata_fields
+    response:
+      rows_path:
+        - metadata_fields
+    columns:
+      - name: external_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the metadata field.
+        expr:
+          kind: path
+          path:
+            - external_id
+      - name: label
+        type: Utf8
+        nullable: false
+        description: Display label for the metadata field.
+        expr:
+          kind: path
+          path:
+            - label
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Data type of the metadata field (integer, string, date, etc.).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: mandatory
+        type: Boolean
+        nullable: false
+        description: Whether the field is required when uploading assets.
+        expr:
+          kind: path
+          path:
+            - mandatory
+      - name: default_value
+        type: Json
+        nullable: true
+        description: Default value(s). Single values are JSON scalars (strings, numbers, etc.); multi-select fields return an array.
+        expr:
+          kind: path
+          path:
+            - default_value
+      - name: validation
+        type: Json
+        nullable: true
+        description: JSON object defining validation rules for the field.
+        expr:
+          kind: path
+          path:
+            - validation

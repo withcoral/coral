@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use coral_engine::{ColumnInfo, CoralQuery, QuerySource, TableInfo};
+use coral_engine::{CoralQuery, CoreError, QuerySource, TableInfo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -20,10 +20,11 @@ fn users_manifest(dir: &std::path::Path) -> Value {
         "name": "alpha",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "users",
             "description": "Alpha users",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -42,10 +43,11 @@ fn teams_manifest(dir: &std::path::Path) -> Value {
         "name": "beta",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "teams",
             "description": "Beta teams",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -87,6 +89,8 @@ fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
     (temp, sources)
 }
 
+const SYSTEM_TABLE_NAMES: &[&str] = &["columns", "filters", "inputs", "table_functions", "tables"];
+
 #[tokio::test]
 async fn coral_tables_lists_installed_sources() {
     let (_temp, sources) = build_catalog_sources();
@@ -95,7 +99,8 @@ async fn coral_tables_lists_installed_sources() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, table_name FROM coral.tables ORDER BY schema_name, table_name",
+            "SELECT schema_name, table_name FROM coral.tables \
+             WHERE schema_name <> 'coral' ORDER BY schema_name, table_name",
         )
         .await
         .expect("catalog query should succeed"),
@@ -107,6 +112,27 @@ async fn coral_tables_lists_installed_sources() {
             json!({"schema_name": "alpha", "table_name": "users"}),
             json!({"schema_name": "beta", "table_name": "teams"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn coral_tables_lists_system_catalog_without_sources() {
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[],
+            test_runtime(),
+            "SELECT schema_name, table_name FROM coral.tables ORDER BY schema_name, table_name",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        SYSTEM_TABLE_NAMES
+            .iter()
+            .map(|table| json!({"schema_name": "coral", "table_name": table}))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -197,12 +223,21 @@ async fn list_tables_matches_catalog() {
 }
 
 #[tokio::test]
-async fn list_tables_empty_when_no_sources() {
+async fn list_tables_returns_system_catalog_when_no_sources() {
     let tables = CoralQuery::list_tables(&[], test_runtime(), None, None)
         .await
-        .expect("empty source list should succeed");
+        .expect("source-free catalog should succeed");
 
-    assert!(tables.is_empty());
+    assert_eq!(
+        tables
+            .iter()
+            .map(|table| (table.schema_name.as_str(), table.table_name.as_str()))
+            .collect::<Vec<_>>(),
+        SYSTEM_TABLE_NAMES
+            .iter()
+            .map(|table| ("coral", *table))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -249,18 +284,6 @@ fn table_summary(table: &TableInfo) -> (String, String, String) {
         table.table_name.clone(),
         table.description.clone(),
     )
-}
-
-#[expect(
-    dead_code,
-    reason = "Reserved for targeted schema assertions as this suite grows."
-)]
-fn table_column_names(table: &TableInfo) -> Vec<String> {
-    table
-        .columns
-        .iter()
-        .map(|column: &ColumnInfo| column.name.clone())
-        .collect()
 }
 
 fn http_manifest_with_inputs() -> Value {
@@ -370,6 +393,19 @@ fn http_manifest_with_function() -> Value {
                     "name": "mode",
                     "values": ["lexical", "semantic", "hybrid"],
                     "bind": { "arg": "search_type" }
+                },
+                // OpenAPI v4 generation does not produce Json HTTP function args.
+                // This fixture verifies typed args still register and list even
+                // though public catalog metadata does not expose arg types yet.
+                {
+                    "name": "metadata",
+                    "type": "Json",
+                    "bind": { "arg": "metadata" }
+                },
+                {
+                    "name": "since",
+                    "type": "Timestamp",
+                    "bind": { "arg": "since" }
                 }
             ],
             "request": {
@@ -411,7 +447,7 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
         "name": "jsonl_inputs",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "inputs": {
             "DATASET": {
                 "kind": "variable",
@@ -426,6 +462,7 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
         "tables": [{
             "name": "events",
             "description": "Input metadata regression fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -462,7 +499,9 @@ async fn coral_table_functions_lists_source_functions() {
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
         json!([
             { "name": "q", "required": true, "values": [] },
-            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] }
+            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] },
+            { "name": "metadata", "required": false, "values": [] },
+            { "name": "since", "required": false, "values": [] }
         ])
     );
     assert_eq!(
@@ -480,6 +519,90 @@ async fn coral_table_functions_lists_source_functions() {
             "max_top_k": 100,
             "max_calls_per_query": 1
         })
+    );
+}
+
+#[tokio::test]
+async fn table_function_used_as_table_returns_guided_error() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    for sql in [
+        "DESCRIBE searchy.search_issues",
+        "SELECT * FROM searchy.search_issues",
+    ] {
+        let error = CoralQuery::execute_sql(&sources, test_runtime(), sql)
+            .await
+            .expect_err("table function reference should explain the object kind");
+
+        let CoreError::QueryFailure(sqe) = error else {
+            panic!("expected structured query error");
+        };
+        assert_eq!(sqe.reason(), "TABLE_FUNCTION_NOT_TABLE");
+        assert!(
+            sqe.summary()
+                .contains("`searchy.search_issues` is a table function, not a table"),
+            "got: {}",
+            sqe.summary()
+        );
+        assert!(
+            sqe.detail()
+                .contains("Query it as `FROM searchy.search_issues(...)`"),
+            "got: {}",
+            sqe.detail()
+        );
+        assert!(
+            sqe.detail()
+                .contains("DESCRIBE SELECT * FROM searchy.search_issues(...)"),
+            "got: {}",
+            sqe.detail()
+        );
+        let hint = sqe.hint().expect("hint should point at catalog metadata");
+        assert!(hint.contains("coral.table_functions"), "got: {hint}");
+        assert!(hint.contains("schema_name = 'searchy'"), "got: {hint}");
+        assert!(
+            hint.contains("function_name = 'search_issues'"),
+            "got: {hint}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn describe_table_keeps_datafusion_shape() {
+    let (_temp, sources) = build_catalog_sources();
+
+    let execution = CoralQuery::execute_sql(&sources, test_runtime(), "DESCRIBE alpha.users")
+        .await
+        .expect("table describe should succeed");
+
+    assert_eq!(
+        execution
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["column_name", "data_type", "is_nullable"]
+    );
+}
+
+#[tokio::test]
+async fn describe_select_from_table_function_keeps_datafusion_shape() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let execution = CoralQuery::execute_sql(
+        &sources,
+        test_runtime(),
+        "DESCRIBE SELECT * FROM searchy.search_issues(q => 'flaky')",
+    )
+    .await
+    .expect("query describe should succeed");
+
+    assert_eq!(
+        execution
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["column_name", "data_type", "is_nullable"]
     );
 }
 
@@ -636,13 +759,15 @@ async fn list_catalog_matches_table_function_metadata() {
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.function_name, "search_issues");
     assert_eq!(function.description, "Search issues");
-    assert_eq!(function.arguments.len(), 2);
+    assert_eq!(function.arguments.len(), 4);
     assert_eq!(function.arguments[0].name, "q");
     assert!(function.arguments[0].required);
     assert_eq!(
         function.arguments[1].values,
         ["lexical", "semantic", "hybrid"]
     );
+    assert_eq!(function.arguments[2].name, "metadata");
+    assert_eq!(function.arguments[3].name, "since");
     assert_eq!(function.result_columns.len(), 3);
     assert_eq!(function.result_columns[0].name, "id");
     assert_eq!(function.result_columns[1].name, "title");

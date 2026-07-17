@@ -18,18 +18,27 @@ mod query_error;
 mod source_ops;
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
 
-use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{
+    Arg, ArgAction, ArgGroup, ArgMatches, Args, CommandFactory, Error as ClapError, FromArgMatches,
+    Parser, Subcommand, ValueEnum,
+};
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{
+    AddFunctionRequest, CreateWorkspaceRequest, DeleteFunctionRequest, DeleteWorkspaceRequest,
+    ExecuteSqlRequest, Function, FunctionRuntimeReady, ListFunctionsRequest, ListWorkspacesRequest,
+    SearchRequest, Workspace, function,
+};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
-    AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table, manifest_input_from_proto,
+    AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
+    format_batches_table, format_search_response_json, format_search_response_text,
+    manifest_input_from_proto, workspace as workspace_resource,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -41,6 +50,10 @@ use tempfile as _;
 /// gRPC-Web surface.
 #[cfg(feature = "embedded-ui")]
 const DEFAULT_SERVER_PORT: u16 = 1457;
+const MCP_INITIAL_QUERY_EXAMPLE_LIMIT: usize = 5;
+const DEFAULT_SEARCH_LIMIT: u32 = 10;
+const MIN_SEARCH_LIMIT: u32 = 1;
+const MAX_SEARCH_LIMIT: u32 = 50;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -50,6 +63,10 @@ const DEFAULT_SERVER_PORT: u16 = 1457;
 )]
 /// A local-first SQL interface for APIs, files, and other data sources.
 struct Cli {
+    #[command(flatten)]
+    feature_overrides: FeatureOverrideArgs,
+    #[command(flatten)]
+    workspace_selection: WorkspaceSelectionArgs,
     #[command(subcommand)]
     command: Command,
 }
@@ -58,12 +75,21 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
+    /// Find relevant Coral tables, functions, columns, and filters
+    Search(SearchArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage workspaces
+    Workspace(WorkspaceArgs),
+    /// Manage functions
+    #[command(name = "functions")]
+    Function(FunctionArgs),
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
     McpStdio(McpStdioArgs),
+    /// Inspect and manage experimental runtime features
+    Features(FeaturesArgs),
     #[cfg(feature = "embedded-ui")]
     /// Start the local gRPC-Web server with the embedded Coral UI
     Ui(UiArgs),
@@ -108,11 +134,194 @@ struct SqlArgs {
 }
 
 #[derive(Debug, Args)]
-/// Start the MCP server over stdio
-struct McpStdioArgs {
-    /// Expose the feedback submission tool.
+/// Find relevant Coral tables, functions, columns, and filters
+struct SearchArgs {
+    /// Render the shared machine-readable JSON response
     #[arg(long)]
-    enable_feedback: bool,
+    json: bool,
+    /// Maximum search results to return, from 1 to 50. Defaults to 10.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_SEARCH_LIMIT,
+        value_parser = clap::value_parser!(u32).range(MIN_SEARCH_LIMIT as i64..=MAX_SEARCH_LIMIT as i64)
+    )]
+    limit: u32,
+    /// Plain-language metadata search text
+    #[arg(value_name = "QUERY", num_args = 1.., required = true)]
+    query: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct WorkspaceSelectionArgs {
+    /// Workspace to target. Overrides `CORAL_WORKSPACE`.
+    #[arg(long = "workspace", value_name = "NAME", global = true)]
+    workspace: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct FeatureOverrideArgs {
+    overrides: coral_app::features::FeatureOverrides,
+}
+
+impl FeatureOverrideArgs {
+    fn into_overrides(self) -> coral_app::features::FeatureOverrides {
+        self.overrides
+    }
+}
+
+impl FromArgMatches for FeatureOverrideArgs {
+    fn from_arg_matches(matches: &ArgMatches) -> Result<Self, ClapError> {
+        let mut matches = matches.clone();
+        Self::from_arg_matches_mut(&mut matches)
+    }
+
+    fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, ClapError> {
+        let mut overrides = coral_app::features::FeatureOverrides::default();
+        apply_feature_override_matches(matches, &mut overrides);
+        Ok(Self { overrides })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), ClapError> {
+        let mut matches = matches.clone();
+        self.update_from_arg_matches_mut(&mut matches)
+    }
+
+    fn update_from_arg_matches_mut(&mut self, matches: &mut ArgMatches) -> Result<(), ClapError> {
+        apply_feature_override_matches(matches, &mut self.overrides);
+        Ok(())
+    }
+}
+
+impl Args for FeatureOverrideArgs {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        add_feature_override_args(cmd)
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        add_feature_override_args(cmd)
+    }
+}
+
+fn apply_feature_override_matches(
+    matches: &ArgMatches,
+    overrides: &mut coral_app::features::FeatureOverrides,
+) {
+    for feature in coral_app::features::Feature::all() {
+        if matches.get_flag(feature.enable_flag()) {
+            overrides.set(feature, true);
+        }
+        if matches.get_flag(feature.disable_flag()) {
+            overrides.set(feature, false);
+        }
+    }
+}
+
+fn add_feature_override_args(mut cmd: clap::Command) -> clap::Command {
+    for feature in coral_app::features::Feature::all() {
+        let key = feature.key();
+        cmd = cmd
+            .arg(
+                Arg::new(feature.enable_flag())
+                    .long(feature.enable_flag())
+                    .help(format!(
+                        "Enable experimental `{key}` feature for this process"
+                    ))
+                    .action(ArgAction::SetTrue)
+                    .global(true)
+                    .hide(true),
+            )
+            .arg(
+                Arg::new(feature.disable_flag())
+                    .long(feature.disable_flag())
+                    .help(format!(
+                        "Disable experimental `{key}` feature for this process"
+                    ))
+                    .action(ArgAction::SetTrue)
+                    .global(true)
+                    .hide(true),
+            )
+            .group(
+                ArgGroup::new(feature.key())
+                    .arg(feature.enable_flag())
+                    .arg(feature.disable_flag())
+                    .multiple(false),
+            );
+    }
+    cmd
+}
+
+#[derive(Debug, Args)]
+/// Start the MCP server over stdio
+struct McpStdioArgs {}
+
+#[derive(Debug, Args)]
+/// Manage workspaces
+struct WorkspaceArgs {
+    #[command(subcommand)]
+    command: WorkspaceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkspaceCommand {
+    /// List configured workspaces
+    List,
+    /// Create a workspace
+    Create {
+        /// Name of the workspace to create
+        name: String,
+    },
+    /// Remove a workspace and its sources/artifacts
+    Remove {
+        /// Name of the workspace to remove
+        name: String,
+    },
+}
+
+#[derive(Debug, Args)]
+/// Inspect and manage experimental runtime features
+struct FeaturesArgs {
+    #[command(subcommand)]
+    command: FeaturesCommand,
+}
+
+#[derive(Debug, Args)]
+/// Manage functions
+struct FunctionArgs {
+    #[command(subcommand)]
+    command: FunctionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum FunctionCommand {
+    /// List installed functions
+    List,
+    /// Add or replace a user function
+    Add {
+        /// Path to a function SQL artifact
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Remove a user function
+    Remove {
+        /// Name of the function to remove
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FeaturesCommand {
+    /// List experimental runtime features and their current status
+    List,
+    /// Enable an experimental runtime feature
+    Enable {
+        /// Feature key to enable
+        feature: String,
+    },
+    /// Disable an experimental runtime feature
+    Disable {
+        /// Feature key to disable
+        feature: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -240,10 +449,14 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
-            Command::Completion(_) => RequiredRuntime::None,
+            Command::Sql(_)
+            | Command::Search(_)
+            | Command::Source(_)
+            | Command::Workspace(_)
+            | Command::Function(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
+            Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
         }
@@ -251,6 +464,18 @@ impl Command {
 
     fn enables_stderr_logs(&self) -> bool {
         matches!(self, Command::McpStdio(_))
+    }
+
+    fn uses_selected_workspace(&self) -> bool {
+        matches!(
+            self,
+            Command::Sql(_)
+                | Command::Search(_)
+                | Command::Source(_)
+                | Command::Function(_)
+                | Command::Onboard
+                | Command::McpStdio(_)
+        )
     }
 }
 
@@ -280,16 +505,12 @@ impl coral_app::RunErrorTelemetry for CliError {
     }
 }
 
-/// Returns whether this CLI invocation should render telemetry logs to stderr.
-///
-/// `MCP` stdio reserves stdout for protocol messages, so stderr is the only
-/// local diagnostics stream that can be safely exposed while the server is
-/// running.
-#[must_use]
-pub fn enables_stderr_logs() -> bool {
-    command_enables_stderr_logs(std::env::args_os())
-}
-
+/// Classifies whether a parsed CLI invocation should render telemetry logs to
+/// stderr. `MCP` stdio reserves stdout for protocol messages, so stderr is the
+/// only local diagnostics stream that can be safely exposed while the server is
+/// running. Exercised only in tests; the live decision uses
+/// `command.enables_stderr_logs()` directly in `run_from_env`.
+#[cfg(test)]
 fn command_enables_stderr_logs<I, T>(args: I) -> bool
 where
     I: IntoIterator<Item = T>,
@@ -309,13 +530,23 @@ where
 /// Returns an error if runtime startup, command execution, or output
 /// formatting fails.
 pub async fn run_from_env() -> Result<(), CliError> {
-    let Cli { command } = Cli::parse();
+    let Cli {
+        feature_overrides,
+        workspace_selection,
+        command,
+    } = Cli::parse();
+    let feature_overrides = feature_overrides.into_overrides();
     let ctx = coral_app::RunContext {
         trace_parent: env::trace_parent(),
     };
 
     match command.required_runtime() {
         RequiredRuntime::AppClient => {
+            let workspace = if command.uses_selected_workspace() {
+                selected_workspace(workspace_selection.workspace)
+            } else {
+                workspace_resource(DEFAULT_WORKSPACE_ID)
+            };
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
@@ -324,18 +555,42 @@ pub async fn run_from_env() -> Result<(), CliError> {
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
             let result = if is_mcp_stdio {
-                run_app_command(app, command, Some(&ctx)).await
+                run_app_command(app, command, Some(&ctx), &feature_overrides, &workspace).await
             } else {
-                coral_app::run_with_context(&ctx, Box::pin(run_app_command(app, command, None)))
-                    .await
+                coral_app::run_with_context(
+                    &ctx,
+                    Box::pin(run_app_command(
+                        app,
+                        command,
+                        None,
+                        &feature_overrides,
+                        &workspace,
+                    )),
+                )
+                .await
             };
             bootstrap.shutdown().await;
             result
         }
         RequiredRuntime::None => {
-            coral_app::run_with_context(&ctx, Box::pin(run_no_runtime_command(command))).await
+            coral_app::run_with_context(
+                &ctx,
+                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+            )
+            .await
         }
     }
+}
+
+fn selected_workspace(cli_workspace: Option<String>) -> Workspace {
+    workspace_resource(selected_workspace_name(cli_workspace, env::workspace()))
+}
+
+fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<String>) -> String {
+    cli_workspace
+        .filter(|value| !value.is_empty())
+        .or_else(|| env_workspace.filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string())
 }
 
 /// Returns the embedded Coral UI assets for the local server to serve.
@@ -381,30 +636,10 @@ async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Parses CLI arguments and runs the shared Coral CLI.
-///
-/// # Errors
-///
-/// Returns an error if argument parsing, command execution, or output
-/// formatting fails.
-pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliError> {
-    let Cli { command } = Cli::parse();
-    let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
-
-    match command.required_runtime() {
-        RequiredRuntime::AppClient if is_mcp_stdio => {
-            run_app_command(app, command, Some(&ctx)).await
-        }
-        RequiredRuntime::AppClient => {
-            coral_app::run_with_context(&ctx, Box::pin(run_app_command(app, command, None))).await
-        }
-        RequiredRuntime::None => {
-            coral_app::run_with_context(&ctx, Box::pin(run_no_runtime_command(command))).await
-        }
-    }
-}
-
-async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
+async fn run_no_runtime_command(
+    command: Command,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), CliError> {
     match command {
         Command::Completion(args) => {
             let mut cmd = Cli::command();
@@ -412,9 +647,16 @@ async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
             generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
+        Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Search(_)
+        | Command::Source(_)
+        | Command::Workspace(_)
+        | Command::Function(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -424,13 +666,15 @@ async fn run_app_command(
     app: AppClient,
     command: Command,
     ctx: Option<&coral_app::RunContext>,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+    workspace: &Workspace,
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
             let response = match app
                 .query_client()
                 .execute_sql(Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
+                    workspace: Some(workspace.clone()),
                     sql: args.sql,
                 }))
                 .await
@@ -447,22 +691,69 @@ async fn run_app_command(
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
         }
-        Command::Source(args) => run_source(&app, args).await?,
+        Command::Search(args) => run_search(&app, workspace, args).await?,
+        Command::Source(args) => run_source(&app, workspace, args).await?,
+        Command::Workspace(args) => run_workspace(&app, args).await?,
+        Command::Function(args) => run_function(&app, workspace, args).await?,
         Command::Onboard => {
-            onboard::run(&app).await?;
+            onboard::run(&app, workspace).await?;
         }
-        Command::McpStdio(args) => {
+        Command::McpStdio(_) => {
+            let features = coral_app::features::FeatureStore::discover(None)
+                .and_then(|store| store.load_with_overrides(feature_overrides))
+                .map_err(anyhow::Error::from)?;
+            let source_names = match source_ops::list_sources(&app, workspace).await {
+                Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to load source names for MCP initialize instructions: {error}"
+                    );
+                    Vec::new()
+                }
+            };
+            let (source_names, query_examples) =
+                match coral_app::bootstrap::workspace_mcp_startup_context(
+                    &workspace.name,
+                    source_names.clone(),
+                    MCP_INITIAL_QUERY_EXAMPLE_LIMIT,
+                ) {
+                    Ok(context) => (
+                        context.source_names().to_vec(),
+                        context
+                            .query_history()
+                            .iter()
+                            .map(|entry| {
+                                coral_mcp::McpQueryExample::new(entry.sql())
+                                    .with_sources(entry.sources().iter().cloned())
+                                    .with_row_count(entry.row_count())
+                            })
+                            .collect(),
+                    ),
+                    Err(error) => {
+                        eprintln!(
+                            "warning: failed to load MCP startup context for initialize instructions: {error}"
+                        );
+                        (source_names, Vec::new())
+                    }
+                };
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
-                    feedback_enabled: args.enable_feedback,
+                    feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    tasks_enabled: features.enabled(coral_app::features::Feature::Tasks),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
+                    source_names,
+                    query_examples,
+                    workspace: Some(workspace.clone()),
                 },
             ))
             .await
             .map_err(anyhow::Error::from)?;
         }
         Command::Completion(_) => {
+            unreachable!("no-runtime commands are routed without an app client")
+        }
+        Command::Features(_) => {
             unreachable!("no-runtime commands are routed without an app client")
         }
         #[cfg(feature = "embedded-ui")]
@@ -474,10 +765,95 @@ async fn run_app_command(
     Ok(())
 }
 
-async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
+fn run_features(
+    args: FeaturesArgs,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let store = coral_app::features::FeatureStore::discover(None)?;
+    match args.command {
+        FeaturesCommand::List => {
+            let rows = store
+                .statuses_with_overrides(feature_overrides)?
+                .into_iter()
+                .map(|status| {
+                    [
+                        status.key.to_string(),
+                        status.configured.as_str().to_string(),
+                        status.enabled.to_string(),
+                        status.description.to_string(),
+                    ]
+                });
+            print_text_table(["Feature", "Configured", "Enabled", "Description"], rows);
+        }
+        FeaturesCommand::Enable { feature } => {
+            store.enable(&feature)?;
+            println!("Enabled feature `{feature}` in config.toml.");
+        }
+        FeaturesCommand::Disable { feature } => {
+            store.disable(&feature)?;
+            println!("Disabled feature `{feature}` in config.toml.");
+        }
+    }
+    Ok(())
+}
+
+async fn run_workspace(app: &AppClient, args: WorkspaceArgs) -> Result<(), CliError> {
+    match args.command {
+        WorkspaceCommand::List => {
+            let workspaces = app
+                .workspace_client()
+                .list_workspaces(Request::new(ListWorkspacesRequest {}))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .workspaces;
+            if workspaces.is_empty() {
+                println!("No workspaces configured.");
+            } else {
+                let rows = workspaces.into_iter().map(|workspace| [workspace.name]);
+                print_text_table(["Workspace"], rows);
+            }
+        }
+        WorkspaceCommand::Create { name } => {
+            let workspace = workspace_resource(name);
+            let workspace = app
+                .workspace_client()
+                .create_workspace(Request::new(CreateWorkspaceRequest {
+                    workspace: Some(workspace),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .workspace
+                .ok_or_else(|| anyhow::anyhow!("create workspace response missing workspace"))?;
+            println!("Created workspace {}", workspace.name);
+        }
+        WorkspaceCommand::Remove { name } => {
+            let workspace = workspace_resource(name);
+            let workspace = app
+                .workspace_client()
+                .delete_workspace(Request::new(DeleteWorkspaceRequest {
+                    workspace: Some(workspace),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .workspace
+                .ok_or_else(|| anyhow::anyhow!("delete workspace response missing workspace"))?;
+            println!("Removed workspace {}", workspace.name);
+        }
+    }
+    Ok(())
+}
+
+async fn run_source(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: SourceArgs,
+) -> Result<(), CliError> {
     match args.command {
         SourceCommand::Discover => {
-            let sources = source_ops::discover_sources(app).await?;
+            let sources = source_ops::discover_sources(app, workspace).await?;
             if sources.is_empty() {
                 println!("No bundled sources available.");
             } else {
@@ -487,30 +863,36 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                     } else {
                         "available".to_string()
                     };
-                    [source.name, source.version, status]
+                    [
+                        source.name,
+                        source_ops::display_version(&source.version),
+                        status,
+                    ]
                 });
                 print_text_table(["Source", "Version", "Status"], rows);
             }
         }
         SourceCommand::List => {
-            let sources = source_ops::list_sources(app).await?;
+            let sources = source_ops::list_sources(app, workspace).await?;
             if sources.is_empty() {
                 println!("No sources configured.");
             } else {
                 let rows = sources.into_iter().map(|source| {
                     [
                         source.name,
-                        source.version,
+                        source_ops::display_version(&source.version),
                         source_ops::source_origin_label(source.origin).to_string(),
+                        source_ops::source_credential_storage_label(source.credential_storage)
+                            .to_string(),
                     ]
                 });
-                print_text_table(["Source", "Version", "Origin"], rows);
+                print_text_table(["Source", "Version", "Origin", "Secrets"], rows);
             }
         }
         SourceCommand::Info { name, verbose } => {
-            source_ops::print_source_info(app, &name, verbose).await?;
+            source_ops::print_source_info(app, workspace, &name, verbose).await?;
         }
-        SourceCommand::Add(args) => run_source_add(app, args).await?,
+        SourceCommand::Add(args) => run_source_add(app, workspace, args).await?,
         SourceCommand::Lint { file } => {
             source_ops::load_validated_manifest_file(&file)?;
             println!("Manifest is valid");
@@ -518,6 +900,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
         SourceCommand::Test { name } => {
             source_ops::test_and_print(
                 app,
+                workspace,
                 &name,
                 source_ops::TableDisplayLimit::All,
                 source_ops::ValidationSeverityMode::Strict,
@@ -525,12 +908,208 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
             .await?;
         }
         SourceCommand::Remove { name } => {
-            source_ops::remove_and_print(app, &name).await?;
+            source_ops::remove_and_print(app, workspace, &name).await?;
         }
     }
     Ok(())
 }
 
+async fn run_search(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: SearchArgs,
+) -> Result<(), CliError> {
+    let response = app
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(workspace.clone()),
+            query: args.query.join(" "),
+            limit: args.limit,
+        }))
+        .await
+        .map_err(anyhow::Error::from)?
+        .into_inner();
+    if args.json {
+        println!(
+            "{}",
+            format_search_response_json(&response).map_err(anyhow::Error::from)?
+        );
+    } else {
+        print!("{}", format_search_response_text(&response));
+    }
+    Ok(())
+}
+
+async fn run_function(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: FunctionArgs,
+) -> Result<(), CliError> {
+    match args.command {
+        FunctionCommand::List => {
+            let mut client = app.function_client();
+            let functions = client
+                .list_functions(Request::new(ListFunctionsRequest {
+                    workspace: Some(workspace.clone()),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .functions;
+            if functions.is_empty() {
+                println!("No installed functions.");
+            } else {
+                let rows = functions.iter().map(|function| {
+                    [
+                        function.name.clone(),
+                        function_status_summary(function),
+                        function_arguments_summary(function),
+                        function_publish_summary(function),
+                        function_columns_summary(function),
+                    ]
+                });
+                print_text_table(
+                    ["Function", "Status", "Arguments", "Publish", "Columns"],
+                    rows,
+                );
+                print_function_invalid_details(&functions);
+            }
+        }
+        FunctionCommand::Add { file } => {
+            let sql = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
+            let mut client = app.function_client();
+            let function = client
+                .add_function(Request::new(AddFunctionRequest {
+                    workspace: Some(workspace.clone()),
+                    sql,
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            let function = function.function.ok_or_else(|| {
+                anyhow::anyhow!("function service returned no function after add")
+            })?;
+            println!("Added function {}", function.name);
+        }
+        FunctionCommand::Remove { name } => {
+            let name = function_name_arg(&name)?;
+            let mut client = app.function_client();
+            client
+                .delete_function(Request::new(DeleteFunctionRequest {
+                    workspace: Some(workspace.clone()),
+                    name: name.clone(),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?;
+            println!("Removed function {name}");
+        }
+    }
+    Ok(())
+}
+
+fn function_status_summary(function: &Function) -> String {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(_)) => "ready".to_string(),
+        Some(function::Runtime::Invalid(_)) | None => "invalid".to_string(),
+    }
+}
+
+fn print_function_invalid_details(functions: &[Function]) {
+    let mut invalid_functions = functions.iter().filter_map(|function| {
+        function_invalid_reason(function).map(|reason| (function.name.as_str(), reason))
+    });
+    let Some((first_name, first_reason)) = invalid_functions.next() else {
+        return;
+    };
+
+    println!("\nInvalid functions:");
+    for (name, reason) in std::iter::once((first_name, first_reason)).chain(invalid_functions) {
+        println!("  {name}:");
+        for line in reason.lines() {
+            println!("    {line}");
+        }
+    }
+}
+
+fn function_invalid_reason(function: &Function) -> Option<&str> {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(_)) => None,
+        Some(function::Runtime::Invalid(invalid)) => Some(invalid.reason.as_str()),
+        None => Some("runtime status unavailable"),
+    }
+}
+
+fn function_publish_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    ready.table_function.as_ref().map_or_else(
+        || "-".to_string(),
+        |target| format!("sql: {}.{}", target.schema_name, target.name),
+    )
+}
+
+fn function_arguments_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    if ready.arguments.is_empty() {
+        return "-".to_string();
+    }
+    ready
+        .arguments
+        .iter()
+        .map(|argument| format!("{}: {}", argument.name, argument.data_type))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn function_columns_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    if ready.result_columns.is_empty() {
+        return "-".to_string();
+    }
+    let visible_columns = ready
+        .result_columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .take(4)
+        .collect::<Vec<_>>();
+    let hidden_count = ready
+        .result_columns
+        .len()
+        .saturating_sub(visible_columns.len());
+    let mut summary = visible_columns.join(", ");
+    if hidden_count > 0 {
+        write!(summary, ", +{hidden_count}").expect("writing to String should not fail");
+    }
+    summary
+}
+
+fn function_runtime_ready(function: &Function) -> Option<&FunctionRuntimeReady> {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(ready)) => Some(ready),
+        Some(function::Runtime::Invalid(_)) | None => None,
+    }
+}
+
+fn function_name_arg(name: &str) -> Result<String, anyhow::Error> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("missing function name"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(anyhow::anyhow!(
+            "function name must not contain '/' or '\\\\'"
+        ));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(anyhow::anyhow!("function name must not be '.' or '..'"));
+    }
+    Ok(trimmed.to_string())
+}
 fn print_batches(
     batches: &[arrow::record_batch::RecordBatch],
     format: OutputFormat,
@@ -618,7 +1197,11 @@ fn pad_cell(value: &str, width: usize, pad: bool) -> String {
     format!("{value}{}", " ".repeat(padding))
 }
 
-async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliError> {
+async fn run_source_add(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: SourceAddArgs,
+) -> Result<(), CliError> {
     let SourceAddArgs {
         name,
         file,
@@ -630,7 +1213,7 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
     let response = match (name, file) {
         (Some(name), None) => {
             let bundled_name = source_ops::source_name_arg(Some(&name))?;
-            let discover = source_ops::discover_sources(app).await?;
+            let discover = source_ops::discover_sources(app, workspace).await?;
             let available = discover
                 .into_iter()
                 .find(|source| source.name == bundled_name)
@@ -643,14 +1226,20 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                 .map_err(anyhow::Error::from)?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
-                source_ops::add_bundled_source_with_credentials(app, &available.name, inputs)
-                    .await?
+                source_ops::add_bundled_source_with_credentials(
+                    app,
+                    workspace,
+                    &available.name,
+                    inputs,
+                )
+                .await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
                     &inputs,
                     format!("coral source add --interactive {}", available.name),
                 )?;
-                source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
+                source_ops::add_bundled_source(app, workspace, &available.name, variables, secrets)
+                    .await?
             }
         }
         (None, Some(file)) => {
@@ -659,7 +1248,8 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(
                     manifest.declared_inputs(),
                 )?;
-                source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
+                source_ops::import_source_with_credentials(app, workspace, manifest_yaml, inputs)
+                    .await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
                     manifest.declared_inputs(),
@@ -668,22 +1258,37 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                         source_ops::shell_quote_arg(&file.display().to_string())
                     ),
                 )?;
-                source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+                source_ops::import_source(app, workspace, manifest_yaml, variables, secrets).await?
             }
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
-    println!("Added source {}", response.name);
-    source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
-        .await
-        .map_err(Into::into)
+    println!(
+        "Added source {} (secrets: {})",
+        response.name,
+        source_ops::source_credential_storage_label(response.credential_storage)
+    );
+    source_ops::validate_and_warn(
+        app,
+        workspace,
+        &response.name,
+        source_ops::TableDisplayLimit::DEFAULT,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
+    use coral_api::v1::{
+        Function, FunctionRuntimeInvalid, FunctionRuntimeReady, TableFunctionResultColumn, function,
+    };
 
-    use super::{Cli, RequiredRuntime, command_enables_stderr_logs};
+    use super::{
+        Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary,
+        function_status_summary,
+    };
 
     #[test]
     fn server_command_is_not_available() {
@@ -719,10 +1324,145 @@ mod tests {
     }
 
     #[test]
+    fn features_command_requires_no_runtime() {
+        let cli =
+            Cli::try_parse_from(["coral", "features", "list"]).expect("features args should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
+    }
+
+    #[test]
     fn regular_commands_use_normal_app_bootstrap() {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+
+        let cli =
+            Cli::try_parse_from(["coral", "functions", "list"]).expect("functions list parses");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn function_columns_summary_shows_hidden_column_count() {
+        let mut function = Function {
+            runtime: Some(function::Runtime::Ready(FunctionRuntimeReady {
+                result_columns: [
+                    "number",
+                    "title",
+                    "html_url",
+                    "state",
+                    "author",
+                    "updated_at",
+                ]
+                .into_iter()
+                .map(|name| TableFunctionResultColumn {
+                    name: name.to_string(),
+                    ..TableFunctionResultColumn::default()
+                })
+                .collect(),
+                ..FunctionRuntimeReady::default()
+            })),
+            ..Function::default()
+        };
+
+        assert_eq!(
+            function_columns_summary(&function),
+            "number, title, html_url, state, +2"
+        );
+
+        match function.runtime.as_mut() {
+            Some(function::Runtime::Ready(ready)) => ready.result_columns.truncate(4),
+            Some(function::Runtime::Invalid(_)) | None => panic!("ready function"),
+        }
+        assert_eq!(
+            function_columns_summary(&function),
+            "number, title, html_url, state"
+        );
+
+        match function.runtime.as_mut() {
+            Some(function::Runtime::Ready(ready)) => ready.result_columns.clear(),
+            Some(function::Runtime::Invalid(_)) | None => panic!("ready function"),
+        }
+        assert_eq!(function_columns_summary(&function), "-");
+    }
+
+    #[test]
+    fn search_command_uses_app_runtime() {
+        let cli =
+            Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn search_limit_rejects_values_outside_cli_contract() {
+        Cli::try_parse_from(["coral", "search", "--limit", "0", "github"])
+            .expect_err("zero limit should fail before contacting the server");
+        Cli::try_parse_from(["coral", "search", "--limit", "51", "github"])
+            .expect_err("limit above the server cap should fail before contacting the server");
+        Cli::try_parse_from(["coral", "search", "--limit", "50", "github"])
+            .expect("server maximum should parse");
+    }
+
+    #[test]
+    fn function_status_summary_stays_on_one_line() {
+        let function = Function {
+            runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
+                reason: "source 'github' is not installed".to_string(),
+            })),
+            ..Function::default()
+        };
+
+        assert_eq!(function_status_summary(&function), "invalid");
+        let ready = Function {
+            runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
+            ..Function::default()
+        };
+        assert_eq!(function_status_summary(&ready), "ready");
+    }
+
+    #[test]
+    fn selected_workspace_preserves_raw_name_for_app_validation() {
+        let workspace = super::selected_workspace(Some(" ../bad ".to_string()));
+
+        assert_eq!(workspace.name, " ../bad ");
+    }
+
+    #[test]
+    fn selected_workspace_treats_empty_cli_value_as_unset() {
+        let workspace = super::selected_workspace_name(Some(String::new()), None);
+
+        assert_eq!(workspace, super::DEFAULT_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn selected_workspace_treats_empty_env_value_as_unset() {
+        let workspace = super::selected_workspace_name(None, Some(String::new()));
+
+        assert_eq!(workspace, super::DEFAULT_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn only_workspace_scoped_commands_use_selected_workspace() {
+        let sql = Cli::try_parse_from(["coral", "sql", "SELECT 1"]).expect("sql parses");
+        let search =
+            Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
+        let source = Cli::try_parse_from(["coral", "source", "list"]).expect("source parses");
+        let functions =
+            Cli::try_parse_from(["coral", "functions", "list"]).expect("functions parses");
+        let onboard = Cli::try_parse_from(["coral", "onboard"]).expect("onboard parses");
+        let workspace =
+            Cli::try_parse_from(["coral", "workspace", "list"]).expect("workspace parses");
+        let mcp = Cli::try_parse_from(["coral", "mcp-stdio"]).expect("mcp parses");
+
+        assert!(sql.command.uses_selected_workspace());
+        assert!(search.command.uses_selected_workspace());
+        assert!(source.command.uses_selected_workspace());
+        assert!(functions.command.uses_selected_workspace());
+        assert!(onboard.command.uses_selected_workspace());
+        assert!(mcp.command.uses_selected_workspace());
+        assert!(!workspace.command.uses_selected_workspace());
     }
 
     #[test]
@@ -737,6 +1477,45 @@ mod tests {
             "mcp-stdio",
             "--enable-feedback"
         ]));
+    }
+
+    #[test]
+    fn global_feature_overrides_parse_before_subcommand() {
+        let cli = Cli::try_parse_from(["coral", "--enable-feedback", "mcp-stdio"])
+            .expect("global feature override should parse before subcommand");
+
+        assert!(matches!(cli.command, super::Command::McpStdio(_)));
+    }
+
+    #[test]
+    fn global_feature_overrides_are_hidden_from_help() {
+        let mut help = Vec::new();
+        Cli::command()
+            .write_long_help(&mut help)
+            .expect("help should render");
+        let help = String::from_utf8(help).expect("help should be utf8");
+
+        assert!(
+            !help.contains("--enable-feedback"),
+            "feature override flags should not be visible in help: {help}"
+        );
+        assert!(
+            !help.contains("--disable-feedback"),
+            "feature override flags should not be visible in help: {help}"
+        );
+    }
+
+    #[test]
+    fn conflicting_global_feature_overrides_are_rejected() {
+        let error = Cli::try_parse_from([
+            "coral",
+            "--enable-feedback",
+            "--disable-feedback",
+            "mcp-stdio",
+        ])
+        .expect_err("conflicting feature overrides should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/catalog.proto";
+import "coral/v1/resources.proto";
+
+// One scalar function argument.
+message FunctionArgument {
+  // Argument name.
+  string name = 1;
+  // Scalar argument type in ManifestDataType spelling, such as Utf8, Int64,
+  // Float64, Boolean, Timestamp, or Json.
+  string data_type = 2;
+}
+
+// SQL table-function publication target.
+message FunctionTableFunctionPublish {
+  // SQL schema.
+  string schema_name = 1;
+  // SQL table-function name.
+  string name = 2;
+  // User-facing description.
+  string description = 3;
+}
+
+// Runtime metadata for an installed function that currently plans and executes.
+message FunctionRuntimeReady {
+  // User-facing description.
+  string description = 1;
+  // Arguments inferred from the planned function SQL.
+  repeated FunctionArgument arguments = 2;
+  // SQL table-function publication.
+  FunctionTableFunctionPublish table_function = 3;
+  // Result columns inferred from the planned function SQL.
+  repeated TableFunctionResultColumn result_columns = 4;
+}
+
+// Validation failure for an installed function that is not currently queryable.
+message FunctionRuntimeInvalid {
+  // Actionable reason the function could not be published into the query runtime.
+  string reason = 1;
+}
+
+// Installed function exposed by function lifecycle APIs.
+message Function {
+  // Stable function name.
+  string name = 1;
+  // Workspace that owns this function.
+  Workspace workspace = 2;
+  // Current runtime state. Installed functions remain listed when invalid so
+  // callers can inspect or remove them.
+  oneof runtime {
+    // The function currently plans and is published into query runtimes.
+    FunctionRuntimeReady ready = 3;
+    // The function is installed but is not currently queryable.
+    FunctionRuntimeInvalid invalid = 4;
+  }
+}
+
+// Installs or replaces one user function after validation.
+message AddFunctionRequest {
+  // Workspace that owns the function.
+  Workspace workspace = 1;
+  // Raw function SQL artifact, including SQL comment frontmatter.
+  string sql = 2;
+}
+
+// Function install response.
+message AddFunctionResponse {
+  // Installed runtime-ready function.
+  Function function = 1;
+}
+
+// Lists installed functions and their current runtime status in one workspace.
+message ListFunctionsRequest {
+  // Workspace that scopes functions and selected sources.
+  Workspace workspace = 1;
+}
+
+// Installed functions and their current runtime status.
+message ListFunctionsResponse {
+  // Every installed function, including functions that no longer plan against
+  // the current workspace sources.
+  repeated Function functions = 1;
+}
+
+// Deletes one user function.
+message DeleteFunctionRequest {
+  // Workspace that owns the function.
+  Workspace workspace = 1;
+  // Function name.
+  string name = 2;
+}
+
+// Empty delete response.
+message DeleteFunctionResponse {}
+
+// Function lifecycle APIs.
+service FunctionService {
+  // Installs or replaces one user function.
+  rpc AddFunction(AddFunctionRequest) returns (AddFunctionResponse);
+  // Lists installed functions and their current runtime status.
+  rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse);
+  // Deletes one user function.
+  rpc DeleteFunction(DeleteFunctionRequest) returns (DeleteFunctionResponse);
+}

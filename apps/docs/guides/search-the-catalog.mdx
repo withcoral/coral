@@ -1,0 +1,43 @@
+---
+title: "Search the catalog"
+description: "Find relevant tables, table functions, columns, and filters before you write SQL."
+---
+
+Catalog search helps you find the right table or table function when you know what you want to query but not where to start. Enter a natural language description, and Coral ranks matching tables, table functions, columns, and filters in your current workspace.
+
+<Note>
+Catalog search looks only at Coral's catalog metadata. It does not query connected sources or return source rows.
+</Note>
+
+## Use catalog search from the CLI
+
+```shellscript
+coral search github issues assigned to me
+```
+
+Among the ranked results, you might see:
+
+```text
+Results
+1. [catalog_metadata] table github.issues
+   SQL: github.issues
+2. [catalog_metadata] table function github.search_issues
+   SQL reference: github.search_issues
+   Call: github.search_issues(q => '<value>')
+```
+
+The `SQL` line gives you the table reference. For a table function, `SQL reference` identifies the function and `Call` shows its required arguments.
+
+To fetch rows, use the result's `SQL` reference or `Call` example in a query with `coral sql`. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
+
+By default, Coral returns up to 10 results. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
+
+## Use catalog search over MCP
+
+Coral exposes catalog search to connected agents through its read-only `search` MCP tool. An agent can use it to find the relevant table or table function before querying your data.
+
+> "Use Coral to show the open GitHub issues assigned to me."
+
+Ask for the result you want; you do not need to mention the `search` tool. The agent can decide when catalog search is needed.
+
+[Set up Coral over MCP](/guides/use-coral-over-mcp).

@@ -11,12 +11,15 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::de::Error as _;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
+
+const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
 
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
@@ -46,6 +49,19 @@ impl SourceManifestCommon {
     }
 }
 
+pub(crate) fn validate_source_name(name: &str) -> Result<()> {
+    validate_reserved_source_schema_name(name, "source name")
+}
+
+pub(crate) fn validate_reserved_source_schema_name(name: &str, label: &str) -> Result<()> {
+    if RESERVED_SOURCE_SCHEMA_NAMES.contains(&name) {
+        return Err(ManifestError::validation(format!(
+            "{label} '{name}' is reserved and cannot be used by manifests"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {
     for (index, query) in test_queries.iter().enumerate() {
         if query.trim().is_empty() {
@@ -62,15 +78,20 @@ pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) 
 #[serde(rename_all = "snake_case")]
 pub enum SourceBackend {
     Http,
-    Parquet,
-    Jsonl,
+    File,
     Mcp,
 }
 
-/// Normalized scalar data types supported by the source-spec DSL.
+/// The normalized scalar type vocabulary shared by source specs, the query
+/// runtime, and catalog surfaces.
 ///
-/// The engine is responsible for mapping these into runtime-specific types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// This is the hub every other scalar vocabulary converts through: v4 IR
+/// scalars lower into it, and the engine maps it into runtime-specific
+/// (Arrow) types. The variant spellings ("Utf8", "Int64", ...) are a wire
+/// contract pinned by the `PascalCase` serde representation and the manifest
+/// JSON schema.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "PascalCase")]
 pub enum ManifestDataType {
     Utf8,
     Int64,
@@ -84,8 +105,78 @@ pub enum ManifestDataType {
     Json,
 }
 
+impl ManifestDataType {
+    /// Every manifest data type, in canonical declaration order.
+    ///
+    /// [`FromStr`](std::str::FromStr) and the lattice enforcement tests
+    /// treat this array as the source of truth for the variant set.
+    pub const ALL: [Self; 6] = {
+        // Exhaustiveness witness: adding a variant breaks this match, and
+        // the new variant must be added to the array below in the same
+        // edit.
+        const fn witness(data_type: ManifestDataType) {
+            match data_type {
+                ManifestDataType::Utf8
+                | ManifestDataType::Int64
+                | ManifestDataType::Boolean
+                | ManifestDataType::Float64
+                | ManifestDataType::Timestamp
+                | ManifestDataType::Json => {}
+            }
+        }
+        let _ = witness;
+        [
+            Self::Utf8,
+            Self::Int64,
+            Self::Boolean,
+            Self::Float64,
+            Self::Timestamp,
+            Self::Json,
+        ]
+    };
+
+    /// Returns the source-manifest spelling for this data type.
+    ///
+    /// This must stay aligned with the enum's `PascalCase` serde
+    /// representation and the `manifest_data_type` definition in the manifest
+    /// JSON schema.
+    #[must_use]
+    pub fn as_manifest_str(self) -> &'static str {
+        match self {
+            Self::Utf8 => "Utf8",
+            Self::Int64 => "Int64",
+            Self::Boolean => "Boolean",
+            Self::Float64 => "Float64",
+            Self::Timestamp => "Timestamp",
+            Self::Json => "Json",
+        }
+    }
+}
+
+impl std::fmt::Display for ManifestDataType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_manifest_str())
+    }
+}
+
+impl std::str::FromStr for ManifestDataType {
+    type Err = ManifestError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|data_type| data_type.as_manifest_str() == s)
+            .ok_or_else(|| {
+                let expected = Self::ALL.map(Self::as_manifest_str).join(", ");
+                ManifestError::validation(format!(
+                    "unsupported data type '{s}' in source manifest; expected one of: {expected}"
+                ))
+            })
+    }
+}
+
 /// One request or auth header declared in the source spec.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct HeaderSpec {
     pub name: String,
     #[serde(flatten)]
@@ -134,7 +225,7 @@ impl TableCommon {
 }
 
 /// How a filter value is matched against `SQL` predicates.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FilterMode {
     /// Pushes down `=` only (current behaviour for all existing providers).
@@ -148,34 +239,24 @@ pub enum FilterMode {
     Contains,
 }
 
-/// One declared filter that can be bound from SQL into a backend request.
-#[derive(Debug, Clone, Deserialize)]
+/// One declared filter that can be used as a complete exact lookup from SQL.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterSpec {
     pub name: String,
     #[serde(rename = "type", default = "default_filter_data_type")]
-    pub data_type: String,
+    pub data_type: ManifestDataType,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
     pub mode: FilterMode,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub lookup_key: bool,
 }
 
-impl FilterSpec {
-    /// Convert this filter's declared type into a normalized manifest data type.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ManifestError`] if the manifest references an unsupported
-    /// data type.
-    pub fn manifest_data_type(&self) -> Result<ManifestDataType> {
-        parse_manifest_data_type(&self.data_type)
-    }
-}
-
-fn default_filter_data_type() -> String {
-    "Utf8".to_string()
+fn default_filter_data_type() -> ManifestDataType {
+    ManifestDataType::Utf8
 }
 
 /// Source-scoped table-function semantic class.
@@ -226,6 +307,52 @@ pub struct SearchLimitsSpec {
     pub max_calls_per_query: usize,
 }
 
+impl SearchLimitsSpec {
+    pub fn validate(&self, context: &str) -> Result<()> {
+        if self.default_top_k == 0 {
+            return Err(ManifestError::validation(format!(
+                "{context}.default_top_k must be > 0"
+            )));
+        }
+        if self.max_top_k == 0 {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k must be > 0"
+            )));
+        }
+        if self.max_top_k > MAX_SEARCH_TOP_K {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k must be <= {MAX_SEARCH_TOP_K}"
+            )));
+        }
+        if self.default_top_k > self.max_top_k {
+            return Err(ManifestError::validation(format!(
+                "{context}.default_top_k must be <= max_top_k"
+            )));
+        }
+        if self.max_calls_per_query == 0 {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_calls_per_query must be > 0"
+            )));
+        }
+        if self.max_calls_per_query > MAX_SEARCH_CALLS_PER_QUERY {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_calls_per_query must be <= {MAX_SEARCH_CALLS_PER_QUERY}"
+            )));
+        }
+        let Some(candidate_budget) = self.max_top_k.checked_mul(self.max_calls_per_query) else {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k * max_calls_per_query exceeds supported range"
+            )));
+        };
+        if candidate_budget > MAX_SEARCH_CANDIDATES_PER_QUERY {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Machine-readable path from a search candidate row to a detail table.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -266,11 +393,17 @@ pub struct SourceTableFunctionSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TableFunctionArgSpec {
     pub name: String,
+    #[serde(rename = "type", default = "default_table_function_arg_data_type")]
+    pub data_type: ManifestDataType,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
     pub values: Vec<String>,
     pub bind: FunctionArgBinding,
+}
+
+fn default_table_function_arg_data_type() -> ManifestDataType {
+    ManifestDataType::Utf8
 }
 
 /// How a table function argument contributes to the provider request.
@@ -421,11 +554,14 @@ impl Serialize for BodySpec {
 }
 
 /// How a source-spec request value is populated at runtime.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum ValueSourceSpec {
     Template {
         template: ParsedTemplate,
+    },
+    OneOf {
+        values: Vec<ValueSourceSpec>,
     },
     Literal {
         value: Value,
@@ -444,6 +580,11 @@ pub enum ValueSourceSpec {
         key: String,
         #[serde(default)]
         default: Option<bool>,
+    },
+    FilterStringArray {
+        key: String,
+        #[serde(default)]
+        default: Option<Vec<String>>,
     },
     FilterSplit {
         key: String,
@@ -483,6 +624,9 @@ pub enum ValueSourceSpec {
     Input {
         key: String,
     },
+    Bearer {
+        key: String,
+    },
     State {
         key: String,
     },
@@ -492,7 +636,7 @@ pub enum ValueSourceSpec {
 }
 
 /// Rules for interpreting the response payload returned by one HTTP table.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ResponseSpec {
     #[serde(default)]
     pub format: ResponseBodyFormat,
@@ -509,7 +653,7 @@ pub struct ResponseSpec {
 }
 
 /// How the raw response body is decoded before row extraction runs.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseBodyFormat {
     /// Standard JSON document (the response is parsed once).
@@ -522,7 +666,7 @@ pub enum ResponseBodyFormat {
 }
 
 /// How the engine converts a selected response value into logical rows.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RowStrategy {
     #[default]
@@ -532,7 +676,7 @@ pub enum RowStrategy {
 }
 
 /// Pagination configuration for one HTTP table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaginationSpec {
     #[serde(default)]
     pub mode: PaginationMode,
@@ -544,6 +688,8 @@ pub struct PaginationSpec {
     pub cursor_body_path: Vec<String>,
     #[serde(default)]
     pub response_cursor_path: Vec<String>,
+    #[serde(default)]
+    pub response_cursor_header: Option<String>,
     #[serde(default)]
     pub page_param: Option<String>,
     #[serde(default)]
@@ -559,6 +705,8 @@ pub struct PaginationSpec {
     #[serde(default)]
     pub link_header_require_results: bool,
     #[serde(default)]
+    pub next_url_header: Option<String>,
+    #[serde(default)]
     pub max_pages: Option<usize>,
 }
 
@@ -570,6 +718,7 @@ impl Default for PaginationSpec {
             cursor_param: None,
             cursor_body_path: Vec::new(),
             response_cursor_path: Vec::new(),
+            response_cursor_header: None,
             page_param: None,
             page_start: 0,
             page_step: default_page_step(),
@@ -577,6 +726,7 @@ impl Default for PaginationSpec {
             offset_start: 0,
             offset_step: None,
             link_header_require_results: false,
+            next_url_header: None,
             max_pages: None,
         }
     }
@@ -587,7 +737,16 @@ impl Default for PaginationSpec {
 pub struct ValidatedPagination {
     pub mode: ValidatedPaginationMode,
     pub page_size: Option<PageSizeSpec>,
+    pub cursor_param: Option<String>,
+    pub cursor_body_path: Vec<String>,
+    pub response_cursor_path: Vec<String>,
+    pub response_cursor_header: Option<String>,
+    pub page_param: Option<String>,
+    pub page_start: i64,
+    pub page_step: i64,
     pub link_header_require_results: bool,
+    pub next_url_header: Option<String>,
+    pub max_pages: Option<usize>,
 }
 
 /// The validated pagination mode selected for one HTTP table.
@@ -624,11 +783,25 @@ impl PaginationSpec {
 
     pub fn validated(&self, schema: &str, table: &str) -> Result<ValidatedPagination> {
         let page_size = self.validated_page_size(schema, table)?;
+        if matches!(self.max_pages, Some(0)) {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.max_pages must be > 0"
+            )));
+        }
         let mode = self.validated_mode(schema, table, page_size.is_some())?;
         Ok(ValidatedPagination {
             mode,
             page_size,
+            cursor_param: self.cursor_param.clone(),
+            cursor_body_path: self.cursor_body_path.clone(),
+            response_cursor_path: self.response_cursor_path.clone(),
+            response_cursor_header: self.response_cursor_header.clone(),
+            page_param: self.page_param.clone(),
+            page_start: self.page_start,
+            page_step: self.page_step,
             link_header_require_results: self.link_header_require_results,
+            next_url_header: self.next_url_header.clone(),
+            max_pages: self.max_pages,
         })
     }
 
@@ -638,6 +811,25 @@ impl PaginationSpec {
         table: &str,
         has_page_size: bool,
     ) -> Result<ValidatedPaginationMode> {
+        if self
+            .response_cursor_header
+            .as_deref()
+            .is_some_and(|header| header.trim().is_empty())
+        {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.response_cursor_header must not be empty"
+            )));
+        }
+        if self
+            .next_url_header
+            .as_deref()
+            .is_some_and(|header| header.trim().is_empty())
+        {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.next_url_header must not be empty"
+            )));
+        }
+
         match self.mode {
             PaginationMode::None => Ok(ValidatedPaginationMode::None),
             PaginationMode::Auto => Ok(ValidatedPaginationMode::Auto),
@@ -647,9 +839,9 @@ impl PaginationSpec {
                         "{schema}.{table} pagination.mode=cursor_query requires cursor_param"
                     )));
                 }
-                if self.response_cursor_path.is_empty() {
+                if self.response_cursor_path.is_empty() && self.response_cursor_header.is_none() {
                     return Err(ManifestError::validation(format!(
-                        "{schema}.{table} pagination.mode=cursor_query requires response_cursor_path"
+                        "{schema}.{table} pagination.mode=cursor_query requires response_cursor_path or response_cursor_header"
                     )));
                 }
                 Ok(ValidatedPaginationMode::CursorQuery)
@@ -660,9 +852,9 @@ impl PaginationSpec {
                         "{schema}.{table} pagination.mode=cursor_body requires cursor_body_path"
                     )));
                 }
-                if self.response_cursor_path.is_empty() {
+                if self.response_cursor_path.is_empty() && self.response_cursor_header.is_none() {
                     return Err(ManifestError::validation(format!(
-                        "{schema}.{table} pagination.mode=cursor_body requires response_cursor_path"
+                        "{schema}.{table} pagination.mode=cursor_body requires response_cursor_path or response_cursor_header"
                     )));
                 }
                 Ok(ValidatedPaginationMode::CursorBody)
@@ -758,7 +950,7 @@ fn default_page_step() -> i64 {
 }
 
 /// Supported pagination modes in the source-spec DSL.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PaginationMode {
     #[default]
@@ -772,7 +964,7 @@ pub enum PaginationMode {
 }
 
 /// Page-size settings shared by several pagination modes.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PageSizeSpec {
     pub default: usize,
     pub max: usize,
@@ -783,11 +975,11 @@ pub struct PageSizeSpec {
 }
 
 /// One declared output column for a manifest table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ColumnSpec {
     pub name: String,
     #[serde(rename = "type")]
-    pub data_type: String,
+    pub data_type: ManifestDataType,
     #[serde(default = "default_nullable")]
     pub nullable: bool,
     #[serde(default)]
@@ -800,16 +992,6 @@ pub struct ColumnSpec {
 }
 
 impl ColumnSpec {
-    /// Convert this manifest type into a normalized manifest data type.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ManifestError`] if the manifest references an unsupported
-    /// data type.
-    pub fn manifest_data_type(&self) -> Result<ManifestDataType> {
-        parse_manifest_data_type(&self.data_type)
-    }
-
     #[must_use]
     pub fn resolved_expr(&self) -> ExprSpec {
         self.expr.clone().unwrap_or_else(|| ExprSpec::Path {
@@ -823,7 +1005,7 @@ fn default_nullable() -> bool {
 }
 
 /// Column expressions supported by the source-spec DSL.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExprSpec {
     Path {
@@ -905,7 +1087,7 @@ pub enum ExprSpec {
 }
 
 /// Declares how to interpret the raw value before formatting as ISO-8601.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampInput {
     /// Seconds since Unix epoch (integer or float).
@@ -927,26 +1109,6 @@ fn default_key_field() -> String {
 
 fn default_value_field() -> String {
     "value".to_string()
-}
-
-/// Parse a manifest data type name into a normalized manifest data type.
-///
-/// # Errors
-///
-/// Returns a [`ManifestError`] if `s` is not one of the supported manifest
-/// data type names.
-pub(crate) fn parse_manifest_data_type(s: &str) -> Result<ManifestDataType> {
-    match s {
-        "Utf8" => Ok(ManifestDataType::Utf8),
-        "Int64" => Ok(ManifestDataType::Int64),
-        "Boolean" => Ok(ManifestDataType::Boolean),
-        "Float64" => Ok(ManifestDataType::Float64),
-        "Timestamp" => Ok(ManifestDataType::Timestamp),
-        "Json" => Ok(ManifestDataType::Json),
-        other => Err(ManifestError::validation(format!(
-            "unsupported data type '{other}' in source manifest"
-        ))),
-    }
 }
 
 #[cfg(test)]
@@ -980,10 +1142,11 @@ mod tests {
             vec![],
             vec![FilterSpec {
                 name: "id".into(),
-                data_type: "Utf8".into(),
+                data_type: ManifestDataType::Utf8,
                 required: false,
                 mode: FilterMode::default(),
                 description: String::new(),
+                lookup_key: false,
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -1017,17 +1180,19 @@ mod tests {
             vec![
                 FilterSpec {
                     name: "id".into(),
-                    data_type: "Utf8".into(),
+                    data_type: ManifestDataType::Utf8,
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
+                    lookup_key: false,
                 },
                 FilterSpec {
                     name: "org".into(),
-                    data_type: "Utf8".into(),
+                    data_type: ManifestDataType::Utf8,
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
+                    lookup_key: false,
                 },
             ],
             RequestSpec {
@@ -1131,6 +1296,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(spec.mode, FilterMode::Equality);
+        assert!(!spec.lookup_key);
     }
 
     #[test]
@@ -1169,7 +1335,7 @@ mod tests {
             "name": "q"
         }))
         .unwrap();
-        assert_eq!(spec.data_type, "Utf8");
+        assert_eq!(spec.data_type, ManifestDataType::Utf8);
         assert_eq!(spec.description, "");
     }
 
@@ -1198,6 +1364,36 @@ mod tests {
         .unwrap();
         assert_eq!(spec.kind, SourceTableFunctionKind::Search);
         assert_eq!(spec.search_limits.unwrap().default_top_k, 10);
+    }
+
+    #[test]
+    fn table_function_arg_data_type_defaults_to_utf8_and_deserializes() {
+        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
+            "name": "search_issues",
+            "args": [
+                { "name": "q", "bind": { "arg": "query" } },
+                { "name": "include_archived", "type": "Boolean", "bind": { "arg": "archived" } }
+            ],
+            "request": { "path": "/search/issues" }
+        }))
+        .unwrap();
+
+        let [query, include_archived] = spec.args.as_slice() else {
+            panic!("expected two table function args");
+        };
+        assert_eq!(query.data_type, ManifestDataType::Utf8);
+        assert_eq!(include_archived.data_type, ManifestDataType::Boolean);
+    }
+
+    #[test]
+    fn filter_lookup_key_field_deserializes() {
+        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
+            "name": "repo",
+            "lookup_key": true
+        }))
+        .unwrap();
+
+        assert!(spec.lookup_key);
     }
 
     #[test]
@@ -1258,6 +1454,97 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("demo.items pagination.mode=offset requires offset_step or page_size")
+        );
+    }
+
+    #[test]
+    fn pagination_max_pages_zero_is_rejected() {
+        let pagination = PaginationSpec {
+            max_pages: Some(0),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.max_pages must be > 0")
+        );
+    }
+
+    #[test]
+    fn cursor_query_pagination_rejects_empty_response_cursor_header() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::CursorQuery,
+            cursor_param: Some("cursor".to_string()),
+            response_cursor_path: vec!["meta".to_string(), "next_cursor".to_string()],
+            response_cursor_header: Some(String::new()),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.response_cursor_header must not be empty")
+        );
+    }
+
+    #[test]
+    fn cursor_body_pagination_rejects_blank_response_cursor_header() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::CursorBody,
+            cursor_body_path: vec!["cursor".to_string()],
+            response_cursor_path: vec!["meta".to_string(), "next_cursor".to_string()],
+            response_cursor_header: Some("   ".to_string()),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.response_cursor_header must not be empty")
+        );
+    }
+
+    #[test]
+    fn link_pagination_rejects_blank_next_url_header() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::LinkHeader,
+            next_url_header: Some("   ".to_string()),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.next_url_header must not be empty")
+        );
+    }
+
+    #[test]
+    fn manifest_data_type_all_round_trips_through_spelling_and_serde() {
+        for data_type in ManifestDataType::ALL {
+            let spelled = data_type.to_string();
+            assert_eq!(
+                spelled.parse::<ManifestDataType>().expect("round trip"),
+                data_type,
+                "Display/FromStr round trip failed for {spelled}"
+            );
+            assert_eq!(
+                serde_json::to_value(data_type).expect("serialize"),
+                Value::String(spelled.clone()),
+                "serde spelling diverged from as_manifest_str for {spelled}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_data_type_rejects_unknown_spelling() {
+        let error = "Banana"
+            .parse::<ManifestDataType>()
+            .expect_err("unknown spelling should fail");
+        assert!(
+            error.to_string().contains("unsupported data type 'Banana'"),
+            "unexpected error: {error}"
         );
     }
 }

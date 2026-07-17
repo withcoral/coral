@@ -1,0 +1,17 @@
+{
+  "lsp": {
+    "yaml-language-server": {
+      "settings": {
+        "yaml": {
+          "schemas": {
+            "./crates/coral-spec/src/schema/source_manifest.schema.json": [
+              "sources/core/**/manifest.yaml",
+              "sources/community/**/manifest.yaml",
+            ],
+            "./crates/coral-spec/src/schema/source_manifest_v4.schema.json": ["sources/v4/**/manifest.yaml"],
+          },
+        },
+      },
+    },
+  },
+}

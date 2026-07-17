@@ -12,8 +12,11 @@ root.
 - workspace identity and validation
 - source lifecycle and install/remove persistence
 - credential-set identity and credential material persistence
+- runtime feature registry semantics for user-facing `[features]` config
 - bundled-source manifest description and install-time manifest mapping through
   `coral-spec`
+- assembly of query-engine runtime packages from app-owned installed state,
+  including DSL v4 materialized artifacts and generated runtime components
 - query-time selection of installed sources before calling `coral-engine`
 - workspace-scoped catalog discovery behavior over query-visible tables:
   matching, pagination, exact lookup, column filtering, and missing-table
@@ -37,10 +40,34 @@ root.
 - Keep `state/`, `credentials/`, `workspaces/`, `sources/`, `query/`, and
   `catalog/` as the main internal boundaries. Do not create new sub-boundaries
   unless they own durable, independent behavior.
-- Persist imported manifests as files under app-owned state; do not inline
-  them into `config.toml`.
+- Keep RDBMS-backed durable app-state infrastructure under `state/db`. The
+  initial DB bootstrap may coexist with filesystem-backed source behavior, but
+  repository wiring must keep SQLx pools, transactions, SeaQuery schema
+  identifiers, and row structs inside that module.
+- DB repository behavior should have shared tests that run against SQLite
+  locally and Postgres in CI through the repository harness.
+- Until the RDBMS migration phases replace the relevant stores, persist
+  imported manifests as files under app-owned state; do not inline them into
+  `config.toml`.
+- Persist DSL v4 imported manifests as authored intent plus durability
+  normalization only. Descriptor hashes, generated OpenAPI metadata, semantic
+  IR, projections, and package fingerprints belong in materialized artifacts
+  or runtime package assembly, not in persisted `manifest.yaml`.
+- Treat DSL v4 materialization as a user-chosen lifecycle event: generate at
+  source add, never re-fetch descriptors or recompute projections implicitly
+  during query/list/validate, and fail with re-add guidance when artifacts are
+  missing or incompatible. RDBMS migration machinery must preserve that
+  explicit lifecycle instead of silently refreshing artifacts.
+- User-facing runtime feature semantics belong in `coral_app::features`; raw
+  config-file persistence, locking, and TOML extraction stay in `state/`.
 - Bundled installs persist source identity plus configured variables and
   secrets, then resolve their manifest from the current binary at runtime.
+- Credential backend selection stays inside `credentials/`. Managers pass
+  explicit source credential-storage routes; CLI, MCP, source-spec, and engine
+  code must not know backend implementation details.
+- An installed source's persisted credential-storage route is authoritative.
+  A missing route is legacy file storage, not an instruction to re-run global
+  backend selection.
 - Source `name` is the canonical installed identifier and SQL schema name.
 - `coral-client::local` intentionally depends on `coral-app::ServerBuilder` for
   the explicit local bootstrap seam.
@@ -63,6 +90,9 @@ root.
   adapters need to share. CLI, MCP, and UI code should render catalog results,
   not reimplement table matching, column filtering, pagination, or
   missing-table context.
+- `sources/runtime_package.rs` owns app-level conversion from installed source
+  state and materialized artifacts into the generic runtime components accepted
+  by `coral-engine`.
 - For all service calls, keep protobuf request/response types confined to the
   service edge. Convert request data into small app-local command, query, or
   binding structs before calling managers; do not pass `coral_api::v1`

@@ -1,0 +1,109 @@
+name: openlibrary
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Search books, authors, and subjects from the Open Library API.
+base_url: https://openlibrary.org
+test_queries:
+  - SELECT * FROM openlibrary.search(q => 'lord of the rings') LIMIT 5
+  - SELECT * FROM openlibrary.subjects WHERE subject = 'love' LIMIT 5
+functions:
+  - name: search
+    kind: search
+    description: Search for books by title, author, or keyword.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /search.json
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: fields
+          from: literal
+          value: key,title,first_publish_year,author_name,author_key,language,isbn,publisher
+    response:
+      rows_path:
+        - docs
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: q
+        type: Utf8
+        expr: {kind: from_arg, key: q}
+      - name: key
+        type: Utf8
+        expr: {kind: path, path: [key]}
+      - name: title
+        type: Utf8
+        expr: {kind: path, path: [title]}
+      - name: first_publish_year
+        type: Int64
+        expr: {kind: path, path: [first_publish_year]}
+      - name: author_name
+        type: Json
+        expr: {kind: path, path: [author_name]}
+      - name: author_key
+        type: Json
+        expr: {kind: path, path: [author_key]}
+      - name: language
+        type: Json
+        expr: {kind: path, path: [language]}
+      - name: isbn
+        type: Json
+        expr: {kind: path, path: [isbn]}
+      - name: publisher
+        type: Json
+        expr: {kind: path, path: [publisher]}
+tables:
+  - name: subjects
+    description: Fetch books belonging to a specific subject or genre.
+    fetch_limit_default: 100
+    filters:
+      - name: subject
+        required: true
+    request:
+      method: GET
+      path: /subjects/{{filter.subject}}.json
+    response:
+      rows_path:
+        - works
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: subject
+        type: Utf8
+        expr: {kind: from_filter, key: subject}
+      - name: key
+        type: Utf8
+        expr: {kind: path, path: [key]}
+      - name: title
+        type: Utf8
+        expr: {kind: path, path: [title]}
+      - name: first_publish_year
+        type: Int64
+        expr: {kind: path, path: [first_publish_year]}
+      - name: authors
+        type: Json
+        expr: {kind: path, path: [authors]}

@@ -2,17 +2,19 @@
 
 use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
 use coral_api::v1::{
-    CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
-    PaginationRequest, SearchCatalogRequest, SearchCatalogResponse,
+    CatalogCounts as ProtoCatalogCounts, CatalogItemKind as ProtoCatalogItemKind,
+    DescribeTableRequest, DescribeTableResponse, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListColumnsResponse, PaginationRequest, SearchCatalogRequest,
+    SearchCatalogResponse,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
     CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
-    column_pagination, search_pagination,
+    SearchCatalogQuery, column_pagination, search_pagination,
 };
+use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
 use crate::transport::{
     catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
@@ -41,16 +43,18 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        instrument_grpc(span, async move {
+        let attribution = QueryAttribution::from_extensions(request.extensions());
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
-            let page = catalog
-                .list_catalog(&workspace_name, schema_name, kind, pagination)
+            let catalog_page = catalog
+                .list_catalog(&workspace_name, schema_name, kind, pagination, &attribution)
                 .await
                 .map_err(query_status)?;
+            let page = catalog_page.items;
             let pagination = pagination_to_proto(
                 page.total,
                 page.limit,
@@ -65,8 +69,12 @@ impl CatalogServiceApi for CatalogService {
                     .map(|item| catalog_item_to_proto(&workspace_name, item))
                     .collect(),
                 pagination: Some(pagination),
+                counts: Some(ProtoCatalogCounts {
+                    table_count: catalog_page.counts.table_count,
+                    table_function_count: catalog_page.counts.table_function_count,
+                }),
             }))
-        })
+        }))
         .await
     }
 
@@ -76,7 +84,8 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        instrument_grpc(span, async move {
+        let attribution = QueryAttribution::from_extensions(request.extensions());
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
@@ -86,11 +95,14 @@ impl CatalogServiceApi for CatalogService {
             let page = catalog
                 .search_catalog(
                     &workspace_name,
-                    &request.pattern,
-                    schema_name,
-                    kind,
-                    request.ignore_case,
-                    pagination,
+                    SearchCatalogQuery {
+                        pattern: &request.pattern,
+                        schema_name,
+                        kind,
+                        ignore_case: request.ignore_case,
+                        pagination,
+                    },
+                    &attribution,
                 )
                 .await
                 .map_err(query_status)?;
@@ -109,7 +121,7 @@ impl CatalogServiceApi for CatalogService {
                     .collect(),
                 pagination: Some(pagination),
             }))
-        })
+        }))
         .await
     }
 
@@ -119,7 +131,8 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<DescribeTableResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        instrument_grpc(span, async move {
+        let attribution = QueryAttribution::from_extensions(request.extensions());
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
@@ -128,6 +141,7 @@ impl CatalogServiceApi for CatalogService {
                 .describe_table(
                     &workspace_name,
                     CatalogTableRef::new(&schema_name, &table_name),
+                    &attribution,
                 )
                 .await
                 .map_err(query_status)?;
@@ -135,7 +149,7 @@ impl CatalogServiceApi for CatalogService {
                 &workspace_name,
                 result,
             )))
-        })
+        }))
         .await
     }
 
@@ -145,7 +159,8 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        instrument_grpc(span, async move {
+        let attribution = QueryAttribution::from_extensions(request.extensions());
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
@@ -162,6 +177,7 @@ impl CatalogServiceApi for CatalogService {
                         required_only: request.required_only,
                         pagination,
                     },
+                    &attribution,
                 )
                 .await
                 .map_err(query_status)?
@@ -183,7 +199,7 @@ impl CatalogServiceApi for CatalogService {
                     .collect(),
                 pagination: Some(pagination),
             }))
-        })
+        }))
         .await
     }
 }

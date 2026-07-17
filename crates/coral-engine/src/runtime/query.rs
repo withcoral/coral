@@ -1,46 +1,295 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+use arrow::datatypes::{DataType, Field, FieldRef};
+use coral_spec::ManifestDataType;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::{ScalarValue, TableReference};
 use datafusion::dataframe::DataFrame;
+use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::physical_plan::displayable;
+use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::optimizer::Analyzer as DataFusionAnalyzer;
+use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
+use tokio::sync::OnceCell;
+use tracing::{Instrument as _, info_span};
 
-use crate::backends::compile_query_source;
+use crate::backends::http::ProviderQueryError;
+use crate::backends::{RegisteredSource, compile_query_source};
 use crate::runtime::catalog;
+use crate::runtime::dependent_join::error::resolver_rows_exceeded;
+use crate::runtime::dependent_join::optimizer;
+use crate::runtime::dependent_join::planner::DependentJoinExtensionPlanner;
 use crate::runtime::error::{
-    datafusion_to_core, datafusion_to_core_with_sql, query_result_observer_error_to_core,
+    datafusion_to_core, datafusion_to_core_with_sql_and_table_functions,
+    query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
+use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
-use crate::runtime::source_functions::SourceFunctionRegistry;
+use crate::runtime::scoped_table_functions::ScopedTableFunctionName;
+use crate::runtime::source_functions::{
+    SOURCE_FUNCTION_NODE_NAME, SourceFunctionNode, SourceFunctionRegistry,
+};
+use crate::runtime::udf_calls::{
+    UDF_CALL_NODE_NAME, UdfCallAnalyzerRule, UdfCallNode, UdfCallRegistry,
+};
+use crate::runtime::udfs::published_table_functions;
 use crate::{
-    CatalogInfo, CoreError, QueryExecution, QueryPlan, QueryResultObserver,
-    QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
+    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator, SourceDecorator,
+    SourceInputResolver, TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
+    fallback_runtime: Option<FallbackRuntime>,
+    memory: QueryMemoryConfig,
+    active_sources: Vec<RegisteredSource>,
+    source_function_names: HashSet<ScopedTableFunctionName>,
+    udfs_installed: bool,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+    schema_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+}
+
+pub(crate) struct InferredSqlSignature {
+    pub(crate) parameter_fields: HashMap<String, Option<FieldRef>>,
+    pub(crate) declared_parameter_types: HashMap<String, ManifestDataType>,
+    pub(crate) planned_schema: Arc<arrow::datatypes::Schema>,
+}
+
+struct FallbackRuntime {
+    config: FallbackRuntimeConfig,
+    runtime: OnceCell<RegisteredRuntime>,
+}
+
+#[derive(Clone)]
+struct FallbackRuntimeConfig {
+    sources: Vec<QuerySource>,
+    runtime_context: QueryRuntimeContext,
+    dependent_join: DependentJoinConfig,
+    memory: QueryMemoryConfig,
+    udfs: Vec<UdfRuntimeDefinition>,
+    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+}
+
+struct RegisteredRuntime {
+    ctx: Arc<SessionContext>,
+    active_sources: Vec<RegisteredSource>,
+    source_function_names: HashSet<ScopedTableFunctionName>,
+    tables: Vec<TableInfo>,
+    table_functions: Vec<TableFunctionInfo>,
+    failures: Vec<SourceRegistrationFailure>,
+}
+
+struct RuntimeBuildInputs<'a> {
+    sources: &'a [QuerySource],
+    runtime_context: &'a QueryRuntimeContext,
+    request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_decorators: &'a mut [Box<dyn SourceDecorator>],
+    dependent_join: &'a DependentJoinConfig,
+    memory: &'a QueryMemoryConfig,
+    udfs: &'a [UdfRuntimeDefinition],
+}
+
+enum SqlExecutionFailure {
+    Planning(DataFusionError),
+    Collection(DataFusionError),
+    Observer(CoreError),
 }
 
 pub(crate) async fn build_runtime(
     sources: &[QuerySource],
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
-    let session_config = SessionConfig::new().with_information_schema(true);
+    let span = info_span!("coral.engine.runtime.build", source.count = sources.len());
+    build_runtime_inner(sources, runtime).instrument(span).await
+}
+
+async fn build_runtime_inner(
+    sources: &[QuerySource],
+    runtime: QueryRuntimeConfig,
+) -> Result<QueryRuntimeAdapter, CoreError> {
+    let QueryRuntimeConfig {
+        context: runtime_context,
+        memory,
+        dependent_join,
+        mut extensions,
+        udfs,
+    } = runtime;
+    let request_authenticators = extensions.request_authenticators.clone();
+    let source_input_resolver = extensions.source_input_resolver.clone();
+    let udfs_installed = !udfs.is_empty();
+    // Resolver-row overflow can retry without the dependent-join optimizer only
+    // when runtime registration is replayable. Source decorators are mutable
+    // one-shot registration hooks today, so decorated runtimes keep resolver-row
+    // overflow as a hard error instead of applying decorators a second time with
+    // potentially different side effects.
+    let fallback_without_dependent_join =
+        dependent_join.optimizer_enabled() && extensions.source_decorators.is_empty();
+    let fallback_runtime = fallback_without_dependent_join.then(|| {
+        FallbackRuntime::new(FallbackRuntimeConfig {
+            sources: sources.to_vec(),
+            runtime_context: runtime_context.clone(),
+            dependent_join: dependent_join.clone(),
+            memory: memory.clone(),
+            udfs: udfs.clone(),
+            request_authenticators: request_authenticators.clone(),
+            source_input_resolver: source_input_resolver.clone(),
+        })
+    });
+
+    let primary = build_registered_runtime(RuntimeBuildInputs {
+        sources,
+        runtime_context: &runtime_context,
+        request_authenticators: &request_authenticators,
+        source_input_resolver,
+        source_decorators: extensions.source_decorators.as_mut_slice(),
+        dependent_join: &dependent_join,
+        memory: &memory,
+        udfs: &udfs,
+    })
+    .await?;
+
+    Ok(QueryRuntimeAdapter {
+        ctx: primary.ctx,
+        fallback_runtime,
+        memory,
+        active_sources: primary.active_sources,
+        source_function_names: primary.source_function_names,
+        udfs_installed,
+        tables: primary.tables,
+        table_functions: primary.table_functions,
+        failures: primary.failures,
+        schema_to_source: schema_to_source_names(sources),
+        query_result_observers: extensions.query_result_observers,
+    })
+}
+
+async fn build_registered_runtime(
+    config: RuntimeBuildInputs<'_>,
+) -> Result<RegisteredRuntime, CoreError> {
+    let ctx = build_session_context(config.dependent_join, config.memory)?;
+    let registration = register_runtime_sources(
+        &ctx,
+        config.sources,
+        config.runtime_context,
+        config.request_authenticators,
+        config.source_input_resolver,
+        config.source_decorators,
+    )
+    .await?;
+    let source_functions = SourceFunctionRegistry::new(
+        registration
+            .active_sources
+            .iter()
+            .flat_map(|source| source.table_functions.iter()),
+    );
+    let source_function_names = source_functions.names();
+    let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    let tables = catalog::collect_tables(&registration.active_sources);
+    let table_functions =
+        catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
+    install_table_function_call_planners(
+        &ctx,
+        source_functions,
+        source_function_names.clone(),
+        config.udfs,
+        &tables,
+    )
+    .await?;
+    for failure in &registration.failures {
+        tracing::warn!(
+            source = %failure.schema_name,
+            detail = %failure.detail,
+            "skipping source during runtime build"
+        );
+    }
+
+    Ok(RegisteredRuntime {
+        ctx,
+        active_sources: registration.active_sources,
+        source_function_names,
+        tables,
+        table_functions,
+        failures: registration.failures,
+    })
+}
+
+async fn install_table_function_call_planners(
+    ctx: &SessionContext,
+    source_functions: SourceFunctionRegistry,
+    source_table_function_names: HashSet<ScopedTableFunctionName>,
+    udfs: &[UdfRuntimeDefinition],
+    tables: &[TableInfo],
+) -> Result<(), CoreError> {
+    match (!source_functions.is_empty(), !udfs.is_empty()) {
+        (false, false) => Ok(()),
+        (true, false) => source_functions
+            .install(ctx)
+            .map_err(|err| datafusion_to_core(&err, tables)),
+        (false, true) => {
+            install_udf_call_planner(ctx, udfs, source_table_function_names, tables).await
+        }
+        (true, true) => {
+            // UDF expansion can reveal source-function calls inside the UDF body.
+            // Install source planning first, then run the source analyzer after UDF expansion.
+            source_functions
+                .install_relation_planner(ctx)
+                .map_err(|err| datafusion_to_core(&err, tables))?;
+            install_udf_call_planner(ctx, udfs, source_table_function_names, tables).await?;
+            SourceFunctionRegistry::install_analyzer(ctx);
+            Ok(())
+        }
+    }
+}
+
+async fn install_udf_call_planner(
+    ctx: &SessionContext,
+    udfs: &[UdfRuntimeDefinition],
+    source_table_function_names: HashSet<ScopedTableFunctionName>,
+    tables: &[TableInfo],
+) -> Result<(), CoreError> {
+    let udf_calls = Box::pin(UdfCallRegistry::new(ctx, udfs, source_table_function_names))
+        .await
+        .map_err(|err| datafusion_to_core(&err, tables))?;
+    udf_calls
+        .install(ctx)
+        .map_err(|err| datafusion_to_core(&err, tables))
+}
+
+fn build_session_context(
+    dependent_join: &DependentJoinConfig,
+    memory: &QueryMemoryConfig,
+) -> Result<Arc<SessionContext>, CoreError> {
+    let session_config = SessionConfig::new().with_information_schema(true).set_bool(
+        "datafusion.execution.listing_table_ignore_subdirectory",
+        false,
+    );
+    let mut runtime_env_builder = RuntimeEnvBuilder::new().with_object_list_cache_limit(0);
+    if let Some(limit) = memory.limit {
+        runtime_env_builder = runtime_env_builder.with_memory_limit(limit.as_bytes(), 1.0);
+    }
     let runtime_env = Arc::new(
-        RuntimeEnvBuilder::new()
-            .with_object_list_cache_limit(0)
+        runtime_env_builder
             .build()
             .map_err(|err| datafusion_to_core(&err, &[]))?,
     );
@@ -51,10 +300,20 @@ pub(crate) async fn build_runtime(
         target: "coral_engine::datafusion",
         options: exec_options
     );
-    let session_state = SessionStateBuilder::new()
+    let mut analyzer_rules = DataFusionAnalyzer::new().rules;
+    analyzer_rules.insert(0, Arc::new(UdfCallAnalyzerRule));
+    let mut builder = SessionStateBuilder::new()
         .with_config(session_config)
         .with_runtime_env(runtime_env)
-        .with_default_features()
+        .with_analyzer_rules(analyzer_rules)
+        .with_default_features();
+    if dependent_join.optimizer_enabled() {
+        builder = builder.with_optimizer_rule(Arc::new(optimizer::rule(dependent_join.clone())));
+    }
+    let session_state = builder
+        .with_query_planner(Arc::new(CoralQueryPlanner::new(vec![Arc::new(
+            DependentJoinExtensionPlanner,
+        )])))
         .with_physical_optimizer_rule(instrument_rule)
         .build();
     let session_state = datafusion_tracing::instrument_rules_with_trace_spans!(
@@ -65,15 +324,25 @@ pub(crate) async fn build_runtime(
     let mut ctx = SessionContext::new_with_state(session_state);
     register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     register_pattern_validator(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
-    let ctx = Arc::new(ctx);
+    Ok(Arc::new(ctx))
+}
 
-    let QueryRuntimeConfig {
-        context: runtime_context,
-        mut extensions,
-    } = runtime;
+async fn register_runtime_sources(
+    ctx: &SessionContext,
+    sources: &[QuerySource],
+    runtime_context: &QueryRuntimeContext,
+    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+) -> Result<crate::runtime::registry::SourceRegistrationResult, CoreError> {
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(source, &runtime_context, &extensions.request_authenticators) {
+        match compile_query_source(
+            source,
+            runtime_context,
+            request_authenticators,
+            source_input_resolver.clone(),
+        ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {
@@ -88,44 +357,57 @@ pub(crate) async fn build_runtime(
             }),
         }
     }
-    let registration = register_sources(
-        &ctx,
-        source_candidates,
-        extensions.source_decorators.as_mut_slice(),
-    )
-    .await?;
-    catalog::register(&ctx, &registration.active_sources)
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions = catalog::collect_table_functions(&registration.active_sources);
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
-    if !source_functions.is_empty() {
-        ctx.register_relation_planner(Arc::new(source_functions))
-            .map_err(|err| datafusion_to_core(&err, &tables))?;
-    }
-    for failure in &registration.failures {
-        tracing::warn!(
-            source = %failure.schema_name,
-            detail = %failure.detail,
-            "skipping source during runtime build"
-        );
-    }
-
-    Ok(QueryRuntimeAdapter {
-        ctx,
-        tables,
-        table_functions,
-        failures: registration.failures,
-        query_result_observers: extensions.query_result_observers,
-    })
+    register_sources(ctx, source_candidates, source_decorators).await
 }
 
 impl QueryRuntimeAdapter {
+    pub(crate) async fn install_udfs(
+        &mut self,
+        udfs: Vec<UdfRuntimeDefinition>,
+    ) -> Result<(), CoreError> {
+        if udfs.is_empty() {
+            return Ok(());
+        }
+        if self.udfs_installed {
+            return Err(CoreError::FailedPrecondition(
+                "query runtime already has installed UDFs".to_string(),
+            ));
+        }
+        if self
+            .fallback_runtime
+            .as_ref()
+            .is_some_and(FallbackRuntime::is_built)
+        {
+            return Err(CoreError::FailedPrecondition(
+                "cannot install UDFs after query execution has initialized the fallback runtime"
+                    .to_string(),
+            ));
+        }
+
+        let udf_table_functions = published_table_functions(&udfs, &self.source_function_names)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let udf_calls = Box::pin(UdfCallRegistry::new(
+            &self.ctx,
+            &udfs,
+            self.source_function_names.clone(),
+        ))
+        .await
+        .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        catalog::register(&self.ctx, &self.active_sources, &udf_table_functions)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        udf_calls
+            .install(&self.ctx)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+
+        self.table_functions =
+            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+        if let Some(fallback_runtime) = &mut self.fallback_runtime {
+            fallback_runtime.config.udfs = udfs;
+        }
+        self.udfs_installed = true;
+        Ok(())
+    }
+
     pub(crate) fn list_tables(
         &self,
         source_filter: Option<&str>,
@@ -159,6 +441,55 @@ impl QueryRuntimeAdapter {
         }
     }
 
+    pub(crate) fn catalog_info_for_schemas(&self, schema_filters: &[&str]) -> CatalogInfo {
+        CatalogInfo {
+            tables: self
+                .tables
+                .iter()
+                .filter(|table| {
+                    schema_filters
+                        .iter()
+                        .any(|schema| table.schema_name == *schema)
+                })
+                .cloned()
+                .collect(),
+            table_functions: self
+                .table_functions
+                .iter()
+                .filter(|function| {
+                    schema_filters
+                        .iter()
+                        .any(|schema| function.schema_name == *schema)
+                })
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub(crate) fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
+        if let Some(table) = self
+            .tables
+            .iter()
+            .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+            .cloned()
+        {
+            return DescribeTableInfo {
+                table: Some(table),
+                missing_context_tables: Vec::new(),
+            };
+        }
+
+        let missing_context_tables = self
+            .tables
+            .iter()
+            .map(table_metadata_without_columns)
+            .collect();
+        DescribeTableInfo {
+            table: None,
+            missing_context_tables,
+        }
+    }
+
     pub(crate) fn registration_failure(
         &self,
         source_name: &str,
@@ -168,15 +499,149 @@ impl QueryRuntimeAdapter {
             .find(|failure| failure.schema_name == source_name)
     }
 
-    pub(crate) async fn execute_sql(&self, sql: &str) -> Result<QueryExecution, CoreError> {
-        let df = self.sql_dataframe(sql).await?;
-        let arrow_schema = Arc::new(df.schema().as_arrow().clone());
-        let batches = df
-            .collect()
+    pub(crate) async fn execute_sql(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<QueryExecution, CoreError> {
+        match self.execute_sql_once(&self.ctx, sql, params).await {
+            Ok(execution) => Ok(execution),
+            Err(SqlExecutionFailure::Collection(error)) => {
+                // Resolver-row overflow is a dependent-join buffering limit, not
+                // a SQL correctness boundary. Retry the original query with only
+                // the dependent-join rewrite disabled; binding fanout and
+                // per-binding fetch caps remain hard execution errors.
+                let Some(cap_error) = resolver_rows_exceeded(&error) else {
+                    return Err(self.collection_error_to_core(&error));
+                };
+                let cap_core_error = self.collection_error_to_core(&error);
+                let Some(fallback_runtime) = &self.fallback_runtime else {
+                    return Err(cap_core_error);
+                };
+
+                tracing::warn!(
+                    target = "coral_engine::dependent_join",
+                    source = %cap_error.source_schema,
+                    table = %cap_error.table,
+                    observed = cap_error.observed,
+                    cap = cap_error.cap,
+                    disposition = "fallback",
+                    "dependent join resolver row cap exceeded",
+                );
+
+                let fallback = fallback_runtime
+                    .get_or_build_without_dependent_join()
+                    .await?;
+
+                match self.execute_sql_once(&fallback.ctx, sql, params).await {
+                    Ok(execution) => Ok(execution),
+                    Err(error) => {
+                        if is_missing_required_filter_failure(&error) {
+                            return Err(cap_core_error);
+                        }
+                        let fallback_error = self.sql_execution_failure_to_core(error, sql);
+                        Err(fallback_error)
+                    }
+                }
+            }
+            Err(error) => Err(self.sql_execution_failure_to_core(error, sql)),
+        }
+    }
+
+    pub(crate) async fn infer_sql_signature(
+        &self,
+        sql: &str,
+    ) -> Result<InferredSqlSignature, CoreError> {
+        let plan_error = |err| {
+            datafusion_to_core_with_sql_and_table_functions(
+                &err,
+                &self.tables,
+                &self.table_functions,
+                Some(sql),
+            )
+        };
+        let df = self
+            .ctx
+            .sql_with_options(sql, read_only_sql_options())
             .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
-        self.observe_query_result(sql, arrow_schema.as_ref(), &batches)?;
-        Ok(QueryExecution::new(arrow_schema, batches))
+            .map_err(plan_error)?;
+        let mut parameter_fields = df
+            .logical_plan()
+            .get_parameter_fields()
+            .map_err(plan_error)?;
+        infer_cast_parameter_fields(df.logical_plan(), &mut parameter_fields)
+            .map_err(plan_error)?;
+        let mut declared_parameter_types = HashMap::new();
+        infer_source_function_parameter_fields(
+            df.logical_plan(),
+            &mut parameter_fields,
+            &mut declared_parameter_types,
+        )
+        .map_err(plan_error)?;
+
+        Ok(InferredSqlSignature {
+            parameter_fields,
+            declared_parameter_types,
+            planned_schema: Arc::new(df.logical_plan().schema().as_arrow().clone()),
+        })
+    }
+
+    async fn execute_sql_once(
+        &self,
+        ctx: &SessionContext,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<QueryExecution, SqlExecutionFailure> {
+        let df = ctx
+            .sql_with_options(sql, read_only_sql_options())
+            .await
+            .map_err(SqlExecutionFailure::Planning)?;
+        let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
+        let provenance = self
+            .query_provenance(sql, df.logical_plan())
+            .map_err(SqlExecutionFailure::Planning)?;
+        let task_ctx = Arc::new(df.task_ctx());
+        let physical_plan = df
+            .create_physical_plan()
+            .await
+            .map_err(SqlExecutionFailure::Collection)?;
+        let arrow_schema = physical_plan.schema();
+        let batches = collect(physical_plan, task_ctx)
+            .await
+            .map_err(SqlExecutionFailure::Collection)?;
+        let execution = QueryExecution::new(arrow_schema, batches, provenance);
+        self.observe_query_result(
+            sql,
+            execution.arrow_schema().as_ref(),
+            execution.batches(),
+            execution.provenance(),
+        )
+        .map_err(SqlExecutionFailure::Observer)?;
+        Ok(execution)
+    }
+
+    fn sql_execution_failure_to_core(&self, error: SqlExecutionFailure, sql: &str) -> CoreError {
+        match error {
+            SqlExecutionFailure::Planning(error) => {
+                datafusion_to_core_with_sql_and_table_functions(
+                    &error,
+                    &self.tables,
+                    &self.table_functions,
+                    Some(sql),
+                )
+            }
+            SqlExecutionFailure::Collection(error) => self.collection_error_to_core(&error),
+            SqlExecutionFailure::Observer(error) => error,
+        }
+    }
+
+    fn collection_error_to_core(&self, error: &DataFusionError) -> CoreError {
+        if let Some(limit) = self.memory.limit
+            && let Some(error) = memory_budget_error(error, limit)
+        {
+            return error;
+        }
+        datafusion_to_core(error, &self.tables)
     }
 
     fn observe_query_result(
@@ -184,17 +649,148 @@ impl QueryRuntimeAdapter {
         sql: &str,
         schema: &arrow::datatypes::Schema,
         batches: &[arrow::record_batch::RecordBatch],
+        provenance: &QueryExecutionProvenance,
     ) -> Result<(), CoreError> {
         for observer in &self.query_result_observers {
             observer
-                .observe_result(sql, schema, batches)
+                .observe_result(sql, schema, batches, provenance)
                 .map_err(|error| query_result_observer_error(observer.name(), &error))?;
         }
         Ok(())
     }
 
-    pub(crate) async fn explain_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
-        let df = self.sql_dataframe(sql).await?;
+    fn query_provenance(
+        &self,
+        sql: &str,
+        plan: &LogicalPlan,
+    ) -> Result<QueryExecutionProvenance, DataFusionError> {
+        let mut tables = BTreeSet::new();
+        let mut table_functions = BTreeSet::new();
+        self.collect_plan_provenance(plan, &mut tables, &mut table_functions)?;
+
+        let mut sources = BTreeSet::new();
+        sources.extend(tables.iter().map(|usage| usage.source_name().to_string()));
+        sources.extend(
+            table_functions
+                .iter()
+                .filter(|usage| self.schema_to_source.contains_key(usage.schema_name()))
+                .map(|usage| usage.source_name().to_string()),
+        );
+
+        Ok(QueryExecutionProvenance::new(
+            sql,
+            sources.into_iter().collect(),
+            tables.into_iter().collect(),
+            table_functions.into_iter().collect(),
+        ))
+    }
+
+    fn collect_plan_provenance(
+        &self,
+        plan: &LogicalPlan,
+        tables: &mut BTreeSet<QueryTableUsage>,
+        table_functions: &mut BTreeSet<QueryTableFunctionUsage>,
+    ) -> Result<(), DataFusionError> {
+        plan.apply_with_subqueries(|node| {
+            match node {
+                LogicalPlan::TableScan(scan) => {
+                    self.collect_table_scan_usage(&scan.table_name, tables);
+                }
+                LogicalPlan::Extension(extension) => {
+                    if let Some(function) =
+                        extension.node.as_any().downcast_ref::<SourceFunctionNode>()
+                    {
+                        self.collect_table_function_usage(
+                            function.table_reference(),
+                            table_functions,
+                        );
+                    } else if let Some(function) =
+                        extension.node.as_any().downcast_ref::<UdfCallNode>()
+                    {
+                        self.record_table_function_usage(
+                            function.table_reference(),
+                            table_functions,
+                        );
+                        self.collect_plan_provenance(
+                            function.body_plan(),
+                            tables,
+                            table_functions,
+                        )?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(())
+    }
+
+    fn collect_table_scan_usage(
+        &self,
+        table_reference: &TableReference,
+        tables: &mut BTreeSet<QueryTableUsage>,
+    ) {
+        let Some((schema_name, table_name)) = relation_parts(table_reference) else {
+            return;
+        };
+        if self
+            .tables
+            .iter()
+            .any(|table| table.schema_name == schema_name && table.table_name == table_name)
+        {
+            tables.insert(QueryTableUsage::new(
+                self.source_name_for_schema(schema_name),
+                schema_name,
+                table_name,
+            ));
+        }
+    }
+
+    fn collect_table_function_usage(
+        &self,
+        table_reference: &TableReference,
+        table_functions: &mut BTreeSet<QueryTableFunctionUsage>,
+    ) -> bool {
+        let Some((schema_name, function_name)) = relation_parts(table_reference) else {
+            return false;
+        };
+        if self.table_functions.iter().any(|function| {
+            function.schema_name == schema_name && function.function_name == function_name
+        }) {
+            return self.record_table_function_usage(table_reference, table_functions);
+        }
+        false
+    }
+
+    fn record_table_function_usage(
+        &self,
+        table_reference: &TableReference,
+        table_functions: &mut BTreeSet<QueryTableFunctionUsage>,
+    ) -> bool {
+        let Some((schema_name, function_name)) = relation_parts(table_reference) else {
+            return false;
+        };
+        table_functions.insert(QueryTableFunctionUsage::new(
+            self.source_name_for_schema(schema_name),
+            schema_name,
+            function_name,
+        ));
+        true
+    }
+
+    fn source_name_for_schema(&self, schema_name: &str) -> String {
+        self.schema_to_source
+            .get(schema_name)
+            .cloned()
+            .unwrap_or_else(|| schema_name.to_string())
+    }
+
+    pub(crate) async fn explain_sql(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<QueryPlan, CoreError> {
+        let df = self.sql_dataframe(sql, params).await?;
         let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
         let (session_state, logical_plan) = df.into_parts();
         let optimized_logical_plan = session_state
@@ -219,19 +815,369 @@ impl QueryRuntimeAdapter {
         ))
     }
 
-    async fn sql_dataframe(&self, sql: &str) -> Result<DataFrame, CoreError> {
-        self.ctx
+    async fn sql_dataframe(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<DataFrame, CoreError> {
+        let df = self
+            .ctx
             .sql_with_options(sql, read_only_sql_options())
             .await
-            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))
+            .map_err(|err| {
+                datafusion_to_core_with_sql_and_table_functions(
+                    &err,
+                    &self.tables,
+                    &self.table_functions,
+                    Some(sql),
+                )
+            })?;
+        apply_query_parameters(df, params).map_err(|err| {
+            datafusion_to_core_with_sql_and_table_functions(
+                &err,
+                &self.tables,
+                &self.table_functions,
+                Some(sql),
+            )
+        })
     }
 }
 
-fn read_only_sql_options() -> SQLOptions {
+fn infer_cast_parameter_fields(
+    plan: &LogicalPlan,
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+) -> Result<(), DataFusionError> {
+    plan.apply_with_subqueries(|node| {
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                let (cast_expr, data_type) = match expr {
+                    Expr::Cast(cast) => (cast.expr.as_ref(), cast.data_type.clone()),
+                    Expr::TryCast(cast) => (cast.expr.as_ref(), cast.data_type.clone()),
+                    _ => return Ok(TreeNodeRecursion::Continue),
+                };
+                let Expr::Placeholder(placeholder) = cast_expr else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                set_parameter_field(
+                    parameter_fields,
+                    &placeholder.id,
+                    Arc::new(Field::new("", data_type, true)),
+                )?;
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })
+    })?;
+    Ok(())
+}
+
+fn infer_source_function_parameter_fields(
+    plan: &LogicalPlan,
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+    declared_parameter_types: &mut HashMap<String, ManifestDataType>,
+) -> Result<(), DataFusionError> {
+    plan.apply_with_subqueries(|node| {
+        let LogicalPlan::Extension(extension) = node else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let Some(function) = extension.node.as_any().downcast_ref::<SourceFunctionNode>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        for (argument, expr) in function.declared_args_with_call_exprs() {
+            let Expr::Placeholder(placeholder) = expr else {
+                continue;
+            };
+            set_parameter_field(
+                parameter_fields,
+                &placeholder.id,
+                Arc::new(Field::new(
+                    "",
+                    crate::types::arrow_data_type(argument.data_type),
+                    true,
+                )),
+            )?;
+            set_declared_parameter_type(
+                declared_parameter_types,
+                &placeholder.id,
+                argument.data_type,
+            )?;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(())
+}
+
+fn set_declared_parameter_type(
+    declared_parameter_types: &mut HashMap<String, ManifestDataType>,
+    parameter: &str,
+    data_type: ManifestDataType,
+) -> Result<(), DataFusionError> {
+    match declared_parameter_types.get(parameter) {
+        Some(existing) if *existing != data_type => Err(DataFusionError::Plan(format!(
+            "conflicting types for parameter {parameter}: {} and {}; use explicit casts so every use has one type",
+            existing.as_manifest_str(),
+            data_type.as_manifest_str()
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            declared_parameter_types.insert(parameter.to_string(), data_type);
+            Ok(())
+        }
+    }
+}
+
+fn set_parameter_field(
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+    parameter: &str,
+    field: FieldRef,
+) -> Result<(), DataFusionError> {
+    match parameter_fields.get(parameter) {
+        Some(Some(existing))
+            if !parameter_types_are_compatible(existing.data_type(), field.data_type()) =>
+        {
+            Err(DataFusionError::Plan(format!(
+                "conflicting types for parameter {parameter}: {} and {}; use explicit casts so every use has one type",
+                existing.data_type(),
+                field.data_type()
+            )))
+        }
+        Some(Some(_)) => Ok(()),
+        _ => {
+            parameter_fields.insert(parameter.to_string(), Some(field));
+            Ok(())
+        }
+    }
+}
+
+fn parameter_types_are_compatible(left: &DataType, right: &DataType) -> bool {
+    if left == right {
+        return true;
+    }
+
+    match (
+        crate::types::manifest_data_type_for_arrow(left),
+        crate::types::manifest_data_type_for_arrow(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Binds named query parameter values into a planned statement.
+///
+/// Rejects parameters the statement never references, then substitutes the
+/// values into the logical plan via `DataFusion` parameter binding — values
+/// stay data and are never rendered into SQL text.
+fn apply_query_parameters(
+    df: DataFrame,
+    params: &QueryParameters,
+) -> Result<DataFrame, DataFusionError> {
+    if params.is_empty() {
+        reject_unbound_sql_parameters(df.logical_plan())?;
+        return Ok(df);
+    }
+    reject_unknown_parameters(df.logical_plan(), params)?;
+    let values: Vec<(String, ScalarValue)> = params
+        .iter()
+        .map(|(name, value)| (name.clone(), query_parameter_scalar_value(value)))
+        .collect();
+    df.with_param_values(values)
+}
+
+fn reject_unbound_sql_parameters(plan: &LogicalPlan) -> Result<(), DataFusionError> {
+    let mut placeholders = ordinary_sql_placeholders(plan)?;
+    if placeholders.is_empty() {
+        return Ok(());
+    }
+    let placeholder = placeholders
+        .pop_first()
+        .expect("empty placeholder set returned above");
+    Err(DataFusionError::Plan(format!(
+        "SQL parameter {placeholder} has no value; pass query parameters or remove the placeholder"
+    )))
+}
+
+fn ordinary_sql_placeholders(plan: &LogicalPlan) -> Result<BTreeSet<String>, DataFusionError> {
+    let mut placeholders = BTreeSet::new();
+    plan.apply_with_subqueries(|node| {
+        if is_parameterized_table_function_call(node) {
+            return Ok(TreeNodeRecursion::Jump);
+        }
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                if let Expr::Placeholder(placeholder) = expr {
+                    placeholders.insert(placeholder.id.clone());
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(placeholders)
+}
+
+fn is_parameterized_table_function_call(plan: &LogicalPlan) -> bool {
+    let LogicalPlan::Extension(extension) = plan else {
+        return false;
+    };
+    matches!(
+        extension.node.name(),
+        SOURCE_FUNCTION_NODE_NAME | UDF_CALL_NODE_NAME
+    )
+}
+
+pub(crate) fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
+    match value {
+        QueryParameterValue::String(value) => ScalarValue::Utf8(value.clone()),
+        QueryParameterValue::Integer(value) => ScalarValue::Int64(*value),
+        QueryParameterValue::Float(value) => ScalarValue::Float64(*value),
+        QueryParameterValue::Boolean(value) => ScalarValue::Boolean(*value),
+        QueryParameterValue::Timestamp(value) => {
+            ScalarValue::TimestampMicrosecond(*value, Some("+00:00".into()))
+        }
+    }
+}
+
+pub(crate) fn reject_unknown_parameters(
+    plan: &LogicalPlan,
+    params: &QueryParameters,
+) -> Result<(), DataFusionError> {
+    let referenced = plan.get_parameter_names()?;
+    let mut unknown: Vec<&str> = params
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !referenced.contains(&format!("${name}")))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+
+    let mut placeholders: Vec<&str> = referenced.iter().map(String::as_str).collect();
+    placeholders.sort_unstable();
+    let placeholder_hint = if placeholders.is_empty() {
+        "the statement has no parameter placeholders".to_string()
+    } else {
+        format!("the statement references: {}", placeholders.join(", "))
+    };
+
+    Err(DataFusionError::Plan(format!(
+        "unknown query parameter(s): {}; {placeholder_hint}",
+        unknown.join(", ")
+    )))
+}
+
+fn is_missing_required_filter_failure(error: &SqlExecutionFailure) -> bool {
+    let SqlExecutionFailure::Collection(error) = error else {
+        return false;
+    };
+    let DataFusionError::External(inner) = error.find_root() else {
+        return false;
+    };
+    matches!(
+        inner.downcast_ref::<ProviderQueryError>(),
+        Some(ProviderQueryError::MissingRequiredFilter { .. })
+    )
+}
+
+fn memory_budget_error(error: &DataFusionError, limit: MemorySize) -> Option<CoreError> {
+    let DataFusionError::ResourcesExhausted(detail) = error.find_root() else {
+        return None;
+    };
+
+    Some(CoreError::Unavailable(format!(
+        "query engine memory budget exceeded ([engine.memory].limit = {}). The query was aborted. \
+         Increase [engine.memory].limit in config.toml, narrow the query, or reduce source rows. \
+         Underlying engine error: {detail}",
+        format_memory_limit(limit),
+    )))
+}
+
+fn format_memory_limit(limit: MemorySize) -> String {
+    let bytes = limit.as_bytes();
+    for (suffix, multiplier) in [
+        ("Ti", 1024_usize.pow(4)),
+        ("Gi", 1024_usize.pow(3)),
+        ("Mi", 1024_usize.pow(2)),
+        ("Ki", 1024),
+    ] {
+        if bytes.is_multiple_of(multiplier) {
+            return format!("{}{} ({} bytes)", bytes / multiplier, suffix, bytes);
+        }
+    }
+    format!("{bytes} bytes")
+}
+
+impl FallbackRuntimeConfig {
+    async fn build_without_dependent_join(&self) -> Result<RegisteredRuntime, CoreError> {
+        let mut source_decorators = Vec::new();
+        let dependent_join = self.dependent_join.without_rewrites();
+        build_registered_runtime(RuntimeBuildInputs {
+            sources: &self.sources,
+            runtime_context: &self.runtime_context,
+            request_authenticators: &self.request_authenticators,
+            source_input_resolver: self.source_input_resolver.clone(),
+            source_decorators: source_decorators.as_mut_slice(),
+            dependent_join: &dependent_join,
+            memory: &self.memory,
+            udfs: &self.udfs,
+        })
+        .await
+    }
+}
+
+impl FallbackRuntime {
+    fn new(config: FallbackRuntimeConfig) -> Self {
+        Self {
+            config,
+            runtime: OnceCell::new(),
+        }
+    }
+
+    async fn get_or_build_without_dependent_join(&self) -> Result<&RegisteredRuntime, CoreError> {
+        self.runtime
+            .get_or_try_init(|| async { self.config.build_without_dependent_join().await })
+            .await
+    }
+
+    fn is_built(&self) -> bool {
+        self.runtime.get().is_some()
+    }
+}
+
+pub(crate) fn read_only_sql_options() -> SQLOptions {
     SQLOptions::new()
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
+}
+
+fn schema_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
+    sources
+        .iter()
+        .flat_map(|source| {
+            let source_name = source.source_name().to_string();
+            source
+                .schema_names()
+                .into_iter()
+                .map(move |schema_name| (schema_name.to_string(), source_name.clone()))
+        })
+        .collect()
+}
+
+fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
+    let schema_name = table_reference.schema()?;
+    Some((schema_name, table_reference.table()))
+}
+
+fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
+    TableInfo {
+        schema_name: table.schema_name.clone(),
+        table_name: table.table_name.clone(),
+        description: table.description.clone(),
+        guide: table.guide.clone(),
+        columns: Vec::new(),
+        required_filters: table.required_filters.clone(),
+    }
 }
 
 fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {
@@ -244,5 +1190,186 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
             CoreError::FailedPrecondition(format!("query result observer '{name}': {detail}"))
         }
         other => other,
+    }
+}
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::str::FromStr as _;
+
+    use datafusion::execution::memory_pool::MemoryConsumer;
+
+    use super::*;
+    use crate::{
+        ColumnInfo, DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
+        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
+        UdfRuntimeTableFunctionPublish,
+    };
+
+    fn adapter_with_table() -> QueryRuntimeAdapter {
+        QueryRuntimeAdapter {
+            ctx: Arc::new(SessionContext::new()),
+            fallback_runtime: None,
+            memory: QueryMemoryConfig::default(),
+            active_sources: Vec::new(),
+            source_function_names: HashSet::new(),
+            udfs_installed: false,
+            tables: vec![TableInfo {
+                schema_name: "demo".to_string(),
+                table_name: "events".to_string(),
+                description: "Event rows".to_string(),
+                guide: "Query event rows.".to_string(),
+                columns: vec![ColumnInfo {
+                    name: "event_id".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    is_virtual: false,
+                    is_required_filter: false,
+                    description: "Event ID".to_string(),
+                    ordinal_position: 0,
+                }],
+                required_filters: vec!["owner".to_string()],
+            }],
+            table_functions: Vec::new(),
+            failures: Vec::new(),
+            schema_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
+            query_result_observers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn describe_table_hit_returns_full_table_without_missing_context() {
+        let result = adapter_with_table().describe_table("demo", "events");
+
+        let table = result.table.expect("exact table");
+        assert_eq!(table.columns.len(), 1);
+        assert!(result.missing_context_tables.is_empty());
+    }
+
+    #[test]
+    fn describe_table_miss_returns_columnless_context_tables() {
+        let result = adapter_with_table().describe_table("demo", "missing");
+
+        assert!(result.table.is_none());
+        assert_eq!(result.missing_context_tables.len(), 1);
+        let context_table = result
+            .missing_context_tables
+            .first()
+            .expect("missing context table");
+        assert!(context_table.columns.is_empty());
+        assert_eq!(context_table.required_filters, ["owner".to_string()]);
+    }
+
+    #[test]
+    fn build_session_context_applies_memory_limit() {
+        let ctx = build_session_context(
+            &DependentJoinConfig::default(),
+            &QueryMemoryConfig {
+                limit: Some(MemorySize::from_str("1Ki").unwrap()),
+            },
+        )
+        .expect("session context should build");
+        let pool = ctx.runtime_env().memory_pool.clone();
+        let reservation = MemoryConsumer::new("test").register(&pool);
+
+        reservation
+            .try_grow(512)
+            .expect("reservation below limit should succeed");
+        let error = reservation
+            .try_grow(1024)
+            .expect_err("reservation above limit should fail");
+
+        assert!(
+            error.to_string().contains("Resources exhausted"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_runtime_preserves_memory_limit() {
+        let fallback = FallbackRuntimeConfig {
+            sources: Vec::new(),
+            runtime_context: QueryRuntimeContext::default(),
+            dependent_join: DependentJoinConfig::default(),
+            memory: QueryMemoryConfig {
+                limit: Some(MemorySize::from_str("1Ki").unwrap()),
+            },
+            udfs: Vec::new(),
+            request_authenticators: HashMap::new(),
+            source_input_resolver: None,
+        };
+
+        let runtime = fallback
+            .build_without_dependent_join()
+            .await
+            .expect("fallback runtime should build");
+        let pool = runtime.ctx.runtime_env().memory_pool.clone();
+        let reservation = MemoryConsumer::new("fallback-test").register(&pool);
+
+        reservation
+            .try_grow(512)
+            .expect("reservation below fallback limit should succeed");
+        let error = reservation
+            .try_grow(1024)
+            .expect_err("reservation above fallback limit should fail");
+
+        assert!(
+            error.to_string().contains("Resources exhausted"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_udf_install_is_retained_by_fallback_runtime() {
+        let mut runtime = build_runtime(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("primary runtime");
+        runtime
+            .install_udfs(vec![UdfRuntimeDefinition {
+                name: "constant_value".to_string(),
+                description: "Returns one value".to_string(),
+                arguments: Vec::new(),
+                implementation: UdfRuntimeImplementation::CoralSql {
+                    query: "select 1 as value".to_string(),
+                },
+                publish: UdfRuntimePublish {
+                    table_function: UdfRuntimeTableFunctionPublish {
+                        schema: "functions".to_string(),
+                        name: "constant_value".to_string(),
+                        description: "Returns one value".to_string(),
+                    },
+                },
+                result_columns: vec![UdfRuntimeResultColumn {
+                    name: "value".to_string(),
+                    data_type: DataType::Int64,
+                    nullable: false,
+                }],
+            }])
+            .await
+            .expect("late UDF install");
+
+        let fallback = runtime
+            .fallback_runtime
+            .as_ref()
+            .expect("dependent join fallback")
+            .get_or_build_without_dependent_join()
+            .await
+            .expect("fallback runtime");
+        let batches = fallback
+            .ctx
+            .sql("select value from functions.constant_value()")
+            .await
+            .expect("plan fallback UDF query")
+            .collect()
+            .await
+            .expect("execute fallback UDF query");
+
+        assert_eq!(
+            batches
+                .iter()
+                .map(arrow::array::RecordBatch::num_rows)
+                .sum::<usize>(),
+            1
+        );
     }
 }

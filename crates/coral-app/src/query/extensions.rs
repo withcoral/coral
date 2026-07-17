@@ -47,13 +47,18 @@ pub(crate) fn engine_extensions_for_providers(
     let mut merged = EngineExtensions::default();
     for provider in providers {
         let extra = provider.extensions_for(selected_sources);
-        merged.source_decorators.extend(extra.source_decorators);
-        merged
-            .query_result_observers
-            .extend(extra.query_result_observers);
-        merged
-            .request_authenticators
-            .extend(extra.request_authenticators);
+        let EngineExtensions {
+            source_decorators,
+            query_result_observers,
+            request_authenticators,
+            source_input_resolver,
+        } = extra;
+        merged.source_decorators.extend(source_decorators);
+        merged.query_result_observers.extend(query_result_observers);
+        merged.request_authenticators.extend(request_authenticators);
+        if source_input_resolver.is_some() {
+            merged.source_input_resolver = source_input_resolver;
+        }
     }
     merged
 }
@@ -65,8 +70,8 @@ mod tests {
     use arrow::datatypes::Schema;
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
-        QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-        RequestAuthenticatorError,
+        QueryExecutionProvenance, QueryResultObserver, QueryResultObserverError,
+        RequestAuthenticator, RequestAuthenticatorError,
     };
     use reqwest::header::{HeaderName, HeaderValue};
 
@@ -106,6 +111,7 @@ mod tests {
             _sql: &str,
             _schema: &Schema,
             _batches: &[RecordBatch],
+            _provenance: &QueryExecutionProvenance,
         ) -> Result<(), QueryResultObserverError> {
             Ok(())
         }

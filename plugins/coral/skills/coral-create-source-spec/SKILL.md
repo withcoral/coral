@@ -54,6 +54,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - base URL or file location
    - auth
    - variables and secrets
+   - credential retrieval methods for secrets, including OAuth when the provider supports browser-based setup
    - tables
    - table functions for source-scoped parameterized endpoints
    - filters
@@ -65,6 +66,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 5. Validate the source in the right mode:
    - standalone specs: `coral source add --file <path>` and inspect with `coral sql`
    - `coral source add` is non-interactive by default: each input `key` is read from the matching environment variable. Export required variables and secrets before running, or pass `--interactive` to be prompted.
+   - for OAuth credential methods, run `coral source add --interactive --file <path>` with no environment value for the target secret so Coral offers the authored credential choices
    - repo sources or already-named sources: `coral source test <name>`
 6. Inspect the exposed shape:
    - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
@@ -82,10 +84,22 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Use the source manifest schema as both inspiration for authoring and validation of structure: https://github.com/withcoral/coral/blob/main/crates/coral-spec/src/schema/source_manifest.schema.json
 - Use source variables for non-secret configuration.
 - Use source secrets for credentials.
-- Keep table names stable and SQL-friendly.
+- For OAuth-backed services, model setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
+- OAuth credential methods support device-code flow and authorization-code flow. For authorization-code flow, set `flow.type: authorization_code`, set `flow.pkce` explicitly to `required` or `disabled`, use a loopback `http://127.0.0.1` or `http://localhost` redirect URI, choose `redirect_uri_port_mode: random` for provider apps or Dynamic Client Registration endpoints that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI. The CLI also accepts the final loopback redirect URL pasted into the terminal when the browser cannot reach the machine running Coral, so do not reject authorization-code OAuth solely because users may run Coral over SSH, in a VM, or in another split-browser environment. For device-code flow, declare `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and either a public client ID or `client.dynamic_registration`; omit redirect URI fields and do not declare a static client secret.
+- When the provider supports OAuth Dynamic Client Registration, prefer `client.dynamic_registration.registration_url` over hard-coding a shared public client ID. Coral always registers a native client; source specs cannot configure a `web` Dynamic Client Registration application type. Set `token_endpoint_auth_method` to `none`, `client_secret_basic`, or `client_secret_post` to match the registered client type. Set `request_refresh_token_grant: true` only when the provider supports registering clients for refresh-token grants. For OAuth-protected Streamable HTTP MCP servers, set `oauth.resource` to the MCP server URL when the provider requires resource indicators.
+- OAuth URL fields may template declared `kind: variable` inputs with `{{input.KEY}}` for non-secret endpoint components such as tenant IDs or domains. This includes `endpoints.*`, `resource`, and `client.dynamic_registration.registration_url`. Do not reference secret inputs, filters, function arguments, state, or inline defaults from OAuth URLs.
+- If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
+- Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
+- Each credential method accepts optional `label`, `description`, and `hint` fields, surfaced during interactive install and in the generated source docs. When an input offers more than one method, put the how-to-get-it guidance in each method's `hint` (rendered next to that method's fields) instead of in one long input-level `hint`, and scope each hint to the inputs that method collects.
+- For short-lived OAuth access tokens, make sure the OAuth method can obtain refresh tokens when the provider supports them, and document any scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire unless the source has another supported long-lived credential path.
+- Keep table and table-function names stable, SQL-friendly, and unique within
+  the source's case-insensitive relation namespace. Prefer plain `snake_case`
+  table names. Table-function names must start with an ASCII letter or
+  underscore and then use only ASCII letters, numbers, or underscores.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
 - Use `kind: search` table functions for provider endpoints that accept query text and return ranked candidates.
+- Set a table-function arg `type` when the provider argument is not string-shaped; omitted arg types default to `Utf8`.
 - Do not model provider search as a table filter. Use `mode: contains` only for ordinary provider-side substring filters. Provider-ranked retrieval belongs in a `kind: search` function.
 - Include `search_limits` on every `kind: search` function and expose stable result identifiers for follow-up detail queries.
 - Prefer explicit pagination when the API shape is known.
@@ -128,6 +142,12 @@ Specific guidance:
   - name the exact credential type (API key, PAT, application key, etc.)
   - include format constraints when relevant (for example, token prefixes)
   - include least-privilege scope guidance
+- For OAuth methods:
+  - use a user-facing `label` such as `Connect with GitHub`
+  - keep `description` to a short one-line blurb; put the setup detail in the method's `hint`
+  - in the method's `hint`, list the required OAuth scopes and explain whether users must register a fixed loopback redirect URI or provide their own OAuth client ID/secret; when the method collects `client.id.input`/`client.secret.input`, say where to obtain those values
+  - for authorization-code flow, note in the method's `hint` that users can paste the final localhost redirect URL into the terminal if their browser cannot reach Coral's loopback listener directly
+  - when a secret offers multiple methods, scope each method's `hint` to the inputs that method collects instead of writing one broad input-level hint that mixes guidance for every method
 - For derived secrets (for example Basic auth blobs):
   - include a short shell example (for example a Base64 command)
 - Prefer stable documentation links.
@@ -167,7 +187,8 @@ For HTTP-backed sources:
 
 - define `backend: http`
 - define `base_url`
-- define auth headers
+- define auth headers or other runtime auth fields
+- define `credential.methods` on secret inputs when setup should offer OAuth or another retrieval choice
 - define request path, query, and body only where needed
 - define source-scoped table functions for provider-native operations that require invocation arguments
 - define response `rows_path`
@@ -177,14 +198,84 @@ For HTTP-backed sources:
 
 Read `references/http-source-checklist.md` when you need table-shape and pagination guidance.
 
-If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), you can use a secret input for the token and define the header as a template:
+If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), use a secret input for the raw token and define the header with `from: bearer`:
 
 ```yaml
+inputs:
+  FOOBAR_API_TOKEN:
+    kind: secret
+    hint: Bearer token for the Foobar API.
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.FOOBAR_API_KEY}}
+      from: bearer
+      key: FOOBAR_API_TOKEN
+```
+
+For an OAuth-backed HTTP source, add the retrieval method to that same secret input:
+
+```yaml
+inputs:
+  FOOBAR_API_TOKEN:
+    kind: secret
+    hint: Connect with Foobar OAuth or paste a token with read access.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Foobar
+          description: Open a browser and authorize Coral to read Foobar data.
+          hint: |
+            Signs you in through Foobar and requests the `read` scope. To
+            use your own app, set FOOBAR_OAUTH_CLIENT_ID to its Client ID.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://foobar.example.com/oauth/authorize
+              token_url: https://foobar.example.com/oauth/token
+            client:
+              id:
+                input: FOOBAR_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read
+        - type: source_config
+          label: Paste token
+          hint: Paste a Foobar API token with read access to the data you query.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: FOOBAR_API_TOKEN
+```
+
+When a provider accepts either a full pasted API-key header or an OAuth access token, declare both credential inputs as optional secrets, then use `from: one_of` and put the complete header value first, followed by a `from: bearer` OAuth fallback:
+
+```yaml
+inputs:
+  FOOBAR_API_KEY:
+    kind: secret
+    required: false
+  FOOBAR_OAUTH_ACCESS_TOKEN:
+    kind: secret
+    required: false
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: FOOBAR_API_KEY
+        - from: bearer
+          key: FOOBAR_OAUTH_ACCESS_TOKEN
 ```
 
 ## Local Data Sources

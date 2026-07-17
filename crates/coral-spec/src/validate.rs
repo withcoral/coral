@@ -3,46 +3,119 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::{
-    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterSpec, FunctionArgBinding,
-    MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
-    RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
+    PaginationSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
     SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
-pub(crate) fn validate_table_names<'a>(
-    schema: &str,
-    table_names: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
-    let mut seen_tables = HashSet::new();
-    for table_name in table_names {
-        let key = table_name.to_ascii_lowercase();
-        if seen_tables.contains(&key) {
-            return Err(ManifestError::validation(format!(
-                "source '{schema}' has duplicate table '{key}'"
-            )));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclaredRelationKind {
+    Table,
+    Function,
+}
+
+impl DeclaredRelationKind {
+    fn validate_name(self, source_name: &str, name: &str) -> Result<()> {
+        match self {
+            Self::Table => {
+                if name.trim().is_empty() {
+                    return Err(ManifestError::validation(format!(
+                        "source '{source_name}' table name must not be empty"
+                    )));
+                }
+                Ok(())
+            }
+            Self::Function => {
+                validate_identifier(name, &format!("source '{source_name}' function name"))
+            }
         }
-        seen_tables.insert(key);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DeclaredRelation<'a> {
+    kind: DeclaredRelationKind,
+    name: &'a str,
+}
+
+impl<'a> DeclaredRelation<'a> {
+    pub(crate) fn table(name: &'a str) -> Self {
+        Self {
+            kind: DeclaredRelationKind::Table,
+            name,
+        }
+    }
+
+    pub(crate) fn function(name: &'a str) -> Self {
+        Self {
+            kind: DeclaredRelationKind::Function,
+            name,
+        }
+    }
+}
+
+pub(crate) fn validate_declared_relation_namespace<'a>(
+    source_name: &str,
+    relations: impl IntoIterator<Item = DeclaredRelation<'a>>,
+) -> Result<()> {
+    let mut namespace = HashMap::new();
+    for relation in relations {
+        relation.kind.validate_name(source_name, relation.name)?;
+
+        let key = relation.name.to_ascii_lowercase();
+        if let Some(previous_kind) = namespace.get(&key) {
+            return match (*previous_kind, relation.kind) {
+                (DeclaredRelationKind::Table, DeclaredRelationKind::Table) => {
+                    Err(ManifestError::validation(format!(
+                        "source '{source_name}' table '{}' is declared more than once",
+                        relation.name
+                    )))
+                }
+                (DeclaredRelationKind::Function, DeclaredRelationKind::Function) => {
+                    Err(ManifestError::validation(format!(
+                        "source '{source_name}' function '{}' is declared more than once",
+                        relation.name
+                    )))
+                }
+                _ => Err(ManifestError::validation(format!(
+                    "source '{source_name}' declares both a table and function named '{}'",
+                    relation.name
+                ))),
+            };
+        }
+        namespace.insert(key, relation.kind);
     }
 
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "HTTP table validation mirrors the source-spec fields it validates."
-)]
-pub(crate) fn validate_http_table(
-    schema: &str,
-    table_name: &str,
-    filters: &[FilterSpec],
-    columns: &[ColumnSpec],
-    request: &RequestSpec,
-    requests: &[RequestRouteSpec],
-    pagination: &PaginationSpec,
-    search_limits: Option<&SearchLimitsSpec>,
-    detail_hints: &[DetailHintSpec],
-) -> Result<()> {
+#[derive(Clone, Copy)]
+pub(crate) struct HttpTableValidation<'a> {
+    pub(crate) schema: &'a str,
+    pub(crate) table_name: &'a str,
+    pub(crate) filters: &'a [FilterSpec],
+    pub(crate) columns: &'a [ColumnSpec],
+    pub(crate) request: &'a RequestSpec,
+    pub(crate) requests: &'a [RequestRouteSpec],
+    pub(crate) pagination: &'a PaginationSpec,
+    pub(crate) search_limits: Option<&'a SearchLimitsSpec>,
+    pub(crate) detail_hints: &'a [DetailHintSpec],
+}
+
+pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> {
+    let HttpTableValidation {
+        schema,
+        table_name,
+        filters,
+        columns,
+        request,
+        requests,
+        pagination,
+        search_limits,
+        detail_hints,
+    } = input;
+
     if request.path.raw().trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "{schema}.{table_name} has an empty request.path"
@@ -60,6 +133,12 @@ pub(crate) fn validate_http_table(
         search_limits,
         detail_hints,
         columns,
+    )?;
+    validate_lookup_key_filters_compatible_with_search_limits(
+        schema,
+        table_name,
+        filters,
+        search_limits,
     )?;
 
     validate_request_bindings(schema, table_name, request, &known_filters)?;
@@ -85,39 +164,6 @@ pub(crate) fn validate_http_table(
     }
 
     pagination.validate(schema, table_name)
-}
-
-pub(crate) fn validate_http_function_names(
-    source_name: &str,
-    table_names: impl IntoIterator<Item = impl AsRef<str>>,
-    functions: &[SourceTableFunctionSpec],
-) -> Result<()> {
-    let table_names = table_names
-        .into_iter()
-        .map(|name| name.as_ref().to_string())
-        .collect::<HashSet<_>>();
-    let mut function_names = HashSet::new();
-
-    for function in functions {
-        validate_identifier(
-            &function.name,
-            &format!("source '{source_name}' function name"),
-        )?;
-        if table_names.contains(&function.name) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' declares both a table and function named '{}'",
-                function.name
-            )));
-        }
-        if !function_names.insert(function.name.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' function '{}' is declared more than once",
-                function.name
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 pub(crate) fn validate_http_function(
@@ -197,13 +243,13 @@ pub(crate) fn validate_filters_and_column_exprs(
 ) -> Result<HashSet<String>> {
     let mut known_filters = HashSet::new();
     for filter in filters {
+        validate_filter_capabilities(filter)?;
         if !known_filters.insert(filter.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate filter '{}'",
                 filter.name
             )));
         }
-        filter.manifest_data_type()?;
     }
 
     validate_column_exprs(columns, &known_filters, &HashSet::new(), schema, table)?;
@@ -280,9 +326,7 @@ pub(crate) fn validate_detail_hint_references(
                     hint.table, hint.detail_filter
                 )));
             };
-            let search_result_type = search_result_column.manifest_data_type()?;
-            let detail_filter_type = detail_filter.manifest_data_type()?;
-            if search_result_type != detail_filter_type {
+            if search_result_column.data_type != detail_filter.data_type {
                 return Err(ManifestError::validation(format!(
                     "{context} search_result_column '{}' type '{}' does not match target table '{}' detail_filter '{}' type '{}'",
                     hint.search_result_column,
@@ -325,7 +369,7 @@ fn validate_search_metadata(
         )));
     }
     if let Some(limits) = search_limits {
-        validate_search_limits(limits, &format!("{schema}.{table} search_limits"))?;
+        limits.validate(&format!("{schema}.{table} search_limits"))?;
     }
     validate_detail_hints(
         detail_hints,
@@ -334,47 +378,23 @@ fn validate_search_metadata(
     )
 }
 
-fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()> {
-    if limits.default_top_k == 0 {
+fn validate_lookup_key_filters_compatible_with_search_limits(
+    schema: &str,
+    table: &str,
+    filters: &[FilterSpec],
+    search_limits: Option<&SearchLimitsSpec>,
+) -> Result<()> {
+    if search_limits.is_none() {
+        return Ok(());
+    }
+
+    if let Some(filter) = filters.iter().find(|filter| filter.lookup_key) {
         return Err(ManifestError::validation(format!(
-            "{context}.default_top_k must be > 0"
+            "{schema}.{table} filter '{}': lookup_key filters require complete filtered result sets, but this table declares search_limits",
+            filter.name
         )));
     }
-    if limits.max_top_k == 0 {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k must be > 0"
-        )));
-    }
-    if limits.max_top_k > MAX_SEARCH_TOP_K {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k must be <= {MAX_SEARCH_TOP_K}"
-        )));
-    }
-    if limits.default_top_k > limits.max_top_k {
-        return Err(ManifestError::validation(format!(
-            "{context}.default_top_k must be <= max_top_k"
-        )));
-    }
-    if limits.max_calls_per_query == 0 {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_calls_per_query must be > 0"
-        )));
-    }
-    if limits.max_calls_per_query > MAX_SEARCH_CALLS_PER_QUERY {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_calls_per_query must be <= {MAX_SEARCH_CALLS_PER_QUERY}"
-        )));
-    }
-    let Some(candidate_budget) = limits.max_top_k.checked_mul(limits.max_calls_per_query) else {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k * max_calls_per_query exceeds supported range"
-        )));
-    };
-    if candidate_budget > MAX_SEARCH_CANDIDATES_PER_QUERY {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
-        )));
-    }
+
     Ok(())
 }
 
@@ -417,6 +437,16 @@ fn validate_detail_hints(
         }
     }
 
+    Ok(())
+}
+
+fn validate_filter_capabilities(filter: &FilterSpec) -> Result<()> {
+    if filter.lookup_key && filter.mode != FilterMode::Equality {
+        return Err(ManifestError::validation(format!(
+            "filter '{}': lookup_key=true requires mode=equality",
+            filter.name
+        )));
+    }
     Ok(())
 }
 
@@ -519,6 +549,7 @@ fn validate_value_source(
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterStringArray { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. }
             if !known_filters.contains(key) =>
@@ -529,6 +560,20 @@ fn validate_value_source(
         }
         ValueSourceSpec::Template { template } => {
             validate_template(template, known_filters, context)?;
+        }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for (index, value) in values.iter().enumerate() {
+                validate_value_source(
+                    value,
+                    known_filters,
+                    &format!("{context} one_of values[{index}]"),
+                )?;
+            }
         }
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
@@ -658,6 +703,7 @@ fn validate_arg_value_source(
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterStringArray { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => {
             return Err(ManifestError::validation(format!(
@@ -666,6 +712,20 @@ fn validate_arg_value_source(
         }
         ValueSourceSpec::Template { template } => {
             validate_arg_template(template, request_arg_names, context)?;
+        }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for (index, value) in values.iter().enumerate() {
+                validate_arg_value_source(
+                    value,
+                    request_arg_names,
+                    &format!("{context} one_of values[{index}]"),
+                )?;
+            }
         }
         _ => {}
     }
@@ -700,7 +760,7 @@ fn validate_arg_template(
     Ok(())
 }
 
-fn validate_identifier(value: &str, context: &str) -> Result<()> {
+pub(crate) fn validate_identifier(value: &str, context: &str) -> Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
         return Err(ManifestError::validation(format!(
@@ -858,13 +918,13 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        validate_filters_and_column_exprs, validate_http_function, validate_http_function_names,
-        validate_http_table, validate_table_names,
+        DeclaredRelation, HttpTableValidation, validate_declared_relation_namespace,
+        validate_filters_and_column_exprs, validate_http_function, validate_http_table,
     };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
-        MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec, QueryParamSpec,
-        RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+        MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, ManifestDataType, PaginationSpec,
+        QueryParamSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
         SourceTableFunctionSpec, TableFunctionArgSpec, ValueSourceSpec,
     };
     use crate::parse_source_manifest_value;
@@ -874,7 +934,7 @@ mod tests {
     fn test_column() -> ColumnSpec {
         ColumnSpec {
             name: "id".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             nullable: true,
             r#virtual: false,
             description: String::new(),
@@ -885,17 +945,43 @@ mod tests {
     fn test_filters() -> Vec<FilterSpec> {
         vec![FilterSpec {
             name: "id".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
+            lookup_key: false,
         }]
+    }
+
+    fn lookup_key_filter(name: &str) -> FilterSpec {
+        FilterSpec {
+            name: name.to_string(),
+            data_type: ManifestDataType::Utf8,
+            required: false,
+            mode: FilterMode::Equality,
+            description: String::new(),
+            lookup_key: true,
+        }
     }
 
     fn column_with_expr(expr: ExprSpec) -> ColumnSpec {
         let mut column = test_column();
         column.expr = Some(expr);
         column
+    }
+
+    #[test]
+    fn column_spec_rejects_invalid_column_type_at_parse_time() {
+        let error = serde_json::from_value::<ColumnSpec>(json!({
+            "name": "id",
+            "type": "Banana",
+        }))
+        .expect_err("column types should be validated during deserialization");
+
+        assert!(
+            error.to_string().contains("unknown variant `Banana`"),
+            "unexpected error: {error}"
+        );
     }
 
     fn base_request() -> RequestSpec {
@@ -984,6 +1070,25 @@ mod tests {
         })
     }
 
+    fn validate_test_http_table(
+        filters: &[FilterSpec],
+        request: &RequestSpec,
+        requests: &[RequestRouteSpec],
+    ) -> crate::Result<()> {
+        let columns = [test_column()];
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "messages",
+            filters,
+            columns: &columns,
+            request,
+            requests,
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &[],
+        })
+    }
+
     fn function_with_request_value(value: ValueSourceSpec) -> SourceTableFunctionSpec {
         SourceTableFunctionSpec {
             name: "search".to_string(),
@@ -994,6 +1099,7 @@ mod tests {
             detail_hints: Vec::new(),
             args: vec![TableFunctionArgSpec {
                 name: "query".to_string(),
+                data_type: ManifestDataType::Utf8,
                 required: true,
                 values: vec![],
                 bind: FunctionArgBinding {
@@ -1015,18 +1121,215 @@ mod tests {
     }
 
     #[test]
-    fn validate_table_names_rejects_duplicate_table_names() {
-        let schema = "github";
-        let table_names = ["issues", "prs", "Issues"];
+    fn validate_declared_relation_namespace_rejects_duplicate_tables_that_differ_only_by_case() {
+        let relations = [
+            DeclaredRelation::table("issues"),
+            DeclaredRelation::table("prs"),
+            DeclaredRelation::table("Issues"),
+        ];
 
-        let error = validate_table_names(schema, table_names)
+        let error = validate_declared_relation_namespace("github", relations)
             .expect_err("expected duplicate table to be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("source 'github' has duplicate table 'issues'")
+                .contains("source 'github' table 'Issues' is declared more than once")
         );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_duplicate_functions_that_differ_only_by_case() {
+        let relations = [
+            DeclaredRelation::function("search"),
+            DeclaredRelation::function("Search"),
+        ];
+
+        let error = validate_declared_relation_namespace("github", relations)
+            .expect_err("expected duplicate function to be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source 'github' function 'Search' is declared more than once")
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_table_function_case_collisions() {
+        let relations = [
+            DeclaredRelation::table("Messages"),
+            DeclaredRelation::function("messages"),
+        ];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected table/function collision to be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source 'demo' declares both a table and function named 'messages'")
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_reports_earlier_collisions_first() {
+        let relations = [
+            DeclaredRelation::table("issues"),
+            DeclaredRelation::function("issues"),
+            DeclaredRelation::function("bad-name"),
+        ];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected first namespace collision to be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' declares both a table and function named 'issues'"
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_allows_quoted_sql_table_names() {
+        let relations = [
+            DeclaredRelation::table("player.stats"),
+            DeclaredRelation::table("message-events"),
+            DeclaredRelation::function("search"),
+        ];
+
+        validate_declared_relation_namespace("demo", relations)
+            .expect("table names that require SQL quoting should remain valid");
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_empty_table_names() {
+        let relations = [DeclaredRelation::table("  ")];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected empty table name to be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' table name must not be empty"
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_invalid_function_names() {
+        let relations = [DeclaredRelation::function("1search")];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected invalid function name to be rejected");
+
+        assert!(error.to_string().contains(
+            "source 'demo' function name '1search' must start with a letter or underscore"
+        ));
+    }
+
+    #[test]
+    fn http_manifest_rejects_table_function_names_that_differ_only_by_case() {
+        let error = parse_source_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "tables": [{
+                "name": "Messages",
+                "description": "Messages",
+                "request": { "path": "/messages" }
+            }],
+            "functions": [{
+                "name": "messages",
+                "request": { "path": "/messages/search" }
+            }]
+        }))
+        .expect_err("HTTP table/function case collision should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' declares both a table and function named 'messages'"
+        );
+    }
+
+    #[test]
+    fn http_manifest_rejects_duplicate_function_names_that_differ_only_by_case() {
+        let error = parse_source_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "functions": [
+                {
+                    "name": "Search",
+                    "request": { "path": "/search" }
+                },
+                {
+                    "name": "search",
+                    "request": { "path": "/search" }
+                }
+            ]
+        }))
+        .expect_err("HTTP function case duplicate should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' function 'search' is declared more than once"
+        );
+    }
+
+    #[test]
+    fn http_backend_accepts_quoted_sql_table_names() {
+        crate::backends::http::HttpSourceManifest::parse_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "tables": [{
+                "name": "message-events",
+                "description": "Events",
+                "request": { "path": "/events" },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("HTTP table names that require SQL quoting should remain valid");
+    }
+
+    #[test]
+    fn file_backend_accepts_quoted_sql_table_names() {
+        crate::backends::file::FileSourceManifest::parse_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "file",
+            "tables": [{
+                "name": "message-events",
+                "description": "Events",
+                "format": "jsonl",
+                "source": { "location": "file:///tmp/coral/events/" },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("file table names that require SQL quoting should remain valid");
+    }
+
+    #[test]
+    fn mcp_backend_accepts_quoted_sql_table_names() {
+        crate::backends::mcp::McpSourceManifest::parse_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "message-events",
+                "tool": "list_events",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("MCP table names that require SQL quoting should remain valid");
     }
 
     #[test]
@@ -1042,18 +1345,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("default request should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("default request should reject unknown filters");
 
         assert!(
             error
@@ -1078,18 +1371,8 @@ mod tests {
             },
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &base_request(),
-            &[route],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("route request should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &base_request(), &[route])
+            .expect_err("route request should reject unknown filters");
 
         assert!(
             error
@@ -1112,18 +1395,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("filter_split should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("filter_split should reject unknown filters");
 
         assert!(
             error
@@ -1146,18 +1419,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("filter_split_int should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("filter_split_int should reject unknown filters");
 
         assert!(
             error
@@ -1202,18 +1465,8 @@ mod tests {
                 ..base_request()
             };
 
-            let error = validate_http_table(
-                "demo",
-                "messages",
-                &test_filters(),
-                &[test_column()],
-                &request,
-                &[],
-                &PaginationSpec::default(),
-                None,
-                &[],
-            )
-            .expect_err("table requests should reject function arguments");
+            let error = validate_test_http_table(&test_filters(), &request, &[])
+                .expect_err("table requests should reject function arguments");
 
             assert!(
                 error.to_string().contains("uses function argument"),
@@ -1226,26 +1479,76 @@ mod tests {
     fn validate_http_table_rejects_function_arg_template_tokens() {
         let request = RequestSpec {
             path: ParsedTemplate::parse("/search/{{arg.q}}").expect("template"),
-            ..RequestSpec::default()
+            ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("table request templates should reject function arguments");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request templates should reject function arguments");
 
         assert!(
             error
                 .to_string()
                 .contains("uses function argument token 'arg.q' outside a function request")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_function_arg_one_of_value_sources() {
+        let request = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "value".to_string(),
+                value: ValueSourceSpec::OneOf {
+                    values: vec![
+                        ValueSourceSpec::Input {
+                            key: "API_KEY".to_string(),
+                        },
+                        ValueSourceSpec::Arg {
+                            key: "q".to_string(),
+                            default: None,
+                        },
+                    ],
+                },
+            }],
+            ..base_request()
+        };
+
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request one_of values should reject function arguments");
+
+        assert!(
+            error
+                .to_string()
+                .contains("uses function argument 'q' outside a function request")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_unknown_filter_one_of_value_sources() {
+        let request = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "value".to_string(),
+                value: ValueSourceSpec::OneOf {
+                    values: vec![
+                        ValueSourceSpec::Input {
+                            key: "API_KEY".to_string(),
+                        },
+                        ValueSourceSpec::Filter {
+                            key: "missing".to_string(),
+                            default: None,
+                        },
+                    ],
+                },
+            }],
+            ..base_request()
+        };
+
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request one_of values should reject unknown filters");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown filter 'missing'")
         );
     }
 
@@ -1316,28 +1619,44 @@ mod tests {
     }
 
     #[test]
-    fn validate_http_function_names_rejects_table_name_collisions() {
-        let function = SourceTableFunctionSpec {
-            name: "messages".to_string(),
-            kind: SourceTableFunctionKind::Table,
-            description: String::new(),
-            fetch_limit_default: None,
-            search_limits: None,
-            detail_hints: Vec::new(),
-            args: vec![],
-            request: base_request(),
-            response: crate::ResponseSpec::default(),
-            pagination: PaginationSpec::default(),
-            columns: vec![],
-        };
+    fn validate_http_function_accepts_arg_one_of_value_sources() {
+        let function = function_with_request_value(ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Arg {
+                    key: "q".to_string(),
+                    default: None,
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
+        });
 
-        let error = validate_http_function_names("demo", ["messages"], &[function])
-            .expect_err("function should not share a table name");
+        validate_http_function("demo", &function)
+            .expect("function request one_of should accept declared args");
+    }
+
+    #[test]
+    fn validate_http_function_rejects_unknown_arg_one_of_value_sources() {
+        let function = function_with_request_value(ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Arg {
+                    key: "missing".to_string(),
+                    default: None,
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
+        });
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("function request one_of should reject unknown args");
 
         assert!(
             error
                 .to_string()
-                .contains("declares both a table and function named 'messages'")
+                .contains("references unknown request arg 'missing'")
         );
     }
 
@@ -1345,23 +1664,26 @@ mod tests {
     fn validate_http_table_allows_contains_filters_without_search_limits() {
         let filters = vec![FilterSpec {
             name: "query".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            lookup_key: false,
         }];
 
-        validate_http_table(
-            "demo",
-            "search",
-            &filters,
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
+        let columns = [test_column()];
+        let request = base_request();
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &[],
+        })
         .expect("contains filters should not force search metadata");
     }
 
@@ -1398,24 +1720,59 @@ mod tests {
         }];
         let filters = vec![FilterSpec {
             name: "query".to_string(),
-            data_type: "Utf8".to_string(),
+            data_type: ManifestDataType::Utf8,
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            lookup_key: false,
         }];
 
-        validate_http_table(
-            "demo",
-            "search",
-            &filters,
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            Some(&search_limits),
-            &detail_hints,
-        )
+        let columns = [test_column()];
+        let request = base_request();
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: Some(&search_limits),
+            detail_hints: &detail_hints,
+        })
         .expect("search metadata should validate");
+    }
+
+    #[test]
+    fn validate_search_limited_http_table_rejects_lookup_key_filters() {
+        let search_limits = SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        };
+        let filters = vec![lookup_key_filter("id")];
+        let columns = [test_column()];
+        let request = base_request();
+
+        let error = validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: Some(&search_limits),
+            detail_hints: &[],
+        })
+        .expect_err("search-limited tables should not allow lookup_key filters");
+
+        assert!(
+            error.to_string().contains(
+                "demo.search filter 'id': lookup_key filters require complete filtered result sets, but this table declares search_limits"
+            ),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -1502,17 +1859,20 @@ mod tests {
             purpose: "Fetch full item details.".to_string(),
         }];
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &detail_hints,
-        )
+        let filters = test_filters();
+        let columns = [test_column()];
+        let request = base_request();
+        let error = validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "messages",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &detail_hints,
+        })
         .expect_err("unknown detail hint result column should fail");
 
         assert!(
@@ -1565,17 +1925,21 @@ mod tests {
         ];
 
         for (field_name, detail_hint) in cases {
-            let error = validate_http_table(
-                "demo",
-                "messages",
-                &test_filters(),
-                &[test_column()],
-                &base_request(),
-                &[],
-                &PaginationSpec::default(),
-                None,
-                &[detail_hint],
-            )
+            let filters = test_filters();
+            let columns = [test_column()];
+            let request = base_request();
+            let detail_hints = [detail_hint];
+            let error = validate_http_table(HttpTableValidation {
+                schema: "demo",
+                table_name: "messages",
+                filters: &filters,
+                columns: &columns,
+                request: &request,
+                requests: &[],
+                pagination: &PaginationSpec::default(),
+                search_limits: None,
+                detail_hints: &detail_hints,
+            })
             .expect_err("empty detail hint fields should fail");
 
             assert!(
@@ -1681,6 +2045,23 @@ mod tests {
             .expect_err("function columns should not reference table filters");
 
         assert!(error.to_string().contains("references unknown filter 'q'"));
+    }
+
+    #[test]
+    fn lookup_key_non_equality_modes_reject() {
+        for mode in [FilterMode::Search, FilterMode::Contains] {
+            let mut filter = lookup_key_filter("q");
+            filter.mode = mode;
+
+            let error = validate_test_http_table(&[filter], &base_request(), &[])
+                .expect_err("non-equality lookup_key mode should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("filter 'q': lookup_key=true requires mode=equality")
+            );
+        }
     }
 
     #[test]

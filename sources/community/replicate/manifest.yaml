@@ -1,0 +1,758 @@
+dsl_version: 3
+name: replicate
+version: 0.1.0
+backend: http
+description: >-
+  Query predictions, models, deployments, and collections from Replicate.
+  Covers your AI inference history, the global public model catalog,
+  account-scoped deployments, curated model collections, and available
+  GPU/CPU hardware options.
+base_url: https://api.replicate.com/v1
+
+inputs:
+  REPLICATE_API_TOKEN:
+    kind: secret
+    hint: |
+      Your Replicate API token. Generate one at:
+      https://replicate.com/account/api-tokens → New API token.
+      This source only performs read-only GET requests. Any Replicate API
+      token is sufficient — Replicate does not provide scoped or read-only
+      token variants.
+      Docs: https://replicate.com/docs/reference/http
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.REPLICATE_API_TOKEN}}
+
+test_queries:
+  - SELECT * FROM replicate.hardware LIMIT 10
+  - SELECT * FROM replicate.collections LIMIT 5
+  - SELECT id, model, status, created_at FROM replicate.predictions LIMIT 5
+  - SELECT owner, name, run_count, visibility FROM replicate.models LIMIT 5
+  - SELECT owner, name, release_hardware FROM replicate.deployments LIMIT 5
+
+tables:
+  # ────────────────────────────────────────────────────────────────────────
+  # replicate.predictions — AI inference history for the authenticated user
+  # GET /v1/predictions
+  # Response: {next, previous, results: [...]}
+  # Pagination: none — limited to first page (max 100 results) because Replicate
+  # returns full URLs for pagination, which is not yet supported by Coral.
+  # Scoped to the authenticated user automatically; no filter required.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: predictions
+    description: >-
+      All predictions (inference runs) made by the authenticated Replicate user.
+      Each row is one model invocation. Includes model identifier, status,
+      timing, input and output payloads (as JSON), logs, and error details.
+      Scoped to the authenticated account. Results are limited to the first
+      page (up to 100 items) because Replicate's full-URL pagination is not
+      yet supported.
+    guide: |
+      Start with `SELECT id, model, status, created_at FROM replicate.predictions LIMIT 10`.
+      `status` is one of: starting, processing, succeeded, failed, canceled, aborted.
+      `model` is in "owner/name" format (e.g. stability-ai/sdxl).
+      `version` is the 64-char model version ID, or "hidden" for official models.
+      `input` and `output` are JSON — their shape varies per model.
+      `metrics__total_time` is the total wall-clock time in seconds.
+      `data_removed` is true when Replicate has deleted the prediction output.
+      Predictions are returned newest-first. Note that query results are
+      limited to the first page (max 100 predictions). To filter predictions
+      upstream, use the `created_after` or `created_before` filters
+      (e.g., `WHERE created_after = '2026-05-01T00:00:00Z'`).
+      The `source` column is available in query results but is not a pushdown
+      filter — use `WHERE source = 'api'` for local filtering after fetch.
+    filters:
+      - name: created_after
+        required: false
+      - name: created_before
+        required: false
+    request:
+      method: GET
+      path: /predictions
+      query:
+        - name: created_after
+          from: filter
+          key: created_after
+        - name: created_before
+          from: filter
+          key: created_before
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique prediction ID.
+        expr:
+          kind: path
+          path:
+            - id
+
+      - name: model
+        type: Utf8
+        nullable: false
+        description: >-
+          Model identifier in "owner/name" format (e.g. stability-ai/sdxl).
+          Use this to filter predictions for a specific model.
+        expr:
+          kind: path
+          path:
+            - model
+
+      - name: version
+        type: Utf8
+        nullable: true
+        description: >-
+          64-character model version ID used for this prediction.
+          "hidden" for official models that do not expose version IDs.
+        expr:
+          kind: path
+          path:
+            - version
+
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >-
+          Prediction lifecycle status: starting, processing, succeeded, failed,
+          canceled, or aborted. Use `WHERE status = 'failed'` to find errors.
+        expr:
+          kind: path
+          path:
+            - status
+
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: ISO 8601 timestamp when the prediction was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the model began processing the prediction.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+
+      - name: completed_at
+        type: Timestamp
+        nullable: true
+        description: >-
+          ISO 8601 timestamp when the prediction completed and all outputs
+          were uploaded. Null for in-progress or failed predictions.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_at
+
+      - name: source
+        type: Utf8
+        nullable: true
+        description: >-
+          How the prediction was created — "api" (via API) or "web" (via
+          the Replicate website playground). This is a response column only;
+          use local SQL filtering (e.g. WHERE source = 'api') rather than
+          a pushdown filter.
+        expr:
+          kind: path
+          path:
+            - source
+
+      - name: deployment
+        type: Utf8
+        nullable: true
+        description: >-
+          Name of the deployment that created this prediction, if it was run
+          via a deployment. Null for predictions run directly against a model.
+        expr:
+          kind: path
+          path:
+            - deployment
+
+      - name: data_removed
+        type: Boolean
+        nullable: false
+        description: >-
+          True when Replicate has deleted the prediction input and output data
+          (per data retention policy). Input and output will be null in this case.
+        expr:
+          kind: path
+          path:
+            - data_removed
+
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Error message if status is "failed". Null on success.
+        expr:
+          kind: path
+          path:
+            - error
+
+      - name: logs
+        type: Utf8
+        nullable: true
+        description: Log output emitted by the model during this prediction run.
+        expr:
+          kind: path
+          path:
+            - logs
+
+      - name: input
+        type: Json
+        nullable: true
+        description: >-
+          Prediction input as a JSON object. Shape is model-specific.
+          Use SQL JSON functions to extract fields (e.g. json_get(input, 'prompt')).
+        expr:
+          kind: path
+          path:
+            - input
+
+      - name: output
+        type: Json
+        nullable: true
+        description: >-
+          Prediction output as a JSON value. Shape is model-specific —
+          can be a string, array of URLs, or a structured object.
+          Null if the prediction has not completed or data was removed.
+        expr:
+          kind: path
+          path:
+            - output
+
+      - name: metrics__total_time
+        type: Float64
+        nullable: true
+        description: >-
+          Total wall-clock time in seconds that the prediction took to complete,
+          including queue wait time.
+        expr:
+          kind: path
+          path:
+            - metrics
+            - total_time
+
+      - name: url_get
+        type: Utf8
+        nullable: true
+        description: API URL to retrieve the latest state of this prediction.
+        expr:
+          kind: path
+          path:
+            - urls
+            - get
+
+      - name: url_cancel
+        type: Utf8
+        nullable: true
+        description: API URL to cancel this prediction if it is still running.
+        expr:
+          kind: path
+          path:
+            - urls
+            - cancel
+
+      - name: created_after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter predictions created after this ISO 8601 timestamp (e.g. '2026-05-01T00:00:00Z').
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: created_after
+
+      - name: created_before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter predictions created before this ISO 8601 timestamp (e.g. '2026-05-31T23:59:59Z').
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: created_before
+
+  # ────────────────────────────────────────────────────────────────────────
+  # replicate.models — global public ML model catalog
+  # GET /v1/models
+  # Response: {next, previous, results: [...]}
+  # Pagination: none — limited to first page (max 100 results) because Replicate
+  # returns full URLs for pagination, which is not yet supported by Coral.
+  # Global public catalog — no filter required. Optional sort filters.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: models
+    description: >-
+      All public models available on Replicate. Each row is one model.
+      Includes owner, name, description, visibility, run count, and URLs.
+      Use `is_official = true` to find Replicate-maintained models.
+      Use optional `sort_by` and `sort_direction` filters to control ordering.
+      Results are limited to the first page (up to 100 items) because Replicate's
+      full-URL pagination is not yet supported.
+    guide: |
+      Start with `SELECT owner, name, run_count, description FROM replicate.models LIMIT 20`.
+      `visibility` is "public" or "private". Only public models appear here.
+      `is_official` marks models officially maintained by Replicate (always-on,
+      stable API, predictable pricing).
+      `run_count` is the total all-time inference count across all users.
+      `latest_version` and `default_example` are JSON objects — shape varies
+      per model. Use SQL JSON functions to inspect them.
+      Use `WHERE sort_by = 'model_created_at' AND sort_direction = 'desc'`
+      to browse newest models first.
+    filters:
+      - name: sort_by
+        required: false
+      - name: sort_direction
+        required: false
+    request:
+      method: GET
+      path: /models
+      query:
+        - name: sort_by
+          from: filter
+          key: sort_by
+        - name: sort_direction
+          from: filter
+          key: sort_direction
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: owner
+        type: Utf8
+        nullable: false
+        description: Username or organization that owns the model (e.g. stability-ai).
+        expr:
+          kind: path
+          path:
+            - owner
+
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Model name within the owner's namespace (e.g. sdxl).
+        expr:
+          kind: path
+          path:
+            - name
+
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Short description of what the model does.
+        expr:
+          kind: path
+          path:
+            - description
+
+      - name: visibility
+        type: Utf8
+        nullable: false
+        description: Whether the model is "public" or "private".
+        expr:
+          kind: path
+          path:
+            - visibility
+
+      - name: is_official
+        type: Boolean
+        nullable: false
+        description: >-
+          True for models officially maintained by Replicate. Official models
+          are always-on, have stable API interfaces, and predictable pricing.
+        expr:
+          kind: path
+          path:
+            - is_official
+
+      - name: run_count
+        type: Int64
+        nullable: false
+        description: Total number of times this model has been run across all users.
+        expr:
+          kind: path
+          path:
+            - run_count
+
+      - name: url
+        type: Utf8
+        nullable: false
+        description: URL of the model page on replicate.com.
+        expr:
+          kind: path
+          path:
+            - url
+
+      - name: cover_image_url
+        type: Utf8
+        nullable: true
+        description: URL of the model's cover image.
+        expr:
+          kind: path
+          path:
+            - cover_image_url
+
+      - name: github_url
+        type: Utf8
+        nullable: true
+        description: URL of the model's source code repository on GitHub.
+        expr:
+          kind: path
+          path:
+            - github_url
+
+      - name: paper_url
+        type: Utf8
+        nullable: true
+        description: URL of the research paper associated with this model.
+        expr:
+          kind: path
+          path:
+            - paper_url
+
+      - name: license_url
+        type: Utf8
+        nullable: true
+        description: URL of the model's license.
+        expr:
+          kind: path
+          path:
+            - license_url
+
+      - name: latest_version
+        type: Json
+        nullable: true
+        description: >-
+          JSON object describing the model's latest version. Contains the version
+          ID, creation timestamp, Cog version, and OpenAPI schema for the model's
+          inputs and outputs. Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - latest_version
+
+      - name: default_example
+        type: Json
+        nullable: true
+        description: >-
+          JSON object for the model's default example prediction, showing
+          typical inputs and expected outputs. Shape varies per model.
+        expr:
+          kind: path
+          path:
+            - default_example
+
+      - name: sort_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Sort field for results. Accepted values: model_created_at,
+          latest_version_created_at. Default: latest_version_created_at.
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: sort_by
+
+      - name: sort_direction
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Sort direction: asc or desc (default). Applied as a query parameter
+          — not returned in the response.
+        expr:
+          kind: from_filter
+          key: sort_direction
+
+  # ────────────────────────────────────────────────────────────────────────
+  # replicate.deployments — account-scoped model deployments
+  # GET /v1/deployments
+  # Response: {next, previous, results: [...]}
+  # Pagination: none — limited to first page (max 100 results) because Replicate
+  # returns full URLs for pagination, which is not yet supported by Coral.
+  # Scoped to the authenticated account; no filter required.
+  # current_release nested fields are flattened with double-underscore prefix.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: deployments
+    description: >-
+      Model deployments configured for the authenticated Replicate account.
+      Each row is one deployment and includes its current release configuration:
+      the model, version, hardware SKU, and auto-scaling settings. Scoped to
+      the authenticated account — no filter required. Results are limited to the
+      first page (up to 100 items) because Replicate's full-URL pagination is not
+      yet supported.
+    guide: |
+      Start with `SELECT owner, name, release_model, release_hardware FROM replicate.deployments`.
+      `release_hardware` is a hardware SKU string (e.g. gpu-t4, gpu-a40-small).
+      Join against `replicate.hardware` on `sku = release_hardware` to get the
+      human-readable hardware name.
+      `release_min_instances` = 0 means the deployment can scale to zero.
+      `release_model` is in "owner/name" format.
+      Deployments list is empty if the account has no configured deployments.
+    request:
+      method: GET
+      path: /deployments
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: owner
+        type: Utf8
+        nullable: false
+        description: Account username or organization that owns the deployment.
+        expr:
+          kind: path
+          path:
+            - owner
+
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Deployment name (unique within the owner's account).
+        expr:
+          kind: path
+          path:
+            - name
+
+      - name: release_number
+        type: Int64
+        nullable: true
+        description: >-
+          Monotonically increasing release number. Increments each time the
+          deployment configuration is updated.
+        expr:
+          kind: path
+          path:
+            - current_release
+            - number
+
+      - name: release_model
+        type: Utf8
+        nullable: true
+        description: >-
+          Model identifier in "owner/name" format used in the current release
+          (e.g. stability-ai/sdxl).
+        expr:
+          kind: path
+          path:
+            - current_release
+            - model
+
+      - name: release_version
+        type: Utf8
+        nullable: true
+        description: 64-character model version ID deployed in the current release.
+        expr:
+          kind: path
+          path:
+            - current_release
+            - version
+
+      - name: release_created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the current release was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - current_release
+              - created_at
+
+      - name: release_hardware
+        type: Utf8
+        nullable: true
+        description: >-
+          Hardware SKU for the current release (e.g. cpu, gpu-t4, gpu-a40-small,
+          gpu-a40-large). Join against replicate.hardware on sku to get the
+          full display name.
+        expr:
+          kind: path
+          path:
+            - current_release
+            - configuration
+            - hardware
+
+      - name: release_min_instances
+        type: Int64
+        nullable: true
+        description: >-
+          Minimum number of instances kept warm. 0 means the deployment
+          can scale to zero when idle.
+        expr:
+          kind: path
+          path:
+            - current_release
+            - configuration
+            - min_instances
+
+      - name: release_max_instances
+        type: Int64
+        nullable: true
+        description: Maximum number of instances the deployment can scale up to.
+        expr:
+          kind: path
+          path:
+            - current_release
+            - configuration
+            - max_instances
+
+      - name: release_creator_type
+        type: Utf8
+        nullable: true
+        description: Account type of the creator of this release — "user" or "organization".
+        expr:
+          kind: path
+          path:
+            - current_release
+            - created_by
+            - type
+
+      - name: release_creator_username
+        type: Utf8
+        nullable: true
+        description: Username of the account that created this release.
+        expr:
+          kind: path
+          path:
+            - current_release
+            - created_by
+            - username
+
+  # ────────────────────────────────────────────────────────────────────────
+  # replicate.collections — curated model groups (global, public)
+  # GET /v1/collections
+  # Response: {next, previous, results: [...]}
+  # Pagination: none — limited to first page (max 100 results) because Replicate
+  # returns full URLs for pagination, which is not yet supported by Coral.
+  # Global public catalog; no filter required.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: collections
+    description: >-
+      Curated collections of models on Replicate. Each collection groups related
+      models under a theme (e.g. "super-resolution", "text-to-image").
+      Use `slug` to reference a collection in the Replicate UI or API.
+      Results are limited to the first page (up to 100 items) because Replicate's
+      full-URL pagination is not yet supported.
+    guide: |
+      Start with `SELECT name, slug, description FROM replicate.collections`.
+      Collections are maintained by Replicate to group models by task or theme.
+      Only the name, slug, and description are returned by this list endpoint —
+      for the full list of models in a collection visit replicate.com/collections/<slug>.
+    request:
+      method: GET
+      path: /collections
+    response:
+      rows_path:
+        - results
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the collection (e.g. "Super resolution").
+        expr:
+          kind: path
+          path:
+            - name
+
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: >-
+          URL-safe slug for the collection in lowercase-with-dashes format
+          (e.g. "super-resolution"). Use this to browse the collection at
+          replicate.com/collections/<slug>.
+        expr:
+          kind: path
+          path:
+            - slug
+
+      - name: description
+        type: Utf8
+        nullable: false
+        description: Short description of the collection's theme or use case.
+        expr:
+          kind: path
+          path:
+            - description
+
+  # ────────────────────────────────────────────────────────────────────────
+  # replicate.hardware — available GPU and CPU hardware options
+  # GET /v1/hardware
+  # Response: root JSON array — no pagination wrapper
+  # No pagination — small static list (< 20 entries).
+  # ────────────────────────────────────────────────────────────────────────
+  - name: hardware
+    description: >-
+      Available hardware options for running models and configuring deployments
+      on Replicate. Each row is one hardware tier with its display name and SKU.
+      Use `sku` values when creating or updating deployments.
+    guide: |
+      Start with `SELECT name, sku FROM replicate.hardware`.
+      `sku` is the identifier used in `replicate.deployments.release_hardware`.
+      Join `replicate.deployments` on `sku = release_hardware` to display
+      human-readable hardware names alongside deployment configurations.
+      This list is small (typically < 20 entries) and returned in a single call.
+    request:
+      method: GET
+      path: /hardware
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable hardware name (e.g. "Nvidia T4 GPU", "CPU").
+        expr:
+          kind: path
+          path:
+            - name
+
+      - name: sku
+        type: Utf8
+        nullable: false
+        description: >-
+          Hardware SKU identifier (e.g. cpu, gpu-t4, gpu-a40-small, gpu-a40-large).
+          Use this value in deployment configuration and to join against
+          replicate.deployments.release_hardware.
+        expr:
+          kind: path
+          path:
+            - sku
