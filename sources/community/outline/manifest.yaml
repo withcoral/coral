@@ -3,7 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query team knowledge bases, document lifecycles, and user directories from Outline.
+  Query team knowledge bases, documents, and user directories from
+  Outline.
 base_url: "{{input.OUTLINE_URL}}/api"
 
 inputs:
@@ -14,7 +15,9 @@ inputs:
       for example `https://app.getoutline.com` or `https://wiki.infra.local`.
   OUTLINE_API_TOKEN:
     kind: secret
-    hint: Long-lived personal API token or bot token generated in user settings.
+    hint: |
+      Outline API key (Settings → API Keys) or OAuth 2.0 access token
+      authorized to read the API. Both are sent as a Bearer token.
 
 auth:
   type: HeaderAuth
@@ -108,7 +111,7 @@ tables:
       - name: collection_id
         type: Utf8
         nullable: true
-        description: Parent collection identifier. Null for documents not in a collection.
+        description: Parent collection ID (null if not in a collection).
         expr: {kind: path, path: [collectionId]}
       - name: title
         type: Utf8
