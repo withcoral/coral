@@ -24,7 +24,8 @@ pub(crate) use import::run_state_migrations;
     reason = "identity persistence types are not yet wired to production consumers"
 )]
 pub(crate) use repositories::identity_specs::{
-    IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
+    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,
+    IdentitySpecScope,
 };
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
 pub(crate) use session::{DbRepos, DbSession};
