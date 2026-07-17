@@ -16,6 +16,7 @@ interface UpdateInfoLike {
 export interface UpdateCheckResultLike {
   isUpdateAvailable: boolean
   updateInfo: UpdateInfoLike
+  downloadPromise?: Promise<unknown> | null
 }
 
 interface DownloadProgressLike {
@@ -55,10 +56,12 @@ function errorMessage(error: unknown): string {
 export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   const { updater } = deps
   let installed = false
-  // The version already downloaded and staged for install-on-quit. Drives both
-  // once-per-version notification dedupe and the manual-check dialog, which
-  // must not promise a fresh notification for an update that is already staged.
-  let downloadedVersion: string | null = null
+  // The version whose download promise completed successfully. On macOS,
+  // electron-updater emits `update-downloaded` before Squirrel has fetched the
+  // archive from its local proxy; the promise resolves after that handoff.
+  // Only the latter is safe to describe as ready for install-on-quit.
+  let readyVersion: string | null = null
+  const trackedDownloads = new WeakMap<Promise<unknown>, Promise<DownloadOutcome>>()
 
   function installListeners(): void {
     updater.on('checking-for-update', () => {
@@ -73,20 +76,11 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     updater.on('download-progress', (progress) => {
       console.info(`[coral-updater] download ${progress.percent.toFixed(1)}%`)
     })
-    // Notify from this single listener instead of checkForUpdatesAndNotify():
-    // that helper attaches a new notification continuation per call, so
-    // overlapping or repeated checks notify more than once for one update.
     updater.on('update-downloaded', (info) => {
-      console.info(`[coral-updater] update downloaded: ${info.version}`)
-      if (downloadedVersion === info.version) return
-      downloadedVersion = info.version
-      deps.showNotification(
-        'Coral update ready',
-        `Coral ${info.version} will install when you quit the app.`,
-      )
+      console.info(`[coral-updater] update archive downloaded: ${info.version}`)
     })
     updater.on('error', (error) => {
-      console.error(`[coral-updater] update check failed: ${errorMessage(error)}`)
+      console.error(`[coral-updater] updater error: ${errorMessage(error)}`)
     })
   }
 
@@ -107,10 +101,10 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
       return
     }
 
-    // If this version already finished downloading in a prior check, the
-    // update-downloaded notification has already fired and will not fire
-    // again (dedupe), so promising a future notification here would be a lie.
-    if (downloadedVersion === result.updateInfo.version) {
+    // If this version already finished downloading in a prior check, its ready
+    // notification has already fired and will not fire again (dedupe), so
+    // promising a future notification here would be a lie.
+    if (readyVersion === result.updateInfo.version) {
       await deps.showInfoDialog(
         `Coral ${result.updateInfo.version} is ready`,
         'The update will install when you quit Coral.',
@@ -124,6 +118,41 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     )
   }
 
+  function trackDownload(result: UpdateCheckResultLike): Promise<DownloadOutcome> | null {
+    const downloadPromise = result.downloadPromise
+    if (!downloadPromise) return null
+
+    const existing = trackedDownloads.get(downloadPromise)
+    if (existing) return existing
+
+    // electron-updater returns the same in-flight download promise to
+    // overlapping checks. Track it once so every caller observes failures but
+    // one completed version produces one notification.
+    const version = result.updateInfo.version
+    const outcome = downloadPromise.then<DownloadOutcome, DownloadOutcome>(
+      () => {
+        if (readyVersion !== version) {
+          readyVersion = version
+          try {
+            deps.showNotification(
+              'Coral update ready',
+              `Coral ${version} will install when you quit the app.`,
+            )
+          } catch (error) {
+            console.error(`[coral-updater] update notification failed: ${errorMessage(error)}`)
+          }
+        }
+        return { ok: true }
+      },
+      (error: unknown) => {
+        console.error(`[coral-updater] update download failed: ${errorMessage(error)}`)
+        return { ok: false, error }
+      },
+    )
+    trackedDownloads.set(downloadPromise, outcome)
+    return outcome
+  }
+
   function install(): void {
     if (installed) return
 
@@ -135,24 +164,39 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     setTimeout(() => {
       void check({ interactive: false })
     }, STARTUP_UPDATE_CHECK_DELAY_MS)
-    // checkForUpdates() dedupes concurrent checks (it returns the in-flight
-    // promise), so a plain interval cannot stack downloads.
+    // The check and download layers each reuse their own in-flight promise;
+    // trackDownload() also observes a shared download only once.
     setInterval(() => {
       void check({ interactive: false })
     }, PERIODIC_UPDATE_CHECK_INTERVAL_MS)
   }
 
   async function check({ interactive }: { interactive: boolean }): Promise<void> {
+    let result: UpdateCheckResultLike | null
     try {
-      const result = await updater.checkForUpdates()
-      if (interactive) await showManualResult(result)
+      result = await updater.checkForUpdates()
     } catch (error) {
       console.error(`[coral-updater] update check failed: ${errorMessage(error)}`)
       if (interactive) {
         await deps.showErrorDialog('Update check failed', errorMessage(error))
       }
+      return
+    }
+
+    // Attach to the auto-download before opening an interactive dialog. The
+    // download starts inside checkForUpdates() and can fail while that dialog
+    // is still open; attaching now prevents an unhandled rejection.
+    const download = result?.isUpdateAvailable ? trackDownload(result) : null
+    if (interactive) await showManualResult(result)
+    if (!download) return
+
+    const outcome = await download
+    if (!outcome.ok && interactive) {
+      await deps.showErrorDialog('Update download failed', errorMessage(outcome.error))
     }
   }
 
   return { check, install }
 }
+
+type DownloadOutcome = { ok: true } | { ok: false; error: unknown }

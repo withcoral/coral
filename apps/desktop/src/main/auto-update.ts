@@ -5,6 +5,7 @@ import type { AppUpdater } from 'electron-updater'
 import { createDesktopUpdater, type DesktopUpdater } from './auto-update-core'
 
 const require = createRequire(import.meta.url)
+const RELEASE_UPDATER_BUNDLE_MARKER = '[coral-updater] release updater enabled'
 
 // Baked in at build time by electron.vite.config.ts (true only when
 // CORAL_DESKTOP_RELEASE=1). `typeof` guard keeps it safe if the define is ever
@@ -45,6 +46,7 @@ function desktopUpdater(): DesktopUpdater {
 
 export function installAutoUpdater(): void {
   if (!desktopUpdatesSupported()) return
+  console.info(RELEASE_UPDATER_BUNDLE_MARKER)
   desktopUpdater().install()
 }
 

@@ -515,9 +515,9 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
-      # Type-check only; the full build stages the Rust binary + reef, which the
-      # rust/reef jobs already cover.
-      - name: Type-check desktop
+      # The full build stages the Rust binary + Reef, which their dedicated jobs
+      # already cover; this runs desktop type and packaging-config checks.
+      - name: Check desktop
         run: npm run check --prefix apps/desktop
 
       - name: Test desktop

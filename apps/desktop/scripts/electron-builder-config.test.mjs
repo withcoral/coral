@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,6 +17,18 @@ const apiKeyCredentials = {
   APPLE_API_KEY_ID: 'TESTKEY123',
   APPLE_API_ISSUER: '00000000-0000-0000-0000-000000000000',
 }
+
+test('desktop package and lockfile versions match', () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+  )
+  const packageLock = JSON.parse(
+    readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'),
+  )
+
+  assert.equal(packageLock.version, packageJson.version)
+  assert.equal(packageLock.packages[''].version, packageJson.version)
+})
 
 test('non-release packages are explicitly unsigned', () => {
   const config = createConfig({})

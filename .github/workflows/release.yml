@@ -350,10 +350,16 @@ jobs:
 
       # Build before Apple credentials enter the environment: the desktop
       # build installs UI and Reef dependencies and executes Rust build scripts.
+      # The release flag is compiled into the main process to enable updates;
+      # signing and notarization still happen only in the credentialed step.
       - name: Build universal desktop inputs
         env:
+          CORAL_DESKTOP_RELEASE: "1"
           CORAL_DESKTOP_UNIVERSAL: "1"
         run: npm run build --prefix apps/desktop
+
+      - name: Verify release updater bundle
+        run: npm run verify:release-build --prefix apps/desktop
 
       # Version/tag agreement, credential preflight, API-key staging,
       # packaging, and signature/notarization/artifact verification live in
