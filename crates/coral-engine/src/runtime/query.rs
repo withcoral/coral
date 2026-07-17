@@ -906,19 +906,13 @@ impl QueryRuntimeAdapter {
         error: &DataFusionError,
         sql: &str,
     ) -> Vec<TableInfo> {
-        let qualifier = missing_table_reference(error, Some(sql))
-            .and_then(|reference| table_context_qualifier(reference.parts.as_slice()));
-        let Some((catalog_name, schema_name)) = qualifier else {
+        let filters = missing_table_reference(error, Some(sql))
+            .map(|reference| table_context_filters(reference.parts.as_slice()))
+            .unwrap_or_default();
+        if filters.is_empty() {
             return self.tables.clone();
-        };
-        match catalog::collect_table_metadata(
-            &self.ctx,
-            catalog_name.as_deref(),
-            Some(&schema_name),
-            None,
-        )
-        .await
-        {
+        }
+        match self.table_metadata_for_error_context(&filters).await {
             Ok(tables) => tables,
             Err(error) => {
                 tracing::debug!(
@@ -928,6 +922,34 @@ impl QueryRuntimeAdapter {
                 self.tables.clone()
             }
         }
+    }
+
+    async fn table_metadata_for_error_context(
+        &self,
+        filters: &TableContextFilters,
+    ) -> Result<Vec<TableInfo>, CoreError> {
+        let mut tables = Vec::new();
+        for (catalog_name, schema_name) in &filters.0 {
+            tables.extend(
+                catalog::collect_table_metadata(
+                    &self.ctx,
+                    catalog_name.as_deref(),
+                    Some(schema_name),
+                    None,
+                )
+                .await
+                .map_err(|error| datafusion_to_core(&error, &self.tables))?,
+            );
+        }
+        let mut seen = HashSet::new();
+        tables.retain(|table| {
+            seen.insert((
+                table.catalog_name.clone(),
+                table.schema_name.clone(),
+                table.table_name.clone(),
+            ))
+        });
+        Ok(tables)
     }
 
     fn observe_query_result(
@@ -1449,17 +1471,30 @@ fn name_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
         .collect()
 }
 
-fn table_context_qualifier(parts: &[String]) -> Option<(Option<String>, String)> {
-    let parts = match parts {
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TableContextFilters(Vec<(Option<String>, String)>);
+
+impl TableContextFilters {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+fn table_context_filters(parts: &[String]) -> TableContextFilters {
+    let body = match parts {
         [catalog, rest @ ..] if catalog == "datafusion" => rest,
         _ => parts,
     };
-    match parts {
-        [schema_name, _table_name] => Some((None, schema_name.clone())),
-        [catalog_name, schema_name, _table_name] => {
-            Some((Some(catalog_name.clone()), schema_name.clone()))
+    match body {
+        [] | [_] => TableContextFilters::default(),
+        [schema_name, _table_name] => TableContextFilters(vec![(None, schema_name.clone())]),
+        [catalog_name, schema @ .., _table_name] => {
+            let schema_name = schema.join(".");
+            TableContextFilters(vec![
+                (None, format!("{catalog_name}.{schema_name}")),
+                (Some(catalog_name.clone()), schema_name),
+            ])
         }
-        _ => None,
     }
 }
 
