@@ -8,6 +8,9 @@ use super::{
 };
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
+use crate::sources::materialization::{
+    MaterializationInputs, build_v4_materialization_tmp, replace_v4_materialization,
+};
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -282,6 +285,175 @@ surface:
     assert!(catalog.tables.iter().any(|table| {
         table.schema_name == healthy_source.as_str() && table.table_name == "messages"
     }));
+}
+
+#[test]
+fn loader_keeps_healthy_source_when_installed_v4_manifest_uses_legacy_surfaces() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let healthy_source = SourceName::parse("demo").expect("source");
+    let legacy_v4_source = SourceName::parse("legacy_v4").expect("source");
+
+    config_store
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
+    install_healthy_source(&layout, &config_store, &workspace_name, &healthy_source);
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &legacy_v4_source,
+        r"
+name: legacy_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+    );
+
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
+        .load_catalog(&workspace_name)
+        .expect("legacy v4 manifest should be isolated");
+
+    assert!(catalog.tables.iter().any(|table| {
+        table.schema_name == healthy_source.as_str() && table.table_name == "messages"
+    }));
+    assert!(
+        catalog
+            .tables
+            .iter()
+            .all(|table| table.schema_name != legacy_v4_source.as_str())
+    );
+}
+
+#[test]
+fn loader_keeps_healthy_source_when_v4_parameter_metadata_override_is_invalid() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let healthy_source = SourceName::parse("demo").expect("source");
+    let v4_source = SourceName::parse("metadata_v4").expect("source");
+
+    config_store
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
+    install_healthy_source(&layout, &config_store, &workspace_name, &healthy_source);
+
+    let openapi_file = temp.path().join("openapi.yaml");
+    std::fs::write(&openapi_file, minimal_openapi_fixture()).expect("write descriptor");
+    let manifest_yaml = format!(
+        r"
+name: metadata_v4
+dsl_version: 4
+surface:
+  type: openapi
+  file: {}
+  base_url: https://api.example.com
+",
+        openapi_file.display()
+    );
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &v4_source,
+        &manifest_yaml,
+    );
+    let manifest = parse_source_manifest_yaml(&manifest_yaml)
+        .expect("parse v4 manifest")
+        .as_v4()
+        .expect("v4")
+        .clone();
+    let build = build_v4_materialization_tmp(
+        &layout,
+        &workspace_name,
+        &v4_source,
+        &manifest_yaml,
+        &manifest,
+        &MaterializationInputs::default(),
+        "test",
+    )
+    .expect("build materialization");
+    replace_v4_materialization(&layout, &workspace_name, &v4_source, &build.temp_dir)
+        .expect("install materialization");
+    let override_path = layout.v4_parameter_metadata_override_file(&workspace_name, &v4_source);
+    std::fs::create_dir_all(override_path.parent().expect("override parent"))
+        .expect("create override dir");
+    std::fs::write(override_path, b": not yaml").expect("write invalid override");
+
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
+        .load_catalog(&workspace_name)
+        .expect("invalid v4 metadata override should be isolated");
+
+    assert!(catalog.tables.iter().any(|table| {
+        table.schema_name == healthy_source.as_str() && table.table_name == "messages"
+    }));
+    assert!(
+        catalog
+            .tables
+            .iter()
+            .all(|table| table.schema_name != v4_source.as_str())
+    );
+}
+
+fn install_healthy_source(
+    layout: &AppStateLayout,
+    config_store: &ConfigStore,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+) {
+    install_imported_source(
+        layout,
+        config_store,
+        workspace_name,
+        source_name,
+        r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+    );
+}
+
+fn minimal_openapi_fixture() -> &'static str {
+    r#"
+openapi: 3.0.3
+info:
+  title: Metadata API
+  version: 1.0.0
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        '200':
+          description: Items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+"#
 }
 
 fn install_imported_source(
