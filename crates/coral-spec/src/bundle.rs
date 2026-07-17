@@ -108,7 +108,7 @@ fn manifest_document_kind(value: &Value, document_number: usize) -> Result<Manif
 }
 
 fn serialize_document_yaml(value: &Value) -> Result<String> {
-    serde_yaml::to_string(value).map_err(ManifestError::parse_yaml)
+    serde_yaml::to_string(value).map_err(ManifestError::serialize_yaml)
 }
 
 #[cfg(test)]

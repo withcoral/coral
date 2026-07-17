@@ -16,7 +16,7 @@ pub fn normalize_mcp_tool_catalog(catalog: &McpToolCatalog) -> Result<Vec<u8>> {
         .sort_by(|left, right| left.name.cmp(&right.name));
     serde_yaml::to_string(&normalized)
         .map(String::into_bytes)
-        .map_err(ManifestError::parse_yaml)
+        .map_err(ManifestError::serialize_yaml)
 }
 
 pub fn import_mcp_surface(
