@@ -343,7 +343,7 @@ impl CatalogDiscovery {
         query: ListColumnsQuery<'_>,
         attribution: &QueryAttribution,
     ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
-        let table = self
+        let mut matches = self
             .queries
             .list_tables(
                 workspace_name,
@@ -354,8 +354,22 @@ impl CatalogDiscovery {
             )
             .await?
             .into_iter()
-            .find(|table| table_matches_ref(table, query.table_ref));
-        let Some(table) = table else {
+            .filter(|table| table_matches_ref(table, query.table_ref))
+            .collect::<Vec<_>>();
+        // An omitted catalog is a wildcard; refuse to guess when the same
+        // schema.table pair exists in more than one catalog.
+        if matches.len() > 1 {
+            let candidates = matches
+                .iter()
+                .map(|table| format!("`{}`", table_addressable_name(table)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(QueryManagerError::App(AppError::InvalidInput(format!(
+                "table reference `{}.{}` is ambiguous; qualify the catalog: {candidates}",
+                query.table_ref.schema_name, query.table_ref.table_name
+            ))));
+        }
+        let Some(table) = matches.pop() else {
             return Ok(None);
         };
 
@@ -638,9 +652,23 @@ fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool 
     table.table_name == table_ref.table_name && table_qualifier_matches(table, table_ref)
 }
 
+/// An omitted catalog is a wildcard, matching the engine's catalog-filter
+/// semantics and `describe_table`'s behavior; a supplied catalog is strict.
+/// A dotted schema with no catalog also matches its `catalog.schema` reading,
+/// so the compound names advertised in miss-hints replay verbatim. Callers
+/// that resolve a single table reject wildcard matches spanning more than one
+/// catalog instead of guessing.
 fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
-    table.catalog_name == table_ref.catalog_name.unwrap_or_default()
-        && table.schema_name == table_ref.schema_name
+    match table_ref.catalog_name {
+        Some(catalog_name) => {
+            table.catalog_name == catalog_name && table.schema_name == table_ref.schema_name
+        }
+        None => {
+            table.schema_name == table_ref.schema_name
+                || (!table.catalog_name.is_empty()
+                    && table_addressable_schema_name(table) == table_ref.schema_name)
+        }
+    }
 }
 
 pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
@@ -731,6 +759,28 @@ mod tests {
             main_table,
             CatalogTableRef::new(Some("coral_db"), "analytics", "users")
         ));
+        assert!(
+            table_matches_ref(main_table, CatalogTableRef::new(None, "main", "users")),
+            "an omitted catalog is a wildcard, matching describe_table"
+        );
+        assert!(
+            table_matches_ref(
+                main_table,
+                CatalogTableRef::new(None, "coral_db.main", "users")
+            ),
+            "advertised compound schema hints must replay verbatim"
+        );
+        assert!(!table_matches_ref(
+            main_table,
+            CatalogTableRef::new(Some("other_db"), "main", "users")
+        ));
+        assert!(
+            !table_matches_ref(
+                main_table,
+                CatalogTableRef::new(Some("coral_db"), "coral_db.main", "users")
+            ),
+            "an explicit catalog keeps the schema comparison strict"
+        );
         assert_eq!(
             table_matched_fields(
                 main_table,
