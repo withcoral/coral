@@ -53,6 +53,7 @@ mod functions;
 mod gui_onboarding;
 mod hash;
 mod identity;
+mod identity_specs;
 mod oauth_resource;
 mod outbound_url_policy;
 mod query;

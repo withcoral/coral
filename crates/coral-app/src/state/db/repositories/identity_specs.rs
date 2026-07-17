@@ -23,7 +23,7 @@ use uuid::{Uuid, Variant, Version};
 pub(crate) struct IdentitySpecId(String);
 
 impl IdentitySpecId {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Uuid::new_v4().to_string())
     }
 

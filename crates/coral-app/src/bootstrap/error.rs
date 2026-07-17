@@ -3,7 +3,8 @@
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
     CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_FUNCTION_NOT_FOUND,
-    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
+    CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -27,6 +28,14 @@ pub enum AppError {
     /// A function cannot be created because the name is already installed.
     #[error("function '{0}' already exists")]
     FunctionAlreadyExists(String),
+    /// A requested identity spec was not found in the selected scope.
+    #[error("identity spec '{name}' not found in scope '{scope}'")]
+    IdentitySpecNotFound {
+        /// Requested identity-spec name.
+        name: String,
+        /// Canonical requested scope (`global` or `workspace:<name>`).
+        scope: String,
+    },
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -209,6 +218,7 @@ pub(crate) fn app_status(error: AppError) -> Status {
     let not_found_reason = match &error {
         AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
         AppError::FunctionNotFound(_) => Some(CORAL_ERROR_REASON_FUNCTION_NOT_FOUND),
+        AppError::IdentitySpecNotFound { .. } => Some(CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND),
         AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
         _ => None,
     };
@@ -297,6 +307,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::Unauthenticated(_) => Code::Unauthenticated,
         AppError::SourceNotFound(_)
         | AppError::FunctionNotFound(_)
+        | AppError::IdentitySpecNotFound { .. }
         | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::FunctionAlreadyExists(_) | AppError::WorkspaceAlreadyExists(_) => {
             Code::AlreadyExists
@@ -422,6 +433,26 @@ mod tests {
             "FUNCTION_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
             info.metadata
         );
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_identity_spec_not_found() {
+        let status = app_status(AppError::IdentitySpecNotFound {
+            name: "github".to_string(),
+            scope: "workspace:default".to_string(),
+        });
+        assert_eq!(status.code(), Code::NotFound);
+
+        let info = status
+            .get_error_details_vec()
+            .into_iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("identity-spec miss must carry ErrorInfo");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
     }
 
     #[test]
