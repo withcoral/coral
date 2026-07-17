@@ -86,8 +86,12 @@
   projections, or persisted artifacts. Treat fingerprints, producer versions,
   identity metadata, and raw-document hashes as advisory provenance: report
   mismatches through tracing, but load readable, structurally compatible
-  artifacts. Degrade per surface and isolate source-local compatibility
-  failures without hiding operational failures.
+  artifacts. Isolate source-local compatibility failures without hiding
+  operational failures.
+- A DSL v4 source declares top-level `inputs:` and exactly one singular
+  `surface:`. The source `name` is its SQL namespace. Do not add surface ids,
+  namespace suffixes, or multiple surfaces to one manifest; represent distinct
+  provider interfaces as distinct source specs instead.
 - Keep cross-crate W3C trace-context propagation helpers in
   `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
   or `coral-mcp` depend on each other just to share telemetry carrier logic.
@@ -106,8 +110,10 @@
   When docs are warranted, choose the best existing location first and make the
   amount of space match the feature's user-facing weight and visibility.
 - Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
-  specs under `sources/v4/[provider]/manifest.yaml` with distinct manifest names
-  (defined in the manifest's `name` field) such as `<name>_v4`. Do not bundle
+  specs under `sources/v4/[source]/manifest.yaml` with distinct manifest names
+  (defined in the manifest's `name` field) such as `<name>_v4`. When a provider
+  has distinct interfaces, use sibling source directories such as `github` and
+  `github_mcp`. Do not bundle
   `sources/v4` into the binary; install preview v4 sources with
   `coral source add --file`. Do not replace or migrate an existing v3 source
   merely because a preview v4 spec exists.

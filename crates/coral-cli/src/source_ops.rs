@@ -473,44 +473,23 @@ fn durable_manifest_file_yaml(
     let Some(v4) = manifest.as_v4() else {
         return Ok(manifest_yaml.to_string());
     };
-    let mut replacement_files = BTreeMap::new();
-    for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file } = &surface.descriptor else {
-            continue;
-        };
-        let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
-        if canonical != *file {
-            replacement_files.insert(surface.id.as_str(), canonical);
-        }
-    }
-    if replacement_files.is_empty() {
+    let SurfaceDescriptor::File { file } = &v4.surface.descriptor else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
+    if canonical == *file {
         return Ok(manifest_yaml.to_string());
     }
 
     let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
-    let surfaces_key = YamlValue::String("surfaces".to_string());
-    let id_key = YamlValue::String("id".to_string());
+    let surface_key = YamlValue::String("surface".to_string());
     let file_key = YamlValue::String("file".to_string());
-    let surfaces = value
+    let surface = value
         .as_mapping_mut()
-        .and_then(|mapping| mapping.get_mut(&surfaces_key))
-        .and_then(YamlValue::as_sequence_mut)
-        .ok_or_else(|| anyhow::anyhow!("DSL v4 manifest is missing surfaces"))?;
-    for surface in surfaces {
-        let Some(mapping) = surface.as_mapping_mut() else {
-            continue;
-        };
-        let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
-            continue;
-        };
-        let Some(file) = replacement_files.get(surface_id) else {
-            continue;
-        };
-        mapping.insert(
-            file_key.clone(),
-            YamlValue::String(file.display().to_string()),
-        );
-    }
+        .and_then(|mapping| mapping.get_mut(&surface_key))
+        .and_then(YamlValue::as_mapping_mut)
+        .ok_or_else(|| anyhow::anyhow!("DSL v4 manifest is missing surface"))?;
+    surface.insert(file_key, YamlValue::String(canonical.display().to_string()));
     serde_yaml::to_string(&value).map_err(Into::into)
 }
 

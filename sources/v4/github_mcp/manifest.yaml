@@ -1,11 +1,11 @@
-name: github_v4
+name: github_mcp_v4
 dsl_version: 4
 inputs:
   GITHUB_TOKEN:
     kind: secret
     hint: |
       GitHub personal access token used as a bearer token for the live
-      GitHub REST API. Set GITHUB_TOKEN when installing this preview
+      GitHub MCP API. Set GITHUB_TOKEN when installing this preview
       source.
     credential:
       methods:
@@ -37,25 +37,15 @@ inputs:
                   - read:user
                   - user:email
 surface:
-  type: openapi
-  url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml
-  auth:
-    type: HeaderAuth
-    headers:
-      - name: Authorization
-        from: template
-        template: Bearer {{input.GITHUB_TOKEN}}
-  request_headers:
-    - name: X-GitHub-Api-Version
-      from: literal
-      value: "2022-11-28"
-    - name: User-Agent
-      from: literal
-      value: coral-dsl-v4
+  type: mcp
+  server:
+    transport: streamable_http
+    url: https://api.githubcopilot.com/mcp/x/all/readonly
+    auth:
+      type: bearer
+      from: input
+      key: GITHUB_TOKEN
+
 test_queries:
-  - >-
-    SELECT total_count, incomplete_results, search_type
-    FROM github_v4.search_issues_and_pull_requests(q => 'repo:octocat/Hello-World is:issue')
-    LIMIT 1
-  - SELECT id, number, title, state FROM github_v4.issues_list_for_repo(owner => 'octocat', repo => 'Hello-World') LIMIT 5
-  - SELECT id, number, title FROM github_v4.issues_get(owner => 'octocat', repo => 'Hello-World', issue_number => 1)
+  - SELECT result FROM github_mcp_v4.get_me LIMIT 1
+  - SELECT result, result_json FROM github_mcp_v4.list_pull_requests(owner => 'withcoral', repo => 'coral', state => 'open', per_page => 10) LIMIT 5

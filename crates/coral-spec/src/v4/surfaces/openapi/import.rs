@@ -22,8 +22,7 @@ pub fn import_openapi_surface(
         .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
     if !openapi.starts_with("3.0.") {
         return Err(ManifestError::validation(format!(
-            "OpenAPI document for surface '{}' uses unsupported version '{openapi}'",
-            surface.id
+            "OpenAPI document uses unsupported version '{openapi}'"
         )));
     }
 
@@ -77,7 +76,7 @@ impl<'a> OpenApiImporter<'a> {
                     match resolve_local_ref(self.document, operation_value) {
                         Ok(operation_value) => operation_value,
                         Err(error) => {
-                            let diagnostic = self.ref_error_diagnostic(
+                            let diagnostic = Self::ref_error_diagnostic(
                                 error,
                                 &RefDiagnosticContext::Operation { path, method_name },
                             );
@@ -92,8 +91,8 @@ impl<'a> OpenApiImporter<'a> {
                     self.import_operation(path, path_item, method_name, operation_value)?;
                 if !operation_ids.insert(operation.id.clone()) {
                     return Err(ManifestError::validation(format!(
-                        "source '{}' surface '{}' imports duplicate operation id '{}'",
-                        self.manifest.common.name, self.surface.id, operation.id
+                        "source '{}' surface imports duplicate operation id '{}'",
+                        self.manifest.common.name, operation.id
                     )));
                 }
                 operations.push(operation);
@@ -102,7 +101,6 @@ impl<'a> OpenApiImporter<'a> {
         Ok(SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: self.manifest.common.name.clone(),
-            surface_id: self.surface.id.clone(),
             surface_type: self.surface.surface_type,
             importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
             operations,
@@ -120,22 +118,16 @@ impl<'a> OpenApiImporter<'a> {
         match resolve_local_ref(self.document, value) {
             Ok(resolved) => Some(resolved.clone()),
             Err(error) => {
-                diagnostics.push(
-                    self.ref_error_diagnostic(
-                        error,
-                        &RefDiagnosticContext::OperationId(operation_id),
-                    ),
-                );
+                diagnostics.push(Self::ref_error_diagnostic(
+                    error,
+                    &RefDiagnosticContext::OperationId(operation_id),
+                ));
                 None
             }
         }
     }
 
-    fn ref_error_diagnostic(
-        &self,
-        error: RefError<'_>,
-        context: &RefDiagnosticContext<'_>,
-    ) -> Diagnostic {
+    fn ref_error_diagnostic(error: RefError<'_>, context: &RefDiagnosticContext<'_>) -> Diagnostic {
         let (code, message) = match error {
             RefError::External(reference) => (
                 "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
@@ -157,6 +149,6 @@ impl<'a> OpenApiImporter<'a> {
                 (message, Some(operation_id.to_string()))
             }
         };
-        Diagnostic::warning(code, message, self.surface.id.clone(), operation_id)
+        Diagnostic::warning(code, message, operation_id)
     }
 }

@@ -25,10 +25,7 @@ pub fn import_mcp_surface(
     catalog: &McpToolCatalog,
 ) -> Result<SemanticIr> {
     if surface.surface_type != SurfaceType::Mcp {
-        return Err(ManifestError::validation(format!(
-            "surface '{}' is not an MCP surface",
-            surface.id
-        )));
+        return Err(ManifestError::validation("surface is not an MCP surface"));
     }
     let mut importer = McpImporter::new(manifest, surface);
     importer.import(catalog)
@@ -60,12 +57,8 @@ impl<'a> McpImporter<'a> {
             let operation_id = normalize_identifier(&tool.name, "tool");
             if let Some(existing_tool_name) = operation_ids.get(&operation_id) {
                 return Err(ManifestError::validation(format!(
-                    "source '{}' surface '{}' imports MCP tools '{}' and '{}' that both normalize to operation id '{}'",
-                    self.manifest.common.name,
-                    self.surface.id,
-                    existing_tool_name,
-                    tool.name,
-                    operation_id
+                    "source '{}' surface imports MCP tools '{}' and '{}' that both normalize to operation id '{}'",
+                    self.manifest.common.name, existing_tool_name, tool.name, operation_id
                 )));
             }
             operation_ids.insert(operation_id.clone(), tool.name.as_str());
@@ -76,7 +69,6 @@ impl<'a> McpImporter<'a> {
         Ok(SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: self.manifest.common.name.clone(),
-            surface_id: self.surface.id.clone(),
             surface_type: self.surface.surface_type,
             importer_version: MCP_IMPORTER_VERSION.to_string(),
             operations,
@@ -123,8 +115,7 @@ mod tests {
             r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: mcp
+surface:
     type: mcp
     server:
       transport: stdio
@@ -167,7 +158,7 @@ surfaces:
     fn import_catalog(catalog: &McpToolCatalog) -> SemanticIr {
         let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
-        let surface = v4.surfaces.first().expect("surface");
+        let surface = &v4.surface;
         import_mcp_surface(v4, surface, catalog).expect("import")
     }
 
@@ -526,8 +517,7 @@ surfaces:
         );
 
         let projections =
-            generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
-                .expect("projections");
+            generate_projection_catalog(manifest().as_v4().expect("v4"), &ir).expect("projections");
         assert_eq!(projections.projections.len(), 0);
     }
 
@@ -857,8 +847,7 @@ surfaces:
         );
 
         let projections =
-            generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
-                .expect("projections");
+            generate_projection_catalog(manifest().as_v4().expect("v4"), &ir).expect("projections");
         assert_eq!(projections.projections.len(), 0);
     }
 
@@ -1043,7 +1032,7 @@ surfaces:
 
         let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
-        let surface = v4.surfaces.first().expect("surface");
+        let surface = &v4.surface;
         let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
         let operation = operation(&ir, "list_catalog");
         let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
@@ -1057,8 +1046,7 @@ surfaces:
         assert_eq!(pagination.offset_arg, "offset");
         assert_eq!(pagination.offset_start, 0);
 
-        let projections =
-            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projection catalog");
+        let projections = generate_projection_catalog(v4, &ir).expect("projection catalog");
         let projection = projections
             .projections
             .iter()
@@ -1164,7 +1152,7 @@ surfaces:
     fn omitted_read_only_hint_keeps_mcp_projection_hidden() {
         let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
-        let surface = v4.surfaces.first().expect("surface");
+        let surface = &v4.surface;
         let catalog = McpToolCatalog {
             tools: vec![tool("list-items", None)],
         };
@@ -1173,8 +1161,7 @@ surfaces:
         let operation = ir.operations.first().expect("operation");
         assert!(!operation.read_only);
 
-        let projections =
-            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projections");
+        let projections = generate_projection_catalog(v4, &ir).expect("projections");
         let projection = projections.projections.first().expect("projection");
         assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
     }
@@ -1183,7 +1170,7 @@ surfaces:
     fn rejects_mcp_tools_that_collide_after_operation_id_normalization() {
         let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
-        let surface = v4.surfaces.first().expect("surface");
+        let surface = &v4.surface;
         let catalog = McpToolCatalog {
             tools: vec![tool("foo-bar", Some(true)), tool("foo_bar", Some(true))],
         };
@@ -1203,7 +1190,7 @@ surfaces:
     fn rejects_mcp_tools_that_collide_even_when_one_tool_is_not_exposed() {
         let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
-        let surface = v4.surfaces.first().expect("surface");
+        let surface = &v4.surface;
         let catalog = McpToolCatalog {
             tools: vec![
                 tool_with_schemas(

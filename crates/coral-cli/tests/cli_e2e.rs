@@ -1323,8 +1323,7 @@ paths: {}
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: openapi.yaml
 ",

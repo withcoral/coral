@@ -6,10 +6,10 @@ use crate::v4::ir::rest::RestExecutionAttachment;
 use crate::v4::manifest::SurfaceType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticIr {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    pub surface_id: String,
     pub surface_type: SurfaceType,
     pub importer_version: String,
     pub operations: Vec<IrOperation>,
@@ -186,7 +186,6 @@ mod tests {
         let ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            surface_id: "rest".to_string(),
             surface_type: SurfaceType::OpenApi,
             importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
             operations: vec![IrOperation {
@@ -234,12 +233,7 @@ mod tests {
                     description: String::new(),
                 },
             ],
-            diagnostics: vec![Diagnostic::warning(
-                "TEST",
-                "diagnostic",
-                "rest".to_string(),
-                None,
-            )],
+            diagnostics: vec![Diagnostic::warning("TEST", "diagnostic", None)],
         };
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize semantic IR");
@@ -259,7 +253,6 @@ mod tests {
         let ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            surface_id: "mcp".to_string(),
             surface_type: SurfaceType::Mcp,
             importer_version: MCP_IMPORTER_VERSION.to_string(),
             operations: vec![IrOperation {
@@ -319,6 +312,7 @@ mod tests {
             yaml.contains("location: tool_arg"),
             "missing tool arg input: {yaml}"
         );
+        assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
 
         serde_yaml::from_str::<SemanticIr>(&yaml).expect("MCP semantic IR should round-trip");
     }
@@ -329,7 +323,6 @@ mod tests {
             r#"
 artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
 source_name: demo
-surface_id: rest
 surface_type: openapi
 importer_version: {OPENAPI_IMPORTER_VERSION}
 operations: []

@@ -5,21 +5,20 @@ use crate::{
 };
 
 #[test]
-fn parses_v4_manifest_and_unions_surface_inputs() {
+fn parses_v4_manifest_top_level_inputs() {
     let manifest = parse_source_manifest_yaml(
         r#"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  ZZZ_TOKEN:
+    kind: secret
+  AAA_BASE:
+    kind: variable
+    default: https://api.example.com
+surface:
     type: openapi
     file: /tmp/openapi.yaml
-    inputs:
-      ZZZ_TOKEN:
-        kind: secret
-      AAA_BASE:
-        kind: variable
-        default: https://api.example.com
     base_url: "{{input.AAA_BASE}}"
     auth:
       type: HeaderAuth
@@ -47,8 +46,7 @@ fn parses_v4_openapi_surface_without_base_url() {
         r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
 ",
@@ -56,9 +54,7 @@ surfaces:
     .expect("v4 manifest");
     let v4 = manifest.as_v4().expect("v4");
     assert_eq!(
-        v4.surfaces
-            .first()
-            .expect("surface")
+        v4.surface
             .openapi_runtime()
             .expect("OpenAPI runtime")
             .base_url
@@ -68,34 +64,12 @@ surfaces:
 }
 
 #[test]
-fn single_surface_relation_namespace_defaults_to_source_name() {
-    let manifest = parse_source_manifest_yaml(
-        r"
-name: demo_source
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: /tmp/openapi.yaml
-",
-    )
-    .expect("v4 manifest");
-    let v4 = manifest.as_v4().expect("v4");
-
-    assert_eq!(
-        v4.surfaces.first().expect("surface").relation_namespace,
-        "demo_source"
-    );
-}
-
-#[test]
-fn reserved_default_relation_namespace_is_rejected() {
+fn reserved_source_namespace_is_rejected() {
     let error = parse_source_manifest_yaml(
         r"
 name: public
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
 ",
@@ -105,13 +79,34 @@ surfaces:
     assert!(
         error
             .to_string()
-            .contains("source surface relation namespace 'public' is reserved"),
+            .contains("source name 'public' is reserved"),
         "unexpected error: {error}"
     );
 }
 
 #[test]
-fn rejects_multiple_surfaces_omitting_namespace_suffix() {
+fn rejects_invalid_v4_source_names() {
+    for name in ["Demo", "demo-api", "4demo"] {
+        let raw = format!(
+            r"
+name: {name}
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+"
+        );
+        let error = parse_source_manifest_yaml(&raw).expect_err("invalid v4 name should fail");
+        assert!(
+            error.to_string().contains("^[a-z][a-z0-9_]*$")
+                || error.to_string().contains("must match [a-z][a-z0-9_]*"),
+            "unexpected error for {name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_plural_surfaces_field() {
     let error = parse_source_manifest_yaml(
         r"
 name: github_v4
@@ -120,121 +115,76 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-  - id: mcp
-    type: mcp
-    server:
-      transport: stdio
-      command: demo-mcp-server
 ",
     )
-    .expect_err("only one surface should be allowed to omit namespace_suffix");
+    .expect_err("plural surfaces should be rejected");
 
-    let message = error.to_string();
     assert!(
-        message.contains("surfaces 'rest' and 'mcp' both omit namespace_suffix")
-            && message
-                .contains("at most one surface may use the default relation namespace 'github_v4'"),
-        "unexpected error: {message}"
+        error.to_string().contains("surfaces"),
+        "unexpected error: {error}"
     );
 }
 
 #[test]
-fn multi_surface_namespace_suffixes_are_source_relative() {
-    let manifest = parse_source_manifest_yaml(
-        r"
-name: github_v4
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: /tmp/openapi.yaml
-  - id: mcp
-    namespace_suffix: mcp
-    type: mcp
-    server:
-      transport: stdio
-      command: demo-mcp-server
-",
-    )
-    .expect("v4 manifest");
-    let v4 = manifest.as_v4().expect("v4");
-    let namespaces = v4
-        .surfaces
-        .iter()
-        .map(|surface| surface.relation_namespace.as_str())
-        .collect::<Vec<_>>();
-
-    assert_eq!(namespaces, ["github_v4", "github_v4_mcp"]);
-}
-
-#[test]
-fn explicit_surface_namespace_suffix_appends_to_source_name() {
-    let manifest = parse_source_manifest_yaml(
-        r"
-name: github_v4
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: api
-    type: openapi
-    file: /tmp/openapi.yaml
-",
-    )
-    .expect("v4 manifest");
-    let v4 = manifest.as_v4().expect("v4");
-
-    assert_eq!(
-        v4.surfaces.first().expect("surface").relation_namespace,
-        "github_v4_api"
-    );
-}
-
-#[test]
-fn unrelated_namespace_suffix_cannot_impersonate_another_source_relation_namespace() {
-    let manifest = parse_source_manifest_yaml(
-        r"
-name: linear
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: github_rest
-    type: openapi
-    file: /tmp/openapi.yaml
-",
-    )
-    .expect("v4 manifest");
-    let v4 = manifest.as_v4().expect("v4");
-
-    assert_eq!(
-        v4.surfaces.first().expect("surface").relation_namespace,
-        "linear_github_rest"
-    );
-}
-
-#[test]
-fn rejects_duplicate_effective_surface_relation_namespaces() {
+fn rejects_surface_id() {
     let error = parse_source_manifest_yaml(
         r"
 name: github_v4
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
+    id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect_err("surface id should be rejected");
+
+    assert!(
+        error.to_string().contains("id"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_surface_namespace_suffix() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surface:
     namespace_suffix: api
     type: openapi
     file: /tmp/openapi.yaml
-  - id: mcp
-    namespace_suffix: api
-    type: mcp
-    server:
-      transport: stdio
-      command: demo-mcp-server
 ",
     )
-    .expect_err("duplicate namespace should fail");
+    .expect_err("namespace suffix should be rejected");
 
-    assert!(error.to_string().contains(
-        "surfaces 'rest' and 'mcp' declare duplicate relation namespace 'github_v4_api'"
-    ));
+    assert!(
+        error.to_string().contains("namespace_suffix"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_surface_inputs() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      GITHUB_TOKEN:
+        kind: secret
+",
+    )
+    .expect_err("surface inputs should be rejected");
+
+    assert!(
+        error.to_string().contains("inputs"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -243,27 +193,26 @@ fn rejects_v4_oauth_endpoint_templates_referencing_runtime_tokens() {
         r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  ACCESS_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/{{filter.tenant}}/oauth/token
+            client:
+              id:
+                default: demo-client
+surface:
     type: openapi
     file: /tmp/openapi.yaml
-    inputs:
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:53682/oauth/callback
-                endpoints:
-                  authorization_url: https://provider.example.com/oauth/authorize
-                  token_url: https://provider.example.com/{{filter.tenant}}/oauth/token
-                client:
-                  id:
-                    default: demo-client
 ",
     )
     .expect_err("runtime token in oauth endpoint should fail");
@@ -288,8 +237,7 @@ fn rejects_v4_openapi_base_url_runtime_controlled_tokens() {
             r#"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: "https://{{{{{token}}}}}"
@@ -298,7 +246,7 @@ surfaces:
         let error = parse_source_manifest_yaml(&raw).expect_err("runtime token should be rejected");
         let message = error.to_string();
         assert!(
-            message.contains("base_url may only reference source inputs"),
+            message.contains("base_url may only reference top-level inputs"),
             "unexpected error for {token}: {message}"
         );
     }
@@ -310,14 +258,13 @@ fn rejects_v4_openapi_base_url_input_token_defaults() {
         r#"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+surface:
     type: openapi
     file: /tmp/openapi.yaml
-    inputs:
-      API_BASE:
-        kind: variable
-        default: https://api.example.com
     base_url: "{{input.API_BASE|https://fallback.example.com}}"
 "#,
     )
@@ -325,78 +272,75 @@ surfaces:
 
     let message = error.to_string();
     assert!(
-        message.contains("must declare defaults under top-level inputs")
-            || message.contains("must declare defaults under source inputs"),
+        message.contains("must declare defaults under top-level inputs"),
         "unexpected error: {message}"
     );
 }
 
 #[test]
-fn rejects_v4_oauth_endpoint_templates_referencing_undeclared_surface_inputs() {
+fn rejects_v4_oauth_endpoint_templates_referencing_undeclared_top_level_inputs() {
     let error = parse_source_manifest_yaml(
         r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  ACCESS_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/{{input.TENANT_ID}}/oauth/token
+            client:
+              id:
+                default: demo-client
+surface:
     type: openapi
     file: /tmp/openapi.yaml
-    inputs:
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:53682/oauth/callback
-                endpoints:
-                  authorization_url: https://provider.example.com/oauth/authorize
-                  token_url: https://provider.example.com/{{input.TENANT_ID}}/oauth/token
-                client:
-                  id:
-                    default: demo-client
 ",
     )
     .expect_err("undeclared endpoint input should fail");
 
     assert!(error.to_string().contains(
-        "manifest input 'TENANT_ID' is referenced but not declared under surface inputs"
+        "manifest input 'TENANT_ID' is referenced but not declared under top-level inputs"
     ));
 }
 
 #[test]
-fn parses_v4_oauth_endpoint_templates_referencing_surface_variables() {
+fn parses_v4_oauth_endpoint_templates_referencing_top_level_variables() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  TENANT_ID:
+    kind: variable
+    default: organizations
+  ACCESS_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
+              token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
+            client:
+              id:
+                default: demo-client
+surface:
     type: openapi
     file: /tmp/openapi.yaml
-    inputs:
-      TENANT_ID:
-        kind: variable
-        default: organizations
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:53682/oauth/callback
-                endpoints:
-                  authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
-                  token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
-                client:
-                  id:
-                    default: demo-client
 ",
     )
     .expect("v4 manifest");
@@ -405,51 +349,50 @@ surfaces:
 }
 
 #[test]
-fn parses_v4_surface_input_oauth_credential_metadata() {
+fn parses_v4_top_level_input_oauth_credential_metadata() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  TENANT_ID:
+    kind: variable
+    default: organizations
+  ACCESS_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Demo
+          description: Use OAuth.
+          hint: Authorize in your browser.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            resource: https://api.example.com/
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
+              token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://login.example.com/{{input.TENANT_ID}}/oauth/register
+                client_name: Coral Demo
+                token_endpoint_auth_method: client_secret_post
+                request_refresh_token_grant: true
+            scopes:
+              scope:
+                delimiter: comma
+                values:
+                  - read
+                  - offline_access
+        - type: source_config
+          label: Paste token
+surface:
     type: openapi
     file: /tmp/openapi.yaml
-    inputs:
-      TENANT_ID:
-        kind: variable
-        default: organizations
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              label: Connect with Demo
-              description: Use OAuth.
-              hint: Authorize in your browser.
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                resource: https://api.example.com/
-                redirect_uri: http://127.0.0.1:0/oauth/callback
-                redirect_uri_port_mode: random
-                endpoints:
-                  authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
-                  token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
-                client:
-                  dynamic_registration:
-                    registration_url: https://login.example.com/{{input.TENANT_ID}}/oauth/register
-                    client_name: Coral Demo
-                    token_endpoint_auth_method: client_secret_post
-                    request_refresh_token_grant: true
-                scopes:
-                  scope:
-                    delimiter: comma
-                    values:
-                      - read
-                      - offline_access
-            - type: source_config
-              label: Paste token
 ",
     )
     .expect("v4 manifest");
@@ -507,66 +450,5 @@ surfaces:
     assert_eq!(
         oauth.scopes.as_ref().expect("scopes").scope.delimiter,
         ManifestOAuthScopeDelimiter::Comma
-    );
-}
-
-#[test]
-fn rejects_v4_surfaces_with_incompatible_oauth_input_metadata() {
-    let error = parse_source_manifest_yaml(
-        r"
-name: demo
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: rest
-    type: openapi
-    file: /tmp/openapi.yaml
-    inputs:
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:0/oauth/callback
-                endpoints:
-                  authorization_url: https://login.example.com/oauth/authorize
-                  token_url: https://login.example.com/oauth/token
-                client:
-                  id:
-                    default: rest-client
-  - id: mcp
-    namespace_suffix: mcp
-    type: mcp
-    inputs:
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              oauth:
-                flow:
-                  type: device_code
-                endpoints:
-                  device_authorization_url: https://login.example.com/oauth/device
-                  token_url: https://login.example.com/oauth/token
-                client:
-                  id:
-                    default: mcp-client
-    server:
-      transport: stdio
-      command: demo-mcp-server
-",
-    )
-    .expect_err("incompatible duplicate input metadata should fail");
-
-    assert!(
-        error
-            .to_string()
-            .contains("declare incompatible input 'ACCESS_TOKEN'"),
-        "unexpected error: {error}"
     );
 }

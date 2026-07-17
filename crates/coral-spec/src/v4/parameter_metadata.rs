@@ -89,8 +89,7 @@ pub fn validate_lookup_keys_for_surface(
     for excluded in &lookup_keys.exclude {
         if !input_names.contains(excluded.as_str()) {
             return Err(ManifestError::validation(format!(
-                "{} parameter_metadata lookup_keys excludes unknown parameter '{excluded}'",
-                ir.surface_id
+                "surface parameter_metadata lookup_keys excludes unknown parameter '{excluded}'"
             )));
         }
     }
@@ -164,28 +163,19 @@ pub enum ProjectionPaginationInputSyncMode {
     PreserveExistingExposure,
 }
 
-pub fn sync_projection_pagination_inputs<'a>(
-    surfaces: impl IntoIterator<Item = &'a SemanticIr>,
+pub fn sync_projection_pagination_inputs(
+    surface: &SemanticIr,
     projections: &mut ProjectionCatalog,
     mode: ProjectionPaginationInputSyncMode,
 ) {
-    let operation_by_projection = surfaces
-        .into_iter()
-        .flat_map(|surface| {
-            surface.operations.iter().map(|operation| {
-                (
-                    (surface.surface_id.as_str(), operation.id.as_str()),
-                    operation,
-                )
-            })
-        })
+    let operation_by_projection = surface
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
 
     for projection in &mut projections.projections {
-        let Some(operation) = operation_by_projection.get(&(
-            projection.surface_id.as_str(),
-            projection.operation_id.as_str(),
-        )) else {
+        let Some(operation) = operation_by_projection.get(projection.operation_id.as_str()) else {
             continue;
         };
         let default_exposure = match projection.kind {
@@ -296,10 +286,7 @@ impl ParameterMetadataOverrides {
         for strategy in &self.pagination {
             strategy.pagination.validated(
                 &ir.source_name,
-                &format!(
-                    "{} parameter_metadata pagination '{}'",
-                    ir.surface_id, strategy.name
-                ),
+                &format!("surface parameter_metadata pagination '{}'", strategy.name),
             )?;
             for operation_id in &strategy.match_rules.operation_ids {
                 validate_rest_operation_target(
@@ -320,10 +307,7 @@ impl ParameterMetadataOverrides {
             )?;
             operation_override.pagination.validated(
                 &ir.source_name,
-                &format!(
-                    "{} parameter_metadata operation override '{}'",
-                    ir.surface_id, operation_id
-                ),
+                &format!("surface parameter_metadata operation override '{operation_id}'"),
             )?;
         }
 
@@ -773,7 +757,7 @@ pagination:
 
         apply_parameter_metadata_overrides(&mut ir, &overrides).expect("apply overrides");
         sync_projection_pagination_inputs(
-            std::slice::from_ref(&ir),
+            &ir,
             &mut projections,
             ProjectionPaginationInputSyncMode::RecomputeRestInputExposure,
         );
@@ -800,7 +784,7 @@ pagination:
             projection_input("debug", "debug", SqlInputExposure::Internal),
         ]);
         sync_projection_pagination_inputs(
-            std::slice::from_ref(&ir),
+            &ir,
             &mut overridden_projections,
             ProjectionPaginationInputSyncMode::PreserveExistingExposure,
         );
@@ -850,7 +834,7 @@ pagination:
                 projection_input("cursor", "cursor", SqlInputExposure::Filter),
                 projection_input("state", "state", SqlInputExposure::Filter),
             ]);
-            sync_projection_pagination_inputs(std::slice::from_ref(&ir), &mut projections, mode);
+            sync_projection_pagination_inputs(&ir, &mut projections, mode);
 
             assert_eq!(
                 projection_input_exposure(&projections, "cursor"),
@@ -896,7 +880,7 @@ pagination:
                 projection_input("state", "state", SqlInputExposure::Filter),
                 projection_input("order_by", "order_by", SqlInputExposure::Filter),
             ]);
-            sync_projection_pagination_inputs(std::slice::from_ref(&ir), &mut projections, mode);
+            sync_projection_pagination_inputs(&ir, &mut projections, mode);
             // Exclusion never demotes exposure; it only withholds joinability.
             assert_eq!(
                 projection_input_exposure(&projections, "order_by"),
@@ -1185,7 +1169,6 @@ operation_overrides:
         SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            surface_id: "rest".to_string(),
             surface_type: SurfaceType::OpenApi,
             importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
             operations,
@@ -1295,11 +1278,9 @@ operation_overrides:
             generator_version: Some("test".to_string()),
             projections: vec![Projection {
                 name: "widgets".to_string(),
-                namespace: "demo".to_string(),
                 kind: ProjectionKind::Table,
                 description: String::new(),
                 guide: String::new(),
-                surface_id: "rest".to_string(),
                 operation_id: "widgets_list".to_string(),
                 visibility: ProjectionVisibility::Published,
                 inputs,

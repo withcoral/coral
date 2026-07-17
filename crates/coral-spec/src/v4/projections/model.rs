@@ -15,14 +15,12 @@ pub struct ProjectionCatalog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Projection {
     pub name: String,
-    #[serde(default)]
-    pub namespace: String,
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
-    pub surface_id: String,
     pub operation_id: String,
     pub visibility: ProjectionVisibility,
     pub inputs: Vec<ProjectionInput>,
@@ -102,13 +100,11 @@ mod tests {
             generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
             projections: vec![Projection {
                 name: "search_issues".to_string(),
-                namespace: "demo".to_string(),
                 kind: ProjectionKind::TableFunction {
                     function_kind: SourceTableFunctionKind::Search,
                 },
                 description: String::new(),
                 guide: String::new(),
-                surface_id: "rest".to_string(),
                 operation_id: "issues/search".to_string(),
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
@@ -152,6 +148,7 @@ mod tests {
             yaml.contains("do_not_index: true"),
             "projection catalog should serialize explicit indexing policy: {yaml}"
         );
+        assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
 
         let decoded = serde_yaml::from_str::<ProjectionCatalog>(&yaml)
             .expect("projection catalog should round-trip");
@@ -165,57 +162,6 @@ mod tests {
                 .expect("column")
                 .do_not_index,
             "projection column policy should survive round-trip"
-        );
-    }
-
-    #[test]
-    fn projection_deserializes_legacy_catalogs_without_namespace() {
-        let raw = format!(
-            r"
-artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
-source_name: demo
-generator_version: {PROJECTION_GENERATOR_VERSION}
-projections:
-  - name: search_issues
-    kind:
-      type: table_function
-      value:
-        function_kind: search
-    description: ''
-    guide: ''
-    surface_id: rest
-    operation_id: issues/search
-    visibility: published
-    inputs: []
-    columns:
-      - name: title
-        data_type: Utf8
-        source_path: [title]
-        nullable: true
-        description: ''
-    search_limits: null
-    detail_hints: []
-    diagnostics: []
-diagnostics: []
-"
-        );
-
-        let catalog: ProjectionCatalog =
-            serde_yaml::from_str(&raw).expect("legacy projection catalog should deserialize");
-        assert_eq!(
-            catalog.projections.first().expect("projection").namespace,
-            ""
-        );
-        assert!(
-            !catalog
-                .projections
-                .first()
-                .expect("projection")
-                .columns
-                .first()
-                .expect("column")
-                .do_not_index,
-            "legacy projection columns should default to indexable"
         );
     }
 

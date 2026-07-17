@@ -121,7 +121,6 @@ impl OpenApiImporter<'_> {
                 diagnostics.push(Diagnostic::warning(
                     "OPENAPI_PARAMETER_INVALID",
                     format!("operation '{operation_id}' has a parameter that is not an object"),
-                    self.surface.id.clone(),
                     Some(operation_id.to_string()),
                 ));
                 continue;
@@ -130,7 +129,6 @@ impl OpenApiImporter<'_> {
                 diagnostics.push(Diagnostic::warning(
                     "OPENAPI_PARAMETER_INVALID",
                     format!("operation '{operation_id}' has a parameter without a string name"),
-                    self.surface.id.clone(),
                     Some(operation_id.to_string()),
                 ));
                 continue;
@@ -143,7 +141,6 @@ impl OpenApiImporter<'_> {
                 diagnostics.push(Diagnostic::warning(
                     "OPENAPI_PARAMETER_SERIALIZATION_UNSUPPORTED",
                     format!("operation '{operation_id}' has unsupported parameter location"),
-                    self.surface.id.clone(),
                     Some(operation_id.to_string()),
                 ));
                 continue;
@@ -195,7 +192,6 @@ impl OpenApiImporter<'_> {
                     "parameter '{name}' has unsupported schema type '{}'",
                     json_schema_type_display(&resolved)
                 ),
-                self.surface.id.clone(),
                 Some(operation_id.to_string()),
             ));
             return None;
@@ -226,7 +222,6 @@ impl OpenApiImporter<'_> {
         diagnostics.push(Diagnostic::warning(
             "OPENAPI_REQUEST_BODY_UNPUBLISHED",
             format!("operation '{operation_id}' has a request body and will not be published"),
-            self.surface.id.clone(),
             Some(operation_id.to_string()),
         ));
         Some(RestRequestBody {

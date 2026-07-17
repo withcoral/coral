@@ -31,3 +31,10 @@ discovery, and normalized source-definition models.
   table/function collision checks.
 - Prefer normalized source-spec values over raw YAML plumbing in public
   helpers.
+- DSL v4 manifests declare source-wide `inputs:` plus exactly one singular
+  `surface:`. The source `name` is the SQL namespace; v4 surfaces and generated
+  projections must not introduce surface IDs, namespace suffixes, or redundant
+  projection namespaces.
+- Keep the DSL v4 materialized model singular too: one semantic IR and one
+  fingerprint surface, with source-wide projection names. Runtime structural
+  validation must accept a valid source with zero projections.

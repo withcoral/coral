@@ -179,8 +179,7 @@ functions:
             r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
 ",

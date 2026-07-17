@@ -192,119 +192,6 @@ tables:
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "This test keeps related failure cases together"
-)]
-fn loader_builds_catalog_from_schema_v3_materialization_fixture_bytes() {
-    let temp = tempdir().expect("tempdir");
-    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-    let config_store = ConfigStore::new(layout.clone());
-    let workspace_name = WorkspaceName::parse("work").expect("workspace");
-    let source_name = SourceName::parse("compatibility_fixture").expect("source");
-    let manifest_yaml = r"
-name: compatibility_fixture
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: rest
-    type: openapi
-    file: /tmp/schema-v3-openapi.yaml
-    base_url: https://api.example.com
-  - id: mcp
-    namespace_suffix: mcp
-    type: mcp
-    server:
-      transport: stdio
-      command: schema-v3-mcp-server
-";
-
-    config_store
-        .create_legacy_workspace_entry_for_tests(&workspace_name)
-        .expect("create legacy workspace entry");
-    install_imported_source(
-        &layout,
-        &config_store,
-        &workspace_name,
-        &source_name,
-        manifest_yaml,
-    );
-
-    let materialized_dir = layout.v4_materialized_dir(&workspace_name, &source_name);
-    let rest_dir = materialized_dir.join("surfaces").join("rest");
-    let mcp_dir = materialized_dir.join("surfaces").join("mcp");
-    std::fs::create_dir_all(&rest_dir).expect("create REST artifact dir");
-    std::fs::create_dir_all(&mcp_dir).expect("create MCP artifact dir");
-    std::fs::write(
-        materialized_dir.join("projections.yaml"),
-        include_str!(
-            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/projections.yaml"
-        ),
-    )
-    .expect("write schema-v3 projections");
-    std::fs::write(
-        rest_dir.join("semantic-ir.yaml"),
-        include_str!(
-            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/semantic-ir.yaml"
-        ),
-    )
-    .expect("write schema-v3 REST semantic IR");
-    std::fs::write(
-        mcp_dir.join("semantic-ir.yaml"),
-        include_str!(
-            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/mcp-semantic-ir.yaml"
-        ),
-    )
-    .expect("write schema-v3 MCP semantic IR");
-
-    let catalog = CatalogSnapshotLoader::new(config_store, layout)
-        .load_catalog(&workspace_name)
-        .expect("load catalog from schema-v3 materialization");
-
-    let table = catalog
-        .tables
-        .iter()
-        .find(|table| {
-            table.schema_name == "compatibility_fixture_rest" && table.table_name == "items"
-        })
-        .expect("legacy projection without a namespace should produce the items table");
-    assert_eq!(
-        table
-            .columns
-            .iter()
-            .map(|column| column.name.as_str())
-            .collect::<Vec<_>>(),
-        ["id", "state", "owner"]
-    );
-    assert_eq!(table.required_filters, ["owner"]);
-    let table_function = catalog
-        .table_functions
-        .iter()
-        .find(|table_function| {
-            table_function.schema_name == "compatibility_fixture_mcp"
-                && table_function.function_name == "search_items"
-        })
-        .expect(
-            "legacy projection without a namespace should produce the search_items table function",
-        );
-    assert_eq!(
-        table_function
-            .result_columns
-            .iter()
-            .map(|column| column.name.as_str())
-            .collect::<Vec<_>>(),
-        ["id", "score"]
-    );
-    assert_eq!(table_function.arguments.len(), 1);
-    let first_arg = table_function
-        .arguments
-        .first()
-        .expect("table function should have at least one argument");
-    assert_eq!(first_arg.name, "query");
-    assert!(first_arg.required);
-}
-
-#[test]
 fn loader_fails_closed_when_installed_manifest_cannot_be_read() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -382,8 +269,7 @@ tables:
         r"
 name: stale_v4
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
 ",

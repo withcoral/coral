@@ -11,21 +11,18 @@ use super::model::{
 
 pub(super) fn resolve_projection_name_collisions(
     manifest: &V4SourceManifest,
-    surfaces: &[SemanticIr],
+    surface: &SemanticIr,
     projections: &mut [Projection],
 ) -> Vec<Diagnostic> {
-    let operations = surfaces
+    let operations = surface
+        .operations
         .iter()
-        .flat_map(|ir| {
-            ir.operations
-                .iter()
-                .map(move |operation| ((ir.surface_id.as_str(), operation.id.as_str()), operation))
-        })
+        .map(|operation| (operation.id.as_str(), operation))
         .collect::<HashMap<_, _>>();
-    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, projection) in projections.iter().enumerate() {
         groups
-            .entry((projection.namespace.clone(), projection.name.clone()))
+            .entry(projection.name.clone())
             .or_default()
             .push(index);
     }
@@ -39,30 +36,22 @@ pub(super) fn resolve_projection_name_collisions(
                 let projection = projections
                     .get(*index)
                     .expect("projection index came from projections");
-                let operation = operations
-                    .get(&(
-                        projection.surface_id.as_str(),
-                        projection.operation_id.as_str(),
-                    ))
-                    .copied();
+                let operation = operations.get(projection.operation_id.as_str()).copied();
                 projection_name_priority(projection, operation, *index)
             })
             .expect("group has at least one projection");
         keep_base_name.insert(keep);
     }
 
-    let mut used_names_by_namespace = BTreeMap::<String, HashSet<String>>::new();
+    let mut used_names = HashSet::new();
     for index in keep_base_name.iter().copied() {
         if let Some(projection) = projections.get(index) {
-            used_names_by_namespace
-                .entry(projection.namespace.clone())
-                .or_default()
-                .insert(projection.name.clone());
+            used_names.insert(projection.name.clone());
         }
     }
 
     let mut diagnostics = Vec::new();
-    for ((namespace, _), indexes) in groups.iter().filter(|(_, indexes)| indexes.len() > 1) {
+    for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
         for index in indexes {
             if keep_base_name.contains(index) {
                 continue;
@@ -70,17 +59,9 @@ pub(super) fn resolve_projection_name_collisions(
             let projection = projections
                 .get(*index)
                 .expect("projection index came from projections");
-            let operation = operations
-                .get(&(
-                    projection.surface_id.as_str(),
-                    projection.operation_id.as_str(),
-                ))
-                .copied();
-            let used_names = used_names_by_namespace
-                .entry(namespace.clone())
-                .or_default();
+            let operation = operations.get(projection.operation_id.as_str()).copied();
             let name =
-                collision_resolved_projection_name(manifest, projection, operation, used_names);
+                collision_resolved_projection_name(manifest, projection, operation, &used_names);
             used_names.insert(name.clone());
             let projection = projections
                 .get_mut(*index)
@@ -90,7 +71,6 @@ pub(super) fn resolve_projection_name_collisions(
                 code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
                 severity: DiagnosticSeverity::Warning,
                 message: format!("projection name collision resolved as '{name}'"),
-                surface_id: Some(projection.surface_id.clone()),
                 operation_id: Some(projection.operation_id.clone()),
                 projection_name: Some(name),
             };
@@ -131,8 +111,8 @@ fn collision_resolved_projection_name(
     }
 
     let suffix = stable_suffix(&format!(
-        "{}/{}/{}",
-        manifest.common.name, projection.surface_id, projection.operation_id
+        "{}/{}",
+        manifest.common.name, projection.operation_id
     ));
     format!("{contextual_name}__{suffix}")
 }

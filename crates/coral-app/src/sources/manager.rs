@@ -867,12 +867,10 @@ impl SourceManager {
             return Ok(None);
         };
         if matches!(origin, SourceOrigin::Bundled)
-            && v4.surfaces.iter().any(|surface| {
-                matches!(
-                    surface.descriptor,
-                    coral_spec::v4::SurfaceDescriptor::File { .. }
-                )
-            })
+            && matches!(
+                v4.surface.descriptor,
+                coral_spec::v4::SurfaceDescriptor::File { .. }
+            )
         {
             return Err(AppError::FailedPrecondition(format!(
                 "bundled source '{}' uses local DSL v4 file descriptors, which are development-only",
@@ -1565,13 +1563,6 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
 }
 
 fn runtime_schema_names(manifest: &ValidatedSourceManifest) -> BTreeSet<String> {
-    if let Some(v4) = manifest.as_v4() {
-        return v4
-            .surfaces
-            .iter()
-            .map(|surface| surface.relation_namespace.clone())
-            .collect();
-    }
     BTreeSet::from([manifest.schema_name().to_string()])
 }
 
@@ -1582,44 +1573,23 @@ fn durable_import_manifest_yaml(
     let Some(v4) = manifest.as_v4() else {
         return Ok(manifest_yaml.to_string());
     };
-    let mut replacement_files = BTreeMap::new();
-    for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file } = &surface.descriptor else {
-            continue;
-        };
-        let canonical = canonicalize_file_descriptor(file)?;
-        if canonical != *file {
-            replacement_files.insert(surface.id.as_str(), canonical);
-        }
-    }
-    if replacement_files.is_empty() {
+    let SurfaceDescriptor::File { file } = &v4.surface.descriptor else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let canonical = canonicalize_file_descriptor(file)?;
+    if canonical == *file {
         return Ok(manifest_yaml.to_string());
     }
 
     let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
-    let surfaces_key = YamlValue::String("surfaces".to_string());
-    let id_key = YamlValue::String("id".to_string());
+    let surface_key = YamlValue::String("surface".to_string());
     let file_key = YamlValue::String("file".to_string());
-    let surfaces = value
+    let surface = value
         .as_mapping_mut()
-        .and_then(|mapping| mapping.get_mut(&surfaces_key))
-        .and_then(YamlValue::as_sequence_mut)
-        .ok_or_else(|| AppError::InvalidInput("DSL v4 manifest is missing surfaces".to_string()))?;
-    for surface in surfaces {
-        let Some(mapping) = surface.as_mapping_mut() else {
-            continue;
-        };
-        let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
-            continue;
-        };
-        let Some(file) = replacement_files.get(surface_id) else {
-            continue;
-        };
-        mapping.insert(
-            file_key.clone(),
-            YamlValue::String(file.display().to_string()),
-        );
-    }
+        .and_then(|mapping| mapping.get_mut(&surface_key))
+        .and_then(YamlValue::as_mapping_mut)
+        .ok_or_else(|| AppError::InvalidInput("DSL v4 manifest is missing surface".to_string()))?;
+    surface.insert(file_key, YamlValue::String(canonical.display().to_string()));
     serde_yaml::to_string(&value).map_err(AppError::from)
 }
 
@@ -1810,38 +1780,13 @@ components:
             r#"
 name: github_v4_test
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_BASE:
+    kind: variable
+    default: http://127.0.0.1:1
+surface:
     type: openapi
     file: {}
-    inputs:
-      API_BASE:
-        kind: variable
-        default: http://127.0.0.1:1
-    base_url: "{{{{input.API_BASE}}}}"
-"#,
-            openapi_file.display()
-        )
-    }
-
-    fn manifest_v4_with_surface_namespace(
-        openapi_file: &std::path::Path,
-        source_name: &str,
-        namespace_suffix: &str,
-    ) -> String {
-        format!(
-            r#"
-name: {source_name}
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: {namespace_suffix}
-    type: openapi
-    file: {}
-    inputs:
-      API_BASE:
-        kind: variable
-        default: http://127.0.0.1:1
     base_url: "{{{{input.API_BASE}}}}"
 "#,
             openapi_file.display()
@@ -1853,14 +1798,13 @@ surfaces:
             r"
 name: github_v4_test
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+surface:
     type: openapi
     file: {}
-    inputs:
-      API_BASE:
-        kind: variable
-        default: https://api.example.com
 ",
             openapi_file.display()
         )
@@ -1871,8 +1815,7 @@ surfaces:
             r"
 name: github_v4_test
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: {}
 ",
@@ -2308,33 +2251,32 @@ tables:
             r#"
 name: secured_messages
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          description: Use OAuth.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/{{{{input.OUTLOOK_TENANT_ID}}}}/oauth/authorize
+              token_url: {token_url_template}
+            client:
+              id:
+                default: default-client
+  OUTLOOK_TENANT_ID:
+    kind: variable
+  API_BASE:
+    kind: variable
+surface:
     type: openapi
     file: {}
-    inputs:
-      API_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              label: Connect
-              description: Use OAuth.
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
-                endpoints:
-                  authorization_url: https://provider.example.com/{{{{input.OUTLOOK_TENANT_ID}}}}/oauth/authorize
-                  token_url: {token_url_template}
-                client:
-                  id:
-                    default: default-client
-      OUTLOOK_TENANT_ID:
-        kind: variable
-      API_BASE:
-        kind: variable
     base_url: "{{{{input.API_BASE}}}}"
     auth:
       type: HeaderAuth
@@ -2552,76 +2494,12 @@ surfaces:
         let materialized = layout.v4_materialized_dir(&default_workspace(), &source_name);
         assert!(materialized.join(FINGERPRINT_FILENAME).exists());
         assert!(materialized.join(PROJECTIONS_FILENAME).exists());
-        assert!(
-            materialized
-                .join("surfaces")
-                .join("rest")
-                .join("semantic-ir.yaml")
-                .exists()
-        );
+        assert!(materialized.join("semantic-ir.yaml").exists());
 
         let info = manager
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
-    }
-
-    #[test]
-    fn import_v4_source_rejects_runtime_schema_collision_before_persistence() {
-        let temp = TempDir::new().expect("temp dir");
-        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let manager = SourceManager::new_for_tests(
-            ConfigStore::new(layout.clone()),
-            CredentialManager::new(CredentialStore::new(layout.clone())),
-            layout.clone(),
-        );
-
-        manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_without_secrets()
-                        .replace("public_messages", "github_v4_rest"),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("install existing source");
-
-        let error = manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_v4_with_surface_namespace(
-                        &openapi_file,
-                        "github_v4",
-                        "rest",
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect_err("surface namespace should collide with installed source schema");
-
-        let message = error.to_string();
-        assert!(message.contains("runtime schema name 'github_v4_rest'"));
-        assert!(message.contains("conflicts with installed source 'github_v4_rest'"));
-        let rejected_source = SourceName::parse("github_v4").expect("source");
-        assert!(
-            manager
-                .get_source(&default_workspace(), &rejected_source)
-                .is_err(),
-            "rejected source should not be persisted"
-        );
-        assert!(
-            !layout
-                .v4_materialized_dir(&default_workspace(), &rejected_source)
-                .exists(),
-            "rejected source should not materialize artifacts"
-        );
     }
 
     #[test]
@@ -3537,13 +3415,11 @@ surfaces:
             redirect_port,
         );
         assert!(
-            manifest_yaml
-                .find("      API_TOKEN:")
-                .expect("API_TOKEN input")
+            manifest_yaml.find("  API_TOKEN:").expect("API_TOKEN input")
                 < manifest_yaml
-                    .find("      OUTLOOK_TENANT_ID:")
+                    .find("  OUTLOOK_TENANT_ID:")
                     .expect("tenant input"),
-            "tenant variable should exercise v4 surface input order after the OAuth secret"
+            "tenant variable should exercise v4 top-level input order after the OAuth secret"
         );
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();

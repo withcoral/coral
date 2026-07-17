@@ -57,8 +57,7 @@ fn importer_warns_and_skips_external_openapi_operation_refs() {
         r"
 name: digitalocean_ref_test
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -66,7 +65,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -91,7 +90,6 @@ paths:
         .iter()
         .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
         .expect("unsupported operation ref diagnostic");
-    assert_eq!(diagnostic.surface_id.as_deref(), Some("rest"));
     assert!(diagnostic.operation_id.is_none());
     assert!(
         diagnostic
@@ -115,8 +113,7 @@ fn importer_resolves_local_openapi_operation_refs() {
         r"
 name: local_ref_test
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -124,7 +121,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -172,8 +169,7 @@ fn importer_preserves_openapi_operation_naming_metadata() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -181,7 +177,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -284,7 +280,7 @@ components:
     assert_eq!(fallback.group.as_deref(), Some("misc"));
     assert_eq!(fallback.operation.as_deref(), Some("get_fallback"));
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let quotes_projection = catalog
         .projections
         .iter()
@@ -300,8 +296,7 @@ fn importer_keeps_common_envelope_objects_as_singletons() {
         r"
 name: statusgator
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -309,7 +304,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -349,7 +344,7 @@ components:
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
     assert!(operation.output.row_path.is_empty());
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -377,8 +372,7 @@ fn importer_keeps_single_array_payload_objects_as_singletons() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -386,7 +380,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -424,7 +418,7 @@ components:
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
     assert!(operation.output.row_path.is_empty());
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let columns = projection
         .columns
@@ -447,8 +441,7 @@ fn importer_keeps_search_result_objects_as_singletons() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -456,7 +449,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -504,7 +497,7 @@ paths:
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
     assert!(operation.output.row_path.is_empty());
 
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let columns = projection
         .columns
@@ -538,8 +531,7 @@ fn importer_keeps_resource_objects_with_array_fields_as_singletons() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -547,7 +539,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -640,7 +632,7 @@ components:
     assert_eq!(fields.len(), 11);
     assert!(fields.iter().any(|field| field.name == "fields"));
 
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let column_types = projection
         .columns
@@ -666,8 +658,7 @@ fn importer_keeps_named_array_fields_on_resource_objects_as_singletons() {
         r"
 name: resources
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -675,7 +666,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -717,8 +708,7 @@ fn importer_handles_recursive_schema_refs() {
         r"
 name: trees
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -726,7 +716,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -801,8 +791,7 @@ fn importer_preserves_ref_backed_property_descriptions() {
         r"
 name: property_descriptions
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -810,7 +799,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -861,8 +850,7 @@ fn importer_resolves_referenced_response_objects() {
         r"
 name: referenced_responses
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -870,7 +858,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -912,7 +900,7 @@ components:
         operation.diagnostics
     );
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -934,8 +922,7 @@ fn importer_handles_2xx_response_range_success_codes() {
         r"
 name: response_ranges
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -943,7 +930,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1014,8 +1001,7 @@ fn importer_preserves_non_string_schema_enum_values() {
         r"
 name: enum_values
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1023,7 +1009,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1065,8 +1051,7 @@ fn importer_respects_additional_properties_false() {
         r"
 name: additional_properties
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1074,7 +1059,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1159,8 +1144,7 @@ fn importer_warns_for_unresolved_response_object_refs() {
         r"
 name: broken_responses
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1168,7 +1152,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1213,8 +1197,7 @@ fn importer_warns_for_openapi_all_of_property_conflicts() {
         r"
 name: conflicting_all_of
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1222,7 +1205,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1268,8 +1251,7 @@ fn importer_preserves_non_string_parameter_defaults() {
         r"
 name: defaults
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1277,7 +1259,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1324,8 +1306,7 @@ fn importer_infers_common_query_pagination_modes() {
         r"
 name: pagination
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1333,7 +1314,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1497,8 +1478,7 @@ fn importer_infers_response_pagination_only_for_list_responses() {
         r"
 name: response_pagination
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1506,7 +1486,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1796,8 +1776,7 @@ fn importer_keeps_opaque_link_header_page_token_public() {
         r"
 name: link_page_token
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1805,7 +1784,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1855,8 +1834,7 @@ fn importer_treats_path_parameters_as_required_when_required_is_omitted() {
         r"
 name: omitted_path_required
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1864,7 +1842,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1914,8 +1892,7 @@ fn importer_warns_for_invalid_parameters_and_unresolved_responses() {
         r"
 name: broken
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1923,7 +1900,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
