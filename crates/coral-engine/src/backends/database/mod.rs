@@ -22,6 +22,7 @@ use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::TableType;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::TableReference;
+use datafusion::sql::unparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SqliteDialect};
 use datafusion_table_providers::UnsupportedTypeAction;
 use datafusion_table_providers::sql::db_connection_pool::dbconnection::query_arrow;
 use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnectionPool;
@@ -160,7 +161,14 @@ async fn postgres_catalog(
                         .with_unsupported_type_action(UnsupportedTypeAction::String))
                 }
             },
-            |pool| database_catalog(pool, POSTGRES_RELATIONS_SQL, POSTGRES_COLUMNS_SQL),
+            |pool| {
+                database_catalog(
+                    pool,
+                    POSTGRES_RELATIONS_SQL,
+                    POSTGRES_COLUMNS_SQL,
+                    Arc::new(PostgreSqlDialect {}),
+                )
+            },
         )
         .await
 }
@@ -200,7 +208,14 @@ async fn mysql_catalog(
                         .map_err(provider_error)
                 }
             },
-            |pool| database_catalog(pool, MYSQL_RELATIONS_SQL, MYSQL_COLUMNS_SQL),
+            |pool| {
+                database_catalog(
+                    pool,
+                    MYSQL_RELATIONS_SQL,
+                    MYSQL_COLUMNS_SQL,
+                    Arc::new(MySqlDialect {}),
+                )
+            },
         )
         .await
 }
@@ -224,7 +239,13 @@ async fn sqlite_catalog(
         .build()
         .await
         .map_err(boxed_provider_error)?;
-    database_catalog(Arc::new(pool), SQLITE_RELATIONS_SQL, SQLITE_COLUMNS_SQL).await
+    database_catalog(
+        Arc::new(pool),
+        SQLITE_RELATIONS_SQL,
+        SQLITE_COLUMNS_SQL,
+        Arc::new(SqliteDialect {}),
+    )
+    .await
 }
 
 const POSTGRES_RELATIONS_SQL: &str = "
@@ -269,14 +290,22 @@ struct DatabaseRelation {
     table_type: TableType,
 }
 
+/// Unparser dialect for the remote SQL sent to one provider. Without it,
+/// `SqlTable` falls back to ANSI double-quoted identifiers, which MySQL
+/// (without `ANSI_QUOTES`) reads as string literals — silently returning the
+/// column name instead of column values.
+type SqlDialect = Arc<dyn Dialect + Send + Sync>;
+
 async fn database_catalog<T: 'static, P: 'static>(
     pool: Pool<T, P>,
     inventory_sql: &str,
     columns_sql: &'static str,
+    dialect: SqlDialect,
 ) -> DataFusionResult<DatabaseCatalog> {
     let relations = load_database_inventory(&pool, inventory_sql).await?;
-    let provider =
-        Arc::new(CoralDatabaseCatalogProvider::new(&pool, &relations)) as Arc<dyn CatalogProvider>;
+    let provider = Arc::new(CoralDatabaseCatalogProvider::new(
+        &pool, &relations, &dialect,
+    )) as Arc<dyn CatalogProvider>;
     let column_fetcher = PooledColumnFetcher::new(&pool, columns_sql);
     Ok(DatabaseCatalog {
         provider,
@@ -347,7 +376,11 @@ struct CoralDatabaseCatalogProvider {
 }
 
 impl CoralDatabaseCatalogProvider {
-    fn new<T: 'static, P: 'static>(pool: &Pool<T, P>, relations: &[DatabaseRelation]) -> Self {
+    fn new<T: 'static, P: 'static>(
+        pool: &Pool<T, P>,
+        relations: &[DatabaseRelation],
+        dialect: &SqlDialect,
+    ) -> Self {
         let mut by_schema = BTreeMap::<String, BTreeMap<String, TableType>>::new();
         for relation in relations {
             by_schema
@@ -362,6 +395,7 @@ impl CoralDatabaseCatalogProvider {
                     schema_name: schema_name.clone(),
                     tables,
                     pool: Arc::clone(pool),
+                    dialect: Arc::clone(dialect),
                 };
                 (schema_name, Arc::new(provider) as Arc<dyn SchemaProvider>)
             })
@@ -397,6 +431,7 @@ struct CoralDatabaseSchemaProvider<T: 'static, P: 'static> {
     schema_name: String,
     tables: BTreeMap<String, TableType>,
     pool: Pool<T, P>,
+    dialect: SqlDialect,
 }
 
 impl<T: 'static, P: 'static> fmt::Debug for CoralDatabaseSchemaProvider<T, P> {
@@ -429,7 +464,10 @@ impl<T: 'static, P: 'static> SchemaProvider for CoralDatabaseSchemaProvider<T, P
             TableReference::partial(self.schema_name.clone(), name.to_string()),
         )
         .await
-        .map(|table| Some(Arc::new(table) as Arc<dyn TableProvider>))
+        .map(|table| {
+            let table = table.with_dialect(Arc::clone(&self.dialect));
+            Some(Arc::new(table) as Arc<dyn TableProvider>)
+        })
         .map_err(provider_error)
     }
 
@@ -560,6 +598,9 @@ mod tests {
             "
             CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
             INSERT INTO users (id, name) VALUES (1, 'Ada'), (2, 'Lin');
+            CREATE TABLE cased (\"createdAt\" TEXT NOT NULL, status TEXT NOT NULL);
+            INSERT INTO cased (\"createdAt\", status)
+            VALUES ('2026-01-01', 'open'), ('2026-01-02', 'closed');
             ",
         )
         .expect("sqlite fixture");
@@ -711,6 +752,23 @@ mod tests {
         )
         .await
         .expect("query all database columns");
-        assert_eq!(all_database_columns.row_count(), 2);
+        assert_eq!(all_database_columns.row_count(), 4);
+    }
+
+    /// The remote scan SQL is unparsed with the provider's dialect; a
+    /// case-sensitive column in a pushed-down projection and filter proves
+    /// quoted identifiers round-trip as identifiers, not string literals.
+    #[tokio::test]
+    async fn sqlite_database_source_round_trips_case_sensitive_identifiers() {
+        let (_temp, sources) = sqlite_test_sources();
+
+        let result = CoralQuery::execute_sql(
+            &sources,
+            QueryRuntimeConfig::default(),
+            "SELECT \"createdAt\" FROM coral_db.main.cased WHERE status = 'open'",
+        )
+        .await
+        .expect("query case-sensitive column");
+        assert_eq!(result.row_count(), 1, "filter must match the real row");
     }
 }
