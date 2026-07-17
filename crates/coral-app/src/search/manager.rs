@@ -29,7 +29,7 @@ pub(crate) struct SearchManager {
 }
 
 const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
-const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(1);
+const SHUTDOWN_DRAIN_SOFT_BUDGET: Duration = Duration::from_secs(1);
 
 impl SearchManager {
     #[cfg(test)]
@@ -135,7 +135,7 @@ impl SearchManager {
         let workspaces = self.workspaces.list_workspaces().await?;
         let observed_projection = self.observed_projection.clone();
         run_blocking_search_operation(move || {
-            let deadline = Instant::now() + SHUTDOWN_DRAIN_BUDGET;
+            let deadline = Instant::now() + SHUTDOWN_DRAIN_SOFT_BUDGET;
             for workspace in workspaces {
                 let remaining_budget = deadline.saturating_duration_since(Instant::now());
                 if remaining_budget.is_zero() {
@@ -157,7 +157,7 @@ impl SearchManager {
                             failed_jobs = result.failed_jobs,
                             remaining_queue_depth = result.remaining_queue_depth,
                             budget_exhausted = result.budget_exhausted,
-                            remaining_budget_ms = remaining_budget.as_millis(),
+                            remaining_soft_budget_ms = remaining_budget.as_millis(),
                             "drained observed-value queue before shutdown"
                         );
                     }

@@ -2,7 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::sqlite_queue::{
@@ -15,6 +14,11 @@ use crate::workspaces::WorkspaceName;
 pub(crate) const MAX_OBSERVED_QUEUE_JOB_ATTEMPTS: i64 = 3;
 
 #[derive(Debug, Clone, Copy)]
+/// Cooperative limits for one observed-values drain.
+///
+/// The time budget is checked between atomic queue jobs. `SQLite` setup and an
+/// in-flight transaction are allowed to finish, so elapsed wall time can
+/// exceed the budget without leaving a partially projected job behind.
 pub(crate) struct ObservedValuesDrainBudget {
     pub(crate) max_jobs: usize,
     pub(crate) time_budget: Duration,
@@ -51,6 +55,52 @@ struct ObservedQueueJobRow {
     workspace_generation: i64,
     source_generation: i64,
     payload_json: String,
+}
+
+#[derive(Debug)]
+struct RawObservedQueueJobRow {
+    id: i64,
+    owner_source_name: String,
+    source_name: String,
+    source_scope_id: String,
+    surface_kind: String,
+    surface_name: String,
+    workspace_generation: i64,
+    source_generation: i64,
+    payload_json: String,
+}
+
+impl RawObservedQueueJobRow {
+    fn decode(self) -> Result<ObservedQueueJobRow, (i64, String)> {
+        let Self {
+            id,
+            owner_source_name,
+            source_name,
+            source_scope_id,
+            surface_kind: surface_kind_raw,
+            surface_name,
+            workspace_generation,
+            source_generation,
+            payload_json,
+        } = self;
+        let Some(surface_kind) = ObservedValuesSurfaceKind::from_str(&surface_kind_raw) else {
+            return Err((
+                id,
+                format!("unknown observed-values surface_kind '{surface_kind_raw}'"),
+            ));
+        };
+        Ok(ObservedQueueJobRow {
+            id,
+            owner_source_name,
+            source_name,
+            source_scope_id,
+            surface_kind,
+            surface_name,
+            workspace_generation,
+            source_generation,
+            payload_json,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,9 +182,17 @@ fn drain_one_observed_job(
     after_job_id: i64,
 ) -> Result<DrainOneResult, SqliteSearchError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let Some(job) = next_queue_job(&transaction, workspace_name, after_job_id)? else {
+    let Some(raw_job) = next_queue_job(&transaction, workspace_name, after_job_id)? else {
         transaction.commit()?;
         return Ok(DrainOneResult::Empty);
+    };
+    let job = match raw_job.decode() {
+        Ok(job) => job,
+        Err((job_id, error)) => {
+            mark_queue_job_failed(&transaction, job_id, &error)?;
+            transaction.commit()?;
+            return Ok(DrainOneResult::Failed { job_id });
+        }
     };
 
     let current_generation =
@@ -352,7 +410,7 @@ fn next_queue_job(
     transaction: &Transaction<'_>,
     workspace_name: &WorkspaceName,
     after_job_id: i64,
-) -> Result<Option<ObservedQueueJobRow>, SqliteSearchError> {
+) -> Result<Option<RawObservedQueueJobRow>, SqliteSearchError> {
     transaction
         .query_row(
             "
@@ -384,17 +442,15 @@ fn next_queue_job(
         .map_err(SqliteSearchError::from)
 }
 
-fn observed_queue_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ObservedQueueJobRow> {
-    let surface_kind_raw: String = row.get(4)?;
-    let surface_kind = ObservedValuesSurfaceKind::from_str(&surface_kind_raw).ok_or_else(|| {
-        invalid_observed_storage_error(4, "surface_kind", surface_kind_raw.as_str())
-    })?;
-    Ok(ObservedQueueJobRow {
+fn observed_queue_job_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RawObservedQueueJobRow> {
+    Ok(RawObservedQueueJobRow {
         id: row.get(0)?,
         owner_source_name: row.get(1)?,
         source_name: row.get(2)?,
         source_scope_id: row.get(3)?,
-        surface_kind,
+        surface_kind: row.get(4)?,
         surface_name: row.get(5)?,
         workspace_generation: row.get(6)?,
         source_generation: row.get(7)?,
@@ -509,21 +565,6 @@ fn truncate_error(error: &str) -> String {
     truncated
 }
 
-fn invalid_observed_storage_error(
-    column: usize,
-    field: &'static str,
-    value: &str,
-) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        column,
-        Type::Text,
-        Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("unknown observed-values {field} '{value}'"),
-        )),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -581,6 +622,66 @@ mod tests {
             )
             .expect("attempts");
         assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn unknown_surface_kind_is_retried_without_starving_later_jobs() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_identity("github", "github", "bad-scope", "Bad value"),
+                epoch,
+            )
+            .expect("enqueue malformed job");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_identity("github", "github", "good-scope", "Good value"),
+                epoch,
+            )
+            .expect("enqueue valid job");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+        connection
+            .execute(
+                "UPDATE observed_queue_jobs SET surface_kind = 'damaged' WHERE source_scope_id = 'bad-scope'",
+                [],
+            )
+            .expect("damage durable surface kind");
+
+        let result = drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+        )
+        .expect("drain");
+
+        assert_eq!(result.failed_jobs, 1);
+        assert_eq!(result.queue_jobs_processed, 1);
+        assert_eq!(result.remaining_queue_depth, 1);
+        let (attempts, last_error): (i64, String) = connection
+            .query_row(
+                "SELECT attempts, last_error FROM observed_queue_jobs WHERE source_scope_id = 'bad-scope'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("malformed job retry state");
+        assert_eq!(attempts, 1);
+        assert!(last_error.contains("unknown observed-values surface_kind 'damaged'"));
+        let projected_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = ?1",
+                params![workspace.as_str()],
+                |row| row.get(0),
+            )
+            .expect("projected count");
+        assert_eq!(projected_count, 1);
     }
 
     #[test]

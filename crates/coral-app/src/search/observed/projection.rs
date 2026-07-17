@@ -33,7 +33,7 @@ impl ObservedValuesProjection {
                 queue_jobs_processed = result.queue_jobs_processed,
                 stale_jobs_skipped = result.stale_jobs_skipped,
                 failed_jobs = result.failed_jobs,
-                "observed-value queue drain budget expired"
+                "observed-value queue drain soft budget expired"
             );
         }
         Ok(result)
