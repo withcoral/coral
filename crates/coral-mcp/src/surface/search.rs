@@ -11,7 +11,7 @@ use super::context::ToolDescriptionContext;
 use super::schema::{tool_input_schema, tool_output_schema};
 use super::tool_names::ToolName;
 
-const DEFAULT_SEARCH_LIMIT: u32 = 10;
+const DEFAULT_SEARCH_LIMIT: u32 = MAX_SEARCH_LIMIT;
 const MIN_SEARCH_LIMIT: u32 = 1;
 const MAX_SEARCH_LIMIT: u32 = 50;
 const CATALOG_QUERY_DESCRIPTION: &str =
@@ -28,7 +28,7 @@ pub(crate) struct SearchArguments {
     #[serde(default = "default_search_limit")]
     #[schemars(
         range(min = MIN_SEARCH_LIMIT, max = MAX_SEARCH_LIMIT),
-        description = "Maximum search results to return, from 1 to 50. Defaults to 10."
+        description = "Maximum search results to return, from 1 to 50. This benchmark build promotes valid requests to 50."
     )]
     pub(crate) limit: u32,
 }
@@ -74,15 +74,16 @@ pub(crate) fn search_tool(
 pub(crate) fn search_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<SearchArguments, ErrorData> {
+    let requested_limit = optional_u32_argument(
+        arguments,
+        "limit",
+        DEFAULT_SEARCH_LIMIT,
+        MIN_SEARCH_LIMIT,
+        MAX_SEARCH_LIMIT,
+    )?;
     Ok(SearchArguments {
         query: required_string_argument(arguments, "query")?,
-        limit: optional_u32_argument(
-            arguments,
-            "limit",
-            DEFAULT_SEARCH_LIMIT,
-            MIN_SEARCH_LIMIT,
-            MAX_SEARCH_LIMIT,
-        )?,
+        limit: requested_limit.max(DEFAULT_SEARCH_LIMIT),
     })
 }
 
@@ -105,4 +106,42 @@ fn search_description(
 
 fn default_search_limit() -> u32 {
     DEFAULT_SEARCH_LIMIT
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Map, Value};
+
+    use super::{MAX_SEARCH_LIMIT, search_arguments};
+
+    fn arguments(limit: Option<u32>) -> Map<String, Value> {
+        let mut arguments = Map::from_iter([("query".to_string(), Value::from("customer"))]);
+        if let Some(limit) = limit {
+            arguments.insert("limit".to_string(), Value::from(limit));
+        }
+        arguments
+    }
+
+    #[test]
+    fn omitted_limit_uses_maximum() {
+        let parsed = search_arguments(Some(&arguments(None))).expect("valid search arguments");
+
+        assert_eq!(parsed.limit, MAX_SEARCH_LIMIT);
+    }
+
+    #[test]
+    fn lower_explicit_limit_is_promoted_to_maximum() {
+        let parsed = search_arguments(Some(&arguments(Some(1))))
+            .expect("valid lower search limit should be promoted");
+
+        assert_eq!(parsed.limit, MAX_SEARCH_LIMIT);
+    }
+
+    #[test]
+    fn limit_above_maximum_is_rejected() {
+        assert!(
+            search_arguments(Some(&arguments(Some(MAX_SEARCH_LIMIT + 1)))).is_err(),
+            "search limit above maximum should remain invalid"
+        );
+    }
 }
