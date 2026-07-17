@@ -31,6 +31,9 @@ struct V4SourceManifestSchema {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(inner(length(min = 1)))]
     test_queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    identity_requirements: Option<IdentityRequirementsSchema>,
     #[schemars(length(min = 1))]
     surfaces: Vec<V4SurfaceSchema>,
 }
@@ -68,9 +71,6 @@ struct V4OpenApiSurfaceSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required, length(min = 1))]
     base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(required)]
-    identity_requirements: Option<IdentityRequirementsSchema>,
     #[serde(default)]
     auth: AuthSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -564,15 +564,15 @@ surfaces:
         let raw = r"
 name: demo
 dsl_version: 4
+identity_requirements:
+  accepts:
+    - id: github_rest_read
+      identity_specs: [github_oauth, github_pat]
+      audience: {host: github.com, port: 443}
 surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
-    identity_requirements:
-      accepts:
-        - id: github_rest_read
-          identity_specs: [github_oauth, github_pat]
-          audience: {host: github.com, port: 443}
 ";
 
         let validator = validator();
@@ -587,30 +587,54 @@ surfaces:
     #[test]
     fn generated_schema_rejects_invalid_identity_requirement_shapes() {
         let invalid_fields = [
-            "    identity_requirements: null\n",
-            "    identity_requirements: {accepts: []}\n",
-            "    identity_requirements:\n      accepts:\n        - id: \"\"\n          identity_specs: [github_oauth]\n",
-            "    identity_requirements:\n      accepts:\n        - id: \"   \"\n          identity_specs: [github_oauth]\n",
-            "    identity_requirements:\n      accepts:\n        - id: github_rest_read\n          identity_specs: []\n",
-            "    identity_requirements:\n      accepts:\n        - id: github_rest_read\n          identity_specs: [\"\"]\n",
-            "    identity_requirements:\n      accepts:\n        - id: github_rest_read\n          identity_specs: [\"   \"]\n",
-            "    identity_requirements:\n      accepts:\n        - id: github_rest_read\n          identity_specs: [github-oauth]\n",
-            "    identity_requirements:\n      accepts:\n        - id: github_rest_read\n          identity_specs: [github_oauth, github_oauth]\n",
-            "    identity_requirements:\n      accepts:\n        - id: github_rest_read\n          identity_specs: [github_oauth]\n          issuer: github\n",
+            "identity_requirements: null\n",
+            "identity_requirements: {accepts: []}\n",
+            "identity_requirements:\n  accepts:\n    - id: \"\"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: \"   \"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: []\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"\"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"   \"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github-oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth, github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth]\n      issuer: github\n",
         ];
 
         let validator = validator();
-        for surface_fields in invalid_fields {
+        for manifest_fields in invalid_fields {
             let raw = format!(
-                "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n{surface_fields}"
+                "name: demo\ndsl_version: 4\n{manifest_fields}surfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
             );
             assert!(
                 !validator.is_valid(&manifest_json(&raw)),
-                "generated schema should reject: {surface_fields}"
+                "generated schema should reject: {manifest_fields}"
             );
             parse_source_manifest_yaml(&raw)
                 .expect_err("parser should reject invalid identity requirements");
         }
+    }
+
+    #[test]
+    fn generated_schema_rejects_surface_scoped_identity_requirements() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    identity_requirements:
+      accepts:
+        - id: github_rest_read
+          identity_specs: [github_oauth]
+";
+
+        let validator = validator();
+        assert!(
+            !validator.is_valid(&manifest_json(raw)),
+            "generated schema should reject surface-scoped identity requirements"
+        );
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject surface-scoped identity requirements");
     }
 
     #[test]

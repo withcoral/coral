@@ -666,7 +666,6 @@ mod tests {
                 file: PathBuf::from("/tmp/openapi.yaml"),
             },
             inputs: Vec::new(),
-            identity_requirements: None,
             runtime: SurfaceRuntimeConfig::OpenApi(OpenApiRuntimeConfig {
                 base_url: coral_spec::ParsedTemplate::parse(base_url).expect("base_url template"),
                 auth: AuthSpec::default(),
@@ -734,6 +733,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: surface.inputs.clone(),
             surfaces: vec![surface],
         }
@@ -767,7 +767,6 @@ mod tests {
                 location: "demo-mcp-server".to_string(),
             },
             inputs: Vec::new(),
-            identity_requirements: None,
             runtime: SurfaceRuntimeConfig::Mcp(McpRuntimeConfig {
                 server: McpServerSpec::Stdio {
                     command: "demo-mcp-server".to_string(),
@@ -949,6 +948,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             surfaces: vec![
                 mcp_surface("rest", "github_v4_rest"),
                 mcp_surface("mcp", "github_v4_mcp"),
@@ -1000,6 +1000,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             surfaces: vec![
                 mcp_surface("healthy", "github_v4_healthy"),
                 mcp_surface("broken", "github_v4_broken"),
@@ -1043,6 +1044,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             surfaces: vec![
                 mcp_surface("healthy", "github_v4_healthy"),
                 mcp_surface("duplicate", "github_v4_duplicate"),
@@ -1096,6 +1098,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surfaces: vec![surface],
         };
@@ -1172,6 +1175,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surfaces: vec![surface],
         };
@@ -1232,6 +1236,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surfaces: vec![surface],
         };
