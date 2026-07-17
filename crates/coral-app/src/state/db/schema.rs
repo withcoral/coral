@@ -25,3 +25,42 @@ pub(in crate::state::db) enum Tasks {
     CreatedAtUnixNanos,
     CompletedAtUnixNanos,
 }
+
+#[expect(
+    dead_code,
+    reason = "identity schema lands before repository behavior in the B1 stack"
+)]
+#[derive(Iden)]
+pub(in crate::state::db) enum IdentitySpecs {
+    Table,
+    Id,
+    WorkspaceId,
+    Name,
+    Version,
+    Description,
+    Issuer,
+    IdentityType,
+    ManifestYaml,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}
+
+#[expect(
+    dead_code,
+    reason = "identity schema lands before repository behavior in the B1 stack"
+)]
+#[derive(Iden)]
+pub(in crate::state::db) enum IdentitySpecDocuments {
+    Table,
+    IdentitySpecId,
+    DocumentVersion,
+    Ciphertext,
+    Nonce,
+    WrappedDek,
+    WrappedDekNonce,
+    KeyId,
+    Algorithm,
+    BindingVersion,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}
