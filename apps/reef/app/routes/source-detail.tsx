@@ -73,6 +73,7 @@ export default function SourceDetailRoute({
       actionData={actionData}
       loaderData={loaderData}
       sourcesPath={routePath('workspaceSources', { workspaceId: params.workspaceId })}
+      workspaceId={params.workspaceId}
     />
   )
 }

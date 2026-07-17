@@ -21,6 +21,7 @@ import type {
   CatalogSourceCredentialMethod,
   CatalogSourceInputSpec,
 } from '@/lib/sources'
+import { routePath } from '@/routing/routemap'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
 import { formatSourceName, ProviderLogo } from '@/components/sources'
@@ -53,6 +54,7 @@ export function SourceInstallDialog({
   openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
   onOpenChange,
   submitting,
+  workspaceId,
 }: {
   actionError?: string | null
   entry: CatalogEntry | null
@@ -61,6 +63,7 @@ export function SourceInstallDialog({
   openAuthorization?: (url: string) => unknown
   onOpenChange: (open: boolean) => void
   submitting?: boolean
+  workspaceId: string
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -75,6 +78,7 @@ export function SourceInstallDialog({
               onCancel={() => onOpenChange(false)}
               openAuthorization={openAuthorization}
               submitting={submitting ?? false}
+              workspaceId={workspaceId}
             />
           ) : null}
         </Dialog.Popup>
@@ -90,6 +94,7 @@ function SourceInstallDialogContent({
   onCancel,
   openAuthorization,
   submitting,
+  workspaceId,
 }: {
   actionError?: string | null
   entry: CatalogEntry
@@ -97,6 +102,7 @@ function SourceInstallDialogContent({
   onCancel: () => void
   openAuthorization: (url: string) => unknown
   submitting: boolean
+  workspaceId: string
 }) {
   const navigate = useNavigate()
   const revalidator = useRevalidator()
@@ -159,7 +165,7 @@ function SourceInstallDialogContent({
     const abortController = new AbortController()
     abortRef.current = abortController
     try {
-      const response = await fetchOAuthInstall(oauthInstallEndpoint(entry.name), {
+      const response = await fetchOAuthInstall(oauthInstallEndpoint(workspaceId, entry.name), {
         body: new FormData(formRef.current),
         method: 'POST',
         signal: abortController.signal,
@@ -190,7 +196,9 @@ function SourceInstallDialogContent({
       if (!abortController.signal.aborted) {
         setProgress({ kind: 'success', name: source.name })
         await revalidator.revalidate()
-        if (!abortController.signal.aborted) await navigate('/sources')
+        if (!abortController.signal.aborted) {
+          await navigate(routePath('workspaceSources', { workspaceId }))
+        }
       }
     } catch (error) {
       if (abortController.signal.aborted) return
@@ -467,8 +475,8 @@ function oauthMethodReady(
   })
 }
 
-function oauthInstallEndpoint(name: string): string {
-  return `/sources/${encodeURIComponent(name)}/oauth-install`
+function oauthInstallEndpoint(workspaceId: string, name: string): string {
+  return `${routePath('workspaceSource', { sourceName: name, workspaceId })}/oauth-install`
 }
 
 function busyLabel(progress: InstallProgress, submitting: boolean): string {

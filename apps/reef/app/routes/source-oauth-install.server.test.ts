@@ -1,21 +1,109 @@
 import { create } from '@bufbuild/protobuf'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { createBundledSourceWithOAuth, getSourceInfo } = vi.hoisted(() => ({
+  createBundledSourceWithOAuth: vi.fn(),
+  getSourceInfo: vi.fn(),
+}))
+
+vi.mock('@/lib/coral-request.server', () => ({
+  sourceClientForRequest: () => ({ createBundledSourceWithOAuth, getSourceInfo }),
+}))
 
 import {
   CreateBundledSourceWithOAuthResponseSchema,
+  OAuthCredentialMethodSchema,
   OAuthCredentialCallbackReceivedSchema,
+  SourceCredentialMethodSchema,
+  SourceCredentialSchema,
+  SourceInfoSchema,
+  SourceInputSpecSchema,
+  SourceOrigin,
   SourceSchema,
+  SourceSecretInputSchema,
   type CreateBundledSourceWithOAuthResponse,
 } from '@/generated/coral/v1/sources_pb'
 import type { OAuthInstallStreamEvent } from '@/lib/source-oauth-install-stream'
 
-import { relayOAuthInstallStreamEvents } from './source-oauth-install'
+import { action, relayOAuthInstallStreamEvents } from './source-oauth-install'
 
 async function* responses(
   events: CreateBundledSourceWithOAuthResponse[],
 ): AsyncIterable<CreateBundledSourceWithOAuthResponse> {
   yield* events
 }
+
+const oauthSourceInfo = create(SourceInfoSchema, {
+  inputs: [
+    create(SourceInputSpecSchema, {
+      input: {
+        case: 'secret',
+        value: create(SourceSecretInputSchema, {
+          credential: create(SourceCredentialSchema, {
+            methods: [
+              create(SourceCredentialMethodSchema, {
+                method: { case: 'oauth', value: create(OAuthCredentialMethodSchema) },
+              }),
+            ],
+          }),
+        }),
+      },
+      key: 'GITHUB_TOKEN',
+      required: true,
+    }),
+  ],
+  name: 'github',
+  origin: SourceOrigin.BUNDLED,
+})
+
+describe('action', () => {
+  beforeEach(() => {
+    createBundledSourceWithOAuth.mockReset()
+    getSourceInfo.mockReset()
+  })
+
+  it('installs the source in the route workspace', async () => {
+    getSourceInfo.mockResolvedValue({ sourceInfo: oauthSourceInfo })
+    createBundledSourceWithOAuth.mockImplementation(async function* () {
+      yield create(CreateBundledSourceWithOAuthResponseSchema, {
+        event: {
+          case: 'source',
+          value: create(SourceSchema, { name: 'github', version: '1.0.0' }),
+        },
+      })
+    })
+    const request = new Request(
+      'http://localhost/workspaces/analytics/sources/github/oauth-install',
+      {
+        body: new URLSearchParams({
+          'method:GITHUB_TOKEN': '0',
+          name: 'github',
+        }),
+        method: 'POST',
+      },
+    )
+
+    const response = await action({
+      params: { sourceName: 'github', workspaceId: 'analytics' },
+      request,
+    } as Parameters<typeof action>[0])
+    await response.text()
+
+    expect(getSourceInfo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'github',
+        workspace: expect.objectContaining({ name: 'analytics' }),
+      }),
+    )
+    expect(createBundledSourceWithOAuth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'github',
+        workspace: expect.objectContaining({ name: 'analytics' }),
+      }),
+      expect.objectContaining({ signal: request.signal }),
+    )
+  })
+})
 
 describe('relayOAuthInstallStreamEvents', () => {
   it('relays callback receipt before the terminal source event', async () => {

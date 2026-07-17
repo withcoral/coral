@@ -10,7 +10,7 @@ export default [
   // Action-only resource route: OAuth/device-code install streams progress over
   // same-origin fetch. It intentionally sits outside the app shell and does not
   // render a page.
-  route('sources/:sourceName/oauth-install', 'routes/source-oauth-install.ts'),
+  route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts'),
   layout('routes/app-shell.tsx', [
     index('routes/index.tsx'),
     route(routePattern('workspaces'), 'routes/workspaces-action.ts'),

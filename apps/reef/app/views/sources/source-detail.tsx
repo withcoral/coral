@@ -31,6 +31,7 @@ export function SourceDetailView({
   actionData,
   loaderData,
   sourcesPath,
+  workspaceId,
 }: {
   actionData: SourcesActionData | undefined
   loaderData: {
@@ -38,6 +39,7 @@ export function SourceDetailView({
     loadError: string | null
   }
   sourcesPath: string
+  workspaceId: string
 }) {
   const navigate = useNavigate()
   const navigation = useNavigation()
@@ -60,6 +62,7 @@ export function SourceDetailView({
           if (!open) navigate(sourcesPath)
         }}
         submitting={pendingName === entry.name && pendingIntent === 'install'}
+        workspaceId={workspaceId}
       />
     )
   }

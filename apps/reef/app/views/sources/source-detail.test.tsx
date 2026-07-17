@@ -23,6 +23,7 @@ describe('SourceDetailView', () => {
                 loadError: null,
               }}
               sourcesPath="/workspaces/default/sources"
+              workspaceId="default"
             />
           ),
           path: '/workspaces/:workspaceId/sources/:sourceName',

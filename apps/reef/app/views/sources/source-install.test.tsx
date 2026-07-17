@@ -44,15 +44,13 @@ describe('SourceInstallDialog', () => {
   it('commits catalog revalidation before leaving the detail route', async () => {
     let installed = false
     let loaderCalls = 0
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        installed = true
-        return streamedResponse([
-          oauthInstallEventToNdjson({ type: 'source', name: 'github', version: '1.0.0' }),
-        ])
-      }),
-    )
+    const fetchOAuthInstall = vi.fn(async () => {
+      installed = true
+      return streamedResponse([
+        oauthInstallEventToNdjson({ type: 'source', name: 'github', version: '1.0.0' }),
+      ])
+    })
+    vi.stubGlobal('fetch', fetchOAuthInstall)
 
     const router = createMemoryRouter(
       [
@@ -60,7 +58,14 @@ describe('SourceInstallDialog', () => {
           children: [
             { index: true, element: <CatalogStatus /> },
             {
-              element: <SourceInstallDialog entry={entry} open onOpenChange={() => undefined} />,
+              element: (
+                <SourceInstallDialog
+                  entry={entry}
+                  open
+                  onOpenChange={() => undefined}
+                  workspaceId="analytics"
+                />
+              ),
               path: ':sourceName',
             },
           ],
@@ -72,13 +77,13 @@ describe('SourceInstallDialog', () => {
             await abortableDelay(request.signal)
             return { installed: snapshot }
           },
-          path: '/sources',
+          path: '/workspaces/:workspaceId/sources',
           shouldRevalidate,
         },
       ],
       {
         hydrationData: { loaderData: { sources: { installed: false } } },
-        initialEntries: ['/sources/github'],
+        initialEntries: ['/workspaces/analytics/sources/github'],
       },
     )
     const screen = await render(<RouterProvider router={router} />)
@@ -86,7 +91,11 @@ describe('SourceInstallDialog', () => {
     await screen.getByRole('button', { name: 'Add source' }).click()
 
     await expect.element(screen.getByText('Configured')).toBeVisible()
-    expect(router.state.location.pathname).toBe('/sources')
+    expect(fetchOAuthInstall).toHaveBeenCalledWith(
+      '/workspaces/analytics/sources/github/oauth-install',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(router.state.location.pathname).toBe('/workspaces/analytics/sources')
     expect(loaderCalls).toBe(1)
   })
 })

@@ -196,6 +196,7 @@ function OAuthInstallFlowSurface({ oauthState }: { oauthState: OAuthStoryState }
         }}
         open={selectedEntry !== null}
         openAuthorization={() => undefined}
+        workspaceId="storybook"
       />
     </>
   )

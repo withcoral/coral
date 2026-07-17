@@ -19,12 +19,12 @@ import {
   splitInstallBindings,
 } from '@/lib/source-install-form'
 import { originLabel } from '@/lib/sources'
-import { firstWorkspaceForRequest } from '@/lib/workspaces.server'
 import {
   oauthInstallEventToNdjson,
   type OAuthInstallStreamEvent,
 } from '@/lib/source-oauth-install-stream'
 import { errorMessage } from '@/lib/utils'
+import { workspaceFromParams } from '@/lib/workspace-routing'
 
 const NDJSON_HEADERS = {
   'Cache-Control': 'no-store',
@@ -48,7 +48,7 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Res
 
   const sourceClient = sourceClientForRequest(request)
   try {
-    const workspace = await firstWorkspaceForRequest(request)
+    const workspace = workspaceFromParams(params)
     const info = await getSourceInfo(sourceClient, name, workspace)
     if (info.installed && originLabel(info.origin) !== 'bundled') {
       return ndjsonErrorResponse("Imported sources can't be installed here yet", 400)

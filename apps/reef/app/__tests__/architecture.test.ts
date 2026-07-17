@@ -338,7 +338,7 @@ describe('Architectural Tests', () => {
       const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
 
       expect(routeConfig).toContain(
-        "route('sources/:sourceName/oauth-install', 'routes/source-oauth-install.ts')",
+        "route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts')",
       )
       expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
       expect(routeConfig).toContain("index('routes/index.tsx')")
@@ -361,7 +361,7 @@ describe('Architectural Tests', () => {
       // Structural check: the OAuth streaming resource route stays outside the
       // app shell, while canonical workspace routes and settings stay inside it.
       expect(routeConfig).toMatch(
-        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\('sources\/:sourceName\/oauth-install', 'routes\/source-oauth-install\.ts'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
+        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
       )
     })
 
