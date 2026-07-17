@@ -21,6 +21,7 @@ export type SourceCatalogSurfaceVariant = 'compact' | 'full'
 interface SourceCatalogSurfaceBaseProps {
   entries: SourceCatalogEntry[]
   errorMessage?: string | null
+  headerAction?: React.ReactNode
   loadState?: SourceCatalogLoadState
   onRetry?: () => void
   onSearchChange: (search: string) => void
@@ -38,6 +39,7 @@ export function SourceCatalogSurface(props: SourceCatalogSurfaceProps) {
   const {
     entries,
     errorMessage = null,
+    headerAction = null,
     loadState = 'idle',
     onRetry,
     onSearchChange,
@@ -57,7 +59,7 @@ export function SourceCatalogSurface(props: SourceCatalogSurfaceProps) {
     : { onPick: props.onPick }
   const loading = loadState === 'loading'
   const error = loadState === 'error'
-  const shouldShowHeader = showHeader && (showTitle || showSearch)
+  const shouldShowHeader = showHeader && (showTitle || showSearch || headerAction !== null)
 
   return (
     <section
@@ -88,6 +90,8 @@ export function SourceCatalogSurface(props: SourceCatalogSurfaceProps) {
                 />
               </div>
             ) : null}
+
+            {headerAction ? <div className={styles.headerAction}>{headerAction}</div> : null}
           </div>
         </div>
       ) : null}

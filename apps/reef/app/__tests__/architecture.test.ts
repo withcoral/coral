@@ -359,6 +359,7 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain(
         "route(routePattern('workspaceSources'), 'routes/sources.tsx', [",
       )
+      expect(routeConfig).toContain("route('install', 'routes/source-install.tsx')")
       expect(routeConfig).toContain("route(':sourceName', 'routes/source-detail.tsx')")
       // Schema is a layout with nested table-detail routes.
       expect(routeConfig).toContain("route(routePattern('workspaceSchema'), 'routes/schema.tsx', [")

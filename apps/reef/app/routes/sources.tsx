@@ -5,7 +5,6 @@ import type { Route } from './+types/sources'
 import { SourcesIndex } from '@/views/sources/sources-index'
 import { routePattern } from '@/routing/routemap'
 
-export { action } from './sources-action'
 export { loader } from './sources-loader'
 
 export function shouldRevalidate({

@@ -21,6 +21,14 @@ function renderSourcesIndex(entries: CatalogEntry[]) {
 }
 
 describe('SourcesIndex', () => {
+  it('links source creation to the dedicated install route', async () => {
+    const screen = await renderSourcesIndex([])
+
+    await expect
+      .element(screen.getByRole('link', { name: 'Create source' }))
+      .toHaveAttribute('href', '/workspaces/team%20alpha/sources/install')
+  })
+
   it('routes installable sources through the source detail route', async () => {
     const screen = await renderSourcesIndex([
       {

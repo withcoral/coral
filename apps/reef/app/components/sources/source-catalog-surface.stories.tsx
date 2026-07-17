@@ -4,6 +4,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { fn } from 'storybook/test'
 
 import type { CatalogEntry } from '@/lib/sources'
+import { Button } from '@/wax/components'
 import { theme } from '@/wax/theme/theme.css'
 
 import { SourceCatalogSurface } from './source-catalog-surface'
@@ -62,6 +63,22 @@ type Story = StoryObj<typeof meta>
 export const Full: Story = {
   args: {
     entries,
+    loadState: 'idle',
+    onPick: fn(),
+    onSearchChange: fn(),
+    search: '',
+  },
+}
+
+export const WithHeaderAction: Story = {
+  args: {
+    entries,
+    headerAction: (
+      <Button.Container variant="primary">
+        <Button.Icon name="Plus" />
+        <Button.Text>Create source</Button.Text>
+      </Button.Container>
+    ),
     loadState: 'idle',
     onPick: fn(),
     onSearchChange: fn(),

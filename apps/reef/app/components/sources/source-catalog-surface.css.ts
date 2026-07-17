@@ -91,13 +91,21 @@ export const searchBar = style({
 
 export const searchBarVariant = styleVariants({
   compact: {
-    flex: '0 0 280px',
+    flex: '0 1 280px',
     maxWidth: 280,
+    minWidth: 180,
   },
   full: {
-    flex: '0 0 360px',
+    flex: '0 1 360px',
     maxWidth: 360,
+    minWidth: 200,
   },
+})
+
+export const headerAction = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
 })
 
 export const statusPanel = style({
