@@ -315,7 +315,7 @@ const COLUMNS_COLUMNS: &[SystemColumnDefinition] = &[
         name: "data_type",
         data_type: "Utf8",
         nullable: false,
-        description: "Column data type rendered in Arrow/DataFusion string form.",
+        description: "Column data type: Arrow/DataFusion string form for static sources; the provider-native type name for database catalogs.",
     },
     SystemColumnDefinition {
         name: "is_nullable",
