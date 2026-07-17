@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useRevalidator } from 'react-router'
+
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 
 import { SourceCatalogSurface } from '@/components/sources'
 import type { CatalogEntry } from '@/lib/sources'
@@ -18,32 +20,32 @@ export function SourcesIndex({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const revalidator = useRevalidator()
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
-        const input = searchInputRef.current
-        if (!input) return
-        event.preventDefault()
-        input.focus()
-        input.select()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+  const onSearchShortcut = useCallback((event: KeyboardEvent) => {
+    const input = searchInputRef.current
+    if (!input) return
+
+    event.preventDefault()
+    input.focus()
+    input.select()
   }, [])
 
   const loading = revalidator.state === 'loading' && entries.length === 0 && !loadError
 
   return (
-    <SourceCatalogSurface
-      entries={entries}
-      errorMessage={loadError}
-      getEntryTo={(entry) => routePath('workspaceSource', { sourceName: entry.name, workspaceId })}
-      loadState={loadError ? 'error' : loading ? 'loading' : 'idle'}
-      onRetry={() => revalidator.revalidate()}
-      onSearchChange={setSearch}
-      search={search}
-      searchInputRef={searchInputRef}
-    />
+    <>
+      <KeyboardShortcut handler={onSearchShortcut} shortcut="$mod+f" />
+      <SourceCatalogSurface
+        entries={entries}
+        errorMessage={loadError}
+        getEntryTo={(entry) =>
+          routePath('workspaceSource', { sourceName: entry.name, workspaceId })
+        }
+        loadState={loadError ? 'error' : loading ? 'loading' : 'idle'}
+        onRetry={() => revalidator.revalidate()}
+        onSearchChange={setSearch}
+        search={search}
+        searchInputRef={searchInputRef}
+      />
+    </>
   )
 }
