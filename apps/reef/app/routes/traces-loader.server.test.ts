@@ -1,3 +1,6 @@
+import { create } from '@bufbuild/protobuf'
+
+import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 import { TraceStatus } from '@/generated/coral/v1/traces_pb'
 import type { TraceSummaryData } from '@/views/traces/trace-utils'
 import { describe, expect, it, vi } from 'vitest'
@@ -22,6 +25,7 @@ function summary(traceId: string, query = `select '${traceId}'`): TraceSummaryDa
 
 describe('traces list loader', () => {
   const request = new Request('http://reef.test/workspaces/analytics/traces')
+  const workspace = create(WorkspaceSchema, { name: 'analytics' })
 
   it('filters query traces and returns a deterministic endpoint label', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(123_456)
@@ -30,13 +34,13 @@ describe('traces list loader', () => {
       traces: [summary('query'), summary('http', '')],
     })
 
-    await expect(loadTracesRouteData(request, listPage)).resolves.toEqual({
+    await expect(loadTracesRouteData(request, workspace, listPage)).resolves.toEqual({
       endpointLabel: 'reef.test',
       loadError: null,
       referenceTimeMs: 123_456,
       traces: [summary('query')],
     })
-    expect(listPage).toHaveBeenCalledWith(request, 100, '')
+    expect(listPage).toHaveBeenCalledWith(request, workspace, 100, '')
   })
 
   it('loads at most two pages, preserves ordering, and caps query traces at 80', async () => {
@@ -47,10 +51,10 @@ describe('traces list loader', () => {
       .mockResolvedValueOnce({ nextPageToken: 'page-2', traces: firstPage })
       .mockResolvedValueOnce({ nextPageToken: 'page-3', traces: secondPage })
 
-    const traces = await listQueryTraces(request, listPage)
+    const traces = await listQueryTraces(request, workspace, listPage)
 
     expect(listPage).toHaveBeenCalledTimes(2)
-    expect(listPage).toHaveBeenNthCalledWith(2, request, 100, 'page-2')
+    expect(listPage).toHaveBeenNthCalledWith(2, request, workspace, 100, 'page-2')
     expect(traces).toHaveLength(80)
     expect(traces.map(({ traceId }) => traceId)).toEqual(
       Array.from({ length: 80 }, (_, index) => `trace-${index}`),
@@ -59,14 +63,14 @@ describe('traces list loader', () => {
 
   it('maps unavailable and generic failures into route data', async () => {
     const unavailable = vi.fn().mockRejectedValue(new Error('rpc unimplemented'))
-    await expect(loadTracesRouteData(request, unavailable)).resolves.toMatchObject({
+    await expect(loadTracesRouteData(request, workspace, unavailable)).resolves.toMatchObject({
       loadError:
         'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run a query.',
       traces: [],
     })
 
     const generic = vi.fn().mockRejectedValue(new Error('sidecar unavailable'))
-    await expect(loadTracesRouteData(request, generic)).resolves.toMatchObject({
+    await expect(loadTracesRouteData(request, workspace, generic)).resolves.toMatchObject({
       loadError: 'sidecar unavailable',
       traces: [],
     })
