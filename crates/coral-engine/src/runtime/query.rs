@@ -497,14 +497,14 @@ impl QueryRuntimeAdapter {
         error: &DataFusionError,
         sql: &str,
     ) -> Vec<TableInfo> {
-        let schema_filters = missing_table_reference(error, Some(sql))
-            .map(|reference| table_context_schema_filters(reference.parts.as_slice()))
+        let filters = missing_table_reference(error, Some(sql))
+            .map(|reference| table_context_filters(reference.parts.as_slice()))
             .unwrap_or_default();
-        if schema_filters.is_empty() {
+        if filters.is_empty() {
             return self.tables.clone();
         }
 
-        match self.table_metadata_for_error_context(&schema_filters).await {
+        match self.table_metadata_for_error_context(&filters).await {
             Ok(tables) => tables,
             Err(error) => {
                 tracing::debug!(
@@ -518,16 +518,36 @@ impl QueryRuntimeAdapter {
 
     async fn table_metadata_for_error_context(
         &self,
-        schema_filters: &[String],
+        filters: &TableContextFilters,
     ) -> Result<Vec<TableInfo>, CoreError> {
         let mut tables = Vec::new();
-        for filter in schema_filters {
+        for qualifier in &filters.qualifiers {
             tables.extend(
-                catalog::collect_table_metadata_for_qualifier(&self.ctx, filter)
+                catalog::collect_table_metadata_for_qualifier(&self.ctx, qualifier)
                     .await
                     .map_err(|err| datafusion_to_core(&err, &self.tables))?,
             );
         }
+        for (catalog_name, schema_name) in &filters.pairs {
+            tables.extend(
+                catalog::collect_table_metadata(
+                    &self.ctx,
+                    Some(catalog_name),
+                    Some(schema_name),
+                    None,
+                )
+                .await
+                .map_err(|err| datafusion_to_core(&err, &self.tables))?,
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        tables.retain(|table| {
+            seen.insert((
+                table.catalog_name.clone(),
+                table.schema_name.clone(),
+                table.table_name.clone(),
+            ))
+        });
         Ok(tables)
     }
 
@@ -903,15 +923,42 @@ fn schema_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
         .collect()
 }
 
-fn table_context_schema_filters(parts: &[String]) -> Vec<String> {
+/// Metadata filters recovered from a missing table reference's qualifier.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TableContextFilters {
+    /// Whole-qualifier matches against either `catalog_name` or `schema_name`.
+    /// Recovers dotted source names like `"foo.bar"` from their exploded form.
+    qualifiers: Vec<String>,
+    /// Split `(catalog, schema)` pairs for multi-part references, since a
+    /// reference like `warehouse.public.typo` names a catalog and schema that
+    /// no whole-qualifier comparison can match.
+    pairs: Vec<(String, String)>,
+}
+
+impl TableContextFilters {
+    fn is_empty(&self) -> bool {
+        self.qualifiers.is_empty() && self.pairs.is_empty()
+    }
+}
+
+fn table_context_filters(parts: &[String]) -> TableContextFilters {
     let body = match parts {
         [catalog, rest @ ..] if catalog == "datafusion" => rest,
         _ => parts,
     };
     match body {
-        [] | [_] => Vec::new(),
-        [schema, _table] => vec![schema.clone()],
-        [schema @ .., _table] => vec![schema.join(".")],
+        [] | [_] => TableContextFilters::default(),
+        [schema, _table] => TableContextFilters {
+            qualifiers: vec![schema.clone()],
+            pairs: Vec::new(),
+        },
+        [catalog, schema @ .., _table] => {
+            let schema = schema.join(".");
+            TableContextFilters {
+                qualifiers: vec![format!("{catalog}.{schema}")],
+                pairs: vec![(catalog.clone(), schema)],
+            }
+        }
     }
 }
 
@@ -1027,27 +1074,34 @@ mod tests {
 
     #[test]
     fn table_context_filters_scope_dynamic_error_hints() {
-        assert!(table_context_schema_filters(&["missing".to_string()]).is_empty());
+        assert!(table_context_filters(&["missing".to_string()]).is_empty());
         assert_eq!(
-            table_context_schema_filters(&["demo".to_string(), "evetns".to_string()]),
-            ["demo".to_string()]
+            table_context_filters(&["demo".to_string(), "evetns".to_string()]),
+            TableContextFilters {
+                qualifiers: vec!["demo".to_string()],
+                pairs: Vec::new(),
+            }
         );
+        let three_part = TableContextFilters {
+            qualifiers: vec!["pickl.pgboss".to_string()],
+            pairs: vec![("pickl".to_string(), "pgboss".to_string())],
+        };
         assert_eq!(
-            table_context_schema_filters(&[
+            table_context_filters(&[
                 "pickl".to_string(),
                 "pgboss".to_string(),
                 "queu".to_string()
             ]),
-            ["pickl.pgboss".to_string()]
+            three_part
         );
         assert_eq!(
-            table_context_schema_filters(&[
+            table_context_filters(&[
                 "datafusion".to_string(),
                 "pickl".to_string(),
                 "pgboss".to_string(),
                 "queu".to_string()
             ]),
-            ["pickl.pgboss".to_string()]
+            three_part
         );
     }
 

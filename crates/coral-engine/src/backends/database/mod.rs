@@ -652,6 +652,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_database_source_suggests_three_part_table_on_typo() {
+        let (_temp, sources) = sqlite_test_sources();
+
+        let error = CoralQuery::execute_sql(
+            &sources,
+            QueryRuntimeConfig::default(),
+            "SELECT id FROM coral_db.main.usrs",
+        )
+        .await
+        .expect_err("typo'd table reference should fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("coral_db.main.users"),
+            "three-part miss should suggest the real table, got: {message}"
+        );
+    }
+
+    #[tokio::test]
     async fn sqlite_database_source_exposes_lazy_column_metadata() {
         let (_temp, sources) = sqlite_test_sources();
 
