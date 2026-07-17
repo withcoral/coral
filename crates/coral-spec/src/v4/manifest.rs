@@ -195,17 +195,7 @@ impl V4SourceManifest {
             mut identity_requirements,
             surfaces,
         } = raw;
-        if dsl_version != 4 {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' declares dsl_version {dsl_version}; expected 4"
-            )));
-        }
-        if surfaces.is_empty() {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' must declare at least one surface"
-            )));
-        }
-        validate_test_queries(&name, &test_queries)?;
+        validate_manifest_header(&name, dsl_version, surfaces.len(), &test_queries)?;
         let common = V4SourceCommon {
             dsl_version,
             name: name.clone(),
@@ -278,19 +268,12 @@ impl V4SourceManifest {
             )?);
         }
 
-        if let Some(requirements) = identity_requirements.as_mut() {
-            if validated_surfaces
-                .iter()
-                .any(|surface| surface.surface_type != SurfaceType::OpenApi)
-            {
-                return Err(ManifestError::validation(format!(
-                    "source '{name}' identity_requirements are only supported when every surface is OpenAPI"
-                )));
-            }
-            validate_identity_source_inputs(&name, &declared_inputs)?;
-            normalize_identity_requirements(requirements);
-            validate_identity_requirements(&name, requirements)?;
-        }
+        normalize_and_validate_source_identity_requirements(
+            &name,
+            identity_requirements.as_mut(),
+            &validated_surfaces,
+            &declared_inputs,
+        )?;
 
         Ok(Self {
             common,
@@ -305,6 +288,25 @@ impl V4SourceManifest {
             .iter()
             .find(|surface| surface.id == surface_id)
     }
+}
+
+fn validate_manifest_header(
+    source_name: &str,
+    dsl_version: u32,
+    surface_count: usize,
+    test_queries: &[String],
+) -> Result<()> {
+    if dsl_version != 4 {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' declares dsl_version {dsl_version}; expected 4"
+        )));
+    }
+    if surface_count == 0 {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' must declare at least one surface"
+        )));
+    }
+    validate_test_queries(source_name, test_queries)
 }
 
 fn parse_surface(
@@ -417,6 +419,28 @@ fn validate_identity_source_inputs(source_name: &str, inputs: &[ManifestInputSpe
         }
     }
     Ok(())
+}
+
+fn normalize_and_validate_source_identity_requirements(
+    source_name: &str,
+    requirements: Option<&mut IdentityRequirements>,
+    surfaces: &[V4Surface],
+    inputs: &[ManifestInputSpec],
+) -> Result<()> {
+    let Some(requirements) = requirements else {
+        return Ok(());
+    };
+    if surfaces
+        .iter()
+        .any(|surface| surface.surface_type != SurfaceType::OpenApi)
+    {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' identity_requirements are only supported when every surface is OpenAPI"
+        )));
+    }
+    validate_identity_source_inputs(source_name, inputs)?;
+    normalize_identity_requirements(requirements);
+    validate_identity_requirements(source_name, requirements)
 }
 
 fn normalize_identity_requirements(requirements: &mut IdentityRequirements) {
