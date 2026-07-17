@@ -114,7 +114,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            mode: ServerMode::NativeGrpc,
+            mode: ServerMode::EphemeralGrpc,
             engine_extensions_providers: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
@@ -160,11 +160,11 @@ impl ServerConfig {
 /// transport or asset-serving knob.
 #[derive(Clone)]
 pub enum ServerMode {
-    /// Native gRPC for CLI, MCP, and local client callers.
-    NativeGrpc,
-    /// Native gRPC bound to an explicit address for the long-running server.
-    RemoteGrpc {
-        /// Address to bind. Non-loopback addresses require authentication.
+    /// Ephemeral native gRPC for CLI, MCP, and local client callers.
+    EphemeralGrpc,
+    /// Native gRPC bound to an explicit address for a standalone server.
+    StandaloneGrpc {
+        /// Address to bind.
         bind: SocketAddr,
     },
     /// Loopback gRPC-Web server that also serves embedded UI assets.
@@ -179,21 +179,10 @@ pub enum ServerMode {
 impl ServerMode {
     fn bind_addr(&self) -> SocketAddr {
         match self {
-            Self::NativeGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            Self::RemoteGrpc { bind } => *bind,
+            Self::EphemeralGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Self::StandaloneGrpc { bind } => *bind,
             Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
         }
-    }
-
-    fn validate_bind(&self) -> Result<(), AppError> {
-        if let Self::RemoteGrpc { bind } = self
-            && !bind.ip().is_loopback()
-        {
-            return Err(AppError::FailedPrecondition(
-                "non-loopback gRPC bind requires configured server authentication".to_string(),
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -205,7 +194,7 @@ pub struct ServerBuilder {
 
 impl ServerBuilder {
     #[must_use]
-    /// Creates a builder for the default native gRPC local server.
+    /// Creates a builder for the default ephemeral native gRPC local server.
     pub fn new() -> Self {
         Self {
             config: ServerConfig::new(),
@@ -213,15 +202,15 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Creates a builder for a native gRPC local server.
-    pub fn native_grpc() -> Self {
-        Self::new().with_mode(ServerMode::NativeGrpc)
+    /// Creates a builder for an ephemeral native gRPC local server.
+    pub fn ephemeral_grpc() -> Self {
+        Self::new().with_mode(ServerMode::EphemeralGrpc)
     }
 
     #[must_use]
-    /// Creates a native gRPC server bound to an explicit address.
-    pub fn remote_grpc(bind: SocketAddr) -> Self {
-        Self::new().with_mode(ServerMode::RemoteGrpc { bind })
+    /// Creates a standalone native gRPC server bound to an explicit address.
+    pub fn standalone_grpc(bind: SocketAddr) -> Self {
+        Self::new().with_mode(ServerMode::StandaloneGrpc { bind })
     }
 
     #[must_use]
@@ -316,7 +305,6 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        self.config.mode.validate_bind()?;
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
@@ -648,7 +636,7 @@ async fn start_server(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let task = match mode {
-        ServerMode::NativeGrpc | ServerMode::RemoteGrpc { .. } => {
+        ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => {
             start_grpc_server(listener, shutdown_rx, routes)
         }
         ServerMode::EmbeddedUi { assets, .. } => {
@@ -1087,11 +1075,11 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn remote_grpc_binds_the_requested_loopback_address() {
+    async fn standalone_grpc_binds_the_requested_loopback_address() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
-        let server = ServerBuilder::remote_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        let server = ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .with_config_dir(config_dir)
             .start()
             .await
@@ -1102,26 +1090,18 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn remote_grpc_rejects_non_loopback_before_state_creation() {
+    async fn standalone_grpc_binds_the_requested_non_loopback_address() {
         let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("must-not-be-created");
-        let result = ServerBuilder::remote_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
-            .with_config_dir(&config_dir)
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .with_config_dir(config_dir)
             .start()
-            .await;
-        let Err(error) = result else {
-            panic!("unauthenticated non-loopback bind must fail");
-        };
+            .await
+            .expect("start explicit non-loopback server");
 
-        assert!(
-            error
-                .to_string()
-                .contains("requires configured server authentication")
-        );
-        assert!(
-            !config_dir.exists(),
-            "validation must run before state setup"
-        );
+        assert!(server.endpoint_uri().starts_with("http://0.0.0.0:"));
+        server.shutdown().await.expect("shutdown server");
     }
 
     #[tokio::test]
@@ -1466,7 +1446,7 @@ backend = "unsupported"
                 local_trace_store_dir: None,
             },
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");
@@ -1535,7 +1515,7 @@ backend = "unsupported"
     }
 
     #[tokio::test]
-    async fn server_builder_applies_injected_provider_to_native_grpc() {
+    async fn server_builder_applies_injected_provider_to_ephemeral_grpc() {
         let temp = TempDir::new().expect("temp dir");
         let server = ServerBuilder::new()
             .with_config_dir(temp.path().join("coral-config"))
@@ -1913,7 +1893,7 @@ tables:
             },
             TraceServerComponents::default(),
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");
@@ -2039,7 +2019,7 @@ tables:
             },
             TraceServerComponents::default(),
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");
@@ -2165,7 +2145,7 @@ tables:
             },
             TraceServerComponents::default(),
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");
