@@ -303,45 +303,36 @@ impl SourceInputResolutionContext {
 #[derive(Debug, Clone)]
 pub struct RequestIdentitySelectionContext {
     source_name: Arc<str>,
-    surface_id: Arc<str>,
     identity_requirements: Arc<IdentityRequirements>,
 }
 
 impl RequestIdentitySelectionContext {
     #[must_use]
-    /// Builds identity-selection context for one executable HTTP component.
+    /// Builds identity-selection context for one executable source.
     pub fn new(
         source_name: impl Into<Arc<str>>,
-        surface_id: impl Into<Arc<str>>,
         identity_requirements: IdentityRequirements,
     ) -> Self {
         Self {
             source_name: source_name.into(),
-            surface_id: surface_id.into(),
             identity_requirements: Arc::new(identity_requirements),
         }
     }
 
     #[must_use]
-    /// Returns the canonical source name that owns the component.
+    /// Returns the canonical source name.
     pub fn source_name(&self) -> &str {
         &self.source_name
     }
 
     #[must_use]
-    /// Returns the surface id used to route identity selection for the component.
-    pub fn surface_id(&self) -> &str {
-        &self.surface_id
-    }
-
-    #[must_use]
-    /// Returns the source-level identity requirements applied to this component.
+    /// Returns this source's identity requirements.
     pub fn identity_requirements(&self) -> &IdentityRequirements {
         &self.identity_requirements
     }
 
     #[must_use]
-    /// Returns whether a candidate identity satisfies this component's source contract.
+    /// Returns whether a candidate identity satisfies this source's contract.
     ///
     /// Accepted identity entries have OR semantics. Within one accepted entry,
     /// the candidate identity spec id must be listed in `identity_specs`, and
@@ -369,7 +360,7 @@ impl RequestIdentitySelectionContext {
     }
 }
 
-/// App-selected request identity for one executable source surface.
+/// App-selected request identity for one executable source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedRequestIdentity {
     identity_id: Arc<str>,
@@ -468,11 +459,11 @@ pub type RequestIdentityHttpAuthenticatorFactory = Arc<
 
 /// Runtime-build selector for app-managed request identities.
 ///
-/// The engine calls this once per selected DSL v4 runtime component whose
-/// source declares identity requirements while building a query runtime.
+/// The engine calls this once per selected DSL v4 source that declares identity
+/// requirements while building a query runtime.
 #[async_trait]
 pub trait RequestIdentitySelector: Send + Sync + std::fmt::Debug {
-    /// Selects the app-owned identity to use for one source runtime component.
+    /// Selects the app-owned identity to use for one source.
     ///
     /// # Errors
     ///
@@ -607,7 +598,6 @@ mod tests {
     ) -> RequestIdentitySelectionContext {
         RequestIdentitySelectionContext::new(
             "github_v4",
-            "rest",
             IdentityRequirements {
                 accepts: vec![AcceptedIdentityRequirement {
                     id: "github_rest_read".to_string(),

@@ -76,12 +76,12 @@ pub use contracts::{
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeHttpSourceComponent,
-    RuntimeIdentityRequirements, RuntimeSourceComponent, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument,
-    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
-    UdfRuntimeSignature, UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
+    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
+    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeTableFunctionPublish,
 };
 
 /// High-level query operations for the local query engine.

@@ -168,6 +168,7 @@ tables:
                 description: String::new(),
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
+                identity_requirements: None,
                 components: primary
                     .components()
                     .iter()

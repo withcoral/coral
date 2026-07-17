@@ -16,8 +16,7 @@ pub use query::{
     QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue,
     QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    RuntimeHttpSourceComponent, RuntimeIdentityRequirements, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 pub use udfs::{

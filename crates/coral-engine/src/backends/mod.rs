@@ -131,9 +131,7 @@ fn compile_component(
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
     match component {
-        RuntimeSourceComponent::Http(component) => {
-            http::compile_manifest(&component.manifest, request)
-        }
+        RuntimeSourceComponent::Http(manifest) => http::compile_manifest(manifest, request),
         RuntimeSourceComponent::File(manifest) => file::compile_manifest(manifest, request),
         RuntimeSourceComponent::Mcp(manifest) => mcp::compile_manifest(manifest, request),
     }
