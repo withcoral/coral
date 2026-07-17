@@ -4,12 +4,14 @@ use std::thread;
 
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use tempfile::tempdir;
+use zeroize::Zeroizing;
 
 use super::CredentialsError;
 use super::encryption::{
-    CREDENTIAL_DOCUMENT_AAD_VERSION, CredentialEncryptionKey, CredentialKeyProvider,
-    LocalFileCredentialKeyProvider, decrypt_credential_values, encrypt_credential_values,
-    rewrap_credential_document,
+    CREDENTIAL_DOCUMENT_BINDING_VERSION, CredentialEncryptionKey, CredentialKeyProvider,
+    ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, LocalFileCredentialKeyProvider,
+    decrypt_credential_values, encrypt_credential_values, open_envelope_document,
+    rewrap_credential_document, rewrap_envelope_document, seal_envelope_document,
 };
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
@@ -65,6 +67,10 @@ fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
 
     let document = encrypt_credential_values(&workspace, &source, &values, &provider)
         .expect("encrypt credentials");
+    assert_eq!(
+        document.binding_version,
+        CREDENTIAL_DOCUMENT_BINDING_VERSION
+    );
     assert_eq!(
         decrypt_credential_values(&workspace, &source, &document, &provider).expect("decrypt"),
         values
@@ -175,14 +181,14 @@ fn credential_document_rejects_key_id_aad_mismatch_even_when_key_resolves() {
     let dek = open_for_test(
         &original_key_bytes,
         encrypted.wrapped_dek_nonce.as_slice(),
-        current_dek_aad_for_test(&original_key_id),
+        current_dek_aad_for_test(encrypted.binding_version, &original_key_id),
         &encrypted.wrapped_dek,
     );
     let mismatched_nonce = [6; 12];
     encrypted.wrapped_dek = seal_for_test(
         &mutated_key_bytes,
         mismatched_nonce,
-        current_dek_aad_for_test(&original_key_id),
+        current_dek_aad_for_test(encrypted.binding_version, &original_key_id),
         &dek,
     );
     encrypted.wrapped_dek_nonce = mismatched_nonce.to_vec();
@@ -198,7 +204,7 @@ fn credential_document_rejects_key_id_aad_mismatch_even_when_key_resolves() {
 }
 
 #[test]
-fn credential_document_rejects_aad_version_mismatch() {
+fn credential_document_rejects_binding_version_mismatch() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
@@ -211,15 +217,15 @@ fn credential_document_rejects_aad_version_mismatch() {
         &provider,
     )
     .expect("encrypt");
-    encrypted.binding_version = CREDENTIAL_DOCUMENT_AAD_VERSION + 1;
+    encrypted.binding_version = CREDENTIAL_DOCUMENT_BINDING_VERSION + 1;
 
     let error = decrypt_credential_values(&workspace, &source, &encrypted, &provider)
-        .expect_err("unsupported AAD version should fail");
+        .expect_err("unsupported binding version should fail");
 
     assert!(
         error
             .to_string()
-            .contains("unsupported credential AAD version"),
+            .contains("unsupported credential binding version"),
         "unexpected error: {error}"
     );
 }
@@ -233,13 +239,12 @@ fn decrypt_accepts_legacy_colon_delimited_dek_aad() {
         key: CredentialEncryptionKey::from_static_bytes_for_test(key_bytes),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
-    let mut encrypted =
-        encrypt_credential_values(&workspace, &source, &values, &provider).expect("encrypt");
+    let mut encrypted = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
     let key_id = encrypted.key_id.clone();
     let dek = open_for_test(
         &key_bytes,
         encrypted.wrapped_dek_nonce.as_slice(),
-        current_dek_aad_for_test(&key_id),
+        current_dek_aad_for_test(encrypted.binding_version, &key_id),
         &encrypted.wrapped_dek,
     );
     let legacy_nonce = [3; 12];
@@ -291,7 +296,7 @@ fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
         try_open_for_test(
             &old_key_bytes,
             rewrapped.wrapped_dek_nonce.as_slice(),
-            current_dek_aad_for_test(&rewrapped.key_id),
+            current_dek_aad_for_test(rewrapped.binding_version, &rewrapped.key_id),
             &rewrapped.wrapped_dek,
         )
         .is_err(),
@@ -301,6 +306,215 @@ fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
         decrypt_credential_values(&workspace, &source, &rewrapped, &rotating_provider)
             .expect("decrypt rewrapped"),
         values
+    );
+}
+
+#[test]
+fn credential_document_same_key_rewrap_authenticates_payload_context() {
+    let workspace = WorkspaceName::parse("default").expect("workspace");
+    let other_workspace = WorkspaceName::parse("other").expect("workspace");
+    let source = SourceName::parse("github").expect("source");
+    let provider = StaticKeyProvider {
+        key: CredentialEncryptionKey::from_static_bytes_for_test([27; 32]),
+    };
+    let encrypted = encrypt_credential_values(
+        &workspace,
+        &source,
+        &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
+        &provider,
+    )
+    .expect("encrypt");
+
+    assert_open_failed(
+        &rewrap_credential_document(&other_workspace, &source, &encrypted, &provider)
+            .expect_err("same-key rewrap must authenticate context"),
+    );
+    let mut tampered = encrypted;
+    *tampered.ciphertext.first_mut().expect("ciphertext") ^= 1;
+    assert_open_failed(
+        &rewrap_credential_document(&workspace, &source, &tampered, &provider)
+            .expect_err("same-key rewrap must authenticate ciphertext"),
+    );
+}
+
+#[test]
+fn credential_v1_rewrap_migrates_to_v2_with_same_key() {
+    let workspace = WorkspaceName::parse("default").expect("workspace");
+    let source = SourceName::parse("github").expect("source");
+    let provider = StaticKeyProvider {
+        key: CredentialEncryptionKey::from_static_bytes_for_test([28; 32]),
+    };
+    let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
+    let v1 = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
+
+    let migrated = rewrap_credential_document(&workspace, &source, &v1, &provider)
+        .expect("rewrap v1")
+        .expect("v1 must be resealed");
+
+    assert_eq!(
+        migrated.binding_version,
+        CREDENTIAL_DOCUMENT_BINDING_VERSION
+    );
+    assert_eq!(migrated.key_id, v1.key_id);
+    assert_ne!(migrated.ciphertext, v1.ciphertext);
+    assert_eq!(
+        decrypt_credential_values(&workspace, &source, &migrated, &provider)
+            .expect("decrypt migrated credential"),
+        values
+    );
+}
+
+#[test]
+fn credential_document_rewrap_migrates_legacy_payload_aad() {
+    let workspace = WorkspaceName::parse("default").expect("workspace");
+    let source = SourceName::parse("github").expect("source");
+    let old_key_bytes = [29; 32];
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes);
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([31; 32]);
+    let old_provider = RotatingKeyProvider {
+        active: old_key.clone(),
+        keys: vec![old_key.clone()],
+    };
+    let rotating_provider = RotatingKeyProvider {
+        active: new_key.clone(),
+        keys: vec![old_key, new_key.clone()],
+    };
+    let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
+    let mut legacy = encrypt_credential_v1_for_test(&workspace, &source, &values, &old_provider);
+    let key_id = legacy.key_id.clone();
+    let dek: [u8; 32] = open_for_test(
+        &old_key_bytes,
+        legacy.wrapped_dek_nonce.as_slice(),
+        current_dek_aad_for_test(legacy.binding_version, &key_id),
+        &legacy.wrapped_dek,
+    )
+    .try_into()
+    .expect("DEK length");
+    let plaintext = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "values": values,
+    }))
+    .expect("serialize legacy document");
+    let legacy_nonce = [5; 12];
+    legacy.ciphertext = seal_for_test(
+        &dek,
+        legacy_nonce,
+        legacy_document_aad_for_test(&workspace, &source, &key_id),
+        &plaintext,
+    );
+    legacy.nonce = legacy_nonce.to_vec();
+
+    let migrated = rewrap_credential_document(&workspace, &source, &legacy, &rotating_provider)
+        .expect("rewrap legacy document")
+        .expect("stale key should migrate");
+    assert_eq!(migrated.key_id, new_key.key_id());
+    assert_eq!(
+        migrated.binding_version,
+        CREDENTIAL_DOCUMENT_BINDING_VERSION
+    );
+    assert_ne!(migrated.ciphertext, legacy.ciphertext);
+    assert_ne!(migrated.nonce, legacy.nonce);
+    assert_eq!(
+        decrypt_credential_values(&workspace, &source, &migrated, &rotating_provider)
+            .expect("decrypt migrated document"),
+        values
+    );
+}
+
+#[test]
+fn shared_envelope_context_authenticates_open_and_rewrap() {
+    const BINDING_VERSION: i64 = 7;
+
+    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([37; 32]);
+    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([41; 32]);
+    let old_provider = RotatingKeyProvider {
+        active: old_key.clone(),
+        keys: vec![old_key.clone()],
+    };
+    let rotating_provider = RotatingKeyProvider {
+        active: new_key.clone(),
+        keys: vec![old_key, new_key.clone()],
+    };
+    let context =
+        EnvelopeContext::new("test-envelope", BINDING_VERSION, &["workspace", "document"])
+            .expect("envelope context");
+    let plaintext = b"envelope payload".to_vec();
+
+    let encrypted =
+        seal_envelope_document(&context, Zeroizing::new(plaintext.clone()), &old_provider)
+            .expect("seal envelope");
+    assert_eq!(encrypted.binding_version, BINDING_VERSION);
+    assert_eq!(
+        open_envelope_document(&context, &encrypted, &old_provider)
+            .expect("open envelope")
+            .as_slice(),
+        plaintext
+    );
+    let wrong_context = EnvelopeContext::new(
+        "test-envelope",
+        BINDING_VERSION,
+        &["other-workspace", "document"],
+    )
+    .expect("wrong envelope context");
+    assert_open_failed(
+        &open_envelope_document(&wrong_context, &encrypted, &old_provider)
+            .expect_err("wrong binding should fail authentication"),
+    );
+    let wrong_version =
+        EnvelopeContext::new("test-envelope", 1, &["workspace", "document"]).expect("context");
+    assert!(
+        open_envelope_document(&wrong_version, &encrypted, &old_provider)
+            .expect_err("wrong expected binding version should fail")
+            .to_string()
+            .contains("binding version 7 does not match context version 1")
+    );
+    let Err(error) = EnvelopeContext::new("test-envelope", 0, &["workspace"]) else {
+        panic!("nonpositive binding version should fail");
+    };
+    assert!(error.to_string().contains("must be positive"));
+    let mut unsupported = encrypted.clone();
+    unsupported.algorithm = "unsupported".to_string();
+    assert!(
+        open_envelope_document(&context, &unsupported, &old_provider)
+            .expect_err("unsupported algorithm should fail")
+            .to_string()
+            .contains("unsupported envelope encryption algorithm")
+    );
+    let mut rebound = encrypted.clone();
+    rebound.binding_version += 1;
+    let rebound_context = EnvelopeContext::new(
+        "test-envelope",
+        rebound.binding_version,
+        &["workspace", "document"],
+    )
+    .expect("rebound context");
+    assert_open_failed(
+        &open_envelope_document(&rebound_context, &rebound, &old_provider)
+            .expect_err("stored version must also bind the wrapped DEK"),
+    );
+
+    let rewrapped = rewrap_envelope_document(&context, &encrypted, &rotating_provider)
+        .expect("rewrap envelope")
+        .expect("stale key should rewrap");
+    assert_eq!(rewrapped.key_id, new_key.key_id());
+    assert_eq!(rewrapped.ciphertext, encrypted.ciphertext);
+    assert_eq!(rewrapped.nonce, encrypted.nonce);
+    assert_ne!(rewrapped.wrapped_dek, encrypted.wrapped_dek);
+    assert_ne!(rewrapped.wrapped_dek_nonce, encrypted.wrapped_dek_nonce);
+    assert_eq!(
+        open_envelope_document(&context, &rewrapped, &rotating_provider)
+            .expect("open rewrapped envelope")
+            .as_slice(),
+        plaintext
+    );
+    assert!(
+        rewrap_envelope_document(&context, &rewrapped, &rotating_provider)
+            .expect("rewrap current envelope")
+            .is_none()
+    );
+    assert_open_failed(
+        &rewrap_envelope_document(&wrong_context, &rewrapped, &rotating_provider)
+            .expect_err("same-key rewrap must still authenticate binding"),
     );
 }
 
@@ -398,13 +612,50 @@ fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileCredentialKeyPro
     LocalFileCredentialKeyProvider::new(layout, None)
 }
 
-fn current_dek_aad_for_test(key_id: &str) -> Vec<u8> {
-    let aad_version = CREDENTIAL_DOCUMENT_AAD_VERSION.to_string();
-    encode_aad_fields_for_test("coral-credential-dek", &[aad_version.as_str(), key_id])
+fn encrypt_credential_v1_for_test(
+    workspace: &WorkspaceName,
+    source: &SourceName,
+    values: &BTreeMap<String, String>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> super::encryption::EncryptedCredentialDocument {
+    let context = EnvelopeContext::new(
+        "coral-credential-document",
+        1,
+        &[workspace.as_str(), source.as_str()],
+    )
+    .expect("v1 credential context");
+    let plaintext = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "values": values,
+    }))
+    .expect("serialize v1 credential document");
+    seal_envelope_document(&context, Zeroizing::new(plaintext), key_provider)
+        .expect("encrypt v1 credential document")
+}
+
+fn current_dek_aad_for_test(binding_version: i64, key_id: &str) -> Vec<u8> {
+    let binding_version = binding_version.to_string();
+    encode_aad_fields_for_test("coral-credential-dek", &[binding_version.as_str(), key_id])
 }
 
 fn legacy_dek_aad_for_test(key_id: &str) -> Vec<u8> {
-    format!("coral-credential-dek:v{CREDENTIAL_DOCUMENT_AAD_VERSION}:{key_id}").into_bytes()
+    format!("coral-credential-dek:v1:{key_id}").into_bytes()
+}
+
+fn legacy_document_aad_for_test(
+    workspace: &WorkspaceName,
+    source: &SourceName,
+    key_id: &str,
+) -> Vec<u8> {
+    format!(
+        "coral-credential-document:v{}:{}:{}:{}:{}",
+        1,
+        workspace.as_str(),
+        source.as_str(),
+        ENVELOPE_DOCUMENT_ALGORITHM,
+        key_id
+    )
+    .into_bytes()
 }
 
 fn encode_aad_fields_for_test(domain: &str, fields: &[&str]) -> Vec<u8> {
