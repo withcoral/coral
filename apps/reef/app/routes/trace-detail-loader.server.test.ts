@@ -1,11 +1,19 @@
 import { create } from '@bufbuild/protobuf'
 
+const traceClientMocks = vi.hoisted(() => ({
+  getTrace: vi.fn(),
+}))
+
+vi.mock('@/lib/coral-request.server', () => ({
+  traceClientForRequest: () => ({ getTrace: traceClientMocks.getTrace }),
+}))
+
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 import { TraceStatus } from '@/generated/coral/v1/traces_pb'
 import type { TraceDetailData } from '@/views/traces/trace-utils'
 import { describe, expect, it, vi } from 'vitest'
 
-import { loadTraceDetailRouteData } from './trace-detail-loader'
+import { loadTraceDetailRouteData, loader } from './trace-detail-loader'
 
 function detail(traceId: string): TraceDetailData {
   return {
@@ -29,6 +37,22 @@ function detail(traceId: string): TraceDetailData {
 describe('trace detail loader', () => {
   const request = new Request('http://reef.test/workspaces/analytics/traces/trace-07')
   const workspace = create(WorkspaceSchema, { name: 'analytics' })
+
+  it('scopes TraceService detail requests to the route workspace', async () => {
+    traceClientMocks.getTrace.mockResolvedValue(detail('trace-07'))
+
+    await loader({
+      params: { traceId: 'trace-07', workspaceId: 'research' },
+      request,
+    } as Parameters<typeof loader>[0])
+
+    expect(traceClientMocks.getTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        traceId: 'trace-07',
+        workspace: expect.objectContaining({ name: 'research' }),
+      }),
+    )
+  })
 
   it('loads the URL-selected trace without decoding it again', async () => {
     const getTrace = vi.fn().mockResolvedValue(detail('trace/with?reserved'))

@@ -1,11 +1,19 @@
 import { create } from '@bufbuild/protobuf'
 
+const traceClientMocks = vi.hoisted(() => ({
+  listTraces: vi.fn(),
+}))
+
+vi.mock('@/lib/coral-request.server', () => ({
+  traceClientForRequest: () => ({ listTraces: traceClientMocks.listTraces }),
+}))
+
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 import { TraceStatus } from '@/generated/coral/v1/traces_pb'
 import type { TraceSummaryData } from '@/views/traces/trace-utils'
 import { describe, expect, it, vi } from 'vitest'
 
-import { listQueryTraces, loadTracesRouteData, traceEndpointLabel } from './traces-loader'
+import { listQueryTraces, loadTracesRouteData, loader, traceEndpointLabel } from './traces-loader'
 
 function summary(traceId: string, query = `select '${traceId}'`): TraceSummaryData {
   return {
@@ -26,6 +34,18 @@ function summary(traceId: string, query = `select '${traceId}'`): TraceSummaryDa
 describe('traces list loader', () => {
   const request = new Request('http://reef.test/workspaces/analytics/traces')
   const workspace = create(WorkspaceSchema, { name: 'analytics' })
+
+  it('scopes TraceService list requests to the route workspace', async () => {
+    traceClientMocks.listTraces.mockResolvedValue({ nextPageToken: '', traces: [] })
+
+    await loader({ params: { workspaceId: 'research' }, request } as Parameters<typeof loader>[0])
+
+    expect(traceClientMocks.listTraces).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace: expect.objectContaining({ name: 'research' }),
+      }),
+    )
+  })
 
   it('filters query traces and returns a deterministic endpoint label', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(123_456)
