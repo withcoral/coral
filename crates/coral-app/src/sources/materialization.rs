@@ -403,14 +403,46 @@ pub(crate) fn load_v4_materialization_with_reporter(
     let normalized_source_document_path = materialized_dir.join("source-document.yaml");
     let semantic_ir_path = materialized_dir.join("semantic-ir.yaml");
     let mut semantic_ir: SemanticIr =
-        read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
+        match read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path) {
+            Ok(semantic_ir) => semantic_ir,
+            Err(error) => {
+                load_diagnostics.push(materialization_warning(
+                    "V4_SEMANTIC_IR_UNAVAILABLE",
+                    error.to_string(),
+                ));
+                diagnostic_reporter.report_source_diagnostics(
+                    workspace_name,
+                    source_name,
+                    "materialization",
+                    load_diagnostics.iter(),
+                );
+                return Err(error);
+            }
+        };
     if let Err(error) = validate_semantic_ir(manifest, &semantic_ir) {
         load_diagnostics.push(materialization_warning(
             "V4_SEMANTIC_IR_PROVENANCE_MISMATCH",
             error,
         ));
     }
-    apply_parameter_metadata_override_file(layout, workspace_name, source_name, &mut semantic_ir)?;
+    if let Err(error) = apply_parameter_metadata_override_file(
+        layout,
+        workspace_name,
+        source_name,
+        &mut semantic_ir,
+    ) {
+        load_diagnostics.push(materialization_warning(
+            "V4_PARAMETER_METADATA_OVERRIDE_FAILED",
+            error.to_string(),
+        ));
+        diagnostic_reporter.report_source_diagnostics(
+            workspace_name,
+            source_name,
+            "materialization",
+            load_diagnostics.iter(),
+        );
+        return Err(error);
+    }
     if let Some(fingerprint) = fingerprint.as_ref()
         && let Some(diagnostic) = diagnostic_reporter.validate_raw_document_fingerprint(
             workspace_name,
@@ -1997,6 +2029,41 @@ surface:
     }
 
     #[test]
+    fn load_v4_materialization_reports_semantic_ir_failure_and_prior_warnings() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
+        std::fs::write(fingerprint_path, b": not yaml").expect("corrupt fingerprint");
+        let semantic_ir_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join("semantic-ir.yaml");
+        std::fs::write(semantic_ir_path, b": not yaml").expect("corrupt semantic IR");
+        let reporter = SourceDiagnosticReporter::default();
+
+        load_v4_materialization_with_reporter(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+            &reporter,
+        )
+        .expect_err("corrupt semantic IR should fail");
+
+        assert!(reporter.tracks_diagnostic(
+            &workspace_name(),
+            &source_name(),
+            "materialization",
+            "V4_FINGERPRINT_UNAVAILABLE",
+        ));
+        assert!(reporter.tracks_diagnostic(
+            &workspace_name(),
+            &source_name(),
+            "materialization",
+            "V4_SEMANTIC_IR_UNAVAILABLE",
+        ));
+    }
+
+    #[test]
     fn load_v4_materialization_warns_on_previous_fingerprint_schema() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
@@ -2151,6 +2218,42 @@ operation_overrides:
             message.contains("Edit or remove the override file"),
             "unexpected error: {message}"
         );
+    }
+
+    #[test]
+    fn load_v4_materialization_reports_metadata_override_failure_and_prior_warnings() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
+        std::fs::write(fingerprint_path, b": not yaml").expect("corrupt fingerprint");
+        let override_path =
+            layout.v4_parameter_metadata_override_file(&workspace_name(), &source_name());
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(override_path, b": not yaml").expect("write corrupt override");
+        let reporter = SourceDiagnosticReporter::default();
+
+        load_v4_materialization_with_reporter(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+            &reporter,
+        )
+        .expect_err("corrupt metadata override should fail");
+
+        assert!(reporter.tracks_diagnostic(
+            &workspace_name(),
+            &source_name(),
+            "materialization",
+            "V4_FINGERPRINT_UNAVAILABLE",
+        ));
+        assert!(reporter.tracks_diagnostic(
+            &workspace_name(),
+            &source_name(),
+            "materialization",
+            "V4_PARAMETER_METADATA_OVERRIDE_FAILED",
+        ));
     }
 
     #[test]
