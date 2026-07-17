@@ -22,7 +22,7 @@ use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 2;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 3;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -40,6 +40,10 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
     SearchSqliteMigration {
         version: 2,
         sql: include_str!("migrations/0002_observed_values.sql"),
+    },
+    SearchSqliteMigration {
+        version: 3,
+        sql: include_str!("migrations/0003_observed_values_governance.sql"),
     },
 ];
 
@@ -738,6 +742,7 @@ fn observed_values_schema_is_current(connection: &Connection) -> Result<bool, Sq
             "idx_observed_queue_jobs_source",
             "idx_observed_queue_jobs_pending_scope",
             "idx_observed_values_source",
+            "idx_observed_values_workspace_last_observed",
         ],
     )
 }
@@ -840,6 +845,30 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("user_version");
         assert_eq!(user_version, SEARCH_SQLITE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn opening_v2_adds_observed_retention_index_without_dropping_queue_data() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let mut connection = Connection::open(&path).expect("raw v2 connection");
+        for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(2) {
+            super::apply_migration(&mut connection, migration).expect("apply v2 history");
+        }
+        seed_observed_queue_job(&connection);
+        assert!(!index_exists(
+            &connection,
+            "idx_observed_values_workspace_last_observed"
+        ));
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+
+        assert_eq!(observed_queue_job_count(&connection), 1);
+        assert!(index_exists(
+            &connection,
+            "idx_observed_values_workspace_last_observed"
+        ));
     }
 
     #[test]
@@ -1354,5 +1383,15 @@ mod tests {
                 row.get(0)
             })
             .expect("observed queue job count")
+    }
+
+    fn index_exists(connection: &Connection, index_name: &str) -> bool {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?1)",
+                [index_name],
+                |row| row.get(0),
+            )
+            .expect("index lookup")
     }
 }
