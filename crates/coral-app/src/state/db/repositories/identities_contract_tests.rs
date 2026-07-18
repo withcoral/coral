@@ -32,6 +32,8 @@ async fn identity_repository_contract_holds_against_sqlite() {
     .await;
     Box::pin(crate::identities::manager::tests::assert_workspace_fixed_token_create_contract(&db))
         .await;
+    Box::pin(crate::identities::manager::tests::assert_workspace_fixed_token_race_contract(&db))
+        .await;
 }
 
 #[expect(clippy::too_many_lines, reason = "shared backend contract fixture")]

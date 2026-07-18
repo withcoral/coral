@@ -38,17 +38,29 @@ pub(crate) struct IdentityManager {
     db: Arc<CoralDb>,
     key_provider: Arc<dyn CredentialKeyProvider>,
     #[cfg(test)]
-    before_write_gate: Option<BeforeWriteGate>,
+    before_write_gate: Option<OneShotGate>,
+    #[cfg(test)]
+    before_retry_gate: Option<OneShotGate>,
     #[cfg(test)]
     before_upsert_gate: Option<BeforeUpsertGate>,
 }
 
 #[cfg(test)]
 #[derive(Clone)]
-struct BeforeWriteGate {
+struct OneShotGate {
     prepared: Arc<tokio::sync::Barrier>,
     resume: Arc<tokio::sync::Barrier>,
     used: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+impl OneShotGate {
+    async fn wait(&self) {
+        if !self.used.swap(true, Ordering::SeqCst) {
+            self.prepared.wait().await;
+            self.resume.wait().await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -73,6 +85,8 @@ impl IdentityManager {
             #[cfg(test)]
             before_write_gate: None,
             #[cfg(test)]
+            before_retry_gate: None,
+            #[cfg(test)]
             before_upsert_gate: None,
         }
     }
@@ -83,7 +97,21 @@ impl IdentityManager {
         prepared: Arc<tokio::sync::Barrier>,
         resume: Arc<tokio::sync::Barrier>,
     ) -> Self {
-        self.before_write_gate = Some(BeforeWriteGate {
+        self.before_write_gate = Some(OneShotGate {
+            prepared,
+            resume,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_retry_gate(
+        mut self,
+        prepared: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_retry_gate = Some(OneShotGate {
             prepared,
             resume,
             used: Arc::new(AtomicBool::new(false)),
@@ -167,15 +195,19 @@ impl IdentityManager {
                 .prepare_fixed_token_document(&owner, &name, &selected.reference, token.clone())
                 .await?;
             #[cfg(test)]
-            if let Some(gate) = &self.before_write_gate
-                && !gate.used.swap(true, Ordering::SeqCst)
-            {
-                gate.prepared.wait().await;
-                gate.resume.wait().await;
+            if let Some(gate) = &self.before_write_gate {
+                gate.wait().await;
             }
             match self.try_write(&owner, &name, &selected, &document).await {
                 Ok(Some(record)) => return Ok(record),
-                Ok(None) | Err(AppError::RetryableTransactionConflict) => {
+                Ok(None) => {
+                    #[cfg(test)]
+                    if let Some(gate) = &self.before_retry_gate {
+                        gate.wait().await;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                Err(AppError::RetryableTransactionConflict) => {
                     tokio::task::yield_now().await;
                 }
                 Err(error) => return Err(error),

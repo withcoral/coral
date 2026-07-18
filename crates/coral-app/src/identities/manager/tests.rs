@@ -592,6 +592,150 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
     cleanup.commit().await.expect("commit workspace cleanup");
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared SQLite/Postgres workspace race contract"
+)]
+pub(crate) async fn assert_workspace_fixed_token_race_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let shadow_workspace =
+        WorkspaceName::parse(&format!("shadowrace{suffix}")).expect("shadow workspace");
+    let generation_workspace =
+        WorkspaceName::parse(&format!("generationrace{suffix}")).expect("generation workspace");
+    put_workspace(db, &shadow_workspace).await;
+    put_workspace(db, &generation_workspace).await;
+
+    let shadow_spec = format!("shadow_race_{suffix}");
+    let generation_spec = format!("generation_race_{suffix}");
+    let shadow_global = IdentitySpecKey::global(&shadow_spec).expect("shadow global key");
+    let shadow_workspace_key = IdentitySpecKey::workspace(shadow_workspace.clone(), &shadow_spec)
+        .expect("shadow workspace key");
+    let generation_global =
+        IdentitySpecKey::global(&generation_spec).expect("generation global key");
+    put_spec(db, &shadow_global, &fixed_manifest(&shadow_spec, "global")).await;
+    put_spec(
+        db,
+        &generation_global,
+        &fixed_manifest(&generation_spec, "before"),
+    )
+    .await;
+
+    let provider = Arc::new(TestKeyProvider(vec![
+        CredentialEncryptionKey::from_static_bytes_for_test([75; 32]),
+    ]));
+    let manager = IdentityManager::new(db.clone(), provider.clone());
+
+    let shadow_prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let shadow_resume = Arc::new(tokio::sync::Barrier::new(2));
+    let shadow_manager = manager
+        .clone()
+        .with_before_write_gate(shadow_prepared.clone(), shadow_resume.clone());
+    let shadow_identity = format!("shadow_identity_{suffix}");
+    let shadow_created = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = shadow_manager.create_or_replace_workspace_fixed_token(
+            &shadow_workspace,
+            &shadow_identity,
+            &shadow_spec,
+            "shadow-token".to_string(),
+        );
+        let install_shadow = async {
+            shadow_prepared.wait().await;
+            put_spec(
+                db,
+                &shadow_workspace_key,
+                &fixed_manifest(&shadow_spec, "workspace"),
+            )
+            .await;
+            shadow_resume.wait().await;
+        };
+        tokio::join!(create, install_shadow).0
+    })
+    .await
+    .expect("workspace shadow race must not deadlock")
+    .expect("create after workspace shadow");
+    assert_reference_key(&shadow_created, &shadow_workspace_key, "workspace");
+    let shadow_owner = IdentityOwner::workspace(shadow_workspace.clone());
+    let shadow_pair = load_pair(db, &shadow_owner, &shadow_identity).await;
+    assert_eq!(shadow_pair.0.as_ref(), Some(&shadow_created));
+    let shadow_document = shadow_pair.1.as_ref().expect("shadow race document");
+    assert_eq!(shadow_document.document_version, 1);
+    assert_material(
+        &shadow_created,
+        shadow_document,
+        "shadow-token",
+        provider.as_ref(),
+    );
+
+    let generation_prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let generation_resume = Arc::new(tokio::sync::Barrier::new(2));
+    let retry_prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let retry_resume = Arc::new(tokio::sync::Barrier::new(2));
+    let generation_manager = manager
+        .with_before_write_gate(generation_prepared.clone(), generation_resume.clone())
+        .with_before_retry_gate(retry_prepared.clone(), retry_resume.clone());
+    let generation_identity = format!("generation_identity_{suffix}");
+    let generation_result = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = generation_manager.create_or_replace_workspace_fixed_token(
+            &generation_workspace,
+            &generation_identity,
+            &generation_spec,
+            "generation-token".to_string(),
+        );
+        let recreate = async {
+            generation_prepared.wait().await;
+            put_spec(
+                db,
+                &generation_global,
+                &fixed_manifest(&generation_spec, "after"),
+            )
+            .await;
+            generation_resume.wait().await;
+            retry_prepared.wait().await;
+            replace_workspace_generation(db, &generation_workspace, 2).await;
+            retry_resume.wait().await;
+        };
+        tokio::join!(create, recreate).0
+    })
+    .await
+    .expect("cross-attempt workspace recreation must not deadlock");
+    assert!(matches!(
+        generation_result,
+        Err(AppError::WorkspaceNotFound(name)) if name == generation_workspace.as_str()
+    ));
+    let generation_owner = IdentityOwner::workspace(generation_workspace.clone());
+    assert_eq!(
+        load_pair(db, &generation_owner, &generation_identity).await,
+        (None, None)
+    );
+
+    let mut cleanup = db.begin().await.expect("begin race cleanup");
+    let shadow_name = IdentityName::parse(&shadow_identity).expect("shadow identity name");
+    assert!(
+        cleanup
+            .identities()
+            .delete(&shadow_owner, &shadow_name)
+            .await
+            .expect("delete shadow identity")
+    );
+    for key in [&shadow_global, &shadow_workspace_key, &generation_global] {
+        assert!(
+            cleanup
+                .identity_specs()
+                .delete(key)
+                .await
+                .expect("delete race spec")
+        );
+    }
+    for workspace in [&shadow_workspace, &generation_workspace] {
+        cleanup
+            .workspaces()
+            .delete(workspace.as_str())
+            .await
+            .expect("delete race workspace");
+    }
+    cleanup.commit().await.expect("commit race cleanup");
+}
+
 async fn put_workspace(db: &CoralDb, workspace: &WorkspaceName) {
     let mut tx = db.begin().await.expect("begin workspace write");
     tx.workspaces()
@@ -599,6 +743,23 @@ async fn put_workspace(db: &CoralDb, workspace: &WorkspaceName) {
         .await
         .expect("write workspace");
     tx.commit().await.expect("commit workspace write");
+}
+
+async fn replace_workspace_generation(
+    db: &CoralDb,
+    workspace: &WorkspaceName,
+    created_at_unix_nanos: i64,
+) {
+    let mut tx = db.begin().await.expect("begin workspace replacement");
+    tx.workspaces()
+        .delete(workspace.as_str())
+        .await
+        .expect("delete workspace generation");
+    tx.workspaces()
+        .ensure(workspace.as_str(), created_at_unix_nanos)
+        .await
+        .expect("replace workspace generation");
+    tx.commit().await.expect("commit workspace replacement");
 }
 
 async fn put_global_spec(db: &CoralDb, name: &str, yaml: &str) {
