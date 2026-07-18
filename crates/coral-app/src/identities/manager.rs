@@ -24,8 +24,10 @@ use crate::identity::Principal;
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::identity_specs::manager::record_to_installed;
 use crate::state::db::{
-    CoralDb, DbRepos, IdentityRecord, IdentitySpecKey, IdentitySpecRecord, now_unix_nanos_i64,
+    CoralDb, CoralTx, DbRepos, IdentityRecord, IdentitySpecKey, IdentitySpecRecord,
+    IdentitySpecScope, now_unix_nanos_i64,
 };
+use crate::workspaces::WorkspaceName;
 
 const FIXED_TOKEN_KEY: &str = "TOKEN";
 const MAX_MUTATION_ATTEMPTS: usize = 8;
@@ -57,6 +59,8 @@ struct BeforeUpsertGate {
 }
 
 struct SelectedFixedTokenSpec {
+    requested_key: IdentitySpecKey,
+    workspace_created_at_unix_nanos: Option<i64>,
     record: IdentitySpecRecord,
     reference: IdentitySpecReference,
 }
@@ -107,14 +111,48 @@ impl IdentityManager {
         let owner = IdentityOwner::for_user(principal.clone());
         let name = IdentityName::parse(identity_name)?;
         let spec_key = IdentitySpecKey::global(identity_spec_name)?;
+        self.create_or_replace_fixed_token(owner, name, spec_key, token)
+            .await
+    }
+
+    /// Create or replace one workspace-owned fixed-token identity with global fallback.
+    pub(crate) async fn create_or_replace_workspace_fixed_token(
+        &self,
+        workspace: &WorkspaceName,
+        identity_name: &str,
+        identity_spec_name: &str,
+        token: String,
+    ) -> Result<IdentityRecord, AppError> {
+        let owner = IdentityOwner::workspace(workspace.clone());
+        let name = IdentityName::parse(identity_name)?;
+        let spec_key = IdentitySpecKey::workspace(workspace.clone(), identity_spec_name)?;
+        self.create_or_replace_fixed_token(owner, name, spec_key, token)
+            .await
+    }
+
+    async fn create_or_replace_fixed_token(
+        &self,
+        owner: IdentityOwner,
+        name: IdentityName,
+        requested_key: IdentitySpecKey,
+        token: String,
+    ) -> Result<IdentityRecord, AppError> {
         let token = token.trim().to_owned();
         if token.is_empty() {
             return Err(AppError::InvalidInput(
                 "fixed-token identity token must not be blank".to_string(),
             ));
         }
+        let mut pinned_workspace_created_at_unix_nanos = None;
         for _ in 0..MAX_MUTATION_ATTEMPTS {
-            let selected = match self.load_fixed_token_spec(&owner, &spec_key).await {
+            let selected = match self
+                .load_fixed_token_spec(
+                    &owner,
+                    &requested_key,
+                    pinned_workspace_created_at_unix_nanos,
+                )
+                .await
+            {
                 Ok(selected) => selected,
                 Err(AppError::RetryableTransactionConflict) => {
                     tokio::task::yield_now().await;
@@ -122,6 +160,9 @@ impl IdentityManager {
                 }
                 Err(error) => return Err(error),
             };
+            if pinned_workspace_created_at_unix_nanos.is_none() {
+                pinned_workspace_created_at_unix_nanos = selected.workspace_created_at_unix_nanos;
+            }
             let document = self
                 .prepare_fixed_token_document(&owner, &name, &selected.reference, token.clone())
                 .await?;
@@ -146,17 +187,25 @@ impl IdentityManager {
     async fn load_fixed_token_spec(
         &self,
         owner: &IdentityOwner,
-        key: &IdentitySpecKey,
+        requested_key: &IdentitySpecKey,
+        expected_workspace_created_at_unix_nanos: Option<i64>,
     ) -> Result<SelectedFixedTokenSpec, AppError> {
         let mut tx = self.db.begin_read_snapshot().await?;
-        let record = tx.identity_specs().get(key).await?;
+        let workspace_created_at_unix_nanos = owner_workspace_created_at(&mut tx, owner).await?;
+        if expected_workspace_created_at_unix_nanos
+            .is_some_and(|expected| Some(expected) != workspace_created_at_unix_nanos)
+        {
+            tx.rollback().await?;
+            return Err(owner_workspace_not_found(owner));
+        }
+        let record = resolve_spec_record(&mut tx, requested_key).await?;
         tx.commit().await?;
-        let record = record.ok_or_else(|| global_spec_not_found(key))?;
+        let record = record.ok_or_else(|| spec_not_found(requested_key))?;
         let installed = record_to_installed(record.clone())?;
         if installed.manifest.identity_type != IdentitySpecType::FixedToken {
             return Err(AppError::InvalidInput(format!(
                 "identity spec '{}' has type 'oauth', not 'fixed_token'",
-                key.name()
+                requested_key.name()
             )));
         }
         let reference = IdentitySpecReference::new(
@@ -166,7 +215,12 @@ impl IdentityManager {
             installed.manifest.issuer,
             "fixed_token",
         )?;
-        Ok(SelectedFixedTokenSpec { record, reference })
+        Ok(SelectedFixedTokenSpec {
+            requested_key: requested_key.clone(),
+            workspace_created_at_unix_nanos,
+            record,
+            reference,
+        })
     }
 
     async fn prepare_fixed_token_document(
@@ -196,11 +250,23 @@ impl IdentityManager {
         document: &EncryptedEnvelopeDocument,
     ) -> Result<Option<IdentityRecord>, AppError> {
         let mut tx = self.db.begin_serializable().await?;
-        let current = match tx.identity_specs().get(selected.reference.key()).await {
+        let workspace_created_at_unix_nanos = match owner_workspace_created_at(&mut tx, owner).await
+        {
+            Ok(created_at) => created_at,
+            Err(error) => {
+                tx.rollback().await?;
+                return Err(error);
+            }
+        };
+        if workspace_created_at_unix_nanos != selected.workspace_created_at_unix_nanos {
+            tx.rollback().await?;
+            return Err(owner_workspace_not_found(owner));
+        }
+        let current = match resolve_spec_record(&mut tx, &selected.requested_key).await {
             Ok(current) => current,
             Err(error) => {
                 tx.rollback().await?;
-                return Err(error.into());
+                return Err(error);
             }
         };
         if current.as_ref() != Some(&selected.record) {
@@ -244,6 +310,42 @@ impl IdentityManager {
     }
 }
 
+async fn resolve_spec_record(
+    tx: &mut CoralTx<'_>,
+    requested_key: &IdentitySpecKey,
+) -> Result<Option<IdentitySpecRecord>, AppError> {
+    if let some @ Some(_) = tx.identity_specs().get(requested_key).await? {
+        return Ok(some);
+    }
+    let IdentitySpecScope::Workspace(_) = requested_key.scope() else {
+        return Ok(None);
+    };
+    let global_key = IdentitySpecKey::global(requested_key.name())?;
+    Ok(tx.identity_specs().get(&global_key).await?)
+}
+
+async fn owner_workspace_created_at(
+    tx: &mut CoralTx<'_>,
+    owner: &IdentityOwner,
+) -> Result<Option<i64>, AppError> {
+    let Some(workspace) = owner.workspace_name() else {
+        return Ok(None);
+    };
+    let record = tx
+        .workspaces()
+        .get(workspace.as_str())
+        .await?
+        .ok_or_else(|| AppError::WorkspaceNotFound(workspace.to_string()))?;
+    Ok(Some(record.created_at_unix_nanos))
+}
+
+fn owner_workspace_not_found(owner: &IdentityOwner) -> AppError {
+    let workspace = owner
+        .workspace_name()
+        .expect("only workspace owners have a persisted workspace generation");
+    AppError::WorkspaceNotFound(workspace.to_string())
+}
+
 async fn run_blocking_identity_operation<T, F>(operation: F) -> Result<T, AppError>
 where
     T: Send + 'static,
@@ -253,10 +355,14 @@ where
     tokio::task::spawn_blocking(move || span.in_scope(operation)).await?
 }
 
-fn global_spec_not_found(key: &IdentitySpecKey) -> AppError {
+fn spec_not_found(key: &IdentitySpecKey) -> AppError {
+    let scope = match key.scope() {
+        IdentitySpecScope::Global => "global".to_string(),
+        IdentitySpecScope::Workspace(workspace) => format!("workspace:{workspace}"),
+    };
     AppError::IdentitySpecNotFound {
         name: key.name().to_string(),
-        scope: "global".to_string(),
+        scope,
     }
 }
 
