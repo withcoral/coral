@@ -1,6 +1,9 @@
-#![expect(
-    dead_code,
-    reason = "Portable repository contracts and manager consumers land in later stack layers."
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Identity manager consumers land in later stack layers."
+    )
 )]
 
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
