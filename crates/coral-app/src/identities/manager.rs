@@ -120,7 +120,7 @@ impl IdentityManager {
     }
 
     #[cfg(test)]
-    fn with_before_upsert_gate(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+    pub(crate) fn with_before_upsert_gate(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
         self.before_upsert_gate = Some(BeforeUpsertGate {
             barrier,
             used: Arc::new(AtomicBool::new(false)),

@@ -28,6 +28,10 @@ async fn identity_spec_persistence_contract_holds_against_sqlite() {
     assert_identity_spec_persistence_contract(&db).await;
     Box::pin(crate::identity_specs::manager::tests::assert_identity_spec_mutation_contract(&db))
         .await;
+    Box::pin(
+        crate::identity_specs::manager::tests::assert_identity_spec_lifecycle_race_contract(&db),
+    )
+    .await;
 }
 
 pub(crate) async fn set_identity_spec_document_version(
