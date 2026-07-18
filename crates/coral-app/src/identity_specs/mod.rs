@@ -6,3 +6,4 @@
 
 pub(crate) mod inputs;
 pub(crate) mod manager;
+pub(crate) mod service;
