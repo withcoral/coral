@@ -39,6 +39,7 @@ struct PlaintextIdentitySpecDocument<'a> {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DecryptedIdentitySpecDocument {
     version: u32,
     values: BTreeMap<String, String>,
@@ -78,6 +79,16 @@ pub(crate) fn decrypt_identity_spec_document(
         )));
     }
     Ok(decoded.values)
+}
+
+#[cfg(test)]
+pub(crate) fn seal_identity_spec_plaintext_for_test(
+    key: &IdentitySpecKey,
+    plaintext: Vec<u8>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
+    let context = identity_spec_document_context(IDENTITY_SPEC_DOCUMENT_BINDING_VERSION, key)?;
+    seal_envelope_document(&context, Zeroizing::new(plaintext), key_provider)
 }
 
 /// Rewrap an identity-spec setup document after authenticating its exact durable key.
