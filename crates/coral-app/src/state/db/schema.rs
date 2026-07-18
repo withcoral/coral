@@ -56,7 +56,6 @@ pub(in crate::state::db) enum IdentitySpecs {
     Version,
     Description,
     Issuer,
-    IdentityType,
     ManifestYaml,
     CreatedAtUnixNanos,
     UpdatedAtUnixNanos,

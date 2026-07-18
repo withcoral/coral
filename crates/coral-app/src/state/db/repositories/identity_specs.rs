@@ -5,9 +5,7 @@ use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::state::db::schema::{IdentitySpecDocuments, IdentitySpecs};
 use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
-use coral_spec::{
-    IdentityManifest, IdentitySpecType, parse_identity_manifest_yaml, validate_identity_spec_name,
-};
+use coral_spec::{IdentityManifest, parse_identity_manifest_yaml, validate_identity_spec_name};
 use uuid::{Uuid, Variant, Version};
 
 /// Opaque database identity for one persisted identity spec.
@@ -146,8 +144,6 @@ pub(crate) struct IdentitySpecRecord {
     pub(crate) description: String,
     /// Issuer identifier declared by the identity spec.
     pub(crate) issuer: String,
-    /// Identity mechanism declared by the identity spec.
-    pub(crate) identity_type: String,
     /// Authored identity spec manifest YAML.
     pub(crate) manifest_yaml: String,
     /// Creation timestamp in Unix nanoseconds.
@@ -164,7 +160,6 @@ struct IdentitySpecRow {
     version: String,
     description: String,
     issuer: String,
-    identity_type: String,
     manifest_yaml: String,
     created_at_unix_nanos: i64,
     updated_at_unix_nanos: i64,
@@ -172,13 +167,8 @@ struct IdentitySpecRow {
 
 impl IdentitySpecRow {
     fn validate(self) -> Result<IdentitySpecRecord, DbError> {
-        validate_identity_spec_fields([
-            &self.version,
-            &self.issuer,
-            &self.identity_type,
-            &self.manifest_yaml,
-        ])
-        .map_err(DbError::CorruptData)?;
+        validate_identity_spec_fields([&self.version, &self.issuer, &self.manifest_yaml])
+            .map_err(DbError::CorruptData)?;
         if self.created_at_unix_nanos < 0 || self.updated_at_unix_nanos < self.created_at_unix_nanos
         {
             return Err(DbError::CorruptData(
@@ -194,7 +184,6 @@ impl IdentitySpecRow {
             version: self.version,
             description: self.description,
             issuer: self.issuer,
-            identity_type: self.identity_type,
             manifest_yaml: self.manifest_yaml,
             created_at_unix_nanos: self.created_at_unix_nanos,
             updated_at_unix_nanos: self.updated_at_unix_nanos,
@@ -354,7 +343,6 @@ impl IdentitySpecsRepo<'_, CoralTx<'_>> {
                 IdentitySpecs::Version,
                 IdentitySpecs::Description,
                 IdentitySpecs::Issuer,
-                IdentitySpecs::IdentityType,
                 IdentitySpecs::ManifestYaml,
             ])
             .value(
@@ -375,7 +363,6 @@ impl IdentitySpecsRepo<'_, CoralTx<'_>> {
                 Expr::val(manifest.version.clone()),
                 Expr::val(manifest.description.clone()),
                 Expr::val(manifest.issuer.clone()),
-                Expr::val(identity_spec_type_label(manifest.identity_type)),
                 Expr::val(manifest_yaml),
                 Expr::val(now_unix_nanos),
                 Expr::val(now_unix_nanos),
@@ -546,7 +533,7 @@ fn parse_identity_spec_name(name: &str) -> Result<String, AppError> {
     Ok(name.to_string())
 }
 
-fn validate_identity_spec_fields(fields: [&str; 4]) -> Result<(), String> {
+fn validate_identity_spec_fields(fields: [&str; 3]) -> Result<(), String> {
     if fields.into_iter().any(|value| value.trim().is_empty()) {
         return Err("identity spec has an empty required field".to_string());
     }
@@ -565,13 +552,8 @@ fn validate_identity_spec_write(
             manifest.name
         )));
     }
-    validate_identity_spec_fields([
-        &manifest.version,
-        &manifest.issuer,
-        identity_spec_type_label(manifest.identity_type),
-        manifest_yaml,
-    ])
-    .map_err(AppError::InvalidInput)?;
+    validate_identity_spec_fields([&manifest.version, &manifest.issuer, manifest_yaml])
+        .map_err(AppError::InvalidInput)?;
     let parsed_manifest = parse_identity_manifest_yaml(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     if &parsed_manifest != manifest {
@@ -580,13 +562,6 @@ fn validate_identity_spec_write(
         ));
     }
     Ok(())
-}
-
-const fn identity_spec_type_label(identity_type: IdentitySpecType) -> &'static str {
-    match identity_type {
-        IdentitySpecType::OAuth => "oauth",
-        IdentitySpecType::FixedToken => "fixed_token",
-    }
 }
 
 fn validate_write_timestamp(now_unix_nanos: i64) -> Result<(), AppError> {
@@ -639,7 +614,7 @@ fn identity_spec_select() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-fn identity_spec_columns() -> [IdentitySpecs; 10] {
+fn identity_spec_columns() -> [IdentitySpecs; 9] {
     [
         IdentitySpecs::Id,
         IdentitySpecs::WorkspaceId,
@@ -647,7 +622,6 @@ fn identity_spec_columns() -> [IdentitySpecs; 10] {
         IdentitySpecs::Version,
         IdentitySpecs::Description,
         IdentitySpecs::Issuer,
-        IdentitySpecs::IdentityType,
         IdentitySpecs::ManifestYaml,
         IdentitySpecs::CreatedAtUnixNanos,
         IdentitySpecs::UpdatedAtUnixNanos,
@@ -709,7 +683,6 @@ mod tests {
         version: &'static str,
         description: &'static str,
         issuer: &'static str,
-        identity_type: &'static str,
         manifest_yaml: &'static str,
         created_at_unix_nanos: i64,
         updated_at_unix_nanos: i64,
@@ -719,7 +692,6 @@ mod tests {
         version: "1.0.0",
         description: "",
         issuer: "github",
-        identity_type: "oauth",
         manifest_yaml: "kind: identity\nname: github\n",
         created_at_unix_nanos: 10,
         updated_at_unix_nanos: 20,
@@ -1029,11 +1001,10 @@ mod tests {
         assert_eq!(
             (
                 inserted.version.as_str(),
-                inserted.identity_type.as_str(),
                 inserted.created_at_unix_nanos,
                 inserted.updated_at_unix_nanos,
             ),
-            ("1.0.0", "fixed_token", 10, 10)
+            ("1.0.0", 10, 10)
         );
         assert_eq!(inserted.manifest_yaml, manifest_yaml);
         upsert_spec(&mut tx, &global, "2.0.0", 30)
@@ -1290,7 +1261,6 @@ mod tests {
                     Expr::val(spec.version),
                     Expr::val(spec.description),
                     Expr::val(spec.issuer),
-                    Expr::val(spec.identity_type),
                     Expr::val(spec.manifest_yaml),
                     Expr::val(spec.created_at_unix_nanos),
                     Expr::val(spec.updated_at_unix_nanos),
@@ -1313,7 +1283,6 @@ mod tests {
             version: spec.version.to_string(),
             description: spec.description.to_string(),
             issuer: spec.issuer.to_string(),
-            identity_type: spec.identity_type.to_string(),
             manifest_yaml: spec.manifest_yaml.to_string(),
             created_at_unix_nanos: spec.created_at_unix_nanos,
             updated_at_unix_nanos: spec.updated_at_unix_nanos,
