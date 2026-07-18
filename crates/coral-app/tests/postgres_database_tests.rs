@@ -25,6 +25,9 @@ use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
 use tonic::Request;
 
+const ALPHA: &str = "identity-alpha";
+const BETA: &str = "identity-beta";
+
 #[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run configured Postgres startup coverage"]
 async fn server_lifecycle_can_start_with_postgres_database_config() {
@@ -230,6 +233,88 @@ async fn assert_postgres_db_is_migrated(database_url: &str) {
             .await
             .expect("inspect migrated Postgres schema");
     assert!(table_exists, "workspaces table should be migrated");
+    assert_postgres_identity_schema(&pool).await;
+}
+
+async fn assert_postgres_identity_schema(pool: &sqlx::PgPool) {
+    for workspace in [ALPHA, BETA] {
+        sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES ($1, 0)")
+            .bind(workspace)
+            .execute(pool)
+            .await
+            .expect("seed identity workspace");
+    }
+    for row in [
+        ("user", "local", None, "user-global", None),
+        ("workspace", ALPHA, Some(ALPHA), "workspace-global", None),
+        (
+            "workspace",
+            ALPHA,
+            Some(ALPHA),
+            "workspace-scoped",
+            Some(ALPHA),
+        ),
+    ] {
+        insert_postgres_identity(pool, row)
+            .await
+            .expect("valid Postgres identity row");
+    }
+    assert_postgres_identity_rejects_invalid_rows(pool).await;
+    sqlx::query("DELETE FROM workspaces WHERE id = 'identity-alpha'")
+        .execute(pool)
+        .await
+        .expect("delete Postgres workspace");
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM identities")
+        .fetch_one(pool)
+        .await
+        .expect("count cascaded Postgres identity rows");
+    assert_eq!(remaining, 1);
+}
+
+async fn assert_postgres_identity_rejects_invalid_rows(pool: &sqlx::PgPool) {
+    for row in [
+        ("unknown", "member", None, "unknown-owner", None),
+        ("user", "member", Some(ALPHA), "user-workspace", None),
+        ("workspace", ALPHA, None, "missing-workspace", None),
+        ("user", "member", None, "user-scoped", Some(ALPHA)),
+        (
+            "workspace",
+            ALPHA,
+            Some(ALPHA),
+            "cross-workspace",
+            Some(BETA),
+        ),
+        ("workspace", ALPHA, Some(BETA), "owner-mismatch", None),
+        ("workspace", "missing", Some("missing"), "missing-row", None),
+    ] {
+        insert_postgres_identity(pool, row)
+            .await
+            .expect_err("invalid Postgres identity row must be rejected");
+    }
+}
+
+type IdentityRow<'a> = (&'a str, &'a str, Option<&'a str>, &'a str, Option<&'a str>);
+
+async fn insert_postgres_identity(
+    pool: &sqlx::PgPool,
+    (owner_kind, owner_key, workspace_id, name, identity_spec_workspace_id): IdentityRow<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO identities (
+            owner_kind, owner_key, workspace_id, name,
+            identity_spec_workspace_id, identity_spec_name,
+            identity_spec_fingerprint, issuer, identity_type,
+            created_at_unix_nanos, updated_at_unix_nanos
+         ) VALUES ($1, $2, $3, $4, $5, 'missing-spec', 'fingerprint', 'issuer', 'fixed_token', 1, 1)",
+    )
+    .bind(owner_kind)
+    .bind(owner_key)
+    .bind(workspace_id)
+    .bind(name)
+    .bind(identity_spec_workspace_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 #[expect(
