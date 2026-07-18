@@ -16,6 +16,7 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
 use coral_api::v1::function_service_server::{FunctionService, FunctionServiceServer};
+use coral_api::v1::identity_service_server::{IdentityService, IdentityServiceServer};
 use coral_api::v1::identity_spec_service_server::{IdentitySpecService, IdentitySpecServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::search_service_server::{SearchService, SearchServiceServer};
@@ -27,19 +28,23 @@ use coral_api::v1::{
     CatalogClearResult, CatalogCounts, CatalogItem, CatalogRebuildResult, CatalogSearchResult,
     ClearSearchDataRequest, ClearSearchDataResponse, Column, ColumnSearchResult,
     CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
-    DeleteFunctionRequest, DeleteFunctionResponse, DeleteIdentitySpecRequest,
-    DeleteIdentitySpecResponse, DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest,
-    DeleteWorkspaceResponse, DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, DrainSearchQueueRequest,
-    DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse, ExecuteSqlRequest,
-    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetIdentitySpecRequest,
-    GetIdentitySpecResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
-    GetSourceResponse, GlobalIdentitySpecScope, IdentitySpec, IdentitySpecScope,
-    IdentitySpecSummary, IdentitySpecType, ImportSourceRequest, ImportSourceResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
-    ListFunctionsRequest, ListFunctionsResponse, ListIdentitySpecsRequest,
-    ListIdentitySpecsResponse, ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest,
+    CreateBundledSourceWithOAuthResponse, CreateUserOwnedFixedTokenIdentityRequest,
+    CreateUserOwnedFixedTokenIdentityResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    CurrentUserIdentityOwner, DeleteFunctionRequest, DeleteFunctionResponse,
+    DeleteIdentitySpecRequest, DeleteIdentitySpecResponse, DeleteSourceRequest,
+    DeleteSourceResponse, DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeCatalogSurfaceRequest,
+    DescribeCatalogSurfaceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    GetIdentitySpecRequest, GetIdentitySpecResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse,
+    GlobalIdentitySpecScope, Identity, IdentityAudience, IdentityOwner, IdentitySpec,
+    IdentitySpecReference, IdentitySpecScope, IdentitySpecSummary, IdentitySpecType,
+    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
+    ListIdentitySpecsRequest, ListIdentitySpecsResponse, ListSourcesRequest, ListSourcesResponse,
+    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse, ListWorkspacesRequest,
     ListWorkspacesResponse, MissingCatalogSurface, ObservedDrainResult, ObservedRebuildResult,
     PaginationRequest, PaginationResponse, QueryPlan, RebuildSearchIndexRequest,
     RebuildSearchIndexResponse, SearchCatalogRequest, SearchCatalogResponse, SearchField,
@@ -50,8 +55,8 @@ use coral_api::v1::{
     StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
     TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
     catalog_item, create_bundled_source_with_o_auth_response, describe_catalog_surface_response,
-    identity_spec_scope, import_source_response, search_maintenance_result, search_result,
-    source_input_spec::Input as ProtoSourceInput,
+    identity_owner, identity_spec_scope, import_source_response, search_maintenance_result,
+    search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -115,6 +120,61 @@ fn mock_identity_spec_summary(
         identity_type,
         scope: Some(scope),
     }
+}
+
+fn mock_user_identity(
+    name: &str,
+    spec_name: &str,
+    identity_type: i32,
+    audience: Option<IdentityAudience>,
+) -> Identity {
+    Identity {
+        name: name.to_string(),
+        owner: Some(IdentityOwner {
+            value: Some(identity_owner::Value::CurrentUser(
+                CurrentUserIdentityOwner {},
+            )),
+        }),
+        identity_spec: Some(IdentitySpecReference {
+            name: spec_name.to_string(),
+            scope: Some(global_identity_spec_scope()),
+            fingerprint: format!("fingerprint-{spec_name}"),
+            issuer: "demo".to_string(),
+            identity_type,
+            audience,
+        }),
+        created_at_unix_nanos: 10,
+        updated_at_unix_nanos: 20,
+    }
+}
+
+fn mock_user_identity_for_get(name: &str) -> Identity {
+    let mut identity = mock_user_identity(
+        name,
+        "global_token",
+        IdentitySpecType::FixedToken as i32,
+        Some(IdentityAudience {
+            host: "api.example.com".to_string(),
+            port: Some(443),
+        }),
+    );
+    match name {
+        "missing_owner" => identity.owner = None,
+        "workspace_owner" => {
+            identity.owner = Some(IdentityOwner {
+                value: Some(identity_owner::Value::Workspace(workspace())),
+            });
+        }
+        "missing_spec" => identity.identity_spec = None,
+        "missing_scope" => identity.identity_spec.as_mut().expect("spec").scope = None,
+        "workspace_scope" => {
+            identity.identity_spec.as_mut().expect("spec").scope = Some(IdentitySpecScope {
+                value: Some(identity_spec_scope::Value::Workspace(workspace())),
+            });
+        }
+        _ => {}
+    }
+    identity
 }
 
 pub(crate) fn assert_default_workspace(workspace: Option<&Workspace>) {
@@ -957,6 +1017,10 @@ struct Captured {
     list_identity_specs: Mutex<Vec<ListIdentitySpecsRequest>>,
     get_identity_spec: Mutex<Vec<GetIdentitySpecRequest>>,
     delete_identity_spec: Mutex<Vec<DeleteIdentitySpecRequest>>,
+    create_user_identity: Mutex<Vec<CreateUserOwnedFixedTokenIdentityRequest>>,
+    list_user_identities: Mutex<Vec<ListUserOwnedIdentitiesRequest>>,
+    get_user_identity: Mutex<Vec<GetUserOwnedIdentityRequest>>,
+    delete_user_identity: Mutex<Vec<DeleteUserOwnedIdentityRequest>>,
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -1362,6 +1426,98 @@ impl IdentitySpecService for MockIdentitySpecService {
 }
 
 #[derive(Clone)]
+struct MockIdentityService {
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl IdentityService for MockIdentityService {
+    async fn create_user_owned_fixed_token_identity(
+        &self,
+        request: Request<CreateUserOwnedFixedTokenIdentityRequest>,
+    ) -> Result<Response<CreateUserOwnedFixedTokenIdentityResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .create_user_identity
+            .lock()
+            .expect("create_user_identity capture")
+            .push(request.clone());
+        Ok(Response::new(CreateUserOwnedFixedTokenIdentityResponse {
+            identity: Some(mock_user_identity(
+                &request.name,
+                &request.identity_spec_name,
+                IdentitySpecType::FixedToken as i32,
+                Some(IdentityAudience {
+                    host: "api.example.com".to_string(),
+                    port: Some(443),
+                }),
+            )),
+        }))
+    }
+
+    async fn list_user_owned_identities(
+        &self,
+        request: Request<ListUserOwnedIdentitiesRequest>,
+    ) -> Result<Response<ListUserOwnedIdentitiesResponse>, Status> {
+        self.captured
+            .list_user_identities
+            .lock()
+            .expect("list_user_identities capture")
+            .push(request.into_inner());
+        Ok(Response::new(ListUserOwnedIdentitiesResponse {
+            identities: vec![
+                mock_user_identity(
+                    "with_port",
+                    "global_token",
+                    IdentitySpecType::FixedToken as i32,
+                    Some(IdentityAudience {
+                        host: "api.example.com".to_string(),
+                        port: Some(443),
+                    }),
+                ),
+                mock_user_identity(
+                    "host_only",
+                    "global_oauth",
+                    IdentitySpecType::Oauth as i32,
+                    Some(IdentityAudience {
+                        host: "login.example.com".to_string(),
+                        port: None,
+                    }),
+                ),
+                mock_user_identity("legacy", "global_legacy", 777, None),
+            ],
+        }))
+    }
+
+    async fn get_user_owned_identity(
+        &self,
+        request: Request<GetUserOwnedIdentityRequest>,
+    ) -> Result<Response<GetUserOwnedIdentityResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .get_user_identity
+            .lock()
+            .expect("get_user_identity capture")
+            .push(request.clone());
+        Ok(Response::new(GetUserOwnedIdentityResponse {
+            identity: Some(mock_user_identity_for_get(&request.name)),
+        }))
+    }
+
+    async fn delete_user_owned_identity(
+        &self,
+        request: Request<DeleteUserOwnedIdentityRequest>,
+    ) -> Result<Response<DeleteUserOwnedIdentityResponse>, Status> {
+        self.captured
+            .delete_user_identity
+            .lock()
+            .expect("delete_user_identity capture")
+            .push(request.into_inner());
+        Ok(Response::new(DeleteUserOwnedIdentityResponse {}))
+    }
+}
+
+#[derive(Clone)]
 struct MockSourceService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
@@ -1739,6 +1895,7 @@ impl MockServer {
         let query_captured = Arc::clone(&captured);
         let search_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
+        let identity_captured = Arc::clone(&captured);
         let identity_spec_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
         let function_captured = Arc::clone(&captured);
@@ -1752,6 +1909,9 @@ impl MockServer {
             Server::builder()
                 .add_service(CatalogServiceServer::new(MockCatalogService {
                     captured: catalog_captured,
+                }))
+                .add_service(IdentityServiceServer::new(MockIdentityService {
+                    captured: identity_captured,
                 }))
                 .add_service(IdentitySpecServiceServer::new(MockIdentitySpecService {
                     captured: identity_spec_captured,
@@ -2039,6 +2199,47 @@ impl MockServer {
             + self.list_identity_specs_requests().len()
             + self.get_identity_spec_requests().len()
             + self.delete_identity_spec_requests().len()
+    }
+
+    pub(crate) fn create_user_identity_requests(
+        &self,
+    ) -> Vec<CreateUserOwnedFixedTokenIdentityRequest> {
+        self.captured
+            .create_user_identity
+            .lock()
+            .expect("create_user_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn list_user_identities_requests(&self) -> Vec<ListUserOwnedIdentitiesRequest> {
+        self.captured
+            .list_user_identities
+            .lock()
+            .expect("list_user_identities capture")
+            .clone()
+    }
+
+    pub(crate) fn get_user_identity_requests(&self) -> Vec<GetUserOwnedIdentityRequest> {
+        self.captured
+            .get_user_identity
+            .lock()
+            .expect("get_user_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_user_identity_requests(&self) -> Vec<DeleteUserOwnedIdentityRequest> {
+        self.captured
+            .delete_user_identity
+            .lock()
+            .expect("delete_user_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn current_user_identity_request_count(&self) -> usize {
+        self.create_user_identity_requests().len()
+            + self.list_user_identities_requests().len()
+            + self.get_user_identity_requests().len()
+            + self.delete_user_identity_requests().len()
     }
 
     pub(crate) fn endpoint_uri(&self) -> &str {
