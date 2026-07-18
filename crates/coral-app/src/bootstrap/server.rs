@@ -1,5 +1,7 @@
 //! Builds and runs the Coral gRPC server.
 
+use std::collections::BTreeSet;
+use std::env::VarError;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +29,7 @@ use tokio::task::{self, JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::service::Routes;
 use tonic::transport::Server;
+use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
@@ -36,6 +39,10 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
+use crate::credentials::encryption::{
+    ConfiguredCredentialKeyProvider, CredentialEncryptionKey, CredentialKeyProvider,
+    LocalFileCredentialKeyProvider,
+};
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::features::service::FeatureService;
 use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
@@ -486,6 +493,115 @@ async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
     Ok(coral_db)
 }
 
+#[expect(
+    dead_code,
+    reason = "the next stack layer activates identity-spec encryption during server bootstrap"
+)]
+fn configured_credential_key_provider(
+    config: &CredentialStorageConfig,
+) -> Result<Option<ConfiguredCredentialKeyProvider>, AppError> {
+    configured_credential_key_provider_with(config, AppEnvironment::env_var)
+}
+
+fn configured_credential_key_provider_with<F>(
+    config: &CredentialStorageConfig,
+    mut env_var: F,
+) -> Result<Option<ConfiguredCredentialKeyProvider>, AppError>
+where
+    F: FnMut(&str) -> Result<Option<String>, VarError>,
+{
+    let Some(active_env) = config.encryption_key_env.as_deref() else {
+        if config.decryption_key_envs.is_empty() {
+            return Ok(None);
+        }
+        return Err(AppError::FailedPrecondition(
+            "[encryption].decryption_key_envs requires [encryption].encryption_key_env".to_string(),
+        ));
+    };
+    let active_env = validate_key_env_name(active_env, "encryption_key_env")?;
+    let mut env_names = BTreeSet::from([active_env]);
+    let active_key = credential_encryption_key_from_env(active_env, &mut env_var)?;
+    let mut decryption_keys = Vec::with_capacity(config.decryption_key_envs.len());
+    for env_name in &config.decryption_key_envs {
+        let env_name = validate_key_env_name(env_name, "decryption_key_envs")?;
+        if !env_names.insert(env_name) {
+            return Err(AppError::FailedPrecondition(format!(
+                "credential encryption key environment variable '{env_name}' is configured more than once"
+            )));
+        }
+        decryption_keys.push(credential_encryption_key_from_env(env_name, &mut env_var)?);
+    }
+    ConfiguredCredentialKeyProvider::new(active_key, decryption_keys)
+        .map(Some)
+        .map_err(|_error| {
+            AppError::FailedPrecondition(
+                "credential encryption key configuration contains duplicate key material"
+                    .to_string(),
+            )
+        })
+}
+
+fn validate_key_env_name<'a>(name: &'a str, field: &str) -> Result<&'a str, AppError> {
+    if name.is_empty() || name.trim() != name || name.contains(['=', '\0']) {
+        return Err(AppError::FailedPrecondition(format!(
+            "[credentials].{field} must contain valid, non-empty environment variable names without surrounding whitespace, '=' or NUL"
+        )));
+    }
+    Ok(name)
+}
+
+fn credential_encryption_key_from_env<F>(
+    env_name: &str,
+    env_var: &mut F,
+) -> Result<CredentialEncryptionKey, AppError>
+where
+    F: FnMut(&str) -> Result<Option<String>, VarError>,
+{
+    let material = Zeroizing::new(
+        env_var(env_name)
+            .map_err(|_error| {
+                AppError::FailedPrecondition(format!(
+                    "credential encryption key environment variable '{env_name}' must contain valid UTF-8"
+                ))
+            })?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "credential encryption key environment variable '{env_name}' is not set"
+                ))
+            })?,
+    );
+    CredentialEncryptionKey::from_encoded_material(material.as_str()).map_err(|_error| {
+        AppError::FailedPrecondition(format!(
+            "credential encryption key environment variable '{env_name}' contains invalid key material"
+        ))
+    })
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the next stack layer activates identity-spec encryption during server bootstrap"
+    )
+)]
+fn identity_spec_key_provider(
+    layout: &AppStateLayout,
+    database_config: &ResolvedDatabaseConfig,
+    configured: Option<ConfiguredCredentialKeyProvider>,
+) -> (Arc<dyn CredentialKeyProvider>, bool) {
+    let postgres_without_key =
+        matches!(database_config, ResolvedDatabaseConfig::Postgres { .. }) && configured.is_none();
+    let provider: Arc<dyn CredentialKeyProvider> = match database_config {
+        ResolvedDatabaseConfig::Sqlite { .. } => Arc::new(
+            LocalFileCredentialKeyProvider::with_configured_keys(layout, configured),
+        ),
+        ResolvedDatabaseConfig::Postgres { .. } => {
+            Arc::new(configured.unwrap_or_else(ConfiguredCredentialKeyProvider::unavailable))
+        }
+    };
+    (provider, postgres_without_key)
+}
+
 fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseConfig, AppError> {
     match DatabaseConfig::load(layout)? {
         DatabaseConfig::Sqlite { path } => Ok(ResolvedDatabaseConfig::Sqlite { path }),
@@ -811,6 +927,7 @@ mod tests {
         reason = "JSON row assertions intentionally fail loudly in tests"
     )]
 
+    use std::collections::BTreeMap;
     use std::future::Future as _;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
@@ -818,6 +935,7 @@ mod tests {
     use std::task::Poll;
     use std::time::Duration;
 
+    use base64::Engine as _;
     use coral_api::v1::gui_onboarding_service_client::GuiOnboardingServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
@@ -837,11 +955,15 @@ mod tests {
 
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, TraceServerComponents,
-        start_server,
+        configured_credential_key_provider_with, identity_spec_key_provider, start_server,
     };
     use crate::bootstrap::AppError;
     use crate::catalog::discovery::CatalogDiscovery;
-    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::credentials::config::CredentialStorageConfig;
+    use crate::credentials::encryption::{
+        ConfiguredCredentialKeyProvider, CredentialEncryptionKey, CredentialKeyProvider,
+    };
+    use crate::credentials::{CredentialManager, CredentialStore, CredentialsError};
     use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
     use crate::feedback::manager::FeedbackManager;
     use crate::gui_onboarding::manager::GuiOnboardingManager;
@@ -863,6 +985,169 @@ mod tests {
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
         Principal, PrincipalProvider, PrincipalProviderError,
     };
+
+    fn encoded_key(byte: u8) -> String {
+        format!(
+            "v1:{}",
+            base64::engine::general_purpose::STANDARD.encode([byte; 32])
+        )
+    }
+
+    #[test]
+    fn configured_key_provider_resolves_rotation_keys_and_rejects_bad_configuration() {
+        let active_material = encoded_key(7);
+        let previous_material = encoded_key(8);
+        let values = BTreeMap::from([
+            ("ACTIVE", active_material.clone()),
+            ("DUPLICATE", active_material.clone()),
+            ("PREVIOUS", previous_material.clone()),
+            ("INVALID", "not-a-key".to_string()),
+        ]);
+        let config = CredentialStorageConfig {
+            encryption_key_env: Some("ACTIVE".to_string()),
+            decryption_key_envs: vec!["PREVIOUS".to_string()],
+            ..CredentialStorageConfig::default()
+        };
+        let provider =
+            configured_credential_key_provider_with(&config, |name| Ok(values.get(name).cloned()))
+                .expect("valid config")
+                .expect("configured provider");
+        let active = CredentialEncryptionKey::from_encoded_material(&active_material).expect("key");
+        let previous =
+            CredentialEncryptionKey::from_encoded_material(&previous_material).expect("key");
+        assert_eq!(provider.active_key().expect("active key"), active);
+        assert_eq!(
+            provider.key(previous.key_id()).expect("previous key"),
+            previous
+        );
+
+        for (config, expected) in [
+            (
+                CredentialStorageConfig {
+                    decryption_key_envs: vec!["PREVIOUS".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "requires",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("MISSING".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "is not set",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some(" ACTIVE".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("BAD=NAME".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace, '=' or NUL",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("BAD\0NAME".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace, '=' or NUL",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("INVALID".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "contains invalid key material",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("ACTIVE".to_string()),
+                    decryption_key_envs: vec!["ACTIVE".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "configured more than once",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("ACTIVE".to_string()),
+                    decryption_key_envs: vec!["DUPLICATE".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "duplicate key material",
+            ),
+        ] {
+            let error = configured_credential_key_provider_with(&config, |name| {
+                Ok(values.get(name).cloned())
+            })
+            .expect_err("invalid config");
+            assert!(matches!(&error, AppError::FailedPrecondition(_)));
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn postgres_key_selection_never_falls_back_to_a_local_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let sqlite = ResolvedDatabaseConfig::Sqlite {
+            path: layout.database_file(),
+        };
+        let (sqlite_provider, missing_key) = identity_spec_key_provider(&layout, &sqlite, None);
+        assert!(!missing_key);
+        let local_key = sqlite_provider.active_key().expect("local key");
+
+        let active = CredentialEncryptionKey::from_static_bytes_for_test([9; 32]);
+        let previous = CredentialEncryptionKey::from_static_bytes_for_test([8; 32]);
+        let configured =
+            ConfiguredCredentialKeyProvider::new(active.clone(), [previous.clone()]).expect("keys");
+        let (sqlite_provider, missing_key) =
+            identity_spec_key_provider(&layout, &sqlite, Some(configured));
+        assert!(!missing_key);
+        assert_eq!(
+            sqlite_provider.active_key().expect("configured key"),
+            active
+        );
+        assert_eq!(
+            sqlite_provider
+                .key(previous.key_id())
+                .expect("previous key"),
+            previous
+        );
+        assert_eq!(
+            sqlite_provider.key(local_key.key_id()).expect("local key"),
+            local_key
+        );
+
+        let postgres = ResolvedDatabaseConfig::Postgres {
+            url: "postgres://example.invalid/coral".to_string(),
+        };
+        let (provider, missing_key) = identity_spec_key_provider(&layout, &postgres, None);
+        assert!(missing_key);
+        assert!(matches!(
+            provider.active_key(),
+            Err(CredentialsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            provider.key(local_key.key_id()),
+            Err(CredentialsError::Unavailable(_))
+        ));
+
+        let active = CredentialEncryptionKey::from_static_bytes_for_test([7; 32]);
+        let configured = ConfiguredCredentialKeyProvider::new(active.clone(), []).expect("keys");
+        let (provider, missing_key) =
+            identity_spec_key_provider(&layout, &postgres, Some(configured));
+        assert!(!missing_key);
+        assert_eq!(provider.active_key().expect("configured key"), active);
+        assert!(matches!(
+            provider.key(local_key.key_id()),
+            Err(CredentialsError::Unavailable(_))
+        ));
+    }
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())

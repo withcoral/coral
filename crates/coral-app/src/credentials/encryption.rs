@@ -45,6 +45,7 @@ pub(crate) const CREDENTIAL_DOCUMENT_BINDING_VERSION: i64 = 2;
 const CREDENTIAL_DOCUMENT_VERSION: u32 = 1;
 const LEGACY_CREDENTIAL_BINDING_VERSION: i64 = 1;
 const KEY_FILE_VERSION: &str = "v1";
+const KEY_FILE_MAX_BYTES: u64 = 4 * 1024;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 
@@ -168,12 +169,84 @@ impl EnvelopeContext {
     }
 }
 
+/// Immutable configured encryption keys resolved during app bootstrap.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfiguredCredentialKeyProvider {
+    active_key_id: Option<String>,
+    keys_by_id: BTreeMap<String, CredentialEncryptionKey>,
+}
+
+impl ConfiguredCredentialKeyProvider {
+    pub(crate) fn new(
+        active_key: CredentialEncryptionKey,
+        decryption_keys: impl IntoIterator<Item = CredentialEncryptionKey>,
+    ) -> Result<Self, CredentialsError> {
+        let active_key_id = active_key.key_id().to_string();
+        let mut keys_by_id = BTreeMap::from([(active_key_id.clone(), active_key)]);
+        for key in decryption_keys {
+            let key_id = key.key_id().to_string();
+            if keys_by_id.contains_key(&key_id) {
+                return Err(CredentialsError::Parse(format!(
+                    "duplicate credential encryption key id '{key_id}'"
+                )));
+            }
+            keys_by_id.insert(key_id, key);
+        }
+        Ok(Self {
+            active_key_id: Some(active_key_id),
+            keys_by_id,
+        })
+    }
+
+    pub(crate) fn unavailable() -> Self {
+        Self {
+            active_key_id: None,
+            keys_by_id: BTreeMap::new(),
+        }
+    }
+
+    fn single(active_key: CredentialEncryptionKey) -> Self {
+        let active_key_id = active_key.key_id().to_string();
+        Self {
+            active_key_id: Some(active_key_id.clone()),
+            keys_by_id: BTreeMap::from([(active_key_id, active_key)]),
+        }
+    }
+
+    fn key_if_present(&self, key_id: &str) -> Option<CredentialEncryptionKey> {
+        self.keys_by_id.get(key_id).cloned()
+    }
+}
+
+impl CredentialKeyProvider for ConfiguredCredentialKeyProvider {
+    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        self.active_key_id
+            .as_deref()
+            .and_then(|key_id| self.key_if_present(key_id))
+            .ok_or_else(configured_key_required)
+    }
+
+    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        self.key_if_present(key_id).ok_or_else(|| {
+            CredentialsError::Unavailable(format!(
+                "credential encryption key '{key_id}' is unavailable"
+            ))
+        })
+    }
+}
+
+fn configured_key_required() -> CredentialsError {
+    CredentialsError::Unavailable(
+        "encrypted identity inputs require a configured credential encryption key".to_string(),
+    )
+}
+
 /// Resolves an explicitly supplied key or falls back to a key file scoped to
 /// this app-state config directory. Callers own config and environment resolution.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFileCredentialKeyProvider {
     path: PathBuf,
-    provided_key: Option<CredentialEncryptionKey>,
+    configured_keys: Option<ConfiguredCredentialKeyProvider>,
 }
 
 impl LocalFileCredentialKeyProvider {
@@ -181,21 +254,31 @@ impl LocalFileCredentialKeyProvider {
         layout: &AppStateLayout,
         provided_key: Option<CredentialEncryptionKey>,
     ) -> Self {
+        let configured_keys = provided_key.map(ConfiguredCredentialKeyProvider::single);
+        Self::with_configured_keys(layout, configured_keys)
+    }
+
+    pub(crate) fn with_configured_keys(
+        layout: &AppStateLayout,
+        configured_keys: Option<ConfiguredCredentialKeyProvider>,
+    ) -> Self {
         Self {
             path: layout.credential_encryption_key_file(),
-            provided_key,
+            configured_keys,
         }
     }
 
     fn load_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(raw) => {
-                let raw = Zeroizing::new(raw);
-                CredentialEncryptionKey::from_encoded_material(raw.as_str()).map(Some)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
         }
+        let raw = Zeroizing::new(storage_fs::read_to_string_private(
+            &self.path,
+            KEY_FILE_MAX_BYTES,
+        )?);
+        CredentialEncryptionKey::from_encoded_material(raw.as_str()).map(Some)
     }
 
     fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -203,7 +286,7 @@ impl LocalFileCredentialKeyProvider {
             CredentialsError::Crypto("credential encryption key lock is poisoned".to_string())
         })?;
         if let Some(parent) = self.path.parent() {
-            storage_fs::ensure_private_dir(parent)?;
+            storage_fs::ensure_private_dir_no_symlink(parent)?;
         }
         let lock_path = self.path.with_extension("key.lock");
         let _process_guard = FileLock::exclusive(&lock_path)?;
@@ -230,24 +313,26 @@ impl LocalFileCredentialKeyProvider {
 
 impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
     fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if let Some(key) = &self.provided_key {
-            return Ok(key.clone());
+        if let Some(keys) = &self.configured_keys {
+            return keys.active_key();
         }
         self.load_or_create_key()
     }
 
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if let Some(key) = &self.provided_key
-            && key.key_id == key_id
+        if let Some(key) = self
+            .configured_keys
+            .as_ref()
+            .and_then(|keys| keys.key_if_present(key_id))
         {
-            return Ok(key.clone());
+            return Ok(key);
         }
         if let Some(key) = self.load_key()?
             && key.key_id == key_id
         {
             return Ok(key);
         }
-        Err(CredentialsError::Crypto(format!(
+        Err(CredentialsError::Unavailable(format!(
             "credential encryption key '{key_id}' is unavailable"
         )))
     }
@@ -734,10 +819,39 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CredentialEncryptionKey, CredentialKeyProvider, KEY_FILE_VERSION, KEY_LEN,
-        LocalFileCredentialKeyProvider,
+        ConfiguredCredentialKeyProvider, CredentialEncryptionKey, CredentialKeyProvider,
+        KEY_FILE_VERSION, KEY_LEN, LocalFileCredentialKeyProvider,
     };
+    use crate::credentials::CredentialsError;
     use crate::state::AppStateLayout;
+
+    #[test]
+    fn configured_provider_selects_active_and_resolves_decryption_keys() {
+        let active = CredentialEncryptionKey::from_static_bytes_for_test([7_u8; KEY_LEN]);
+        let previous = CredentialEncryptionKey::from_static_bytes_for_test([8_u8; KEY_LEN]);
+        let provider = ConfiguredCredentialKeyProvider::new(active.clone(), [previous.clone()])
+            .expect("configured key ring");
+
+        assert_eq!(provider.active_key().expect("active key"), active);
+        assert_eq!(
+            provider.key(previous.key_id()).expect("previous key"),
+            previous
+        );
+        assert!(matches!(
+            provider.key("missing-key"),
+            Err(CredentialsError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn configured_provider_rejects_duplicate_key_material() {
+        let active = CredentialEncryptionKey::from_static_bytes_for_test([7_u8; KEY_LEN]);
+
+        let error = ConfiguredCredentialKeyProvider::new(active.clone(), [active])
+            .expect_err("duplicate key id");
+
+        assert!(matches!(error, CredentialsError::Parse(_)));
+    }
 
     #[test]
     fn provided_key_does_not_create_a_local_key_file() {
@@ -767,6 +881,13 @@ mod tests {
 
         assert!(error.to_string().contains("is unavailable"));
         assert!(!layout.credential_encryption_key_file().exists());
+        assert!(
+            !layout
+                .credential_encryption_key_file()
+                .parent()
+                .unwrap()
+                .exists()
+        );
     }
 
     #[test]

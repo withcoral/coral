@@ -58,9 +58,30 @@ fn ensure_private_dir_no_symlink_inner(path: &Path, tighten_existing: bool) -> i
         }
         Err(error) => return Err(error),
     }
-    let dir = File::open(path)?;
-    set_open_dir_permissions_private(&dir)?;
-    Ok(())
+    tighten_private_dir_no_symlink(path)
+}
+
+fn ensure_existing_private_dir_no_symlink(path: &Path) -> io::Result<()> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(());
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => tighten_private_dir_no_symlink(path),
+        Ok(_) => Err(private_directory_error(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(private_directory_error(path)),
+        Err(error) => Err(error),
+    }
+}
+
+fn tighten_private_dir_no_symlink(path: &Path) -> io::Result<()> {
+    let dir = File::open(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            private_directory_error(path)
+        } else {
+            error
+        }
+    })?;
+    set_open_dir_permissions_private(&dir)
 }
 
 pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
@@ -91,16 +112,9 @@ pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
 /// requires write access to it, and anything able to write there can generally read
 /// the key outright. The value here is tightening loose modes, which is a real and
 /// common failure, not defeating a local attacker who already has the directory.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the next stack layer activates strict reads for local encryption keys"
-    )
-)]
 pub(crate) fn read_to_string_private(path: &Path, max_bytes: u64) -> io::Result<String> {
     if let Some(parent) = path.parent() {
-        ensure_private_dir_no_symlink(parent)?;
+        ensure_existing_private_dir_no_symlink(parent)?;
     }
     let path_metadata = fs::symlink_metadata(path)?;
     if !path_metadata.file_type().is_file() {
@@ -419,7 +433,8 @@ fn set_open_dir_permissions_private(_directory: &File) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DirectoryBackup, ensure_file_private, read_to_string_private, remove_file_if_exists,
+        DirectoryBackup, ensure_file_private, ensure_private_dir_no_symlink,
+        read_to_string_private, remove_file_if_exists,
     };
 
     #[test]
@@ -508,7 +523,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn read_to_string_private_rejects_missing_directory_beneath_symlink() {
+    fn ensure_private_dir_no_symlink_rejects_missing_directory_beneath_symlink() {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -519,9 +534,8 @@ mod tests {
         let config = temp.path().join("config");
         symlink(&target, &config).expect("config symlink");
 
-        let error =
-            read_to_string_private(&config.join("credentials").join("encryption.key"), 1024)
-                .expect_err("symlinked ancestor should be rejected");
+        let error = ensure_private_dir_no_symlink(&config.join("credentials"))
+            .expect_err("symlinked ancestor should be rejected");
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(!target.join("credentials").exists());
@@ -535,7 +549,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn read_to_string_private_does_not_tighten_existing_ancestor() {
+    fn ensure_private_dir_no_symlink_does_not_tighten_existing_ancestor() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -544,10 +558,7 @@ mod tests {
         let private = temp.path().join("private");
         let credentials = private.join("credentials");
 
-        let error = read_to_string_private(&credentials.join("encryption.key"), 1024)
-            .expect_err("missing key should remain missing");
-
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        ensure_private_dir_no_symlink(&credentials).expect("create private directories");
         for path in [&private, &credentials] {
             let mode = std::fs::metadata(path)
                 .expect("created private directory")
@@ -562,6 +573,18 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(ancestor_mode, 0o755);
+    }
+
+    #[test]
+    fn read_to_string_private_does_not_recreate_a_missing_parent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = temp.path().join("credentials");
+
+        let error = read_to_string_private(&parent.join("encryption.key"), 1024)
+            .expect_err("missing parent should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!parent.exists());
     }
 
     #[test]
