@@ -22,6 +22,9 @@ use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::search_service_server::{SearchService, SearchServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::task_service_server::{TaskService, TaskServiceServer};
+use coral_api::v1::workspace_identity_service_server::{
+    WorkspaceIdentityService, WorkspaceIdentityServiceServer,
+};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
     AddFunctionRequest, AddFunctionResponse, AddIdentitySpecRequest, AddIdentitySpecResponse,
@@ -29,34 +32,38 @@ use coral_api::v1::{
     ClearSearchDataRequest, ClearSearchDataResponse, Column, ColumnSearchResult,
     CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, CreateUserOwnedFixedTokenIdentityRequest,
-    CreateUserOwnedFixedTokenIdentityResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
-    CurrentUserIdentityOwner, DeleteFunctionRequest, DeleteFunctionResponse,
-    DeleteIdentitySpecRequest, DeleteIdentitySpecResponse, DeleteSourceRequest,
-    DeleteSourceResponse, DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse,
-    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeCatalogSurfaceRequest,
-    DescribeCatalogSurfaceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    CreateUserOwnedFixedTokenIdentityResponse, CreateWorkspaceOwnedFixedTokenIdentityRequest,
+    CreateWorkspaceOwnedFixedTokenIdentityResponse, CreateWorkspaceRequest,
+    CreateWorkspaceResponse, CurrentUserIdentityOwner, DeleteFunctionRequest,
+    DeleteFunctionResponse, DeleteIdentitySpecRequest, DeleteIdentitySpecResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DeleteUserOwnedIdentityRequest,
+    DeleteUserOwnedIdentityResponse, DeleteWorkspaceOwnedIdentityRequest,
+    DeleteWorkspaceOwnedIdentityResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
+    DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest,
+    EndTaskResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
     GetIdentitySpecRequest, GetIdentitySpecResponse, GetSourceInfoRequest, GetSourceInfoResponse,
     GetSourceRequest, GetSourceResponse, GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse,
-    GlobalIdentitySpecScope, Identity, IdentityAudience, IdentityOwner, IdentitySpec,
-    IdentitySpecReference, IdentitySpecScope, IdentitySpecSummary, IdentitySpecType,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
-    ListIdentitySpecsRequest, ListIdentitySpecsResponse, ListSourcesRequest, ListSourcesResponse,
-    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse, ListWorkspacesRequest,
-    ListWorkspacesResponse, MissingCatalogSurface, ObservedDrainResult, ObservedRebuildResult,
-    PaginationRequest, PaginationResponse, QueryPlan, RebuildSearchIndexRequest,
-    RebuildSearchIndexResponse, SearchCatalogRequest, SearchCatalogResponse, SearchField,
-    SearchMaintenanceResult, SearchMaintenanceState, SearchProvider, SearchProviderCoverage,
-    SearchProviderState, SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult, SearchSurfaceRef, SearchTableShape, Source,
-    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
-    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
-    catalog_item, create_bundled_source_with_o_auth_response, describe_catalog_surface_response,
-    identity_owner, identity_spec_scope, import_source_response, search_maintenance_result,
-    search_result, source_input_spec::Input as ProtoSourceInput,
+    GetWorkspaceOwnedIdentityRequest, GetWorkspaceOwnedIdentityResponse, GlobalIdentitySpecScope,
+    Identity, IdentityAudience, IdentityOwner, IdentitySpec, IdentitySpecReference,
+    IdentitySpecScope, IdentitySpecSummary, IdentitySpecType, ImportSourceRequest,
+    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListIdentitySpecsRequest,
+    ListIdentitySpecsResponse, ListSourcesRequest, ListSourcesResponse,
+    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
+    ListWorkspaceOwnedIdentitiesRequest, ListWorkspaceOwnedIdentitiesResponse,
+    ListWorkspacesRequest, ListWorkspacesResponse, MissingCatalogSurface, ObservedDrainResult,
+    ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
+    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
+    SearchCatalogResponse, SearchField, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
+    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceRef,
+    SearchTableShape, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin,
+    SourceSecretInput, StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary,
+    Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    describe_catalog_surface_response, identity_owner, identity_spec_scope, import_source_response,
+    search_maintenance_result, search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -74,6 +81,12 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 fn workspace() -> Workspace {
     Workspace {
         name: "default".to_string(),
+    }
+}
+
+fn named_workspace(name: &str) -> Workspace {
+    Workspace {
+        name: name.to_string(),
     }
 }
 
@@ -170,6 +183,76 @@ fn mock_user_identity_for_get(name: &str) -> Identity {
         "workspace_scope" => {
             identity.identity_spec.as_mut().expect("spec").scope = Some(IdentitySpecScope {
                 value: Some(identity_spec_scope::Value::Workspace(workspace())),
+            });
+        }
+        _ => {}
+    }
+    identity
+}
+
+fn mock_workspace_identity(
+    name: &str,
+    spec_name: &str,
+    owner: Workspace,
+    scope: IdentitySpecScope,
+) -> Identity {
+    Identity {
+        name: name.to_string(),
+        owner: Some(IdentityOwner {
+            value: Some(identity_owner::Value::Workspace(owner)),
+        }),
+        identity_spec: Some(IdentitySpecReference {
+            name: spec_name.to_string(),
+            scope: Some(scope),
+            fingerprint: format!("fingerprint-{spec_name}"),
+            issuer: "demo".to_string(),
+            identity_type: IdentitySpecType::FixedToken as i32,
+            audience: Some(IdentityAudience {
+                host: "api.example.com".to_string(),
+                port: Some(443),
+            }),
+        }),
+        created_at_unix_nanos: 10,
+        updated_at_unix_nanos: 20,
+    }
+}
+
+fn mock_workspace_identity_for_get(name: &str, workspace: Workspace) -> Identity {
+    let mut identity = mock_workspace_identity(
+        name,
+        "workspace_token",
+        workspace.clone(),
+        IdentitySpecScope {
+            value: Some(identity_spec_scope::Value::Workspace(workspace)),
+        },
+    );
+    match name {
+        "global_fallback" => {
+            let spec = identity.identity_spec.as_mut().expect("spec");
+            spec.name = "global_token".to_string();
+            spec.fingerprint = "fingerprint-global_token".to_string();
+            spec.scope = Some(global_identity_spec_scope());
+        }
+        "missing_owner" => identity.owner = None,
+        "current_user_owner" => {
+            identity.owner = Some(IdentityOwner {
+                value: Some(identity_owner::Value::CurrentUser(
+                    CurrentUserIdentityOwner {},
+                )),
+            });
+        }
+        "wrong_owner" => {
+            identity.owner = Some(IdentityOwner {
+                value: Some(identity_owner::Value::Workspace(named_workspace("other"))),
+            });
+        }
+        "missing_spec" => identity.identity_spec = None,
+        "missing_scope" => identity.identity_spec.as_mut().expect("spec").scope = None,
+        "wrong_scope" => {
+            identity.identity_spec.as_mut().expect("spec").scope = Some(IdentitySpecScope {
+                value: Some(identity_spec_scope::Value::Workspace(named_workspace(
+                    "other",
+                ))),
             });
         }
         _ => {}
@@ -1021,6 +1104,10 @@ struct Captured {
     list_user_identities: Mutex<Vec<ListUserOwnedIdentitiesRequest>>,
     get_user_identity: Mutex<Vec<GetUserOwnedIdentityRequest>>,
     delete_user_identity: Mutex<Vec<DeleteUserOwnedIdentityRequest>>,
+    create_workspace_identity: Mutex<Vec<CreateWorkspaceOwnedFixedTokenIdentityRequest>>,
+    list_workspace_identities: Mutex<Vec<ListWorkspaceOwnedIdentitiesRequest>>,
+    get_workspace_identity: Mutex<Vec<GetWorkspaceOwnedIdentityRequest>>,
+    delete_workspace_identity: Mutex<Vec<DeleteWorkspaceOwnedIdentityRequest>>,
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -1518,6 +1605,100 @@ impl IdentityService for MockIdentityService {
 }
 
 #[derive(Clone)]
+struct MockWorkspaceIdentityService {
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl WorkspaceIdentityService for MockWorkspaceIdentityService {
+    async fn create_workspace_owned_fixed_token_identity(
+        &self,
+        request: Request<CreateWorkspaceOwnedFixedTokenIdentityRequest>,
+    ) -> Result<Response<CreateWorkspaceOwnedFixedTokenIdentityResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .create_workspace_identity
+            .lock()
+            .expect("create_workspace_identity capture")
+            .push(request.clone());
+        let workspace = request.workspace.clone().unwrap_or_default();
+        Ok(Response::new(
+            CreateWorkspaceOwnedFixedTokenIdentityResponse {
+                identity: Some(mock_workspace_identity(
+                    &request.name,
+                    &request.identity_spec_name,
+                    workspace.clone(),
+                    IdentitySpecScope {
+                        value: Some(identity_spec_scope::Value::Workspace(workspace)),
+                    },
+                )),
+            },
+        ))
+    }
+
+    async fn list_workspace_owned_identities(
+        &self,
+        request: Request<ListWorkspaceOwnedIdentitiesRequest>,
+    ) -> Result<Response<ListWorkspaceOwnedIdentitiesResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .list_workspace_identities
+            .lock()
+            .expect("list_workspace_identities capture")
+            .push(request.clone());
+        let workspace = request.workspace.unwrap_or_default();
+        Ok(Response::new(ListWorkspaceOwnedIdentitiesResponse {
+            identities: vec![
+                mock_workspace_identity(
+                    "workspace_local",
+                    "workspace_token",
+                    workspace.clone(),
+                    IdentitySpecScope {
+                        value: Some(identity_spec_scope::Value::Workspace(workspace.clone())),
+                    },
+                ),
+                mock_workspace_identity(
+                    "global_fallback",
+                    "global_token",
+                    workspace,
+                    global_identity_spec_scope(),
+                ),
+            ],
+        }))
+    }
+
+    async fn get_workspace_owned_identity(
+        &self,
+        request: Request<GetWorkspaceOwnedIdentityRequest>,
+    ) -> Result<Response<GetWorkspaceOwnedIdentityResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .get_workspace_identity
+            .lock()
+            .expect("get_workspace_identity capture")
+            .push(request.clone());
+        Ok(Response::new(GetWorkspaceOwnedIdentityResponse {
+            identity: Some(mock_workspace_identity_for_get(
+                &request.name,
+                request.workspace.unwrap_or_default(),
+            )),
+        }))
+    }
+
+    async fn delete_workspace_owned_identity(
+        &self,
+        request: Request<DeleteWorkspaceOwnedIdentityRequest>,
+    ) -> Result<Response<DeleteWorkspaceOwnedIdentityResponse>, Status> {
+        self.captured
+            .delete_workspace_identity
+            .lock()
+            .expect("delete_workspace_identity capture")
+            .push(request.into_inner());
+        Ok(Response::new(DeleteWorkspaceOwnedIdentityResponse {}))
+    }
+}
+
+#[derive(Clone)]
 struct MockSourceService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
@@ -1896,6 +2077,7 @@ impl MockServer {
         let search_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
         let identity_captured = Arc::clone(&captured);
+        let workspace_identity_captured = Arc::clone(&captured);
         let identity_spec_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
         let function_captured = Arc::clone(&captured);
@@ -1913,6 +2095,11 @@ impl MockServer {
                 .add_service(IdentityServiceServer::new(MockIdentityService {
                     captured: identity_captured,
                 }))
+                .add_service(WorkspaceIdentityServiceServer::new(
+                    MockWorkspaceIdentityService {
+                        captured: workspace_identity_captured,
+                    },
+                ))
                 .add_service(IdentitySpecServiceServer::new(MockIdentitySpecService {
                     captured: identity_spec_captured,
                 }))
@@ -2240,6 +2427,51 @@ impl MockServer {
             + self.list_user_identities_requests().len()
             + self.get_user_identity_requests().len()
             + self.delete_user_identity_requests().len()
+    }
+
+    pub(crate) fn create_workspace_identity_requests(
+        &self,
+    ) -> Vec<CreateWorkspaceOwnedFixedTokenIdentityRequest> {
+        self.captured
+            .create_workspace_identity
+            .lock()
+            .expect("create_workspace_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn list_workspace_identities_requests(
+        &self,
+    ) -> Vec<ListWorkspaceOwnedIdentitiesRequest> {
+        self.captured
+            .list_workspace_identities
+            .lock()
+            .expect("list_workspace_identities capture")
+            .clone()
+    }
+
+    pub(crate) fn get_workspace_identity_requests(&self) -> Vec<GetWorkspaceOwnedIdentityRequest> {
+        self.captured
+            .get_workspace_identity
+            .lock()
+            .expect("get_workspace_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_workspace_identity_requests(
+        &self,
+    ) -> Vec<DeleteWorkspaceOwnedIdentityRequest> {
+        self.captured
+            .delete_workspace_identity
+            .lock()
+            .expect("delete_workspace_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn workspace_identity_request_count(&self) -> usize {
+        self.create_workspace_identity_requests().len()
+            + self.list_workspace_identities_requests().len()
+            + self.get_workspace_identity_requests().len()
+            + self.delete_workspace_identity_requests().len()
     }
 
     pub(crate) fn endpoint_uri(&self) -> &str {

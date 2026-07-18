@@ -812,6 +812,242 @@ async fn current_user_identity_malformed_responses_fail_closed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn workspace_identity_add_reads_stdin_without_secret_egress_or_other_identity_rpc() {
+    let server = MockServer::start().await;
+    let token = "workspace-fixed-token-secret-sentinel";
+
+    let added = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args([
+            "--workspace",
+            "work",
+            "identity",
+            "--workspace-owned",
+            "add",
+            "github_shared",
+            "--identity-spec",
+            "workspace_token",
+            "--token-stdin",
+        ])
+        .write_stdin(format!("{token}\r\n"))
+        .assert()
+        .success()
+        .stdout(
+            "Stored workspace identity 'github_shared' in 'work' using identity spec 'workspace_token' from workspace:work.\n",
+        );
+    let stdout = String::from_utf8_lossy(&added.get_output().stdout);
+    let stderr = String::from_utf8_lossy(&added.get_output().stderr);
+    assert!(!stdout.contains(token), "secret leaked to stdout: {stdout}");
+    assert!(!stderr.contains(token), "secret leaked to stderr: {stderr}");
+
+    let requests = server.create_workspace_identity_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].name, "github_shared");
+    assert_eq!(requests[0].identity_spec_name, "workspace_token");
+    assert_eq!(
+        requests[0].setup.as_ref().map(|setup| setup.token.as_str()),
+        Some(token)
+    );
+    assert_eq!(server.workspace_identity_request_count(), 1);
+    assert_eq!(server.current_user_identity_request_count(), 0);
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_identity_list_and_info_render_exact_owner_and_resolved_scope() {
+    let server = MockServer::start().await;
+
+    let listed = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args([
+            "--workspace",
+            "work",
+            "identity",
+            "--workspace-owned",
+            "list",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&listed.get_output().stdout);
+    let rows = nonempty_lines(&stdout);
+    for expected in [
+        [
+            "workspace_local",
+            "workspace_token",
+            "demo",
+            "fixed_token",
+            "api.example.com:443",
+            "workspace:work",
+        ],
+        [
+            "global_fallback",
+            "global_token",
+            "demo",
+            "fixed_token",
+            "api.example.com:443",
+            "global",
+        ],
+    ] {
+        assert!(
+            rows.iter().any(|row| row.split_whitespace().eq(expected)),
+            "missing row {expected:?}: {stdout}"
+        );
+    }
+    let lists = server.list_workspace_identities_requests();
+    assert_eq!(lists.len(), 1);
+    assert_workspace_name(lists[0].workspace.as_ref(), "work");
+
+    for (name, spec, scope) in [
+        ("workspace_local", "workspace_token", "workspace:work"),
+        ("global_fallback", "global_token", "global"),
+    ] {
+        let info = server
+            .cmd()
+            .env("CORAL_WORKSPACE", "ignored")
+            .args([
+                "--workspace",
+                "work",
+                "identity",
+                "--workspace-owned",
+                "info",
+                name,
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&info.get_output().stdout);
+        for expected in [
+            format!("Identity spec: {spec}"),
+            "Owner:         workspace:work".to_string(),
+            format!("Spec scope:    {scope}"),
+            format!("Fingerprint:   fingerprint-{spec}"),
+        ] {
+            assert!(stdout.contains(&expected), "missing {expected:?}: {stdout}");
+        }
+    }
+    let gets = server.get_workspace_identity_requests();
+    assert_eq!(gets.len(), 2);
+    for request in &gets {
+        assert_workspace_name(request.workspace.as_ref(), "work");
+    }
+    assert_eq!(server.workspace_identity_request_count(), 3);
+    assert_eq!(server.current_user_identity_request_count(), 0);
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_identity_remove_sends_exact_request() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args([
+            "--workspace",
+            "work",
+            "identity",
+            "--workspace-owned",
+            "remove",
+            "github_shared",
+        ])
+        .assert()
+        .success()
+        .stdout("Removed workspace identity 'github_shared' from 'work'.\n");
+    let requests = server.delete_workspace_identity_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].name, "github_shared");
+    assert_eq!(server.workspace_identity_request_count(), 1);
+    assert_eq!(server.current_user_identity_request_count(), 0);
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_identity_rejects_ambiguous_selection_without_rpc() {
+    let server = MockServer::start().await;
+
+    let current_user = server
+        .cmd()
+        .args(["--workspace", "work", "identity", "list"])
+        .assert()
+        .failure();
+    assert!(
+        String::from_utf8_lossy(&current_user.get_output().stderr)
+            .contains("add --workspace-owned")
+    );
+    let environment_only = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "work")
+        .args(["identity", "--workspace-owned", "list"])
+        .assert()
+        .failure();
+    assert!(
+        String::from_utf8_lossy(&environment_only.get_output().stderr)
+            .contains("--workspace-owned requires an explicit --workspace NAME")
+    );
+    assert_eq!(server.workspace_identity_request_count(), 0);
+    assert_eq!(server.current_user_identity_request_count(), 0);
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_identity_malformed_responses_fail_closed() {
+    let server = MockServer::start().await;
+    let cases = [
+        ("missing_owner", "missing exact owner"),
+        ("current_user_owner", "current-user owner"),
+        ("wrong_owner", "response owner 'other' does not match"),
+        ("missing_spec", "missing identity spec reference"),
+        ("missing_scope", "missing exact identity-spec scope"),
+        ("wrong_scope", "response spec scope 'other' does not match"),
+    ];
+
+    for (name, expected) in cases {
+        let result = server
+            .cmd()
+            .env("CORAL_WORKSPACE", "ignored")
+            .args([
+                "--workspace",
+                "work",
+                "identity",
+                "--workspace-owned",
+                "info",
+                name,
+            ])
+            .assert()
+            .failure()
+            .stdout("");
+        let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+        assert!(stderr.contains(expected), "missing {expected:?}: {stderr}");
+    }
+    let gets = server.get_workspace_identity_requests();
+    assert_eq!(
+        gets.iter()
+            .map(|request| request.name.as_str())
+            .collect::<Vec<_>>(),
+        cases.map(|(name, _)| name).as_slice()
+    );
+    for request in &gets {
+        assert_workspace_name(request.workspace.as_ref(), "work");
+    }
+    assert_eq!(server.workspace_identity_request_count(), cases.len());
+    assert_eq!(server.current_user_identity_request_count(), 0);
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_list_renders_configured_sources() {
     let server = MockServer::start().await;
 
