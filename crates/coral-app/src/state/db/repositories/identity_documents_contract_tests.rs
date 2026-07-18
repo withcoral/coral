@@ -1,3 +1,4 @@
+use sea_query::{Expr, ExprTrait, Query};
 use tempfile::tempdir;
 
 use super::identity_documents::IdentityDocumentRecord;
@@ -5,8 +6,30 @@ use crate::bootstrap::AppError;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::identity::{Principal, PrincipalKind};
+use crate::state::db::schema::IdentityDocuments;
 use crate::state::db::{CoralDb, CoralTx, DbRepos, IdentitySpecKey, ResolvedDatabaseConfig};
 use crate::workspaces::WorkspaceName;
+
+pub(crate) async fn set_identity_document_version(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+    version: i64,
+) {
+    let mut tx = db.begin().await.expect("begin document version update");
+    tx.execute(
+        Query::update()
+            .table(IdentityDocuments::Table)
+            .value(IdentityDocuments::DocumentVersion, version)
+            .and_where(Expr::col(IdentityDocuments::OwnerKind).eq(owner.kind()))
+            .and_where(Expr::col(IdentityDocuments::OwnerKey).eq(owner.key()))
+            .and_where(Expr::col(IdentityDocuments::Name).eq(name.as_str()))
+            .to_owned(),
+    )
+    .await
+    .expect("set identity document version");
+    tx.commit().await.expect("commit document version update");
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn identity_document_repository_contract_holds_against_sqlite() {

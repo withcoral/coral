@@ -423,7 +423,9 @@ fn prepare_document_write(
         .map_err(Into::into)
 }
 
-fn record_to_installed(record: IdentitySpecRecord) -> Result<InstalledIdentitySpec, DbError> {
+pub(crate) fn record_to_installed(
+    record: IdentitySpecRecord,
+) -> Result<InstalledIdentitySpec, DbError> {
     let manifest = parse_identity_manifest_yaml(&record.manifest_yaml).map_err(|error| {
         corrupt_record(&record.key, &format!("manifest cannot be parsed: {error}"))
     })?;
