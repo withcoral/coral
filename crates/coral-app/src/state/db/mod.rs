@@ -24,6 +24,8 @@ pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
     IdentitySpecScope,
 };
+#[cfg(test)]
+pub(crate) use repositories::identity_specs_contract_tests::set_identity_spec_document_version;
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
 pub(crate) use session::{DbRepos, DbSession};
 #[cfg(test)]
