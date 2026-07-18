@@ -80,6 +80,7 @@ pub(crate) fn app_error_type(error: &AppError) -> &'static str {
         }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
+        AppError::RetryableTransactionConflict => "DATABASE_TRANSACTION_CONFLICT",
         AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
         AppError::Internal(_) => "INTERNAL",
         AppError::Io(_) => "IO",
