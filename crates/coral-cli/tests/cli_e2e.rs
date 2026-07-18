@@ -26,8 +26,8 @@ use tempfile::tempdir;
 use tonic::Code;
 
 use harness::{
-    MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
-    encode_arrow_ipc_stream,
+    MockServer, MockServerConfig, assert_default_workspace, assert_identity_spec_global_scope,
+    assert_identity_spec_workspace_scope, assert_workspace_name, encode_arrow_ipc_stream,
 };
 
 fn nonempty_lines(output: &str) -> Vec<&str> {
@@ -37,6 +37,28 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
         .filter(|line| !line.is_empty())
         .collect()
 }
+
+const IDENTITY_SPEC_WITH_INPUTS: &str = r"kind: identity
+spec_version: 1
+name: demo_oauth
+version: 1.0.0
+issuer: demo
+type: oauth
+audience: {host: api.example.com}
+inputs:
+  TENANT: {kind: variable, default: public}
+  CLIENT_SECRET: {kind: secret, required: true}
+oauth:
+  method:
+    flow: {type: authorization_code, pkce: disabled}
+    redirect_uri: http://127.0.0.1:53682/oauth/callback
+    endpoints:
+      authorization_url: https://provider.example.com/authorize
+      token_url: https://provider.example.com/token
+    client:
+      id: {input: TENANT}
+      secret: {input: CLIENT_SECRET, transport: basic_auth}
+";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sql_command_renders_table_output() {
@@ -357,6 +379,204 @@ async fn workspace_remove_sends_request() {
     let requests = server.delete_workspace_requests();
     assert_eq!(requests.len(), 1, "expected one delete_workspace call");
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_add_preserves_manifest_inputs_and_workspace_selection() {
+    let server = MockServer::start().await;
+    let directory = tempdir().expect("identity spec dir");
+    let manifest = directory.path().join("identity.yaml");
+    std::fs::write(&manifest, IDENTITY_SPEC_WITH_INPUTS).expect("write identity spec");
+    let secret = "super-secret-sentinel";
+
+    let assert = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "env-work")
+        .env("TENANT", "tenant-from-env")
+        .env("CLIENT_SECRET", secret)
+        .args(["identity-spec", "add", "--file"])
+        .arg(&manifest)
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stdout.contains("Added identity spec 'demo_oauth'")
+            && stdout.contains("workspace 'env-work'"),
+        "unexpected add output: {stdout}"
+    );
+    assert!(!stdout.contains(secret), "secret leaked to stdout");
+    assert!(!stderr.contains(secret), "secret leaked to stderr");
+
+    server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .env_remove("TENANT")
+        .env_remove("CLIENT_SECRET")
+        .args(["identity-spec", "add", "--file"])
+        .arg(&manifest)
+        .assert()
+        .success()
+        .stdout("Replaced identity spec 'demo_oauth' (1.0.0) in workspace 'default'.\n");
+
+    let requests = server.add_identity_spec_requests();
+    assert_eq!(requests.len(), 2, "expected two add calls");
+    for request in &requests {
+        assert_eq!(request.manifest_yaml, IDENTITY_SPEC_WITH_INPUTS);
+    }
+    assert_identity_spec_workspace_scope(requests[0].scope.as_ref(), "env-work");
+    assert_eq!(
+        requests[0]
+            .input_values
+            .iter()
+            .map(|input| (input.key.as_str(), input.value.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("TENANT", "tenant-from-env"), ("CLIENT_SECRET", secret)]
+    );
+    assert_identity_spec_workspace_scope(requests[1].scope.as_ref(), "default");
+    assert!(requests[1].input_values.is_empty());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_list_and_info_use_exact_scopes_and_render_safely() {
+    let server = MockServer::start().await;
+
+    let list = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args([
+            "--workspace",
+            "work",
+            "identity-spec",
+            "list",
+            "--include-global",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&list.get_output().stdout);
+    let rows = nonempty_lines(&stdout);
+    for expected in [
+        ["global_demo", "1.0.0", "demo", "fixed_token", "global"],
+        [
+            "workspace_demo",
+            "1.0.0",
+            "demo",
+            "unknown",
+            "workspace:work",
+        ],
+    ] {
+        assert!(
+            rows.iter().any(|row| row.split_whitespace().eq(expected)),
+            "missing row {expected:?}: {stdout}"
+        );
+    }
+    let lists = server.list_identity_specs_requests();
+    assert_eq!(lists.len(), 1);
+    assert_identity_spec_workspace_scope(lists[0].scope.as_ref(), "work");
+    assert!(lists[0].include_global);
+
+    let info = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args(["identity-spec", "--global", "info", "global_demo"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&info.get_output().stdout);
+    for expected in [
+        "global_demo",
+        "Scope:       global",
+        "Type:        fixed_token",
+        "Manifest:",
+        "name: global_demo",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected:?}: {stdout}");
+    }
+    let gets = server.get_identity_spec_requests();
+    assert_eq!(gets.len(), 1);
+    assert_identity_spec_global_scope(gets[0].scope.as_ref());
+
+    let missing_scope = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .args(["identity-spec", "info", "missing_scope"])
+        .assert()
+        .failure();
+    assert!(
+        String::from_utf8_lossy(&missing_scope.get_output().stderr)
+            .contains("identity spec response missing exact scope")
+    );
+    let gets = server.get_identity_spec_requests();
+    assert_eq!(gets.len(), 2);
+    assert_identity_spec_workspace_scope(gets[1].scope.as_ref(), "default");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_remove_uses_strict_global_request() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args(["identity-spec", "remove", "global_demo", "--global"])
+        .assert()
+        .success()
+        .stdout("Removed identity spec 'global_demo' from global scope.\n");
+    let requests = server.delete_identity_spec_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].name, "global_demo");
+    assert_identity_spec_global_scope(requests[0].scope.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_invalid_scope_and_interactive_args_send_no_rpc() {
+    let server = MockServer::start().await;
+    let directory = tempdir().expect("identity spec dir");
+    let manifest = directory.path().join("identity.yaml");
+    std::fs::write(&manifest, IDENTITY_SPEC_WITH_INPUTS).expect("write identity spec");
+
+    server
+        .cmd()
+        .args(["--workspace", "work", "identity-spec", "--global", "list"])
+        .assert()
+        .failure();
+    server
+        .cmd()
+        .args(["identity-spec", "--global", "list", "--include-global"])
+        .assert()
+        .failure();
+    let interactive = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .env_remove("TENANT")
+        .env_remove("CLIENT_SECRET")
+        .args(["identity-spec", "add", "--interactive", "--file"])
+        .arg(&manifest)
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&interactive.get_output().stderr);
+    assert!(
+        stderr.contains("interactive identity-spec add requires a TTY"),
+        "unexpected stderr: {stderr}"
+    );
+    server
+        .cmd()
+        .args(["identity-spec", "remove", "demo", "--force"])
+        .assert()
+        .failure();
+    server
+        .cmd()
+        .args(["identity-spec", "remove", "demo", "--orphan"])
+        .assert()
+        .failure();
+    assert_eq!(server.identity_spec_request_count(), 0);
 
     server.shutdown().await;
 }
