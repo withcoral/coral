@@ -43,7 +43,7 @@ use serde_json::Value;
 pub use client::{
     AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, FunctionClient,
     HealthCheckClient, IdentityClient, IdentitySpecClient, QueryClient, SearchClient, SourceClient,
-    TaskClient, WorkspaceClient, default_workspace, workspace,
+    TaskClient, WorkspaceClient, WorkspaceIdentityClient, default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
 pub use propagation::{BearerToken, with_task_metadata};

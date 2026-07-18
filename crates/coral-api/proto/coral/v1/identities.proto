@@ -103,6 +103,61 @@ message DeleteUserOwnedIdentityRequest {
 // Confirms user-owned identity deletion.
 message DeleteUserOwnedIdentityResponse {}
 
+// Creates or replaces one fixed-token identity owned by a workspace.
+message CreateWorkspaceOwnedFixedTokenIdentityRequest {
+  // Workspace that owns the identity independently of any user.
+  Workspace workspace = 1;
+  // Stable identity name used by source identity bindings.
+  string name = 2;
+  // Identity spec name resolved from the workspace with global fallback.
+  string identity_spec_name = 3;
+  // Write-only fixed-token setup material.
+  FixedTokenIdentitySetup setup = 4;
+}
+
+// Returns the created or replaced workspace-owned identity metadata.
+message CreateWorkspaceOwnedFixedTokenIdentityResponse {
+  // Stored identity. Setup material is never returned.
+  Identity identity = 1;
+}
+
+// Lists identities owned by one workspace.
+message ListWorkspaceOwnedIdentitiesRequest {
+  // Workspace whose identities should be listed.
+  Workspace workspace = 1;
+}
+
+// Returns workspace-owned identities in identity-name order.
+message ListWorkspaceOwnedIdentitiesResponse {
+  // Stored workspace-owned identity metadata.
+  repeated Identity identities = 1;
+}
+
+// Fetches one identity owned by a workspace.
+message GetWorkspaceOwnedIdentityRequest {
+  // Workspace that owns the identity.
+  Workspace workspace = 1;
+  // Stored identity name.
+  string name = 2;
+}
+
+// Returns one workspace-owned identity.
+message GetWorkspaceOwnedIdentityResponse {
+  // Stored identity metadata.
+  Identity identity = 1;
+}
+
+// Deletes one identity owned by a workspace.
+message DeleteWorkspaceOwnedIdentityRequest {
+  // Workspace that owns the identity.
+  Workspace workspace = 1;
+  // Stored identity name.
+  string name = 2;
+}
+
+// Confirms workspace-owned identity deletion.
+message DeleteWorkspaceOwnedIdentityResponse {}
+
 // Current-user stored identity management APIs.
 service IdentityService {
   // Creates or replaces one current-user fixed-token identity.
@@ -113,4 +168,16 @@ service IdentityService {
   rpc GetUserOwnedIdentity(GetUserOwnedIdentityRequest) returns (GetUserOwnedIdentityResponse);
   // Deletes one current-user identity.
   rpc DeleteUserOwnedIdentity(DeleteUserOwnedIdentityRequest) returns (DeleteUserOwnedIdentityResponse);
+}
+
+// Workspace-owned stored identity management APIs.
+service WorkspaceIdentityService {
+  // Creates or replaces one workspace-owned fixed-token identity.
+  rpc CreateWorkspaceOwnedFixedTokenIdentity(CreateWorkspaceOwnedFixedTokenIdentityRequest) returns (CreateWorkspaceOwnedFixedTokenIdentityResponse);
+  // Lists identities owned by one workspace.
+  rpc ListWorkspaceOwnedIdentities(ListWorkspaceOwnedIdentitiesRequest) returns (ListWorkspaceOwnedIdentitiesResponse);
+  // Fetches one identity owned by a workspace.
+  rpc GetWorkspaceOwnedIdentity(GetWorkspaceOwnedIdentityRequest) returns (GetWorkspaceOwnedIdentityResponse);
+  // Deletes one identity owned by a workspace.
+  rpc DeleteWorkspaceOwnedIdentity(DeleteWorkspaceOwnedIdentityRequest) returns (DeleteWorkspaceOwnedIdentityResponse);
 }
