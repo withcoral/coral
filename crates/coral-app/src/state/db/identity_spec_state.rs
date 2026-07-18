@@ -77,6 +77,17 @@ impl IdentitySpecState<'_> {
         let mut tx = self.db.begin_serializable().await?;
         let result = async {
             require_scope_workspace(&mut tx, key.scope()).await?;
+            if tx.identity_specs().get(key).await?.is_none() {
+                return Ok(false);
+            }
+            let dependent_count = tx.identities().count_dependents(key).await?;
+            if dependent_count > 0 {
+                return Err(AppError::FailedPrecondition(format!(
+                    "identity spec '{}' in scope '{}' has {dependent_count} stored identity references and cannot be deleted",
+                    key.name(),
+                    scope_label(key.scope()),
+                )));
+            }
             tx.identity_specs().delete(key).await.map_err(Into::into)
         }
         .await;
@@ -106,6 +117,13 @@ impl IdentitySpecState<'_> {
         let snapshot = load_mutation_snapshot(&mut tx, key).await?;
         tx.commit().await?;
         Ok(snapshot)
+    }
+}
+
+fn scope_label(scope: &IdentitySpecScope) -> String {
+    match scope {
+        IdentitySpecScope::Global => "global".to_string(),
+        IdentitySpecScope::Workspace(workspace) => format!("workspace:{workspace}"),
     }
 }
 
