@@ -648,7 +648,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
                 )
                 .await
             };
-            bootstrap.shutdown().await;
+            Box::pin(bootstrap.shutdown()).await;
             result
         }
         RequiredRuntime::None => {

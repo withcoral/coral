@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/identity_specs.proto";
+import "coral/v1/resources.proto";
+
+// Explicit current-user identity owner marker.
+message CurrentUserIdentityOwner {}
+
+// Exact owner of one stored provider-facing identity.
+message IdentityOwner {
+  // The selected identity owner. Servers set exactly one value.
+  oneof value {
+    // The current authenticated Coral user principal owns the identity.
+    CurrentUserIdentityOwner current_user = 1;
+    // The selected workspace owns the identity independently of any user.
+    Workspace workspace = 2;
+  }
+}
+
+// Exact installed identity spec revision pinned by one stored identity.
+message IdentitySpecReference {
+  // Stable installed identity spec name.
+  string name = 1;
+  // Exact scope where the selected identity spec is installed.
+  IdentitySpecScope scope = 2;
+  // Semantic manifest fingerprint selected when the identity was written.
+  string fingerprint = 3;
+  // Provider or issuer copied from the selected identity spec.
+  string issuer = 4;
+  // Identity mechanism copied from the selected identity spec.
+  IdentitySpecType identity_type = 5;
+}
+
+// Safe metadata for one stored provider-facing identity.
+message Identity {
+  // Stable identity name used by source identity bindings.
+  string name = 1;
+  // Exact user or workspace owner.
+  IdentityOwner owner = 2;
+  // Exact identity spec revision selected when this identity was written.
+  IdentitySpecReference identity_spec = 3;
+  // Creation time as Unix epoch nanoseconds.
+  int64 created_at_unix_nanos = 4 [jstype = JS_STRING];
+  // Last replacement time as Unix epoch nanoseconds.
+  int64 updated_at_unix_nanos = 5 [jstype = JS_STRING];
+}
+
+// Fixed-token setup payload. The token is write-only and never returned.
+message FixedTokenIdentitySetup {
+  // Bearer token to encrypt and store for this identity.
+  string token = 1;
+}
+
+// Creates or replaces one fixed-token identity owned by the request Coral user
+// principal.
+message CreateUserOwnedFixedTokenIdentityRequest {
+  // Stable identity name used by source identity bindings.
+  string name = 1;
+  // Globally installed fixed-token identity spec name.
+  string identity_spec_name = 2;
+  // Write-only fixed-token setup material.
+  FixedTokenIdentitySetup setup = 3;
+}
+
+// Returns the created or replaced user-owned identity metadata.
+message CreateUserOwnedFixedTokenIdentityResponse {
+  // Stored identity. Setup material is never returned.
+  Identity identity = 1;
+}
+
+// Lists identities owned by the request Coral user principal.
+message ListUserOwnedIdentitiesRequest {}
+
+// Returns user-owned identities in identity-name order.
+message ListUserOwnedIdentitiesResponse {
+  // Stored user-owned identity metadata.
+  repeated Identity identities = 1;
+}
+
+// Fetches one identity owned by the request Coral user principal.
+message GetUserOwnedIdentityRequest {
+  // Stored identity name.
+  string name = 1;
+}
+
+// Returns one user-owned identity.
+message GetUserOwnedIdentityResponse {
+  // Stored identity metadata.
+  Identity identity = 1;
+}
+
+// Deletes one identity owned by the request Coral user principal.
+message DeleteUserOwnedIdentityRequest {
+  // Stored identity name.
+  string name = 1;
+}
+
+// Confirms user-owned identity deletion.
+message DeleteUserOwnedIdentityResponse {}
+
+// Current-user stored identity management APIs.
+service IdentityService {
+  // Creates or replaces one current-user fixed-token identity.
+  rpc CreateUserOwnedFixedTokenIdentity(CreateUserOwnedFixedTokenIdentityRequest) returns (CreateUserOwnedFixedTokenIdentityResponse);
+  // Lists current-user identities.
+  rpc ListUserOwnedIdentities(ListUserOwnedIdentitiesRequest) returns (ListUserOwnedIdentitiesResponse);
+  // Fetches one current-user identity.
+  rpc GetUserOwnedIdentity(GetUserOwnedIdentityRequest) returns (GetUserOwnedIdentityResponse);
+  // Deletes one current-user identity.
+  rpc DeleteUserOwnedIdentity(DeleteUserOwnedIdentityRequest) returns (DeleteUserOwnedIdentityResponse);
+}
