@@ -220,6 +220,92 @@ mod tests {
         assert_eq!(remaining, 1);
     }
 
+    #[tokio::test]
+    async fn sqlite_identity_document_schema_enforces_exact_parent_and_cascade() {
+        let pool = sqlx::SqlitePool::connect(":memory:")
+            .await
+            .expect("sqlite pool");
+        MIGRATOR.run(&pool).await.expect("run migrations");
+
+        let columns: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_table_info('identity_documents') ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("identity document columns");
+        assert_eq!(
+            columns.iter().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "owner_kind",
+                "owner_key",
+                "name",
+                "document_version",
+                "ciphertext",
+                "nonce",
+                "wrapped_dek",
+                "wrapped_dek_nonce",
+                "key_id",
+                "algorithm",
+                "binding_version",
+                "created_at_unix_nanos",
+                "updated_at_unix_nanos",
+            ]
+        );
+
+        sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES ('shared', 0)")
+            .execute(&pool)
+            .await
+            .expect("seed document workspace");
+        for row in [
+            ("user", "shared", None, "alpha", None),
+            ("workspace", "shared", Some("shared"), "beta", None),
+            ("user", "other", None, "beta", None),
+        ] {
+            insert_identity(&pool, row)
+                .await
+                .expect("seed identity document parent");
+        }
+        for key in [
+            ("user", "shared", "alpha"),
+            ("workspace", "shared", "beta"),
+            ("user", "other", "beta"),
+        ] {
+            insert_identity_document(&pool, key.0, key.1, key.2)
+                .await
+                .expect("identity document with exact parent");
+        }
+        insert_identity_document(&pool, "user", "shared", "alpha")
+            .await
+            .expect_err("an identity may have only one setup document");
+        insert_identity_document(&pool, "user", "shared", "beta")
+            .await
+            .expect_err("recombined parent tuple must be rejected");
+        insert_identity_document(&pool, "user", "missing", "missing")
+            .await
+            .expect_err("orphan identity document must be rejected");
+
+        sqlx::query(
+            "DELETE FROM identities WHERE owner_kind = 'user' AND owner_key = 'shared' AND name = 'alpha'",
+        )
+        .execute(&pool)
+        .await
+        .expect("delete direct identity parent");
+        sqlx::query("DELETE FROM workspaces WHERE id = 'shared'")
+            .execute(&pool)
+            .await
+            .expect("delete workspace parent");
+        let surviving: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT owner_kind, owner_key, name FROM identity_documents ORDER BY owner_kind, owner_key, name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("surviving identity documents");
+        assert_eq!(
+            surviving,
+            vec![("user".to_string(), "other".to_string(), "beta".to_string())]
+        );
+    }
+
     async fn insert_identity(
         pool: &sqlx::SqlitePool,
         (owner_kind, owner_key, workspace_id, name, identity_spec_workspace_id): IdentityRow<'_>,
@@ -237,6 +323,32 @@ mod tests {
         .bind(workspace_id)
         .bind(name)
         .bind(identity_spec_workspace_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    }
+
+    async fn insert_identity_document(
+        pool: &sqlx::SqlitePool,
+        owner_kind: &str,
+        owner_key: &str,
+        name: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO identity_documents (
+                owner_kind, owner_key, name, document_version,
+                ciphertext, nonce, wrapped_dek, wrapped_dek_nonce,
+                key_id, algorithm, binding_version,
+                created_at_unix_nanos, updated_at_unix_nanos
+             ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, 'test-key', 'test-algorithm', 1, 1, 1)",
+        )
+        .bind(owner_kind)
+        .bind(owner_key)
+        .bind(name)
+        .bind([1_u8].as_slice())
+        .bind([2_u8].as_slice())
+        .bind([3_u8].as_slice())
+        .bind([4_u8].as_slice())
         .execute(pool)
         .await
         .map(|_| ())
