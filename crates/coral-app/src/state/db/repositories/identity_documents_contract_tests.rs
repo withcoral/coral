@@ -4,7 +4,9 @@ use tempfile::tempdir;
 use super::identity_documents::IdentityDocumentRecord;
 use crate::bootstrap::AppError;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
-use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
+use crate::identities::model::{
+    IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference,
+};
 use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::schema::IdentityDocuments;
 use crate::state::db::{CoralDb, CoralTx, DbRepos, IdentitySpecKey, ResolvedDatabaseConfig};
@@ -350,8 +352,15 @@ pub(super) fn document(seed: u8) -> EncryptedEnvelopeDocument {
 }
 
 pub(super) fn reference(owner: &IdentityOwner, key: IdentitySpecKey) -> IdentitySpecReference {
-    IdentitySpecReference::new(owner, key, "fingerprint", "issuer", "fixed_token")
-        .expect("identity spec reference")
+    IdentitySpecReference::new(
+        owner,
+        key,
+        "fingerprint",
+        "issuer",
+        "fixed_token",
+        IdentityAudience::new("api.example.com", None).expect("identity audience"),
+    )
+    .expect("identity spec reference")
 }
 
 pub(super) fn parsed_workspace(value: &str) -> WorkspaceName {

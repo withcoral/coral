@@ -1,4 +1,8 @@
+use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroU16;
+
+use serde_json::Value;
 
 use crate::bootstrap::AppError;
 use crate::identity::{LOCAL_PRINCIPAL_ID, Principal, PrincipalKind, parse_path_segment};
@@ -7,6 +11,94 @@ use crate::workspaces::WorkspaceName;
 
 const USER_OWNER_KIND: &str = "user";
 const WORKSPACE_OWNER_KIND: &str = "workspace";
+
+/// Normalized provider audience pinned when an identity is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IdentityAudience {
+    host: String,
+    port: Option<NonZeroU16>,
+}
+
+impl IdentityAudience {
+    /// Parse and normalize one typed host and optional non-zero port.
+    pub(crate) fn new(host: &str, port: Option<u16>) -> Result<Self, AppError> {
+        if host.trim().is_empty() {
+            return Err(invalid_audience());
+        }
+        let host = url::Host::parse(host)
+            .map_err(|_error| invalid_audience())?
+            .to_string();
+        let port = port
+            .map(|port| NonZeroU16::new(port).ok_or_else(invalid_audience))
+            .transpose()?;
+        Ok(Self { host, port })
+    }
+
+    /// Extract an already normalized audience from a validated manifest.
+    pub(crate) fn from_manifest(audience: &BTreeMap<String, Value>) -> Result<Self, AppError> {
+        if audience.keys().any(|key| key != "host" && key != "port") {
+            return Err(invalid_audience());
+        }
+        let host = audience
+            .get("host")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid_audience)?;
+        let port = audience
+            .get("port")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+                    .ok_or_else(invalid_audience)
+            })
+            .transpose()?;
+        let normalized = Self::new(host, port)?;
+        if normalized.host != host {
+            return Err(invalid_audience());
+        }
+        Ok(normalized)
+    }
+
+    pub(crate) fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub(crate) fn port(&self) -> Option<u16> {
+        self.port.map(NonZeroU16::get)
+    }
+
+    fn from_storage_parts(
+        host: Option<String>,
+        port: Option<i64>,
+    ) -> Result<Option<Self>, DbError> {
+        let Some(host) = host else {
+            return if port.is_none() {
+                Ok(None)
+            } else {
+                Err(corrupt_audience())
+            };
+        };
+        let port = port
+            .map(|port| u16::try_from(port).map_err(|_error| corrupt_audience()))
+            .transpose()?;
+        let audience = Self::new(&host, port).map_err(|_error| corrupt_audience())?;
+        if audience.host != host {
+            return Err(corrupt_audience());
+        }
+        Ok(Some(audience))
+    }
+}
+
+fn invalid_audience() -> AppError {
+    AppError::InvalidInput(
+        "identity audience must contain a normalized host and optional port from 1 through 65535"
+            .to_string(),
+    )
+}
+
+fn corrupt_audience() -> DbError {
+    DbError::CorruptData("persisted identity audience is invalid or not normalized".to_string())
+}
 
 /// Validated name of one identity instance within an owner.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -145,6 +237,7 @@ pub(crate) struct IdentitySpecReference {
     fingerprint: String,
     issuer: String,
     identity_type: String,
+    audience: Option<IdentityAudience>,
 }
 
 impl IdentitySpecReference {
@@ -155,6 +248,7 @@ impl IdentitySpecReference {
         fingerprint: impl Into<String>,
         issuer: impl Into<String>,
         identity_type: impl Into<String>,
+        audience: IdentityAudience,
     ) -> Result<Self, AppError> {
         validate_scope(owner, key.scope())?;
         let reference = Self {
@@ -162,21 +256,9 @@ impl IdentitySpecReference {
             fingerprint: fingerprint.into(),
             issuer: issuer.into(),
             identity_type: identity_type.into(),
+            audience: Some(audience),
         };
-        for (field, value) in [
-            ("identity spec fingerprint", reference.fingerprint.as_str()),
-            ("identity spec issuer", reference.issuer.as_str()),
-            ("identity spec type", reference.identity_type.as_str()),
-        ] {
-            if value.trim().is_empty() {
-                return Err(AppError::InvalidInput(format!("missing {field}")));
-            }
-        }
-        if !matches!(reference.identity_type.as_str(), "oauth" | "fixed_token") {
-            return Err(AppError::InvalidInput(
-                "identity spec type must be 'oauth' or 'fixed_token'".to_string(),
-            ));
-        }
+        reference.validate_required_fields()?;
         Ok(reference)
     }
 
@@ -196,10 +278,19 @@ impl IdentitySpecReference {
         &self.identity_type
     }
 
+    /// Return the pinned audience, absent only for legacy persisted rows.
+    pub(crate) fn audience(&self) -> Option<&IdentityAudience> {
+        self.audience.as_ref()
+    }
+
     pub(crate) fn validate_for_owner(&self, owner: &IdentityOwner) -> Result<(), AppError> {
         validate_scope(owner, self.key.scope())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "validates one complete persisted identity spec reference"
+    )]
     pub(crate) fn from_storage_parts(
         owner: &IdentityOwner,
         workspace_id: Option<&str>,
@@ -207,13 +298,46 @@ impl IdentitySpecReference {
         fingerprint: String,
         issuer: String,
         identity_type: String,
+        audience_host: Option<String>,
+        audience_port: Option<i64>,
     ) -> Result<Self, DbError> {
         let key = IdentitySpecKey::from_reference_storage_parts(workspace_id, name)?;
-        Self::new(owner, key, fingerprint, issuer, identity_type).map_err(|error| {
+        validate_scope(owner, key.scope()).map_err(|error| {
             DbError::CorruptData(format!(
                 "invalid persisted identity spec reference: {error}"
             ))
-        })
+        })?;
+        let reference = Self {
+            key,
+            fingerprint,
+            issuer,
+            identity_type,
+            audience: IdentityAudience::from_storage_parts(audience_host, audience_port)?,
+        };
+        reference.validate_required_fields().map_err(|error| {
+            DbError::CorruptData(format!(
+                "invalid persisted identity spec reference: {error}"
+            ))
+        })?;
+        Ok(reference)
+    }
+
+    fn validate_required_fields(&self) -> Result<(), AppError> {
+        for (field, value) in [
+            ("identity spec fingerprint", self.fingerprint.as_str()),
+            ("identity spec issuer", self.issuer.as_str()),
+            ("identity spec type", self.identity_type.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(AppError::InvalidInput(format!("missing {field}")));
+            }
+        }
+        if !matches!(self.identity_type.as_str(), "oauth" | "fixed_token") {
+            return Err(AppError::InvalidInput(
+                "identity spec type must be 'oauth' or 'fixed_token'".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -234,7 +358,7 @@ fn validate_scope(owner: &IdentityOwner, scope: &IdentitySpecScope) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::{IdentityName, IdentityOwner, IdentitySpecReference};
+    use super::{IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference};
     use crate::identity::{Principal, PrincipalKind};
     use crate::state::db::IdentitySpecKey;
     use crate::workspaces::WorkspaceName;
@@ -290,7 +414,14 @@ mod tests {
         let beta = WorkspaceName::parse("beta").expect("beta");
         let workspace = IdentityOwner::workspace(alpha.clone());
         let reference = |owner: &IdentityOwner, key| {
-            IdentitySpecReference::new(owner, key, "fingerprint", "issuer", "fixed_token")
+            IdentitySpecReference::new(
+                owner,
+                key,
+                "fingerprint",
+                "issuer",
+                "fixed_token",
+                audience(),
+            )
         };
 
         reference(&user, IdentitySpecKey::global("token").expect("global"))
@@ -336,8 +467,55 @@ mod tests {
                 fields.0,
                 fields.1,
                 fields.2,
+                audience(),
             )
             .expect_err("blank required spec-reference field must be rejected");
+        }
+    }
+
+    #[test]
+    fn identity_audiences_are_typed_normalized_and_legacy_aware() {
+        let normalized = IdentityAudience::new("API.EXAMPLE.COM", Some(443)).expect("audience");
+        assert_eq!(normalized.host(), "api.example.com");
+        assert_eq!(normalized.port(), Some(443));
+        for (host, port) in [
+            ("", None),
+            ("https://api.example.com", None),
+            ("api.example.com", Some(0)),
+        ] {
+            IdentityAudience::new(host, port).expect_err("invalid audience");
+        }
+
+        let owner = IdentityOwner::for_user(UserPrincipal::local());
+        let stored = |host: Option<&str>, port| {
+            IdentitySpecReference::from_storage_parts(
+                &owner,
+                None,
+                "token",
+                "fingerprint".to_string(),
+                "issuer".to_string(),
+                "fixed_token".to_string(),
+                host.map(str::to_string),
+                port,
+            )
+        };
+        assert!(
+            stored(None, None)
+                .expect("legacy reference")
+                .audience()
+                .is_none()
+        );
+        let known = stored(Some("api.example.com"), Some(8443)).expect("known reference");
+        assert_eq!(known.audience().expect("audience").port(), Some(8443));
+        for (host, port) in [
+            (None, Some(443)),
+            (Some("API.EXAMPLE.COM"), None),
+            (Some("bad host"), None),
+            (Some("api.example.com"), Some(0)),
+            (Some("api.example.com"), Some(-1)),
+            (Some("api.example.com"), Some(65_536)),
+        ] {
+            stored(host, port).expect_err("corrupt stored audience");
         }
     }
 
@@ -361,7 +539,13 @@ mod tests {
             "fingerprint".to_string(),
             "issuer".to_string(),
             "fixed_token".to_string(),
+            None,
+            None,
         )
         .expect_err("user cannot reference a workspace spec");
+    }
+
+    fn audience() -> IdentityAudience {
+        IdentityAudience::new("api.example.com", Some(443)).expect("audience")
     }
 }

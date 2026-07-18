@@ -1260,6 +1260,7 @@ pub(crate) mod tests {
             "legacy-mixed-fingerprint",
             original.issuer(),
             original.identity_type(),
+            original.audience().expect("pinned audience").clone(),
         )
         .unwrap();
         let mut tx = db.begin().await.unwrap();

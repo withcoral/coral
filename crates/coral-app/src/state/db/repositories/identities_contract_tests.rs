@@ -5,7 +5,9 @@ use tempfile::tempdir;
 
 use super::identities::IdentityRecord;
 use crate::bootstrap::AppError;
-use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
+use crate::identities::model::{
+    IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference,
+};
 use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::schema::Identities;
 use crate::state::db::{
@@ -78,6 +80,7 @@ async fn assert_identity_repository_contract(db: &CoralDb) {
         "f3",
         "replacement-issuer",
         "oauth",
+        IdentityAudience::new("replacement.example.com", None).expect("replacement audience"),
     )
     .expect("replacement reference");
 
@@ -235,6 +238,44 @@ async fn assert_identity_repository_corruption_contract(db: &CoralDb) {
     seed_identity(&mut tx, &owner, &name, &reference, 10).await;
     tx.commit().await.expect("commit corruption seed");
 
+    let mut tx = db.begin().await.expect("begin legacy audience read");
+    tx.execute(
+        Query::update()
+            .table(Identities::Table)
+            .value(
+                Identities::IdentitySpecAudienceHost,
+                Expr::val(None::<String>),
+            )
+            .value(Identities::IdentitySpecAudiencePort, Expr::val(None::<i64>))
+            .and_where(identity_where(&owner, &name))
+            .to_owned(),
+    )
+    .await
+    .expect("clear legacy audience");
+    let legacy = tx
+        .identities()
+        .get(&owner, &name)
+        .await
+        .expect("read legacy identity")
+        .expect("legacy identity");
+    assert!(legacy.spec_reference.audience().is_none());
+    assert!(matches!(
+        tx.identities()
+            .upsert(&owner, &name, &legacy.spec_reference, 11)
+            .await,
+        Err(AppError::InvalidInput(_))
+    ));
+    tx.rollback().await.expect("restore pinned audience");
+
+    for (host, port) in [
+        (None, Some(443)),
+        (Some(" "), None),
+        (Some("api.example.com"), Some(0)),
+        (Some("api.example.com"), Some(65_536)),
+    ] {
+        assert_audience_constraint_rejected(db, &owner, &name, host, port).await;
+    }
+
     assert_corrupt_identity(
         db,
         &owner,
@@ -249,6 +290,10 @@ async fn assert_identity_repository_corruption_contract(db: &CoralDb) {
         (Identities::IdentitySpecFingerprint, Expr::val("")),
         (Identities::Issuer, Expr::val(" ")),
         (Identities::IdentityType, Expr::val("unknown")),
+        (
+            Identities::IdentitySpecAudienceHost,
+            Expr::val("API.EXAMPLE.COM"),
+        ),
         (Identities::CreatedAtUnixNanos, Expr::val(-1_i64)),
         (Identities::UpdatedAtUnixNanos, Expr::val(9_i64)),
     ] {
@@ -268,6 +313,32 @@ async fn assert_identity_repository_corruption_contract(db: &CoralDb) {
         .await
         .expect("delete corruption workspace");
     tx.commit().await.expect("commit corruption cleanup");
+}
+
+async fn assert_audience_constraint_rejected(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+    host: Option<&str>,
+    port: Option<i64>,
+) {
+    let mut tx = db.begin().await.expect("begin invalid audience update");
+    tx.execute(
+        Query::update()
+            .table(Identities::Table)
+            .value(
+                Identities::IdentitySpecAudienceHost,
+                Expr::val(host.map(str::to_string)),
+            )
+            .value(Identities::IdentitySpecAudiencePort, Expr::val(port))
+            .and_where(identity_where(owner, name))
+            .to_owned(),
+    )
+    .await
+    .expect_err("invalid audience columns must be rejected");
+    tx.rollback()
+        .await
+        .expect("rollback invalid audience update");
 }
 
 #[derive(Clone, Copy)]
@@ -435,6 +506,13 @@ fn reference(
     key: IdentitySpecKey,
     fingerprint: &str,
 ) -> IdentitySpecReference {
-    IdentitySpecReference::new(owner, key, fingerprint, "issuer", "fixed_token")
-        .expect("identity reference")
+    IdentitySpecReference::new(
+        owner,
+        key,
+        fingerprint,
+        "issuer",
+        "fixed_token",
+        IdentityAudience::new("api.example.com", Some(8443)).expect("identity audience"),
+    )
+    .expect("identity reference")
 }

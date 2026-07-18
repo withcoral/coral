@@ -14,6 +14,15 @@ enum IdentitySpecType {
   IDENTITY_SPEC_TYPE_FIXED_TOKEN = 2;
 }
 
+// Normalized provider audience declared by an identity spec.
+message IdentityAudience {
+  // Canonical DNS name or IP address matched against provider requests.
+  string host = 1;
+  // Required provider port when the identity spec constrains one. Absence
+  // means the known audience applies to every port on the exact host.
+  optional uint32 port = 2;
+}
+
 // Explicit global identity-spec scope marker.
 message GlobalIdentitySpecScope {}
 
