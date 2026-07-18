@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use coral_spec::parse_identity_manifest_yaml;
 
@@ -43,11 +44,13 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
     let fixed_a = format!("fixeda_{suffix}");
     let fixed_b = format!("fixedb_{suffix}");
     let oauth = format!("oauth_{suffix}");
+    let race = format!("race_{suffix}");
     let missing = format!("missing_{suffix}");
     for (name, yaml) in [
         (&fixed_a, fixed_manifest(&fixed_a, "a")),
         (&fixed_b, fixed_manifest(&fixed_b, "b")),
         (&oauth, oauth_manifest(&oauth)),
+        (&race, fixed_manifest(&race, "before")),
     ] {
         put_spec(db, name, &yaml).await;
     }
@@ -154,15 +157,109 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
     );
     assert_eq!(load_pair(db, &owner, &identity).await, before_failure);
 
-    let mut cleanup = db.begin().await.expect("begin identity cleanup");
-    assert!(
-        cleanup
-            .identities()
-            .delete(&owner, &identity_name)
-            .await
-            .expect("delete test identity")
+    let conflict_name = format!("conflict_{suffix}");
+    let conflict_gate = Arc::new(tokio::sync::Barrier::new(2));
+    let left = rotated
+        .clone()
+        .with_before_upsert_gate(conflict_gate.clone());
+    let right = rotated.clone().with_before_upsert_gate(conflict_gate);
+    let (left, right) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            left.create_or_replace_user_fixed_token(
+                &principal,
+                &conflict_name,
+                &fixed_a,
+                "left-token".to_string(),
+            ),
+            right.create_or_replace_user_fixed_token(
+                &principal,
+                &conflict_name,
+                &fixed_b,
+                "right-token".to_string(),
+            ),
+        )
+    })
+    .await
+    .expect("conflicting writes must not deadlock");
+    let left = left.expect("left write");
+    let right = right.expect("right write");
+    assert_reference(&left, &fixed_a, "a");
+    assert_reference(&right, &fixed_b, "b");
+    let conflict = load_pair(db, &owner, &conflict_name).await;
+    let conflict_identity = conflict.0.as_ref().expect("conflict identity");
+    let conflict_document = conflict.1.as_ref().expect("conflict document");
+    assert_eq!(conflict_document.document_version, 2);
+    let (winning, winning_token) = match conflict_identity.spec_reference.key().name() {
+        name if name == fixed_a.as_str() => (&left, "left-token"),
+        name if name == fixed_b.as_str() => (&right, "right-token"),
+        name => panic!("unexpected winning spec {name}"),
+    };
+    assert_eq!(conflict_identity, winning);
+    assert_material(
+        conflict_identity,
+        conflict_document,
+        winning_token,
+        rotated_provider.as_ref(),
     );
-    for spec_name in [&fixed_a, &fixed_b, &oauth] {
+
+    let prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = rotated
+        .clone()
+        .with_before_write_gate(prepared.clone(), resume.clone());
+    let raced_name = format!("raced_{suffix}");
+    let raced = tokio::time::timeout(Duration::from_secs(10), async {
+        let create = gated.create_or_replace_user_fixed_token(
+            &principal,
+            &raced_name,
+            &race,
+            "race-token".to_string(),
+        );
+        let replace = async {
+            prepared.wait().await;
+            put_spec(db, &race, &fixed_manifest(&race, "after")).await;
+            resume.wait().await;
+        };
+        tokio::join!(create, replace).0
+    })
+    .await
+    .expect("spec replacement race must not deadlock")
+    .expect("raced create");
+    assert_reference(&raced, &race, "after");
+    let raced_pair = load_pair(db, &owner, &raced_name).await;
+    assert_eq!(raced_pair.0.as_ref(), Some(&raced));
+    assert_eq!(
+        raced_pair
+            .1
+            .as_ref()
+            .expect("raced document")
+            .document_version,
+        1
+    );
+    assert_material(
+        &raced,
+        raced_pair.1.as_ref().expect("raced document"),
+        "race-token",
+        rotated_provider.as_ref(),
+    );
+
+    let mut cleanup = db.begin().await.expect("begin identity cleanup");
+    let conflict_identity_name = IdentityName::parse(&conflict_name).expect("conflict name");
+    let raced_identity_name = IdentityName::parse(&raced_name).expect("raced name");
+    for name in [
+        &identity_name,
+        &conflict_identity_name,
+        &raced_identity_name,
+    ] {
+        assert!(
+            cleanup
+                .identities()
+                .delete(&owner, name)
+                .await
+                .expect("delete test identity")
+        );
+    }
+    for spec_name in [&fixed_a, &fixed_b, &oauth, &race] {
         assert!(
             cleanup
                 .identity_specs()

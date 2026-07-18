@@ -26,7 +26,10 @@ async fn identity_repository_contract_holds_against_sqlite() {
     db.migrate().await.expect("migrate sqlite");
     assert_identity_repository_contract(&db).await;
     assert_identity_repository_corruption_contract(&db).await;
-    crate::identities::manager::tests::assert_user_global_fixed_token_create_contract(&db).await;
+    Box::pin(
+        crate::identities::manager::tests::assert_user_global_fixed_token_create_contract(&db),
+    )
+    .await;
 }
 
 #[expect(clippy::too_many_lines, reason = "shared backend contract fixture")]
