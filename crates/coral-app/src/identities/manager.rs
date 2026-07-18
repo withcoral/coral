@@ -41,6 +41,8 @@ pub(crate) struct IdentityManager {
     before_retry_gate: Option<OneShotGate>,
     #[cfg(test)]
     before_upsert_gate: Option<BeforeUpsertGate>,
+    #[cfg(test)]
+    before_use_snapshot_gate: Option<OneShotGate>,
 }
 
 #[cfg(test)]
@@ -126,6 +128,8 @@ impl IdentityManager {
             before_retry_gate: None,
             #[cfg(test)]
             before_upsert_gate: None,
+            #[cfg(test)]
+            before_use_snapshot_gate: None,
         }
     }
 
@@ -161,6 +165,20 @@ impl IdentityManager {
     pub(crate) fn with_before_upsert_gate(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
         self.before_upsert_gate = Some(BeforeUpsertGate {
             barrier,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_use_snapshot_gate(
+        mut self,
+        prepared: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_use_snapshot_gate = Some(OneShotGate {
+            prepared,
+            resume,
             used: Arc::new(AtomicBool::new(false)),
         });
         self
@@ -325,7 +343,12 @@ impl IdentityManager {
         let mut tx = self.db.begin_read_snapshot().await?;
         let result = async {
             owner_workspace_created_at(&mut tx, owner).await?;
-            load_identity_use_snapshot(&mut tx, owner, &name).await
+            let identity = tx.identities().get(owner, &name).await?;
+            #[cfg(test)]
+            if let Some(gate) = &self.before_use_snapshot_gate {
+                gate.wait().await;
+            }
+            load_identity_use_snapshot(&mut tx, owner, &name, identity).await
         }
         .await;
         let snapshot = complete_transaction(tx, result).await?;
@@ -540,8 +563,8 @@ async fn load_identity_use_snapshot(
     tx: &mut CoralTx<'_>,
     owner: &IdentityOwner,
     name: &IdentityName,
+    identity: Option<IdentityRecord>,
 ) -> Result<IdentityUseSnapshot, AppError> {
-    let identity = tx.identities().get(owner, name).await?;
     let identity_document = tx.identity_documents().get(owner, name).await?;
     let (identity_spec, identity_spec_document) = match identity.as_ref() {
         Some(identity) => {

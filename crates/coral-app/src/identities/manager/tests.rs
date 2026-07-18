@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use coral_spec::parse_identity_manifest_yaml;
@@ -7,12 +8,15 @@ use super::IdentityManager;
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
-use crate::identities::crypto::{IdentityDocumentBinding, decrypt_identity_document};
+use crate::identities::crypto::{
+    IDENTITY_DOCUMENT_BINDING_VERSION, IdentityDocumentBinding, decrypt_identity_document,
+};
 use crate::identities::model::{IdentityName, IdentityOwner};
 use crate::identity::{Principal, PrincipalKind};
 use crate::identity_specs::identity_spec_fingerprint;
+use crate::identity_specs::manager::IdentitySpecManager;
 use crate::state::db::{
-    CoralDb, DbRepos, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey,
+    CoralDb, DbRepos, IdentityDocumentRecord, IdentityRecord, IdentitySpecKey, IdentitySpecScope,
     set_identity_document_version,
 };
 use crate::workspaces::WorkspaceName;
@@ -32,6 +36,26 @@ impl CredentialKeyProvider for TestKeyProvider {
             .iter()
             .find(|key| key.key_id() == key_id)
             .cloned()
+            .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
+    }
+}
+
+struct ReadOnlyKeyProvider {
+    key: CredentialEncryptionKey,
+    active_key_calls: AtomicUsize,
+}
+
+impl CredentialKeyProvider for ReadOnlyKeyProvider {
+    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        self.active_key_calls.fetch_add(1, Ordering::SeqCst);
+        Err(CredentialsError::Crypto(
+            "identity reads must not request an active key".to_string(),
+        ))
+    }
+
+    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        (key_id == self.key.key_id())
+            .then(|| self.key.clone())
             .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
     }
 }
@@ -441,6 +465,376 @@ async fn assert_workspace_delete_recreate_race(
         "new-generation-token",
         provider,
     );
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared SQLite/Postgres identity-use contract"
+)]
+pub(crate) async fn assert_identity_use_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let key = CredentialEncryptionKey::from_static_bytes_for_test([79; 32]);
+    let write_provider = Arc::new(TestKeyProvider(vec![key.clone()]));
+    let read_provider = Arc::new(ReadOnlyKeyProvider {
+        key,
+        active_key_calls: AtomicUsize::new(0),
+    });
+    let writer = IdentityManager::new(db.clone(), write_provider.clone());
+    let reader = IdentityManager::new(db.clone(), read_provider.clone());
+
+    let spec = format!("use_spec_{suffix}");
+    let yaml = fixed_manifest_with_port(&spec, "stable", 8443);
+    put_global_spec(db, &spec, &yaml).await;
+    let principal = UserPrincipal::for_user(&format!("use-{suffix}")).expect("principal");
+    let owner = IdentityOwner::for_user(principal.clone());
+    let identity = format!("primary_{suffix}");
+    let token = format!("primary-token-{suffix}");
+    let created = writer
+        .create_or_replace_user_fixed_token(&principal, &identity, &spec, token.clone())
+        .await
+        .expect("create identity for use");
+    let before_document = load_pair(db, &owner, &identity)
+        .await
+        .1
+        .expect("identity document");
+    assert_eq!(
+        before_document.envelope.binding_version,
+        IDENTITY_DOCUMENT_BINDING_VERSION
+    );
+
+    let resolved = reader
+        .get_for_use(&owner, &identity)
+        .await
+        .expect("resolve identity for use");
+    assert_eq!(resolved.identity, created);
+    assert_eq!(
+        resolved.identity_spec.spec.key,
+        IdentitySpecKey::global(&spec).expect("global key")
+    );
+    assert_eq!(resolved.identity_spec.spec.manifest_yaml, yaml);
+    assert!(resolved.identity_spec.inputs.variables().is_empty());
+    assert!(resolved.identity_spec.inputs.secrets().is_empty());
+    assert_eq!(
+        resolved.identity.spec_reference.fingerprint(),
+        identity_spec_fingerprint(&resolved.identity_spec.spec.manifest).expect("fingerprint")
+    );
+    let audience = resolved
+        .identity
+        .spec_reference
+        .audience()
+        .expect("pinned audience");
+    assert_eq!(
+        (audience.host(), audience.port()),
+        ("api.example.com", Some(8443))
+    );
+    assert_eq!(resolved.material().get("TOKEN"), Some(&token));
+    let debug = format!("{resolved:?}");
+    assert!(debug.contains("material_value_count: 1"));
+    assert!(!debug.contains(&token));
+    assert_eq!(
+        load_pair(db, &owner, &identity)
+            .await
+            .1
+            .expect("identity document after read"),
+        before_document
+    );
+    let unavailable = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(Vec::new())));
+    assert!(matches!(
+        unavailable.get_for_use(&owner, &identity).await,
+        Err(AppError::Credentials(CredentialsError::Unavailable(_)))
+    ));
+
+    let workspace = WorkspaceName::parse(&format!("use{suffix}")).expect("workspace");
+    put_workspace(db, &workspace).await;
+    let workspace_owner = IdentityOwner::workspace(workspace.clone());
+    let workspace_identity = format!("workspace_{suffix}");
+    let workspace_token = format!("workspace-token-{suffix}");
+    let pinned = writer
+        .create_or_replace_workspace_fixed_token(
+            &workspace,
+            &workspace_identity,
+            &spec,
+            workspace_token.clone(),
+        )
+        .await
+        .expect("create global-fallback identity");
+    let spec_manager = IdentitySpecManager::new(db.clone(), write_provider.clone());
+    spec_manager
+        .add_or_replace_exact(
+            IdentitySpecScope::workspace(workspace.clone()),
+            &fixed_manifest_with_port(&spec, "shadow", 9443),
+            Vec::new(),
+        )
+        .await
+        .expect("install later workspace shadow");
+    let workspace_resolved = reader
+        .get_for_use(&workspace_owner, &workspace_identity)
+        .await
+        .expect("resolve pinned global identity");
+    assert_eq!(workspace_resolved.identity, pinned);
+    assert_eq!(workspace_resolved.identity_spec.spec.manifest_yaml, yaml);
+    assert_eq!(
+        workspace_resolved.material().get("TOKEN"),
+        Some(&workspace_token)
+    );
+    assert_eq!(
+        workspace_resolved.identity_spec.spec.key,
+        IdentitySpecKey::global(&spec).expect("pinned global key")
+    );
+
+    let orphan_spec = format!("orphan_spec_{suffix}");
+    let orphan_identity = format!("orphan_{suffix}");
+    put_global_spec(db, &orphan_spec, &fixed_manifest(&orphan_spec, "orphan")).await;
+    let orphan = writer
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &orphan_identity,
+            &orphan_spec,
+            "orphan-token".to_string(),
+        )
+        .await
+        .expect("create identity before orphaning spec");
+    let mut tx = db.begin().await.expect("begin deliberate orphaning");
+    tx.identity_specs()
+        .delete(&IdentitySpecKey::global(&orphan_spec).expect("orphan key"))
+        .await
+        .expect("delete exact spec");
+    tx.commit().await.expect("commit deliberate orphaning");
+    assert_eq!(
+        reader
+            .get(&owner, &orphan_identity)
+            .await
+            .expect("management get remains safe"),
+        orphan
+    );
+    assert!(matches!(
+        reader.get_for_use(&owner, &orphan_identity).await,
+        Err(AppError::FailedPrecondition(detail)) if detail.contains("orphaned")
+    ));
+
+    let drift_spec = format!("drift_spec_{suffix}");
+    let drift_identity = format!("drift_{suffix}");
+    put_global_spec(db, &drift_spec, &fixed_manifest(&drift_spec, "before")).await;
+    writer
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &drift_identity,
+            &drift_spec,
+            "drift-token".to_string(),
+        )
+        .await
+        .expect("create identity before spec drift");
+    put_global_spec(db, &drift_spec, &fixed_manifest(&drift_spec, "after")).await;
+    assert!(matches!(
+        reader.get_for_use(&owner, &drift_identity).await,
+        Err(AppError::FailedPrecondition(detail)) if detail.contains("no longer matches")
+    ));
+
+    let tamper_spec = format!("tamper_spec_{suffix}");
+    let tamper_identity = format!("tamper_{suffix}");
+    put_global_spec(db, &tamper_spec, &fixed_manifest(&tamper_spec, "tamper")).await;
+    let tamper_record = writer
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &tamper_identity,
+            &tamper_spec,
+            "tamper-token".to_string(),
+        )
+        .await
+        .expect("create identity before document tamper");
+    let tamper_name = IdentityName::parse(&tamper_identity).expect("identity name");
+    let document = load_pair(db, &owner, &tamper_identity)
+        .await
+        .1
+        .expect("document to tamper");
+    let mut tampered = document.envelope.clone();
+    *tampered
+        .ciphertext
+        .first_mut()
+        .expect("nonempty ciphertext") ^= 1;
+    let mut tx = db.begin().await.expect("begin deliberate document tamper");
+    tx.identity_documents()
+        .upsert(
+            &owner,
+            &tamper_name,
+            &tampered,
+            document.updated_at_unix_nanos + 1,
+        )
+        .await
+        .expect("persist tampered ciphertext");
+    tx.commit()
+        .await
+        .expect("commit deliberate document tamper");
+    assert_eq!(
+        reader
+            .get(&owner, &tamper_identity)
+            .await
+            .expect("management get remains safe after tamper"),
+        tamper_record
+    );
+    assert!(matches!(
+        reader.get_for_use(&owner, &tamper_identity).await,
+        Err(AppError::Database(_))
+    ));
+    assert_eq!(read_provider.active_key_calls.load(Ordering::SeqCst), 0);
+
+    cleanup_identity_use_fixtures(
+        db,
+        &[
+            (&owner, identity.as_str()),
+            (&workspace_owner, workspace_identity.as_str()),
+            (&owner, orphan_identity.as_str()),
+            (&owner, drift_identity.as_str()),
+            (&owner, tamper_identity.as_str()),
+        ],
+        &[
+            IdentitySpecKey::global(&spec).expect("cleanup global spec"),
+            IdentitySpecKey::workspace(workspace.clone(), &spec).expect("cleanup shadow spec"),
+            IdentitySpecKey::global(&drift_spec).expect("cleanup drift spec"),
+            IdentitySpecKey::global(&tamper_spec).expect("cleanup tamper spec"),
+        ],
+        &[&workspace],
+    )
+    .await;
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared SQLite/Postgres identity-use snapshot race contract"
+)]
+pub(crate) async fn assert_identity_use_snapshot_race_contract(db: &Arc<CoralDb>) {
+    db.enable_sqlite_wal_for_tests()
+        .await
+        .expect("enable SQLite WAL for identity-use races");
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let provider = Arc::new(TestKeyProvider(vec![
+        CredentialEncryptionKey::from_static_bytes_for_test([80; 32]),
+    ]));
+    let manager = IdentityManager::new(db.clone(), provider.clone());
+    let principal = UserPrincipal::for_user(&format!("race-use-{suffix}")).expect("principal");
+    let owner = IdentityOwner::for_user(principal.clone());
+
+    let old_spec = format!("race_old_{suffix}");
+    let new_spec = format!("race_new_{suffix}");
+    put_global_spec(db, &old_spec, &fixed_manifest(&old_spec, "old")).await;
+    put_global_spec(db, &new_spec, &fixed_manifest(&new_spec, "new")).await;
+    let identity = format!("replace_{suffix}");
+    let old = manager
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &identity,
+            &old_spec,
+            "old-token".to_string(),
+        )
+        .await
+        .expect("create old identity generation");
+    let prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_use_snapshot_gate(prepared.clone(), resume.clone());
+    let (read, replacement) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(gated.get_for_use(&owner, &identity), async {
+            prepared.wait().await;
+            let replacement = manager
+                .create_or_replace_user_fixed_token(
+                    &principal,
+                    &identity,
+                    &new_spec,
+                    "new-token".to_string(),
+                )
+                .await
+                .expect("commit concurrent identity replacement");
+            resume.wait().await;
+            replacement
+        })
+    })
+    .await
+    .expect("identity replacement race must not deadlock");
+    let read = read.expect("resolve old coherent snapshot");
+    assert_eq!(read.identity, old);
+    assert_eq!(read.identity_spec.spec.key.name(), old_spec);
+    assert_eq!(
+        read.material().get("TOKEN").map(String::as_str),
+        Some("old-token")
+    );
+    let current = manager
+        .get_for_use(&owner, &identity)
+        .await
+        .expect("resolve replacement generation");
+    assert_eq!(current.identity, replacement);
+    assert_eq!(current.identity_spec.spec.key.name(), new_spec);
+    assert_eq!(
+        current.material().get("TOKEN").map(String::as_str),
+        Some("new-token")
+    );
+
+    let spec = format!("race_yaml_{suffix}");
+    let old_yaml = fixed_manifest_with_port(&spec, "same", 8443);
+    let new_yaml = equivalent_fixed_manifest_with_port(&spec, "same", 8443);
+    assert_ne!(old_yaml, new_yaml);
+    put_global_spec(db, &spec, &old_yaml).await;
+    let spec_identity = format!("spec_replace_{suffix}");
+    let pinned = manager
+        .create_or_replace_user_fixed_token(
+            &principal,
+            &spec_identity,
+            &spec,
+            "stable-token".to_string(),
+        )
+        .await
+        .expect("create identity pinned to equivalent spec");
+    let prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_use_snapshot_gate(prepared.clone(), resume.clone());
+    let spec_manager = IdentitySpecManager::new(db.clone(), provider);
+    let (read, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(gated.get_for_use(&owner, &spec_identity), async {
+            prepared.wait().await;
+            spec_manager
+                .add_or_replace_exact(IdentitySpecScope::global(), &new_yaml, Vec::new())
+                .await
+                .expect("commit equivalent exact-spec replacement");
+            resume.wait().await;
+        })
+    })
+    .await
+    .expect("exact-spec replacement race must not deadlock");
+    let read = read.expect("resolve old spec snapshot");
+    assert_eq!(read.identity, pinned);
+    assert_eq!(read.identity_spec.spec.manifest_yaml, old_yaml);
+    assert_eq!(
+        read.material().get("TOKEN").map(String::as_str),
+        Some("stable-token")
+    );
+    let current = manager
+        .get_for_use(&owner, &spec_identity)
+        .await
+        .expect("resolve new equivalent spec");
+    assert_eq!(current.identity, pinned);
+    assert_eq!(current.identity_spec.spec.manifest_yaml, new_yaml);
+    assert_eq!(
+        current.identity.spec_reference.fingerprint(),
+        read.identity.spec_reference.fingerprint()
+    );
+    assert_eq!(current.material(), read.material());
+
+    cleanup_identity_use_fixtures(
+        db,
+        &[
+            (&owner, identity.as_str()),
+            (&owner, spec_identity.as_str()),
+        ],
+        &[
+            IdentitySpecKey::global(&old_spec).expect("cleanup old spec"),
+            IdentitySpecKey::global(&new_spec).expect("cleanup new spec"),
+            IdentitySpecKey::global(&spec).expect("cleanup replaced spec"),
+        ],
+        &[],
+    )
+    .await;
 }
 
 #[expect(
@@ -1289,6 +1683,45 @@ fn fixed_manifest_with_port(name: &str, revision: &str, port: u16) -> String {
         revision,
         &format!("{{host: api.example.com, port: {port}}}"),
     )
+}
+
+fn equivalent_fixed_manifest_with_port(name: &str, revision: &str, port: u16) -> String {
+    format!(
+        "audience:\n  port: {port}\n  host: api.example.com\ntype: fixed_token\nissuer: issuer_{revision}\ndescription: {revision}\nversion: {revision}\nname: {name}\nspec_version: 1\nkind: identity\n"
+    )
+}
+
+async fn cleanup_identity_use_fixtures(
+    db: &CoralDb,
+    identities: &[(&IdentityOwner, &str)],
+    specs: &[IdentitySpecKey],
+    workspaces: &[&WorkspaceName],
+) {
+    let mut tx = db.begin().await.expect("begin identity-use cleanup");
+    for &(owner, name) in identities {
+        let name = IdentityName::parse(name).expect("cleanup identity name");
+        assert!(
+            tx.identities()
+                .delete(owner, &name)
+                .await
+                .expect("delete identity-use fixture")
+        );
+    }
+    for key in specs {
+        assert!(
+            tx.identity_specs()
+                .delete(key)
+                .await
+                .expect("delete identity-use spec fixture")
+        );
+    }
+    for workspace in workspaces {
+        tx.workspaces()
+            .delete(workspace.as_str())
+            .await
+            .expect("delete identity-use workspace fixture");
+    }
+    tx.commit().await.expect("commit identity-use cleanup");
 }
 
 fn fixed_manifest_with_audience(name: &str, revision: &str, audience: &str) -> String {
