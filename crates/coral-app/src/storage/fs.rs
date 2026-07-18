@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -28,6 +28,41 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Creates or tightens one private directory entry without accepting a symlink.
+///
+/// Missing ancestors are checked and created up to the first existing directory,
+/// which is the caller-owned trust boundary. Callers must validate that boundary
+/// separately when it is not already trusted; walking every absolute ancestor
+/// would reject platform paths with standard symlink prefixes such as macOS `/var`.
+pub(crate) fn ensure_private_dir_no_symlink(path: &Path) -> io::Result<()> {
+    ensure_private_dir_no_symlink_inner(path, true)
+}
+
+fn ensure_private_dir_no_symlink_inner(path: &Path, tighten_existing: bool) -> io::Result<()> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(());
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            if !tighten_existing {
+                // Do not chmod or walk above the caller's first existing directory.
+                return Ok(());
+            }
+        }
+        Ok(_) => return Err(private_directory_error(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                ensure_private_dir_no_symlink_inner(parent, false)?;
+            }
+            fs::create_dir(path)?;
+        }
+        Err(error) => return Err(error),
+    }
+    let dir = File::open(path)?;
+    set_open_dir_permissions_private(&dir)?;
+    Ok(())
+}
+
 pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         ensure_private_dir(parent)?;
@@ -46,6 +81,69 @@ pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// Reads a bounded private regular file, tightening its permissions first.
+///
+/// Rejects symlinks and non-regular entries and caps the read, so a stray or
+/// swapped path cannot become an unbounded read. It deliberately does not defend
+/// against a path swapped *during* the read: reaching the key file's `0700` parent
+/// requires write access to it, and anything able to write there can generally read
+/// the key outright. The value here is tightening loose modes, which is a real and
+/// common failure, not defeating a local attacker who already has the directory.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the next stack layer activates strict reads for local encryption keys"
+    )
+)]
+pub(crate) fn read_to_string_private(path: &Path, max_bytes: u64) -> io::Result<String> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir_no_symlink(parent)?;
+    }
+    let path_metadata = fs::symlink_metadata(path)?;
+    if !path_metadata.file_type().is_file() {
+        return Err(not_same_regular_file(path));
+    }
+
+    let mut file = File::open(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            not_same_regular_file(path)
+        } else {
+            error
+        }
+    })?;
+    set_open_permissions_private(&file)?;
+
+    let mut raw = String::new();
+    std::io::Read::by_ref(&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_string(&mut raw)?;
+    if raw.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("private file exceeds {max_bytes} bytes: {}", path.display()),
+        ));
+    }
+    Ok(raw)
+}
+
+fn not_same_regular_file(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "path is not the same private regular file that was inspected: {}",
+            path.display()
+        ),
+    )
+}
+
+fn private_directory_error(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("path is not a private directory: {}", path.display()),
+    )
 }
 
 fn ensure_existing_file_private(path: &Path) -> io::Result<()> {
@@ -294,9 +392,187 @@ fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn set_open_permissions_private(file: &File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_open_permissions_private(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_open_dir_permissions_private(directory: &File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    directory.set_permissions(fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_open_dir_permissions_private(_directory: &File) -> io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryBackup, ensure_file_private, remove_file_if_exists};
+    use super::{
+        DirectoryBackup, ensure_file_private, read_to_string_private, remove_file_if_exists,
+    };
+
+    #[test]
+    fn read_to_string_private_rejects_non_regular_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("credential-encryption.key");
+        std::fs::create_dir(&path).expect("create directory at key path");
+
+        let error = read_to_string_private(&path, 1024).expect_err("directory should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("private regular file"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_private_rejects_symlink_without_chmoding_target() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target.key");
+        let link = temp.path().join("credential-encryption.key");
+        std::fs::write(&target, "v1:not-a-real-key\n").expect("write target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))
+            .expect("set target permissions");
+        symlink(&target, &link).expect("create symlink");
+
+        let error = read_to_string_private(&link, 1024).expect_err("symlink should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        let target_mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(target_mode, 0o644);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_private_tightens_opened_file_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("credential-encryption.key");
+        std::fs::write(&path, "private key\n").expect("write key");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("set permissive mode");
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("set permissive parent mode");
+
+        assert_eq!(
+            read_to_string_private(&path, 1024).expect("read key"),
+            "private key\n"
+        );
+        let mode = std::fs::metadata(&path)
+            .expect("key metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        let parent_mode = std::fs::metadata(temp.path())
+            .expect("parent metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(parent_mode, 0o700);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_private_rejects_symlinked_parent() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target");
+        std::fs::create_dir(&target).expect("target directory");
+        std::fs::write(target.join("encryption.key"), "private key\n").expect("key");
+        let parent = temp.path().join("credentials");
+        symlink(&target, &parent).expect("parent symlink");
+
+        let error = read_to_string_private(&parent.join("encryption.key"), 1024)
+            .expect_err("symlinked parent should be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_private_rejects_missing_directory_beneath_symlink() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target");
+        std::fs::create_dir(&target).expect("target directory");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+            .expect("set target permissions");
+        let config = temp.path().join("config");
+        symlink(&target, &config).expect("config symlink");
+
+        let error =
+            read_to_string_private(&config.join("credentials").join("encryption.key"), 1024)
+                .expect_err("symlinked ancestor should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!target.join("credentials").exists());
+        let target_mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(target_mode, 0o755);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_private_does_not_tighten_existing_ancestor() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("set ancestor permissions");
+        let private = temp.path().join("private");
+        let credentials = private.join("credentials");
+
+        let error = read_to_string_private(&credentials.join("encryption.key"), 1024)
+            .expect_err("missing key should remain missing");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        for path in [&private, &credentials] {
+            let mode = std::fs::metadata(path)
+                .expect("created private directory")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        let ancestor_mode = std::fs::metadata(temp.path())
+            .expect("ancestor metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(ancestor_mode, 0o755);
+    }
+
+    #[test]
+    fn read_to_string_private_rejects_oversized_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("encryption.key");
+        std::fs::write(&path, "0123456789").expect("key");
+
+        let error = read_to_string_private(&path, 9).expect_err("oversized file");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     #[test]
     fn ensure_file_private_rejects_existing_directory() {
