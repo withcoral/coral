@@ -31,5 +31,7 @@ mod search_tests;
 mod server_lifecycle_tests;
 #[path = "grpc/source_lifecycle_tests.rs"]
 mod source_lifecycle_tests;
+#[path = "grpc/workspace_identity_lifecycle_tests.rs"]
+mod workspace_identity_lifecycle_tests;
 #[path = "grpc/workspace_lifecycle_tests.rs"]
 mod workspace_lifecycle_tests;
