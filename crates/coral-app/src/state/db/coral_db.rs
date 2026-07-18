@@ -35,6 +35,22 @@ impl CoralDb {
         CoralTx::begin_serializable(&self.backend).await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn enable_sqlite_wal_for_tests(&self) -> Result<(), DbError> {
+        let CoralDbBackend::Sqlite(db) = &self.backend else {
+            return Ok(());
+        };
+        let mode = sqlx::query_scalar::<_, String>("PRAGMA journal_mode = WAL")
+            .fetch_one(&db.pool)
+            .await?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            return Err(DbError::Config(format!(
+                "SQLite did not enable WAL mode for concurrency test: {mode}"
+            )));
+        }
+        Ok(())
+    }
+
     #[cfg_attr(
         not(test),
         expect(
