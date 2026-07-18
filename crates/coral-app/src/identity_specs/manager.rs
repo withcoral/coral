@@ -12,6 +12,7 @@ use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identity::spec_document::{
     decrypt_identity_spec_document, encrypt_identity_spec_document,
 };
+use crate::identity_specs::identity_spec_fingerprint;
 use crate::identity_specs::inputs::{
     IdentitySpecInputValue, ResolvedIdentitySpecInputs, prepare_identity_spec_input_material,
     resolve_identity_spec_inputs_for_use,
@@ -135,11 +136,13 @@ impl IdentitySpecManager {
                                 &previous_values,
                                 prepare_inputs.as_slice(),
                             )?;
-                            prepare_document_write(
+                            let document = prepare_document_write(
                                 &prepare_key,
                                 prepared.values(),
                                 key_provider.as_ref(),
-                            )
+                            )?;
+                            let fingerprint = identity_spec_fingerprint(prepare_manifest.as_ref())?;
+                            Ok((document, fingerprint))
                         })
                         .await
                     },
@@ -487,13 +490,13 @@ pub(crate) mod tests {
 
     use tempfile::{TempDir, tempdir};
 
-    use super::{IdentitySpecManager, record_to_installed, scope_label};
+    use super::{IdentitySpecManager, identity_spec_fingerprint, record_to_installed, scope_label};
     use crate::bootstrap::AppError;
     use crate::credentials::CredentialsError;
     use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
     use crate::encrypted_document::EncryptedEnvelopeDocument;
     use crate::identities::manager::IdentityManager;
-    use crate::identities::model::{IdentityName, IdentityOwner};
+    use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
     use crate::identity::Principal;
     use crate::identity::spec_document::{
         encrypt_identity_spec_document, seal_identity_spec_plaintext_for_test,
@@ -794,6 +797,9 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(exact_created.spec_reference.key(), &workspace_key);
 
+        assert_dependent_replacement_contract(db, &manager, &workspace, &name, &user_identity)
+            .await;
+
         let global_error = manager.delete_exact(&global_key).await.unwrap_err();
         assert!(
             matches!(&global_error, AppError::FailedPrecondition(detail)
@@ -886,6 +892,206 @@ pub(crate) mod tests {
             manager.get_exact(&workspace_key).await,
             Err(AppError::IdentitySpecNotFound { .. })
         ));
+    }
+
+    async fn assert_dependent_replacement_contract(
+        db: &Arc<CoralDb>,
+        manager: &IdentitySpecManager,
+        workspace: &WorkspaceName,
+        name: &str,
+        user_identity: &str,
+    ) {
+        let global_key = IdentitySpecKey::global(name).unwrap();
+        let workspace_key = IdentitySpecKey::workspace(workspace.clone(), name).unwrap();
+        assert_scoped_dependent_replacement(
+            db,
+            manager,
+            IdentitySpecScope::global(),
+            &global_key,
+            "fixed",
+            "global_changed",
+            2,
+            "global",
+        )
+        .await;
+        assert_scoped_dependent_replacement(
+            db,
+            manager,
+            IdentitySpecScope::workspace(workspace.clone()),
+            &workspace_key,
+            "workspace_fixed",
+            "workspace_changed",
+            1,
+            &format!("workspace:{workspace}"),
+        )
+        .await;
+        assert_orphan_and_stale_repair(db, manager, &global_key, name).await;
+        assert_mixed_fingerprints_reject(db, manager, &global_key, name, user_identity).await;
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "exact-scope replacement contract"
+    )]
+    async fn assert_scoped_dependent_replacement(
+        db: &Arc<CoralDb>,
+        manager: &IdentitySpecManager,
+        scope: IdentitySpecScope,
+        key: &IdentitySpecKey,
+        current_version: &str,
+        changed_version: &str,
+        expected_dependents: u64,
+        scope_label: &str,
+    ) {
+        let (installed, replaced) = manager
+            .add_or_replace_exact(
+                scope.clone(),
+                &equivalent_manifest(key.name(), current_version),
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert!(replaced);
+        let fingerprint = identity_spec_fingerprint(&installed.manifest).unwrap();
+        let mut session = db.as_ref();
+        assert_eq!(
+            session
+                .identities()
+                .count_exact_dependents(key, &fingerprint)
+                .await
+                .unwrap(),
+            expected_dependents
+        );
+        let before = manager.load_mutation_snapshot(key).await.unwrap();
+        assert_equivalent_rejection(
+            &manager
+                .add_or_replace_exact(scope, &manifest(key.name(), changed_version), vec![])
+                .await
+                .unwrap_err(),
+            expected_dependents,
+            scope_label,
+        );
+        assert!(manager.load_mutation_snapshot(key).await.unwrap() == before);
+    }
+
+    async fn assert_orphan_and_stale_repair(
+        db: &Arc<CoralDb>,
+        manager: &IdentitySpecManager,
+        key: &IdentitySpecKey,
+        name: &str,
+    ) {
+        let mut tx = db.begin().await.unwrap();
+        assert!(tx.identity_specs().delete(key).await.unwrap());
+        tx.commit().await.unwrap();
+        assert_equivalent_rejection(
+            &manager
+                .add_or_replace_exact(
+                    IdentitySpecScope::global(),
+                    &manifest(name, "orphan_changed"),
+                    vec![],
+                )
+                .await
+                .unwrap_err(),
+            2,
+            "global",
+        );
+        assert!(matches!(
+            manager.get_global(name).await,
+            Err(AppError::IdentitySpecNotFound { .. })
+        ));
+        let (_, replaced) = manager
+            .add_or_replace_exact(
+                IdentitySpecScope::global(),
+                &equivalent_manifest(name, "fixed"),
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert!(!replaced);
+        assert_eq!(
+            manager.get_global(name).await.unwrap().manifest.version,
+            "fixed"
+        );
+
+        let mut tx = db.begin().await.unwrap();
+        seed_spec(&mut tx, key, manifest(name, "stale")).await;
+        tx.commit().await.unwrap();
+        let (_, replaced) = manager
+            .add_or_replace_exact(
+                IdentitySpecScope::global(),
+                &equivalent_manifest(name, "fixed"),
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert!(replaced);
+        assert_eq!(
+            manager.get_global(name).await.unwrap().manifest.version,
+            "fixed"
+        );
+    }
+
+    async fn assert_mixed_fingerprints_reject(
+        db: &Arc<CoralDb>,
+        manager: &IdentitySpecManager,
+        key: &IdentitySpecKey,
+        name: &str,
+        user_identity: &str,
+    ) {
+        let owner = IdentityOwner::for_user(Principal::local());
+        let identity_name = IdentityName::parse(user_identity).unwrap();
+        let mut session = db.as_ref();
+        let original = session
+            .identities()
+            .get(&owner, &identity_name)
+            .await
+            .unwrap()
+            .unwrap()
+            .spec_reference;
+        let mixed = IdentitySpecReference::new(
+            &owner,
+            key.clone(),
+            "legacy-mixed-fingerprint",
+            original.issuer(),
+            original.identity_type(),
+        )
+        .unwrap();
+        let mut tx = db.begin().await.unwrap();
+        tx.identities()
+            .upsert(&owner, &identity_name, &mixed, 1)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let before = manager.load_mutation_snapshot(key).await.unwrap();
+        assert_equivalent_rejection(
+            &manager
+                .add_or_replace_exact(
+                    IdentitySpecScope::global(),
+                    &equivalent_manifest(name, "fixed"),
+                    vec![],
+                )
+                .await
+                .unwrap_err(),
+            2,
+            "global",
+        );
+        assert!(manager.load_mutation_snapshot(key).await.unwrap() == before);
+        let mut tx = db.begin().await.unwrap();
+        tx.identities()
+            .upsert(&owner, &identity_name, &original, 2)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    fn assert_equivalent_rejection(error: &AppError, count: u64, scope: &str) {
+        assert!(
+            matches!(&error, AppError::FailedPrecondition(detail)
+                if detail.contains(scope)
+                    && detail.contains(&format!("{count} stored identity references"))
+                    && detail.contains("semantically equivalent manifest")),
+            "unexpected replacement error: {error}"
+        );
     }
 
     async fn mutate(
@@ -1309,6 +1515,12 @@ pub(crate) mod tests {
     fn manifest(name: &str, version: &str) -> String {
         format!(
             "kind: identity\nspec_version: 1\nname: {name}\nversion: {version}\ndescription: description {version}\nissuer: issuer_{version}\ntype: fixed_token\naudience: {{host: example.com}}\n"
+        )
+    }
+
+    fn equivalent_manifest(name: &str, version: &str) -> String {
+        format!(
+            "# semantically equivalent reordered YAML\naudience:\n  host: example.com\ntype: fixed_token\nissuer: issuer_{version}\ndescription: description {version}\nversion: {version}\nname: {name}\nspec_version: 1\nkind: identity\n"
         )
     }
 
