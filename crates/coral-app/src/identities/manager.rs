@@ -1,23 +1,30 @@
 //! Database-backed identity instance management.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_spec::IdentitySpecType;
 
-use super::crypto::{IdentityDocumentBinding, encrypt_identity_document};
+use super::crypto::{
+    IdentityDocumentBinding, decrypt_identity_document, encrypt_identity_document,
+};
 use super::model::{IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
-use crate::credentials::encryption::CredentialKeyProvider;
+use crate::credentials::CredentialsError;
+use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identity::Principal;
 use crate::identity_specs::identity_spec_fingerprint;
-use crate::identity_specs::manager::record_to_installed;
+use crate::identity_specs::manager::{
+    InstalledIdentitySpec, ResolvedIdentitySpec, record_to_installed, resolve_installed_for_use,
+};
 use crate::state::db::{
-    CoralDb, CoralTx, DbRepos, IdentityRecord, IdentitySpecKey, IdentitySpecRecord,
-    IdentitySpecScope, now_unix_nanos_i64,
+    CoralDb, CoralTx, DbError, DbRepos, IdentityDocumentRecord, IdentityRecord,
+    IdentitySpecDocumentRecord, IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
+    now_unix_nanos_i64,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -67,6 +74,64 @@ struct SelectedFixedTokenSpec {
     workspace_created_at_unix_nanos: Option<i64>,
     record: IdentitySpecRecord,
     reference: IdentitySpecReference,
+}
+
+/// Coherent decrypted identity data prepared for one runtime use.
+pub(crate) struct ResolvedIdentityForUse {
+    pub(crate) identity: IdentityRecord,
+    pub(crate) identity_spec: ResolvedIdentitySpec,
+    material: BTreeMap<String, String>,
+}
+
+impl ResolvedIdentityForUse {
+    /// Borrow the validated decrypted identity material.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the runtime identity consumer lands in the next stack layer"
+        )
+    )]
+    pub(crate) fn material(&self) -> &BTreeMap<String, String> {
+        &self.material
+    }
+}
+
+impl fmt::Debug for ResolvedIdentityForUse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedIdentityForUse")
+            .field("owner", &self.identity.owner)
+            .field("name", &self.identity.name)
+            .field("identity_spec", &self.identity_spec)
+            .field("material_value_count", &self.material.len())
+            .finish_non_exhaustive()
+    }
+}
+
+struct IdentityUseSnapshot {
+    identity: Option<IdentityRecord>,
+    identity_document: Option<IdentityDocumentRecord>,
+    identity_spec: Option<IdentitySpecRecord>,
+    identity_spec_document: Option<IdentitySpecDocumentRecord>,
+}
+
+struct PinnedKeyProvider {
+    key: CredentialEncryptionKey,
+}
+
+impl CredentialKeyProvider for PinnedKeyProvider {
+    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        Err(CredentialsError::Crypto(
+            "active key access is not allowed while reading an identity".to_string(),
+        ))
+    }
+
+    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        (key_id == self.key.key_id())
+            .then(|| self.key.clone())
+            .ok_or_else(|| CredentialsError::Crypto("identity key id changed".to_string()))
+    }
 }
 
 impl IdentityManager {
@@ -260,6 +325,34 @@ impl IdentityManager {
         }
         .await;
         complete_transaction(tx, result).await
+    }
+
+    /// Resolve one identity, its material, and its exact pinned spec from one snapshot.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the runtime identity consumer lands in the next stack layer"
+        )
+    )]
+    pub(crate) async fn get_for_use(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<ResolvedIdentityForUse, AppError> {
+        let name = IdentityName::parse(identity_name)?;
+        let mut tx = self.db.begin_read_snapshot().await?;
+        let result = async {
+            owner_workspace_created_at(&mut tx, owner).await?;
+            load_identity_use_snapshot(&mut tx, owner, &name).await
+        }
+        .await;
+        let snapshot = complete_transaction(tx, result).await?;
+        let key_provider = Arc::clone(&self.key_provider);
+        run_blocking_identity_operation(move || {
+            prepare_identity_for_use(snapshot, &name, key_provider.as_ref())
+        })
+        .await
     }
 
     /// Delete one identity and its cascading encrypted setup document.
@@ -462,6 +555,185 @@ impl IdentityManager {
     }
 }
 
+async fn load_identity_use_snapshot(
+    tx: &mut CoralTx<'_>,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+) -> Result<IdentityUseSnapshot, AppError> {
+    let identity = tx.identities().get(owner, name).await?;
+    let identity_document = tx.identity_documents().get(owner, name).await?;
+    let (identity_spec, identity_spec_document) = match identity.as_ref() {
+        Some(identity) => {
+            let key = identity.spec_reference.key();
+            let identity_spec = tx.identity_specs().get(key).await?;
+            let identity_spec_document = match identity_spec.as_ref() {
+                Some(record) => tx.identity_spec_documents().get(&record.id).await?,
+                None => None,
+            };
+            (identity_spec, identity_spec_document)
+        }
+        None => (None, None),
+    };
+    Ok(IdentityUseSnapshot {
+        identity,
+        identity_document,
+        identity_spec,
+        identity_spec_document,
+    })
+}
+
+fn prepare_identity_for_use(
+    snapshot: IdentityUseSnapshot,
+    name: &IdentityName,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<ResolvedIdentityForUse, AppError> {
+    let identity = snapshot.identity.ok_or_else(|| identity_not_found(name))?;
+    let identity_document = snapshot
+        .identity_document
+        .ok_or_else(|| recreate_identity(name, "has no encrypted setup document"))?;
+    validate_identity_document_key(&identity, &identity_document)?;
+    let identity_spec_record = snapshot.identity_spec.ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "identity '{name}' is orphaned because its exact identity spec '{}:{}' is not installed; restore that exact spec or recreate the identity",
+            scope_label(identity.spec_reference.key().scope()),
+            identity.spec_reference.key().name(),
+        ))
+    })?;
+    let identity_spec_id = identity_spec_record.id.clone();
+    let installed = record_to_installed(identity_spec_record)?;
+    validate_identity_reference(&identity, &installed)?;
+    let identity_spec = resolve_installed_for_use(
+        installed,
+        &identity_spec_id,
+        snapshot.identity_spec_document,
+        key_provider,
+    )?;
+    let material = decrypt_fixed_token_material(&identity, identity_document, key_provider)?;
+    Ok(ResolvedIdentityForUse {
+        identity,
+        identity_spec,
+        material,
+    })
+}
+
+fn validate_identity_reference(
+    identity: &IdentityRecord,
+    installed: &InstalledIdentitySpec,
+) -> Result<(), AppError> {
+    if identity.spec_reference.audience().is_none() {
+        return Err(recreate_identity(
+            &identity.name,
+            "uses legacy metadata without a pinned audience",
+        ));
+    }
+    if installed.manifest.identity_type != IdentitySpecType::FixedToken {
+        return Err(recreate_identity(
+            &identity.name,
+            "references an unsupported OAuth identity spec",
+        ));
+    }
+    let audience =
+        IdentityAudience::from_manifest(&installed.manifest.audience).map_err(|_error| {
+            corrupt_identity(
+                &identity.owner,
+                &identity.name,
+                "has invalid audience metadata",
+            )
+        })?;
+    let fingerprint = identity_spec_fingerprint(&installed.manifest).map_err(|_error| {
+        corrupt_identity(
+            &identity.owner,
+            &identity.name,
+            "has an invalid exact-spec fingerprint",
+        )
+    })?;
+    let expected = IdentitySpecReference::new(
+        &identity.owner,
+        installed.key.clone(),
+        fingerprint,
+        installed.manifest.issuer.clone(),
+        "fixed_token",
+        audience,
+    )
+    .map_err(|_error| {
+        corrupt_identity(
+            &identity.owner,
+            &identity.name,
+            "has invalid derived exact-spec metadata",
+        )
+    })?;
+    if identity.spec_reference != expected {
+        return Err(AppError::FailedPrecondition(format!(
+            "identity '{}' no longer matches its exact installed identity spec; restore the pinned spec revision or recreate the identity",
+            identity.name,
+        )));
+    }
+    Ok(())
+}
+
+fn decrypt_fixed_token_material(
+    identity: &IdentityRecord,
+    document: IdentityDocumentRecord,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let envelope = document.envelope;
+    let resolved_key = key_provider
+        .key(&envelope.key_id)
+        .map_err(AppError::Credentials)?;
+    if resolved_key.key_id() != envelope.key_id {
+        return Err(AppError::Credentials(CredentialsError::Crypto(
+            "credential key provider returned a different key id".to_string(),
+        )));
+    }
+    let pinned_provider = PinnedKeyProvider { key: resolved_key };
+    let binding =
+        IdentityDocumentBinding::new(&identity.owner, &identity.name, &identity.spec_reference)
+            .map_err(|_error| {
+                corrupt_identity(
+                    &identity.owner,
+                    &identity.name,
+                    "has invalid authenticated metadata",
+                )
+            })?;
+    let material =
+        decrypt_identity_document(&binding, &envelope, &pinned_provider).map_err(|_error| {
+            AppError::from(corrupt_identity(
+                &identity.owner,
+                &identity.name,
+                "has an encrypted setup document that failed authentication or decoding",
+            ))
+        })?;
+    if material.len() != 1
+        || material.get(FIXED_TOKEN_KEY).is_none_or(|token| {
+            let trimmed = token.trim();
+            trimmed.is_empty() || trimmed != token
+        })
+    {
+        return Err(corrupt_identity(
+            &identity.owner,
+            &identity.name,
+            "has invalid fixed-token material",
+        )
+        .into());
+    }
+    Ok(material)
+}
+
+fn validate_identity_document_key(
+    identity: &IdentityRecord,
+    document: &IdentityDocumentRecord,
+) -> Result<(), AppError> {
+    if document.owner == identity.owner && document.name == identity.name {
+        return Ok(());
+    }
+    Err(corrupt_identity(
+        &identity.owner,
+        &identity.name,
+        "has an encrypted setup document with a different key",
+    )
+    .into())
+}
+
 async fn resolve_spec_record(
     tx: &mut CoralTx<'_>,
     requested_key: &IdentitySpecKey,
@@ -528,14 +800,32 @@ fn identity_not_found(name: &IdentityName) -> AppError {
 }
 
 fn spec_not_found(key: &IdentitySpecKey) -> AppError {
-    let scope = match key.scope() {
-        IdentitySpecScope::Global => "global".to_string(),
-        IdentitySpecScope::Workspace(workspace) => format!("workspace:{workspace}"),
-    };
+    let scope = scope_label(key.scope());
     AppError::IdentitySpecNotFound {
         name: key.name().to_string(),
         scope,
     }
+}
+
+fn scope_label(scope: &IdentitySpecScope) -> String {
+    match scope {
+        IdentitySpecScope::Global => "global".to_string(),
+        IdentitySpecScope::Workspace(workspace) => format!("workspace:{workspace}"),
+    }
+}
+
+fn recreate_identity(name: &IdentityName, detail: &str) -> AppError {
+    AppError::FailedPrecondition(format!(
+        "identity '{name}' {detail}; restore its exact identity spec or recreate the identity"
+    ))
+}
+
+fn corrupt_identity(owner: &IdentityOwner, name: &IdentityName, detail: &str) -> DbError {
+    DbError::CorruptData(format!(
+        "identity '{}:{}:{name}' is corrupt: {detail}",
+        owner.kind(),
+        owner.key(),
+    ))
 }
 
 #[cfg(test)]

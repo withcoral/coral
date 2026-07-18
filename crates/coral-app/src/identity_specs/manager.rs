@@ -321,15 +321,7 @@ impl IdentitySpecManager {
             let IdentitySpecUseSnapshot { record, document } = snapshot;
             let identity_spec_id = record.id.clone();
             let spec = record_to_installed(record)?;
-            let material = decrypt_input_material(
-                &spec.key,
-                &identity_spec_id,
-                document,
-                key_provider.as_ref(),
-            )?;
-            let inputs =
-                resolve_identity_spec_inputs_for_use(&spec.key, &spec.manifest, &material)?;
-            Ok(ResolvedIdentitySpec { spec, inputs })
+            resolve_installed_for_use(spec, &identity_spec_id, document, key_provider.as_ref())
         })
         .await
     }
@@ -460,6 +452,18 @@ pub(crate) fn record_to_installed(
         manifest_yaml: record.manifest_yaml,
         manifest,
     })
+}
+
+/// Resolve one already-read exact spec and its optional setup-input document.
+pub(crate) fn resolve_installed_for_use(
+    spec: InstalledIdentitySpec,
+    identity_spec_id: &IdentitySpecId,
+    document: Option<IdentitySpecDocumentRecord>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<ResolvedIdentitySpec, AppError> {
+    let material = decrypt_input_material(&spec.key, identity_spec_id, document, key_provider)?;
+    let inputs = resolve_identity_spec_inputs_for_use(&spec.key, &spec.manifest, &material)?;
+    Ok(ResolvedIdentitySpec { spec, inputs })
 }
 
 fn require_match(
