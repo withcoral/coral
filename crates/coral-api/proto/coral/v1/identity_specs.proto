@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Identity mechanism declared by an identity spec.
+enum IdentitySpecType {
+  // Unspecified identity mechanism.
+  IDENTITY_SPEC_TYPE_UNSPECIFIED = 0;
+  // OAuth access-token identity.
+  IDENTITY_SPEC_TYPE_OAUTH = 1;
+  // User-supplied fixed bearer-token identity.
+  IDENTITY_SPEC_TYPE_FIXED_TOKEN = 2;
+}
+
+// Explicit global identity-spec scope marker.
+message GlobalIdentitySpecScope {}
+
+// Scope containing one installed identity spec.
+message IdentitySpecScope {
+  // The selected identity-spec scope. Callers must set exactly one value.
+  oneof value {
+    // Install or address the spec globally.
+    GlobalIdentitySpecScope global = 1;
+    // Install or address the spec in one workspace.
+    Workspace workspace = 2;
+  }
+}
+
+// An identity spec installed in either the global scope or one workspace scope.
+message IdentitySpec {
+  // Stable identity spec name.
+  string name = 1;
+  // Authored identity spec version string.
+  string version = 2;
+  // Human-readable description.
+  string description = 3;
+  // Provider or issuer name, such as `github`.
+  string issuer = 4;
+  // Identity mechanism declared by the spec.
+  IdentitySpecType identity_type = 5;
+  // Authored and validated identity spec manifest YAML.
+  string manifest_yaml = 6;
+  // Scope where this identity spec is installed.
+  IdentitySpecScope scope = 7;
+}
+
+// List-safe metadata for one installed identity spec.
+message IdentitySpecSummary {
+  // Stable identity spec name.
+  string name = 1;
+  // Authored identity spec version string.
+  string version = 2;
+  // Human-readable description.
+  string description = 3;
+  // Provider or issuer name, such as `github`.
+  string issuer = 4;
+  // Identity mechanism declared by the spec.
+  IdentitySpecType identity_type = 5;
+  // Scope where this identity spec is installed.
+  IdentitySpecScope scope = 6;
+}
+
+// Installs or replaces one identity spec in exactly the requested scope.
+message AddIdentitySpecRequest {
+  // Raw identity spec manifest YAML to validate and install.
+  string manifest_yaml = 1;
+  // Setup input values owned by the installed identity spec. The server parses
+  // `manifest_yaml`, matches values to declared inputs, and applies the
+  // manifest-declared input kind during validation and later use.
+  repeated IdentitySpecInputValue input_values = 2;
+  // Exact target scope. Callers must set a scope explicitly.
+  IdentitySpecScope scope = 3;
+}
+
+// One setup input value for an installed identity spec.
+message IdentitySpecInputValue {
+  // Declared identity spec input key from AddIdentitySpecRequest.manifest_yaml.
+  string key = 1;
+  // Potentially sensitive input value. The identity spec manifest declares
+  // whether this key is a variable or secret. Responses never return it.
+  string value = 2;
+}
+
+// Returns the installed identity spec.
+message AddIdentitySpecResponse {
+  // The installed identity spec, including the scope where it was installed.
+  IdentitySpec identity_spec = 1;
+  // Whether an existing spec with the same name in the same scope was replaced.
+  bool replaced = 2;
+}
+
+// Lists installed identity specs in one requested scope.
+message ListIdentitySpecsRequest {
+  // Exact identity-spec scope to list. Callers must set a scope explicitly.
+  IdentitySpecScope scope = 1;
+  // When a workspace scope is selected, include global specs alongside its
+  // workspace-scoped specs. Invalid when the selected scope is global.
+  bool include_global = 2;
+}
+
+// Returns identity specs for the requested scope.
+message ListIdentitySpecsResponse {
+  // Installed identity-spec summaries with global specs first, then workspace
+  // specs, and names ascending within each scope. Same-name entries from
+  // different scopes are preserved.
+  repeated IdentitySpecSummary identity_specs = 1;
+}
+
+// Fetches one installed identity spec in one requested scope.
+message GetIdentitySpecRequest {
+  // Identity spec name.
+  string name = 1;
+  // Exact requested identity-spec scope. Callers must set it explicitly.
+  IdentitySpecScope scope = 2;
+}
+
+// Returns one installed identity spec.
+message GetIdentitySpecResponse {
+  // The installed identity spec, including the scope where it was installed.
+  IdentitySpec identity_spec = 1;
+}
+
+// Deletes one installed identity spec in one requested scope.
+message DeleteIdentitySpecRequest {
+  // Identity spec name.
+  string name = 1;
+  // Exact requested identity-spec scope. Callers must set it explicitly.
+  IdentitySpecScope scope = 2;
+}
+
+// Confirms identity spec deletion.
+message DeleteIdentitySpecResponse {}
+
+// Identity spec management APIs.
+service IdentitySpecService {
+  // Installs one identity spec in the requested scope.
+  rpc AddIdentitySpec(AddIdentitySpecRequest) returns (AddIdentitySpecResponse);
+  // Lists identity specs in the requested scope.
+  rpc ListIdentitySpecs(ListIdentitySpecsRequest) returns (ListIdentitySpecsResponse);
+  // Fetches one identity spec in the requested scope.
+  rpc GetIdentitySpec(GetIdentitySpecRequest) returns (GetIdentitySpecResponse);
+  // Deletes one identity spec in the requested scope.
+  rpc DeleteIdentitySpec(DeleteIdentitySpecRequest) returns (DeleteIdentitySpecResponse);
+}

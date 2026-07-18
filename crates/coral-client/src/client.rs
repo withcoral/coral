@@ -6,13 +6,15 @@ use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::function_service_client::FunctionServiceClient;
+use coral_api::v1::identity_spec_service_client::IdentitySpecServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::v1::task_service_client::TaskServiceClient;
 use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
 use coral_api::{
-    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
+    IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use coral_app::READINESS_SERVICE_NAME;
@@ -55,6 +57,9 @@ pub type SourceClient = SourceServiceClient<GrpcService>;
 /// Public workspace-management gRPC client.
 pub type WorkspaceClient = WorkspaceServiceClient<GrpcService>;
 
+/// Public identity-spec management gRPC client.
+pub type IdentitySpecClient = IdentitySpecServiceClient<GrpcService>;
+
 /// Public catalog-discovery gRPC client.
 pub type CatalogClient = CatalogServiceClient<GrpcService>;
 
@@ -83,6 +88,7 @@ pub type HealthCheckClient = HealthClient<GrpcService>;
 pub struct AppClient {
     source: SourceClient,
     workspace: WorkspaceClient,
+    identity_spec: IdentitySpecClient,
     catalog: CatalogClient,
     query: QueryClient,
     search: SearchClient,
@@ -198,6 +204,12 @@ impl AppClient {
             &grpc_endpoint,
             static_metadata.clone(),
         ));
+        let identity_spec_client = IdentitySpecClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ))
+        .max_decoding_message_size(IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE);
         let catalog_client = CatalogClient::new(grpc_service(
             channel.clone(),
             &grpc_endpoint,
@@ -237,6 +249,7 @@ impl AppClient {
         Ok(Self {
             source: source_client,
             workspace: workspace_client,
+            identity_spec: identity_spec_client,
             catalog: catalog_client,
             query: query_client,
             search: search_client,
@@ -257,6 +270,12 @@ impl AppClient {
     /// Returns a cloned workspace-management client.
     pub fn workspace_client(&self) -> WorkspaceClient {
         self.workspace.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned identity-spec management client.
+    pub fn identity_spec_client(&self) -> IdentitySpecClient {
+        self.identity_spec.clone()
     }
 
     #[must_use]
@@ -428,15 +447,30 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use coral_api::v1::feedback_service_server::{FeedbackService, FeedbackServiceServer};
+    use coral_api::v1::identity_spec_service_server::{
+        IdentitySpecService, IdentitySpecServiceServer,
+    };
+    use coral_api::v1::{
+        AddIdentitySpecRequest, AddIdentitySpecResponse, DeleteIdentitySpecRequest,
+        DeleteIdentitySpecResponse, GetIdentitySpecRequest, GetIdentitySpecResponse,
+        IdentitySpecSummary, ListIdentitySpecsRequest, ListIdentitySpecsResponse,
+    };
     use coral_api::v1::{SubmitFeedbackRequest, SubmitFeedbackResponse};
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::trace::SdkTracerProvider;
+    use tokio::net::TcpListener;
     use tokio::sync::oneshot;
     use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
+    use tonic::{Request, Response, Status};
     use tracing::Instrument as _;
     use tracing_subscriber::prelude::*;
 
     use super::*;
+
+    const TONIC_DEFAULT_MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+    const DESCRIPTION_SIZE: usize = 1024 * 1024;
+    const SPEC_COUNT: usize = 5;
 
     #[derive(Clone, Default)]
     struct MetadataCapture(Arc<Mutex<Option<(String, String)>>>);
@@ -632,5 +666,99 @@ mod tests {
     #[test]
     fn https_endpoint_builds_with_native_root_tls() {
         configured_endpoint("https://api.example.com:50051").expect("HTTPS endpoint");
+    }
+
+    #[derive(Debug)]
+    struct LargeIdentitySpecFixture;
+
+    #[tonic::async_trait]
+    impl IdentitySpecService for LargeIdentitySpecFixture {
+        async fn add_identity_spec(
+            &self,
+            _request: Request<AddIdentitySpecRequest>,
+        ) -> Result<Response<AddIdentitySpecResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn list_identity_specs(
+            &self,
+            _request: Request<ListIdentitySpecsRequest>,
+        ) -> Result<Response<ListIdentitySpecsResponse>, Status> {
+            let identity_specs = (0..SPEC_COUNT)
+                .map(|index| IdentitySpecSummary {
+                    name: format!("large-{index}"),
+                    description: "x".repeat(DESCRIPTION_SIZE),
+                    ..IdentitySpecSummary::default()
+                })
+                .collect();
+            Ok(Response::new(ListIdentitySpecsResponse { identity_specs }))
+        }
+
+        async fn get_identity_spec(
+            &self,
+            _request: Request<GetIdentitySpecRequest>,
+        ) -> Result<Response<GetIdentitySpecResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn delete_identity_spec(
+            &self,
+            _request: Request<DeleteIdentitySpecRequest>,
+        ) -> Result<Response<DeleteIdentitySpecResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+    }
+
+    #[tokio::test]
+    async fn app_client_decodes_identity_spec_summary_aggregate_above_tonic_default() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind identity-spec fixture");
+        let address = listener.local_addr().expect("read fixture address");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(
+                    IdentitySpecServiceServer::new(LargeIdentitySpecFixture)
+                        .max_encoding_message_size(IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE),
+                )
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    drop(shutdown_rx.await);
+                })
+                .await
+        });
+        let client = AppClient::connect(&format!("http://{address}"))
+            .await
+            .expect("connect AppClient to identity-spec fixture");
+        let response = client
+            .identity_spec_client()
+            .list_identity_specs(ListIdentitySpecsRequest::default())
+            .await
+            .expect("decode identity-spec response through AppClient")
+            .into_inner();
+
+        assert_eq!(response.identity_specs.len(), SPEC_COUNT);
+        assert!(
+            response
+                .identity_specs
+                .iter()
+                .all(|spec| spec.description.len() < TONIC_DEFAULT_MAX_MESSAGE_SIZE)
+        );
+        assert!(
+            response
+                .identity_specs
+                .iter()
+                .map(|spec| spec.description.len())
+                .sum::<usize>()
+                > TONIC_DEFAULT_MAX_MESSAGE_SIZE
+        );
+        drop(client);
+        shutdown_tx
+            .send(())
+            .expect("shutdown identity-spec fixture");
+        server
+            .await
+            .expect("join identity-spec fixture")
+            .expect("server");
     }
 }

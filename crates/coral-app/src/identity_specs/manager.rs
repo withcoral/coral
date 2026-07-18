@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use coral_spec::{IdentityManifest, IdentitySpecType, parse_identity_manifest_yaml};
+use coral_spec::{IdentityManifest, parse_identity_manifest_yaml};
 
 use crate::bootstrap::AppError;
 use crate::credentials::encryption::CredentialKeyProvider;
@@ -436,12 +436,6 @@ fn record_to_installed(record: IdentitySpecRecord) -> Result<InstalledIdentitySp
         &manifest.description,
     )?;
     require_match(&record.key, "issuer", &record.issuer, &manifest.issuer)?;
-    require_match(
-        &record.key,
-        "identity_type",
-        &record.identity_type,
-        identity_type_label(manifest.identity_type),
-    )?;
     Ok(InstalledIdentitySpec {
         key: record.key,
         manifest_yaml: record.manifest_yaml,
@@ -458,13 +452,6 @@ fn require_match(
     (stored == parsed)
         .then_some(())
         .ok_or_else(|| corrupt_record(key, &format!("stored {field} does not match manifest")))
-}
-
-fn identity_type_label(identity_type: IdentitySpecType) -> &'static str {
-    match identity_type {
-        IdentitySpecType::OAuth => "oauth",
-        IdentitySpecType::FixedToken => "fixed_token",
-    }
 }
 
 fn corrupt_record(key: &IdentitySpecKey, detail: &str) -> DbError {
@@ -498,7 +485,7 @@ pub(crate) mod tests {
 
     use tempfile::{TempDir, tempdir};
 
-    use super::{IdentitySpecManager, identity_type_label, record_to_installed, scope_label};
+    use super::{IdentitySpecManager, record_to_installed, scope_label};
     use crate::bootstrap::AppError;
     use crate::credentials::CredentialsError;
     use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
@@ -1165,7 +1152,6 @@ pub(crate) mod tests {
             |row: &mut IdentitySpecRecord| row.version.push_str("_drift"),
             |row: &mut IdentitySpecRecord| row.description.push_str("_drift"),
             |row: &mut IdentitySpecRecord| row.issuer.push_str("_drift"),
-            |row: &mut IdentitySpecRecord| row.identity_type.push_str("_drift"),
         ] {
             let mut drifted = record.clone();
             drift(&mut drifted);
@@ -1201,7 +1187,6 @@ pub(crate) mod tests {
             version: parsed.version,
             description: parsed.description,
             issuer: parsed.issuer,
-            identity_type: identity_type_label(parsed.identity_type).to_string(),
             manifest_yaml,
             created_at_unix_nanos: 1,
             updated_at_unix_nanos: 1,

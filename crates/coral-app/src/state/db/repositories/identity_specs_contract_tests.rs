@@ -477,7 +477,6 @@ fn expected_spec(
         version: manifest.version,
         description: manifest.description,
         issuer: manifest.issuer,
-        identity_type: "fixed_token".to_string(),
         manifest_yaml,
         created_at_unix_nanos: now,
         updated_at_unix_nanos: now,

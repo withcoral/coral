@@ -123,4 +123,23 @@ mod tests {
             "unexpected error: {error}"
         );
     }
+
+    #[tokio::test]
+    async fn sqlite_identity_specs_do_not_persist_derived_identity_type() {
+        let pool = sqlx::SqlitePool::connect(":memory:")
+            .await
+            .expect("sqlite pool");
+        MIGRATOR.run(&pool).await.expect("run migrations");
+
+        let columns: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM pragma_table_info('identity_specs') ORDER BY cid")
+                .fetch_all(&pool)
+                .await
+                .expect("read identity_specs columns");
+
+        assert!(
+            columns.iter().all(|(column,)| column != "identity_type"),
+            "identity_type must be derived from manifest_yaml"
+        );
+    }
 }

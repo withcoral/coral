@@ -66,7 +66,6 @@ async fn assert_identity_spec_corruption_contract(db: &CoralDb) {
     for column in [
         IdentitySpecs::Version,
         IdentitySpecs::Issuer,
-        IdentitySpecs::IdentityType,
         IdentitySpecs::ManifestYaml,
     ] {
         assert_corrupt_spec(db, &key, column, Expr::val("")).await;
