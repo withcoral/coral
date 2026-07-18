@@ -31,10 +31,6 @@ impl CoralDb {
     }
 
     /// Begin a transaction that detects conflicting concurrent writes.
-    #[expect(
-        dead_code,
-        reason = "the next stack layer wires identity-spec mutations"
-    )]
     pub(crate) async fn begin_serializable(&self) -> Result<CoralTx<'_>, DbError> {
         CoralTx::begin_serializable(&self.backend).await
     }

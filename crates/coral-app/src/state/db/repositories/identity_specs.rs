@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "identity persistence APIs are not yet wired to production consumers"
-    )
-)]
-
 use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::bootstrap::AppError;

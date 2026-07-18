@@ -8,15 +8,21 @@ use coral_spec::{IdentityManifest, IdentitySpecType, parse_identity_manifest_yam
 
 use crate::bootstrap::AppError;
 use crate::credentials::encryption::CredentialKeyProvider;
-use crate::identity::spec_document::decrypt_identity_spec_document;
+use crate::encrypted_document::EncryptedEnvelopeDocument;
+use crate::identity::spec_document::{
+    decrypt_identity_spec_document, encrypt_identity_spec_document,
+};
 use crate::identity_specs::inputs::{
-    ResolvedIdentitySpecInputs, resolve_identity_spec_inputs_for_use,
+    IdentitySpecInputValue, ResolvedIdentitySpecInputs, prepare_identity_spec_input_material,
+    resolve_identity_spec_inputs_for_use,
 };
 use crate::state::db::{
     CoralDb, CoralTx, DbError, DbRepos, IdentitySpecDocumentRecord, IdentitySpecId,
-    IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
+    IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope, now_unix_nanos_i64,
 };
 use crate::workspaces::WorkspaceName;
+
+const MAX_MUTATION_ATTEMPTS: usize = 8;
 
 /// One installed identity spec and the exact scope that supplied it.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,16 +53,132 @@ struct IdentitySpecUseSnapshot {
     document: Option<IdentitySpecDocumentRecord>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct IdentitySpecMutationSnapshot {
+    record: Option<IdentitySpecRecord>,
+    document: Option<IdentitySpecDocumentRecord>,
+}
+
 /// Database-backed identity-spec read and resolution behavior.
 #[derive(Clone)]
 pub(crate) struct IdentitySpecManager {
     db: Arc<CoralDb>,
     key_provider: Arc<dyn CredentialKeyProvider>,
+    #[cfg(test)]
+    mutation_barrier: Option<Arc<tokio::sync::Barrier>>,
 }
 
 impl IdentitySpecManager {
     pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn CredentialKeyProvider>) -> Self {
-        Self { db, key_provider }
+        Self {
+            db,
+            key_provider,
+            #[cfg(test)]
+            mutation_barrier: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_mutation_barrier(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+        self.mutation_barrier = Some(barrier);
+        self
+    }
+
+    /// Install or replace one spec in exactly the selected scope.
+    pub(crate) async fn add_or_replace_exact(
+        &self,
+        scope: IdentitySpecScope,
+        manifest_yaml: &str,
+        input_values: Vec<IdentitySpecInputValue>,
+    ) -> Result<(InstalledIdentitySpec, bool), AppError> {
+        let manifest = Arc::new(
+            parse_identity_manifest_yaml(manifest_yaml)
+                .map_err(|error| AppError::InvalidInput(error.to_string()))?,
+        );
+        let key = IdentitySpecKey::new(scope, &manifest.name)?;
+        let input_values = Arc::new(input_values);
+        #[cfg(test)]
+        let mut mutation_barrier = self.mutation_barrier.clone();
+
+        for _ in 0..MAX_MUTATION_ATTEMPTS {
+            let snapshot = match self.load_mutation_snapshot(&key).await {
+                Ok(snapshot) => snapshot,
+                Err(AppError::RetryableTransactionConflict) => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            #[cfg(test)]
+            if let Some(barrier) = mutation_barrier.take() {
+                barrier.wait().await;
+            }
+            let expected = snapshot.clone();
+            let prepare_key = key.clone();
+            let prepare_manifest = Arc::clone(&manifest);
+            let prepare_inputs = Arc::clone(&input_values);
+            let key_provider = Arc::clone(&self.key_provider);
+            let document = run_blocking_identity_spec_operation(move || {
+                let previous_identity_spec_id =
+                    snapshot.record.as_ref().map(|record| record.id.clone());
+                let previous = snapshot
+                    .record
+                    .clone()
+                    .map(record_to_installed)
+                    .transpose()?;
+                let previous_values = match previous_identity_spec_id {
+                    Some(identity_spec_id) => decrypt_input_material(
+                        &prepare_key,
+                        &identity_spec_id,
+                        snapshot.document,
+                        key_provider.as_ref(),
+                    )?,
+                    None => BTreeMap::new(),
+                };
+                let prepared = prepare_identity_spec_input_material(
+                    &prepare_key,
+                    prepare_manifest.as_ref(),
+                    previous.as_ref().map(|spec| &spec.manifest),
+                    &previous_values,
+                    prepare_inputs.as_slice(),
+                )?;
+                prepare_document_write(&prepare_key, prepared.values(), key_provider.as_ref())
+            })
+            .await?;
+            let replaced = expected.record.is_some();
+
+            match self
+                .try_write_mutation(
+                    &key,
+                    &expected,
+                    manifest.as_ref(),
+                    manifest_yaml,
+                    document.as_ref(),
+                )
+                .await
+            {
+                Ok(Some(installed)) => return Ok((installed, replaced)),
+                Ok(None) | Err(AppError::RetryableTransactionConflict) => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(AppError::RetryableTransactionConflict)
+    }
+
+    /// Delete one spec in exactly the selected scope.
+    pub(crate) async fn delete_exact(&self, key: &IdentitySpecKey) -> Result<(), AppError> {
+        for _ in 0..MAX_MUTATION_ATTEMPTS {
+            match self.try_delete_exact(key).await {
+                Ok(()) => return Ok(()),
+                Err(AppError::RetryableTransactionConflict) => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(AppError::RetryableTransactionConflict)
     }
 
     /// Fetch one spec in exactly the requested scope, without fallback.
@@ -173,6 +295,79 @@ impl IdentitySpecManager {
         convert_optional(record, key)
     }
 
+    async fn load_mutation_snapshot(
+        &self,
+        key: &IdentitySpecKey,
+    ) -> Result<IdentitySpecMutationSnapshot, AppError> {
+        let mut tx = self.db.begin_read_snapshot().await?;
+        let snapshot = load_mutation_snapshot(&mut tx, key).await?;
+        tx.commit().await?;
+        Ok(snapshot)
+    }
+
+    async fn try_write_mutation(
+        &self,
+        key: &IdentitySpecKey,
+        expected: &IdentitySpecMutationSnapshot,
+        manifest: &IdentityManifest,
+        manifest_yaml: &str,
+        document: Option<&EncryptedEnvelopeDocument>,
+    ) -> Result<Option<InstalledIdentitySpec>, AppError> {
+        let mut tx = self.db.begin_serializable().await?;
+        if load_mutation_snapshot(&mut tx, key).await? != *expected {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        let now = now_unix_nanos_i64()?;
+        let result = async {
+            let record = tx
+                .identity_specs()
+                .upsert(key, manifest, manifest_yaml, now)
+                .await?;
+            match document {
+                Some(document) => {
+                    tx.identity_spec_documents()
+                        .upsert(&record.id, document, now)
+                        .await?;
+                }
+                None => {
+                    tx.identity_spec_documents().delete(&record.id).await?;
+                }
+            }
+            record_to_installed(record).map_err(Into::into)
+        }
+        .await;
+        match result {
+            Ok(installed) => {
+                tx.commit().await?;
+                Ok(Some(installed))
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn try_delete_exact(&self, key: &IdentitySpecKey) -> Result<(), AppError> {
+        let mut tx = self.db.begin_serializable().await?;
+        require_scope_workspace(&mut tx, key.scope()).await?;
+        match tx.identity_specs().delete(key).await {
+            Ok(true) => {
+                tx.commit().await?;
+                Ok(())
+            }
+            Ok(false) => {
+                tx.rollback().await?;
+                Err(spec_not_found(key))
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error.into())
+            }
+        }
+    }
+
     async fn resolve_snapshot_for_use(
         &self,
         snapshot: IdentitySpecUseSnapshot,
@@ -205,6 +400,19 @@ async fn read_use_snapshot(
     };
     let document = tx.identity_spec_documents().get(&record.id).await?;
     Ok(Some(IdentitySpecUseSnapshot { record, document }))
+}
+
+async fn load_mutation_snapshot(
+    tx: &mut CoralTx<'_>,
+    key: &IdentitySpecKey,
+) -> Result<IdentitySpecMutationSnapshot, AppError> {
+    require_scope_workspace(tx, key.scope()).await?;
+    let record = tx.identity_specs().get(key).await?;
+    let document = match record.as_ref() {
+        Some(record) => tx.identity_spec_documents().get(&record.id).await?,
+        None => None,
+    };
+    Ok(IdentitySpecMutationSnapshot { record, document })
 }
 
 async fn run_blocking_identity_spec_operation<T, F>(operation: F) -> Result<T, AppError>
@@ -288,6 +496,19 @@ fn decrypt_input_material(
     })
 }
 
+fn prepare_document_write(
+    key: &IdentitySpecKey,
+    values: &BTreeMap<String, String>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<Option<EncryptedEnvelopeDocument>, AppError> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    encrypt_identity_spec_document(key, values, key_provider)
+        .map(Some)
+        .map_err(Into::into)
+}
+
 fn record_to_installed(record: IdentitySpecRecord) -> Result<InstalledIdentitySpec, DbError> {
     let manifest = parse_identity_manifest_yaml(&record.manifest_yaml).map_err(|error| {
         corrupt_record(&record.key, &format!("manifest cannot be parsed: {error}"))
@@ -355,7 +576,7 @@ fn scope_label(scope: &IdentitySpecScope) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -371,9 +592,10 @@ mod tests {
     use crate::identity::spec_document::{
         encrypt_identity_spec_document, seal_identity_spec_plaintext_for_test,
     };
+    use crate::identity_specs::inputs::IdentitySpecInputValue;
     use crate::state::db::{
         CoralDb, CoralTx, DbRepos, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
-        IdentitySpecScope, ResolvedDatabaseConfig,
+        IdentitySpecScope, ResolvedDatabaseConfig, set_identity_spec_document_version,
     };
     use crate::workspaces::WorkspaceName;
 
@@ -427,6 +649,255 @@ mod tests {
         fn key(&self, _key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
             Err(CredentialsError::Unavailable("unavailable".into()))
         }
+    }
+
+    struct MutationKeyProvider(Vec<CredentialEncryptionKey>, ThreadId);
+
+    impl MutationKeyProvider {
+        fn new(keys: Vec<CredentialEncryptionKey>) -> Self {
+            Self(keys, thread::current().id())
+        }
+
+        fn require_blocking_thread(&self) {
+            assert_ne!(
+                thread::current().id(),
+                self.1,
+                "identity spec key access ran on the async runtime"
+            );
+        }
+    }
+
+    impl CredentialKeyProvider for MutationKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+            self.require_blocking_thread();
+            self.0
+                .last()
+                .cloned()
+                .ok_or_else(|| CredentialsError::Crypto("missing mutation key".to_string()))
+        }
+
+        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+            self.require_blocking_thread();
+            self.0
+                .iter()
+                .find(|key| key.key_id() == key_id)
+                .cloned()
+                .ok_or_else(|| CredentialsError::Crypto("missing mutation key".to_string()))
+        }
+    }
+
+    #[expect(clippy::too_many_lines, reason = "shared backend mutation contract")]
+    pub(crate) async fn assert_identity_spec_mutation_contract(db: &Arc<CoralDb>) {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let workspace = WorkspaceName::parse(&format!("mutation{suffix}")).unwrap();
+        let name = format!("mutation_{suffix}");
+        let global_key = IdentitySpecKey::global(&name).unwrap();
+        let workspace_key = IdentitySpecKey::workspace(workspace.clone(), &name).unwrap();
+        let mut tx = db.begin().await.unwrap();
+        tx.workspaces().ensure(workspace.as_str(), 1).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let old_key = CredentialEncryptionKey::from_static_bytes_for_test([51; 32]);
+        let old_provider = Arc::new(MutationKeyProvider::new(vec![old_key.clone()]));
+        let manager = IdentitySpecManager::new(Arc::clone(db), old_provider);
+        let (_, replaced) = mutate(
+            &manager,
+            IdentitySpecScope::global(),
+            &name,
+            "v1",
+            &[("CLIENT_SECRET", "global-secret")],
+        )
+        .await;
+        assert!(!replaced);
+        mutate(
+            &manager,
+            IdentitySpecScope::workspace(workspace.clone()),
+            &name,
+            "workspace",
+            &[("CLIENT_SECRET", "workspace-secret")],
+        )
+        .await;
+        assert_exact(&manager, &global_key, "tenant-v1", "global-secret").await;
+        assert_exact(
+            &manager,
+            &workspace_key,
+            "tenant-workspace",
+            "workspace-secret",
+        )
+        .await;
+
+        let new_key = CredentialEncryptionKey::from_static_bytes_for_test([52; 32]);
+        let new_key_id = new_key.key_id().to_string();
+        let rotating_provider = Arc::new(MutationKeyProvider::new(vec![old_key, new_key]));
+        let manager = IdentitySpecManager::new(Arc::clone(db), rotating_provider.clone());
+        assert!(
+            mutate(&manager, IdentitySpecScope::global(), &name, "v2", &[],)
+                .await
+                .1
+        );
+        assert_exact(&manager, &global_key, "tenant-v2", "global-secret").await;
+        assert_eq!(
+            manager
+                .load_mutation_snapshot(&global_key)
+                .await
+                .unwrap()
+                .document
+                .unwrap()
+                .envelope
+                .key_id,
+            new_key_id
+        );
+
+        let mut tx = db.begin().await.unwrap();
+        let global_id = tx
+            .identity_specs()
+            .get(&global_key)
+            .await
+            .unwrap()
+            .expect("global spec exists")
+            .id;
+        set_identity_spec_document_version(&mut tx, &global_id, i64::MAX).await;
+        tx.commit().await.unwrap();
+        let before = manager.load_mutation_snapshot(&global_key).await.unwrap();
+        let overflow_secret = "overflow-secret-must-not-leak";
+        let error = manager
+            .add_or_replace_exact(
+                IdentitySpecScope::global(),
+                &oauth_manifest(&name, "overflow"),
+                vec![IdentitySpecInputValue::new(
+                    "CLIENT_SECRET",
+                    overflow_secret,
+                )],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::FailedPrecondition(_)));
+        assert!(!format!("{error:?}").contains(overflow_secret));
+        assert!(manager.load_mutation_snapshot(&global_key).await.unwrap() == before);
+
+        let global_before_delete = manager.load_mutation_snapshot(&global_key).await.unwrap();
+        manager.delete_exact(&workspace_key).await.unwrap();
+        let deleted = manager
+            .load_mutation_snapshot(&workspace_key)
+            .await
+            .unwrap();
+        assert!(deleted.record.is_none() && deleted.document.is_none());
+        assert!(manager.load_mutation_snapshot(&global_key).await.unwrap() == global_before_delete);
+        assert!(matches!(
+            manager.delete_exact(&workspace_key).await,
+            Err(AppError::IdentitySpecNotFound { .. })
+        ));
+
+        let missing = WorkspaceName::parse(&format!("missing{suffix}")).unwrap();
+        let missing_key = IdentitySpecKey::workspace(missing.clone(), &name).unwrap();
+        assert!(matches!(
+            manager
+                .add_or_replace_exact(
+                    IdentitySpecScope::workspace(missing),
+                    &manifest(&name, "missing"),
+                    vec![],
+                )
+                .await,
+            Err(AppError::WorkspaceNotFound(_))
+        ));
+        assert!(matches!(
+            manager.delete_exact(&missing_key).await,
+            Err(AppError::WorkspaceNotFound(_))
+        ));
+
+        assert_disjoint_replacements_converge(db, &manager, &suffix).await;
+        manager
+            .add_or_replace_exact(
+                IdentitySpecScope::global(),
+                &manifest(&name, "fixed"),
+                vec![],
+            )
+            .await
+            .unwrap();
+        let empty = manager.load_mutation_snapshot(&global_key).await.unwrap();
+        assert!(empty.document.is_none());
+        assert_eq!(
+            record_to_installed(empty.record.unwrap())
+                .unwrap()
+                .manifest
+                .version,
+            "fixed"
+        );
+    }
+
+    async fn mutate(
+        manager: &IdentitySpecManager,
+        scope: IdentitySpecScope,
+        name: &str,
+        label: &str,
+        values: &[(&str, &str)],
+    ) -> (super::InstalledIdentitySpec, bool) {
+        manager
+            .add_or_replace_exact(
+                scope,
+                &oauth_manifest(name, label),
+                values
+                    .iter()
+                    .map(|(key, value)| IdentitySpecInputValue::new(*key, *value))
+                    .collect(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn assert_exact(
+        manager: &IdentitySpecManager,
+        key: &IdentitySpecKey,
+        tenant: &str,
+        secret: &str,
+    ) {
+        let resolved = manager.get_exact_for_use(key).await.unwrap();
+        assert_eq!(resolved.inputs.variables().get("TENANT").unwrap(), tenant);
+        assert_eq!(
+            resolved.inputs.secrets().get("CLIENT_SECRET").unwrap(),
+            secret
+        );
+    }
+
+    async fn assert_disjoint_replacements_converge(
+        db: &Arc<CoralDb>,
+        manager: &IdentitySpecManager,
+        suffix: &str,
+    ) {
+        let name = format!("concurrent_{suffix}");
+        let key = IdentitySpecKey::global(&name).unwrap();
+        mutate(
+            manager,
+            IdentitySpecScope::global(),
+            &name,
+            "race",
+            &[("TENANT", "before"), ("CLIENT_SECRET", "before")],
+        )
+        .await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let left = IdentitySpecManager::new(Arc::clone(db), Arc::clone(&manager.key_provider))
+            .with_mutation_barrier(Arc::clone(&barrier));
+        let right = IdentitySpecManager::new(Arc::clone(db), Arc::clone(&manager.key_provider))
+            .with_mutation_barrier(barrier);
+        let manifest = oauth_manifest(&name, "race");
+        let (left, right) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                left.add_or_replace_exact(
+                    IdentitySpecScope::global(),
+                    &manifest,
+                    vec![IdentitySpecInputValue::new("TENANT", "left")],
+                ),
+                right.add_or_replace_exact(
+                    IdentitySpecScope::global(),
+                    &manifest,
+                    vec![IdentitySpecInputValue::new("CLIENT_SECRET", "right")],
+                )
+            )
+        })
+        .await
+        .expect("concurrent identity spec replacements timed out");
+        assert!(left.unwrap().1 && right.unwrap().1);
+        assert_exact(manager, &key, "left", "right").await;
     }
 
     #[tokio::test]
