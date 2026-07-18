@@ -1,4 +1,4 @@
-//! Database-backed identity instance creation.
+//! Database-backed identity instance management.
 
 #![cfg_attr(
     not(test),
@@ -216,6 +216,116 @@ impl IdentityManager {
         Err(AppError::RetryableTransactionConflict)
     }
 
+    /// List safe persisted metadata for one exact owner in identity-name order.
+    ///
+    /// Management reads remain available when the referenced exact spec is no
+    /// longer installed so callers can inspect and delete legacy identities.
+    pub(crate) async fn list_for_owner(
+        &self,
+        owner: &IdentityOwner,
+    ) -> Result<Vec<IdentityRecord>, AppError> {
+        let mut tx = self.db.begin_read_snapshot().await?;
+        let result = async {
+            owner_workspace_created_at(&mut tx, owner).await?;
+            Ok(tx.identities().list(owner).await?)
+        }
+        .await;
+        complete_transaction(tx, result).await
+    }
+
+    /// Get safe persisted metadata for one exact owner and identity name.
+    ///
+    /// This does not resolve the referenced spec or decrypt setup material.
+    pub(crate) async fn get(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<IdentityRecord, AppError> {
+        let user_name = owner
+            .workspace_name()
+            .is_none()
+            .then(|| IdentityName::parse(identity_name))
+            .transpose()?;
+        let mut tx = self.db.begin_read_snapshot().await?;
+        let result = async {
+            owner_workspace_created_at(&mut tx, owner).await?;
+            let name = match user_name {
+                Some(name) => name,
+                None => IdentityName::parse(identity_name)?,
+            };
+            tx.identities()
+                .get(owner, &name)
+                .await?
+                .ok_or_else(|| identity_not_found(&name))
+        }
+        .await;
+        complete_transaction(tx, result).await
+    }
+
+    /// Delete one identity and its cascading encrypted setup document.
+    pub(crate) async fn delete(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<(), AppError> {
+        let (name, workspace_created_at_unix_nanos) =
+            self.prepare_delete(owner, identity_name).await?;
+        for _ in 0..MAX_MUTATION_ATTEMPTS {
+            match self
+                .try_delete(owner, &name, workspace_created_at_unix_nanos)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(AppError::RetryableTransactionConflict) => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(AppError::RetryableTransactionConflict)
+    }
+
+    async fn prepare_delete(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<(IdentityName, Option<i64>), AppError> {
+        if owner.workspace_name().is_none() {
+            return Ok((IdentityName::parse(identity_name)?, None));
+        }
+        let mut tx = self.db.begin_read_snapshot().await?;
+        let result = async {
+            let workspace_created_at_unix_nanos =
+                owner_workspace_created_at(&mut tx, owner).await?;
+            let name = IdentityName::parse(identity_name)?;
+            Ok((name, workspace_created_at_unix_nanos))
+        }
+        .await;
+        complete_transaction(tx, result).await
+    }
+
+    async fn try_delete(
+        &self,
+        owner: &IdentityOwner,
+        name: &IdentityName,
+        expected_workspace_created_at_unix_nanos: Option<i64>,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin_serializable().await?;
+        let result = async {
+            let workspace_created_at_unix_nanos =
+                owner_workspace_created_at(&mut tx, owner).await?;
+            if workspace_created_at_unix_nanos != expected_workspace_created_at_unix_nanos {
+                return Err(owner_workspace_not_found(owner));
+            }
+            if !tx.identities().delete(owner, name).await? {
+                return Err(identity_not_found(name));
+            }
+            Ok(())
+        }
+        .await;
+        complete_transaction(tx, result).await
+    }
+
     async fn load_fixed_token_spec(
         &self,
         owner: &IdentityOwner,
@@ -385,6 +495,26 @@ where
 {
     let span = tracing::Span::current();
     tokio::task::spawn_blocking(move || span.in_scope(operation)).await?
+}
+
+async fn complete_transaction<T>(
+    tx: CoralTx<'_>,
+    result: Result<T, AppError>,
+) -> Result<T, AppError> {
+    match result {
+        Ok(value) => {
+            tx.commit().await?;
+            Ok(value)
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            Err(error)
+        }
+    }
+}
+
+fn identity_not_found(name: &IdentityName) -> AppError {
+    AppError::IdentityNotFound(name.to_string())
 }
 
 fn spec_not_found(key: &IdentitySpecKey) -> AppError {

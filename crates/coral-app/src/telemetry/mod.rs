@@ -62,6 +62,7 @@ pub(crate) fn app_error_type(error: &AppError) -> &'static str {
         AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
         AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
         AppError::IdentitySpecNotFound { .. } => "IDENTITY_SPEC_NOT_FOUND",
+        AppError::IdentityNotFound(_) => "IDENTITY_NOT_FOUND",
         AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",

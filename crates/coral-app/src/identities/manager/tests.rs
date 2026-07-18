@@ -38,6 +38,199 @@ impl CredentialKeyProvider for TestKeyProvider {
 
 #[expect(
     clippy::too_many_lines,
+    reason = "shared SQLite/Postgres identity management contract"
+)]
+pub(crate) async fn assert_identity_management_contract(db: &Arc<CoralDb>) {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let spec = format!("manage_spec_{suffix}");
+    let spec_key = IdentitySpecKey::global(&spec).expect("global spec key");
+    put_global_spec(db, &spec, &fixed_manifest(&spec, "manage")).await;
+
+    let workspace = WorkspaceName::parse(&format!("manage{suffix}")).expect("workspace");
+    put_workspace(db, &workspace).await;
+    let primary_user = UserPrincipal::for_user(&format!("manage-a-{suffix}")).expect("principal");
+    let other_user = UserPrincipal::for_user(&format!("manage-b-{suffix}")).expect("principal");
+    let primary_owner = IdentityOwner::for_user(primary_user.clone());
+    let other_owner = IdentityOwner::for_user(other_user.clone());
+    let workspace_owner = IdentityOwner::workspace(workspace.clone());
+    let alpha = format!("alpha_{suffix}");
+    let zeta = format!("zeta_{suffix}");
+    let provider = Arc::new(TestKeyProvider(vec![
+        CredentialEncryptionKey::from_static_bytes_for_test([70; 32]),
+    ]));
+    let manager = IdentityManager::new(db.clone(), provider);
+
+    let primary_zeta = manager
+        .create_or_replace_user_fixed_token(&primary_user, &zeta, &spec, "zeta-token".to_string())
+        .await
+        .expect("create second user identity");
+    let primary_alpha = manager
+        .create_or_replace_user_fixed_token(&primary_user, &alpha, &spec, "alpha-token".to_string())
+        .await
+        .expect("create first user identity");
+    let other_alpha = manager
+        .create_or_replace_user_fixed_token(&other_user, &alpha, &spec, "other-token".to_string())
+        .await
+        .expect("create other user identity");
+    let workspace_alpha = manager
+        .create_or_replace_workspace_fixed_token(
+            &workspace,
+            &alpha,
+            &spec,
+            "workspace-token".to_string(),
+        )
+        .await
+        .expect("create workspace identity");
+
+    assert_eq!(
+        manager
+            .list_for_owner(&primary_owner)
+            .await
+            .expect("list user identities"),
+        vec![primary_alpha.clone(), primary_zeta.clone()]
+    );
+    assert_eq!(
+        manager
+            .list_for_owner(&other_owner)
+            .await
+            .expect("list other user identities"),
+        vec![other_alpha.clone()]
+    );
+    assert_eq!(
+        manager
+            .list_for_owner(&workspace_owner)
+            .await
+            .expect("list workspace identities"),
+        vec![workspace_alpha.clone()]
+    );
+    assert_eq!(
+        manager
+            .get(&primary_owner, &alpha)
+            .await
+            .expect("get user identity"),
+        primary_alpha
+    );
+    assert_eq!(
+        manager
+            .get(&workspace_owner, &alpha)
+            .await
+            .expect("get workspace identity"),
+        workspace_alpha
+    );
+
+    let mut remove_spec = db.begin().await.expect("begin exact spec removal");
+    assert!(
+        remove_spec
+            .identity_specs()
+            .delete(&spec_key)
+            .await
+            .expect("remove exact spec")
+    );
+    remove_spec
+        .commit()
+        .await
+        .expect("commit exact spec removal");
+    assert_eq!(
+        manager
+            .get(&primary_owner, &alpha)
+            .await
+            .expect("get legacy identity without installed spec"),
+        primary_alpha
+    );
+    assert_eq!(
+        manager
+            .list_for_owner(&workspace_owner)
+            .await
+            .expect("list legacy workspace identity"),
+        vec![workspace_alpha.clone()]
+    );
+
+    for result in [
+        manager.get(&primary_owner, "bad/name").await.map(drop),
+        manager.delete(&primary_owner, "bad/name").await,
+    ] {
+        assert!(matches!(result, Err(AppError::InvalidInput(_))));
+    }
+    let missing_name = format!("missing_{suffix}");
+    assert!(matches!(
+        manager.get(&primary_owner, &missing_name).await,
+        Err(AppError::IdentityNotFound(name)) if name == missing_name
+    ));
+    assert!(matches!(
+        manager.delete(&primary_owner, &missing_name).await,
+        Err(AppError::IdentityNotFound(name)) if name == missing_name
+    ));
+
+    let missing_workspace =
+        WorkspaceName::parse(&format!("missing{suffix}")).expect("missing workspace name");
+    let missing_workspace_owner = IdentityOwner::workspace(missing_workspace.clone());
+    assert!(matches!(
+        manager.list_for_owner(&missing_workspace_owner).await,
+        Err(AppError::WorkspaceNotFound(name)) if name == missing_workspace.as_str()
+    ));
+    assert!(matches!(
+        manager.get(&missing_workspace_owner, "bad/name").await,
+        Err(AppError::WorkspaceNotFound(name)) if name == missing_workspace.as_str()
+    ));
+    assert!(matches!(
+        manager.delete(&missing_workspace_owner, "bad/name").await,
+        Err(AppError::WorkspaceNotFound(name)) if name == missing_workspace.as_str()
+    ));
+
+    manager
+        .delete(&primary_owner, &alpha)
+        .await
+        .expect("delete exact user identity");
+    assert_eq!(load_pair(db, &primary_owner, &alpha).await, (None, None));
+    assert_eq!(
+        manager
+            .get(&other_owner, &alpha)
+            .await
+            .expect("other user identity remains"),
+        other_alpha
+    );
+    assert_eq!(
+        manager
+            .get(&workspace_owner, &alpha)
+            .await
+            .expect("workspace identity remains"),
+        workspace_alpha
+    );
+    assert!(matches!(
+        manager.delete(&primary_owner, &alpha).await,
+        Err(AppError::IdentityNotFound(name)) if name == alpha
+    ));
+
+    manager
+        .delete(&workspace_owner, &alpha)
+        .await
+        .expect("delete workspace identity");
+    manager
+        .delete(&primary_owner, &zeta)
+        .await
+        .expect("delete remaining first-user identity");
+    manager
+        .delete(&other_owner, &alpha)
+        .await
+        .expect("delete remaining second-user identity");
+    for (owner, name) in [
+        (&workspace_owner, alpha.as_str()),
+        (&primary_owner, zeta.as_str()),
+        (&other_owner, alpha.as_str()),
+    ] {
+        assert_eq!(load_pair(db, owner, name).await, (None, None));
+    }
+    let mut cleanup = db.begin().await.expect("begin identity cleanup");
+    cleanup
+        .workspaces()
+        .delete(workspace.as_str())
+        .await
+        .expect("delete workspace");
+    cleanup.commit().await.expect("commit identity cleanup");
+}
+
+#[expect(
+    clippy::too_many_lines,
     reason = "shared SQLite/Postgres manager contract"
 )]
 pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<CoralDb>) {
