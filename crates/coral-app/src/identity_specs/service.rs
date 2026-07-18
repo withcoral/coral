@@ -1,11 +1,4 @@
 //! Implements the gRPC `IdentitySpecService` management boundary.
-#![cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "the next stack layer mounts this adapter in server bootstrap"
-    )
-)]
 
 use coral_api::v1::identity_spec_service_server::IdentitySpecService as IdentitySpecServiceApi;
 use coral_api::v1::{

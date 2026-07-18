@@ -39,6 +39,9 @@ trust boundary:
 
 - Source secrets are stored separately from non-secret source variables and are
   never written into `config.toml`.
+- Identity-spec setup inputs use a separate envelope-encryption path. Coral
+  stores their encrypted documents in the app database and does not return the
+  input values from identity-spec management APIs.
 - By default, sources use the operating-system credential store when Coral
   can successfully write, read, and delete a probe item. On macOS this uses
   Keychain; on Windows, Credential Manager; on Linux, Secret Service.
@@ -56,9 +59,9 @@ trust boundary:
 - MCP clients can query installed sources, but they do not receive raw stored
   secret values through the discovery tables or resources.
 
-## Secret storage configuration
+## Source secret storage
 
-Coral reads the credential storage preference from `config.toml`:
+Coral reads the source-secret storage preference from `config.toml`:
 
 ```toml
 [credentials]
@@ -76,6 +79,43 @@ Supported values:
 <Note>
 Changing the global preference does not rewrite existing credentials. To update those, remove and re-add the source you want to update.
 </Note>
+
+This preference does not control identity setup inputs. Source secrets use the
+keychain or plaintext file backend described above; identity setup inputs use
+the database-backed envelope encryption described next.
+
+## Identity setup input encryption
+
+Coral envelope-encrypts persisted identity setup inputs. A per-document
+data-encryption key encrypts the input values, and a longer-lived
+key-encryption key (KEK) wraps that data key. The database stores the encrypted
+document and its key identifier, not the KEK itself.
+
+You can supply KEKs through environment variables named by
+`[encryption].encryption_key_env` and
+`[encryption].decryption_key_envs`. Coral reads them once at startup. The
+active key encrypts new documents; previous keys are decrypt-only so existing
+documents remain readable during rotation. One KEK protects every encrypted
+document — source credentials and identity material alike — so rotating or
+losing it reaches further than source secrets. See
+[Configuration](/reference/configuration#encryption) for the format and
+rotation behavior.
+
+The KEK location defines the protection boundary:
+
+- SQLite uses a private local key file in Coral's local state directory by
+  default. When you configure a KEK, Coral uses it for new writes while
+  retaining lookup compatibility with an existing local key for older
+  documents. Protect both the key file and the configured SQLite database
+  location with your operating-system account controls.
+- PostgreSQL never uses a node-local fallback. Every Coral server that needs to
+  write or decrypt identity setup inputs must receive the same configured key
+  ring. A server without an active configured KEK can start, but encrypted
+  identity setup input operations are unavailable.
+
+Envelope encryption separates database contents from the KEK, but it does not
+protect against an attacker who controls the Coral process, its environment,
+or the local user account that can read a SQLite key file.
 
 ## What you still need to trust
 
@@ -95,6 +135,9 @@ you configure; it does not make an otherwise untrusted local agent safe.
   configured sources. If a source uses file-backed secret storage, anyone who
   can read your local Coral config directory should also be treated as able to
   read its stored source secrets.
+- Anyone who can read the configured identity KEKs, Coral process memory, or a
+  SQLite local encryption-key file should be treated as able to decrypt the
+  corresponding identity setup inputs when they also obtain the database.
 - Coral does not attempt to protect against a compromised machine, compromised
   MCP client, malicious shell environment, or malicious upstream API response.
 

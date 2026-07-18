@@ -87,6 +87,49 @@ async fn server_lifecycle_rejects_postgres_config_without_url_env_value() {
     }
 }
 
+#[tokio::test]
+async fn server_lifecycle_validates_configured_encryption_key_before_opening_database() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let missing_key_env = format!(
+        "CORAL_TEST_CREDENTIAL_KEY_MISSING_FOR_SERVER_START_{}",
+        uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .to_ascii_uppercase()
+    );
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        format!("[encryption]\nencryption_key_env = \"{missing_key_env}\"\n"),
+    )
+    .expect("write config");
+
+    let result = ServerBuilder::new()
+        .with_config_dir(&config_dir)
+        .start()
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(server) => {
+            server.shutdown().await.expect("shutdown unexpected server");
+            panic!("server start should fail without the configured encryption key");
+        }
+    };
+
+    match error {
+        LocalServerError::FailedPrecondition(detail) => assert!(
+            detail.contains(&missing_key_env),
+            "unexpected detail: {detail}"
+        ),
+        other => panic!("unexpected error: {other}"),
+    }
+    assert!(
+        !config_dir.join("coral.db").exists(),
+        "credential-key validation must happen before the database is opened"
+    );
+}
+
 async fn assert_default_sqlite_db_is_migrated(config_dir: &std::path::Path) {
     let database_file = config_dir.join("coral.db");
     assert!(

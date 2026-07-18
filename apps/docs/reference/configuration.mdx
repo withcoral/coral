@@ -43,6 +43,66 @@ export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?ssl
   Remote Postgres URLs must set `sslmode=verify-full` so Coral verifies the server identity. Loopback and local-socket Postgres URLs may omit TLS for local development.
 </Note>
 
+## Credentials
+
+The `[credentials]` section selects where source secrets are stored:
+
+- `storage` selects where source secrets are stored. See the
+  [security model](/project/security#source-secret-storage).
+
+```toml
+[credentials]
+storage = "auto"
+```
+
+## Encryption
+
+The `[encryption]` section configures the key-encryption keys (KEKs) that protect
+every encrypted document Coral stores — source credential documents, identity spec
+setup inputs, and identity setup inputs alike. One key covers all of them, so
+losing or rotating it affects more than stored source secrets.
+
+- `encryption_key_env` names the environment variable containing the active KEK
+  used for new writes.
+- `decryption_key_envs` lists environment variables containing previous KEKs that
+  may decrypt existing documents but are never used for new writes.
+
+```toml
+[encryption]
+encryption_key_env = "CORAL_ENVELOPE_KEK_CURRENT"
+decryption_key_envs = ["CORAL_ENVELOPE_KEK_PREVIOUS"]
+```
+
+Each referenced environment variable must contain `v1:` followed by standard
+Base64 that decodes to exactly 32 bytes. The key material belongs in the
+environment variable, not in `config.toml`.
+
+```text
+v1:<base64-encoded-32-byte-key>
+```
+
+Coral resolves the configured keys once during server startup and keeps that
+immutable key ring for the process lifetime. Restart Coral after changing the
+configuration or referenced environment variables. Startup fails when an
+explicitly configured key is missing or invalid, when key names or material
+are duplicated, or when `decryption_key_envs` is set without
+`encryption_key_env`.
+
+To rotate keys, move the old active environment-variable name into
+`decryption_key_envs`, point `encryption_key_env` at the new key, and restart
+Coral. New identity setup documents use only the active key; previous keys
+remain decrypt-only until you remove them from the configuration.
+
+With SQLite, Coral uses `encryption/envelope.key` in the local state
+directory when no active key is configured. If you later configure an active
+key, Coral still consults an existing local key when decrypting older identity
+setup documents.
+
+With PostgreSQL, Coral never falls back to a node-local key file. Configure the
+same active and previous keys on every Coral server that must write or decrypt
+identity setup inputs. Without an active configured key, Coral can start, but
+operations that require encrypted identity setup inputs are unavailable.
+
 ## Workspaces
 
 Workspace metadata is stored under `[workspaces]`. The `default` workspace
