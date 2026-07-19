@@ -857,8 +857,8 @@ fn infer_cast_parameter_fields(
         node.apply_expressions(|expr| {
             expr.apply(|expr| {
                 let (cast_expr, data_type) = match expr {
-                    Expr::Cast(cast) => (cast.expr.as_ref(), cast.data_type.clone()),
-                    Expr::TryCast(cast) => (cast.expr.as_ref(), cast.data_type.clone()),
+                    Expr::Cast(cast) => (cast.expr.as_ref(), cast.field.data_type().clone()),
+                    Expr::TryCast(cast) => (cast.expr.as_ref(), cast.field.data_type().clone()),
                     _ => return Ok(TreeNodeRecursion::Continue),
                 };
                 let Expr::Placeholder(placeholder) = cast_expr else {

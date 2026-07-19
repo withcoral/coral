@@ -73,7 +73,7 @@ fn optimise_json_get_cast(cast: &Cast) -> Option<Transformed<Expr>> {
     if scalar_func.func.name() != "json_get" {
         return None;
     }
-    let func = match &cast.data_type {
+    let func = match cast.field.data_type() {
         DataType::Boolean => json_get_bool_udf(),
         // Keep decimal casts on the normal cast path. Rewriting them to
         // `json_get_float` would erase the requested decimal precision/scale.

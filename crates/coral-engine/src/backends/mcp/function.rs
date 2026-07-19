@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -129,10 +128,6 @@ impl std::fmt::Debug for McpFunctionCallTableProvider {
 
 #[async_trait]
 impl TableProvider for McpFunctionCallTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.state.schema.clone()
     }

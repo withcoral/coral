@@ -55,11 +55,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
-datafusion = "53"
-datafusion-datasource = "53"
-datafusion-datasource-json = "53"
-datafusion-functions-json = "0.53"
-datafusion-tracing = "53.0.2"
+datafusion = "54"
+datafusion-datasource = "54"
+datafusion-datasource-json = "54"
+datafusion-functions-json = "0.54"
+datafusion-tracing = "54"
 dialoguer = "0.12"
 etcetera = "0.11"
 fs2 = "0.4"

@@ -541,8 +541,12 @@ fn join_column_operand(expr: &Expr) -> Option<ParsedJoinOperand> {
             expr: Expr::Column(column.clone()),
             cast_type: None,
         }),
-        Expr::Cast(cast) => cast_join_column_operand(expr, cast.expr.as_ref(), &cast.data_type),
-        Expr::TryCast(cast) => cast_join_column_operand(expr, cast.expr.as_ref(), &cast.data_type),
+        Expr::Cast(cast) => {
+            cast_join_column_operand(expr, cast.expr.as_ref(), cast.field.data_type())
+        }
+        Expr::TryCast(cast) => {
+            cast_join_column_operand(expr, cast.expr.as_ref(), cast.field.data_type())
+        }
         _ => None,
     }
 }
@@ -642,7 +646,7 @@ fn peel_dependent_side(plan: &LogicalPlan) -> PeelOutcome {
             let Ok(provider) = source_as_provider(&scan.source) else {
                 return PeelOutcome::NotHttp;
             };
-            let Some(provider) = provider.as_any().downcast_ref::<HttpSourceTableProvider>() else {
+            let Some(provider) = provider.downcast_ref::<HttpSourceTableProvider>() else {
                 return PeelOutcome::NotHttp;
             };
             let Some(literal_filters) =

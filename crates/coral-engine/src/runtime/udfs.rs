@@ -237,17 +237,15 @@ fn literal_scalar_value(expr: &Expr) -> DataFusionResult<Option<ScalarValue>> {
     match unalias(expr) {
         Expr::Literal(value, _) => Ok(Some(value.clone())),
         Expr::Cast(cast) => Ok(literal_scalar_value(&cast.expr)?
-            .map(|value| value.cast_to(&cast.data_type))
+            .map(|value| value.cast_to(cast.field.data_type()))
             .transpose()?),
         Expr::TryCast(cast) => {
             let Some(value) = literal_scalar_value(&cast.expr)? else {
                 return Ok(None);
             };
-            Ok(Some(
-                value
-                    .cast_to(&cast.data_type)
-                    .unwrap_or(ScalarValue::try_new_null(&cast.data_type)?),
-            ))
+            Ok(Some(value.cast_to(cast.field.data_type()).unwrap_or(
+                ScalarValue::try_new_null(cast.field.data_type())?,
+            )))
         }
         Expr::Negative(expr) => Ok(literal_scalar_value(expr)?
             .map(|value| value.arithmetic_negate())

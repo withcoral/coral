@@ -1,6 +1,5 @@
 //! Shared execution-plan adapter for backends that materialize rows as JSON values.
 
-use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
@@ -200,10 +199,6 @@ impl ExecutionPlan for JsonExec {
         "JsonExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.projected_schema.clone()
     }
@@ -215,8 +210,10 @@ impl ExecutionPlan for JsonExec {
     fn partition_statistics(
         &self,
         _partition: Option<usize>,
-    ) -> Result<datafusion::common::Statistics> {
-        Ok(datafusion::common::Statistics::new_unknown(&self.schema()))
+    ) -> Result<Arc<datafusion::common::Statistics>> {
+        Ok(Arc::new(datafusion::common::Statistics::new_unknown(
+            &self.schema(),
+        )))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

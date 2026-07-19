@@ -97,7 +97,6 @@ async fn resolve_http_provider(
         .ok_or_else(|| plan_datafusion_err!("dependent table '{}' is not registered", table_ref))?;
 
     let provider = provider
-        .as_any()
         .downcast_ref::<HttpSourceTableProvider>()
         .ok_or_else(|| {
             plan_datafusion_err!(
