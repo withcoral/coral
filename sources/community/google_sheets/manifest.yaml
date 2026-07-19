@@ -1,0 +1,412 @@
+name: google_sheets
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Google Sheets spreadsheet metadata, sheet structure, named ranges, and
+  cell values via the Sheets API v4. Authenticates with Google OAuth
+  (authorization_code + PKCE). Join with GitHub, Linear, or Notion sources to
+  correlate spreadsheet data with engineering activity.
+base_url: https://sheets.googleapis.com
+
+inputs:
+  GOOGLE_SHEETS_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      A valid Google OAuth access token with the
+      `https://www.googleapis.com/auth/spreadsheets.readonly` scope.
+
+      To connect interactively, choose "Connect with Google" and provide a
+      Google Sheets OAuth client ID and client secret when prompted. Google
+      returns a refresh token because the authorization request asks for
+      offline access and consent, and Coral refreshes the access token
+      automatically.
+
+      To paste a token manually instead, obtain one from your own OAuth flow
+      with the same read-only Sheets scope. Manually pasted access tokens must
+      be replaced when they expire.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Google
+          description: Use a Google Sheets OAuth client ID and client secret.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_SHEETS_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_SHEETS_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/spreadsheets.readonly
+        - type: source_config
+          label: Paste access token
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_SHEETS_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+
+test_queries:
+  - >-
+    SELECT spreadsheet_id, title, locale, time_zone
+    FROM google_sheets.spreadsheet_info
+    WHERE spreadsheet_id = '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms'
+  - >-
+    SELECT spreadsheet_id, range, row_data
+    FROM google_sheets.get_values('1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms', 'Class Data!A1:E2')
+    LIMIT 2
+
+tables:
+  - name: spreadsheet_info
+    description: >-
+      Metadata for a single Google Sheets spreadsheet. Returns the title,
+      locale, time zone, and recalculation interval for the spreadsheet.
+    guide: |
+      Requires the `spreadsheet_id` filter (the ID found in the spreadsheet
+      URL between `/d/` and `/edit`). Use this table to verify spreadsheet
+      identity and locale before querying sheets or cell values.
+    filters:
+      - name: spreadsheet_id
+        required: true
+    request:
+      method: GET
+      path: /v4/spreadsheets/{{filter.spreadsheet_id}}
+      query:
+        - name: fields
+          from: literal
+          value: spreadsheetId,properties
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: spreadsheet_id
+        type: Utf8
+        nullable: false
+        description: Unique spreadsheet identifier from the URL.
+        expr:
+          kind: path
+          path:
+            - spreadsheetId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Spreadsheet title as shown in Google Drive.
+        expr:
+          kind: path
+          path:
+            - properties
+            - title
+      - name: locale
+        type: Utf8
+        nullable: true
+        description: Locale used for number and date formatting, for example en_US.
+        expr:
+          kind: path
+          path:
+            - properties
+            - locale
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: Time zone used in the spreadsheet, for example America/New_York.
+        expr:
+          kind: path
+          path:
+            - properties
+            - timeZone
+      - name: auto_recalc
+        type: Utf8
+        nullable: true
+        description: Recalculation interval (ON_CHANGE, MINUTE, or HOUR).
+        expr:
+          kind: path
+          path:
+            - properties
+            - autoRecalc
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw spreadsheet properties object.
+        expr:
+          kind: path
+          path:
+            - properties
+
+  - name: sheets
+    description: >-
+      Lists all sheets (tabs) within a spreadsheet. Returns the sheet ID,
+      title, tab index, sheet type, and grid dimensions (row and column count).
+    guide: |
+      Requires the `spreadsheet_id` filter. Use `sheet_id` and `title` to
+      identify the sheet you want when calling the `get_values` function.
+      `row_count` and `column_count` reflect the allocated grid size, not the
+      number of cells with actual data.
+    filters:
+      - name: spreadsheet_id
+        required: true
+    request:
+      method: GET
+      path: /v4/spreadsheets/{{filter.spreadsheet_id}}
+      query:
+        - name: fields
+          from: literal
+          value: sheets.properties
+    response:
+      rows_path:
+        - sheets
+    pagination:
+      mode: none
+    columns:
+      - name: spreadsheet_id
+        type: Utf8
+        nullable: false
+        description: Parent spreadsheet identifier.
+        expr:
+          kind: from_filter
+          key: spreadsheet_id
+        virtual: true
+      - name: sheet_id
+        type: Int64
+        nullable: true
+        description: Numeric sheet identifier, stable across renames.
+        expr:
+          kind: path
+          path:
+            - properties
+            - sheetId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Sheet tab title.
+        expr:
+          kind: path
+          path:
+            - properties
+            - title
+      - name: index
+        type: Int64
+        nullable: true
+        description: Zero-based tab position from left to right.
+        expr:
+          kind: path
+          path:
+            - properties
+            - index
+      - name: sheet_type
+        type: Utf8
+        nullable: true
+        description: Sheet type (GRID, OBJECT, or DATA_SOURCE).
+        expr:
+          kind: path
+          path:
+            - properties
+            - sheetType
+      - name: row_count
+        type: Int64
+        nullable: true
+        description: Number of rows allocated in the grid.
+        expr:
+          kind: path
+          path:
+            - properties
+            - gridProperties
+            - rowCount
+      - name: column_count
+        type: Int64
+        nullable: true
+        description: Number of columns allocated in the grid.
+        expr:
+          kind: path
+          path:
+            - properties
+            - gridProperties
+            - columnCount
+      - name: hidden
+        type: Boolean
+        nullable: true
+        description: True when the sheet tab is hidden; null or false when visible.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hidden
+
+  - name: named_ranges
+    description: >-
+      Named ranges defined in a spreadsheet. Returns the range name, its sheet
+      location, and row and column bounds.
+    guide: |
+      Requires the `spreadsheet_id` filter. Named ranges serve as readable
+      aliases for fixed data regions. Use `sheet_id` to join with
+      `google_sheets.sheets` to resolve the sheet title.
+    filters:
+      - name: spreadsheet_id
+        required: true
+    request:
+      method: GET
+      path: /v4/spreadsheets/{{filter.spreadsheet_id}}
+      query:
+        - name: fields
+          from: literal
+          value: namedRanges
+    response:
+      rows_path:
+        - namedRanges
+    pagination:
+      mode: none
+    columns:
+      - name: spreadsheet_id
+        type: Utf8
+        nullable: false
+        description: Parent spreadsheet identifier.
+        expr:
+          kind: from_filter
+          key: spreadsheet_id
+        virtual: true
+      - name: named_range_id
+        type: Utf8
+        nullable: true
+        description: Unique named range identifier assigned by the API.
+        expr:
+          kind: path
+          path:
+            - namedRangeId
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable name for the range.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: sheet_id
+        type: Int64
+        nullable: true
+        description: Sheet containing this named range; join to google_sheets.sheets.sheet_id.
+        expr:
+          kind: path
+          path:
+            - range
+            - sheetId
+      - name: start_row_index
+        type: Int64
+        nullable: true
+        description: Zero-based start row index (inclusive).
+        expr:
+          kind: path
+          path:
+            - range
+            - startRowIndex
+      - name: end_row_index
+        type: Int64
+        nullable: true
+        description: Zero-based end row index (exclusive).
+        expr:
+          kind: path
+          path:
+            - range
+            - endRowIndex
+      - name: start_column_index
+        type: Int64
+        nullable: true
+        description: Zero-based start column index (inclusive).
+        expr:
+          kind: path
+          path:
+            - range
+            - startColumnIndex
+      - name: end_column_index
+        type: Int64
+        nullable: true
+        description: Zero-based end column index (exclusive).
+        expr:
+          kind: path
+          path:
+            - range
+            - endColumnIndex
+
+functions:
+  - name: get_values
+    description: >-
+      Fetch cell values for a range within a spreadsheet. Returns one row per
+      spreadsheet row in the range. Each `row_data` column is a JSON array of
+      FORMATTED_VALUE strings — use `json_get_str(row_data, 0)` to extract
+      individual cells by zero-based column index. Specify the range in A1
+      notation such as `Sheet1!A1:D10` or a named range. The spreadsheet_id and
+      range columns echo the required function arguments; the API's actual
+      returned range is an envelope field that cannot be surfaced per row.
+    args:
+      - name: spreadsheet_id
+        required: true
+        bind:
+          arg: spreadsheet_id
+      - name: range
+        required: true
+        bind:
+          arg: range
+    request:
+      method: GET
+      path: /v4/spreadsheets/{{arg.spreadsheet_id}}/values/{{arg.range}}
+      query:
+        - name: majorDimension
+          from: literal
+          value: ROWS
+        - name: valueRenderOption
+          from: literal
+          value: FORMATTED_VALUE
+    response:
+      rows_path:
+        - values
+    pagination:
+      mode: none
+    columns:
+      - name: spreadsheet_id
+        type: Utf8
+        nullable: false
+        description: Spreadsheet ID passed as the first argument.
+        expr:
+          kind: from_arg
+          key: spreadsheet_id
+        virtual: true
+      - name: range
+        type: Utf8
+        nullable: false
+        description: Range argument passed to the function (A1 notation).
+        expr:
+          kind: from_arg
+          key: range
+        virtual: true
+      - name: row_data
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of cell strings for this row in FORMATTED_VALUE form.
+          Extract individual cells with json_get_str(row_data, 0),
+          json_get_str(row_data, 1), and so on by column index.
+        expr:
+          kind: current_row
