@@ -1,0 +1,241 @@
+name: squadcast
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Squadcast services and users via the Squadcast API v3. Join users
+  with Linear issues by email for cross-source on-call team intelligence.
+base_url: "{{input.SQUADCAST_API_BASE_URL}}"
+
+inputs:
+  SQUADCAST_TOKEN:
+    kind: secret
+    hint: |
+      A Squadcast access token. Obtain one from the Squadcast web app under
+      API Tokens, then exchange that refresh token for an access token via the
+      authentication endpoint for your region.
+
+      To exchange a refresh token:
+        curl -X GET https://auth.squadcast.com/oauth/access-token \
+          -H "X-Refresh-Token: <your-refresh-token>"
+
+      EU accounts must use https://auth.eu.squadcast.com/oauth/access-token.
+      Set the returned data.access_token value here and use data.expires_at to
+      determine when it must be refreshed.
+
+      See https://apidocs.squadcast.com/
+  SQUADCAST_API_BASE_URL:
+    kind: variable
+    default: https://api.squadcast.com
+    hint: |
+      Base URL for the Squadcast API. Defaults to the US region
+      (https://api.squadcast.com). For EU accounts use
+      https://api.eu.squadcast.com.
+  SQUADCAST_OWNER_ID:
+    kind: variable
+    hint: |
+      Your Squadcast account owner ID. Find it in the Squadcast web app under
+      Settings -> General Settings -> Organization ID. Required for querying
+      services.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.SQUADCAST_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+
+test_queries:
+  - SELECT id, name FROM squadcast.services LIMIT 1
+
+tables:
+  - name: services
+    description: >-
+      Lists all Squadcast services for the account. Returns service ID, name,
+      slug, description, escalation policy, ownership, maintenance state, and
+      timestamps.
+    guide: |
+      Use id, name, slug, owner, and maintainer to inventory service ownership.
+      Requires SQUADCAST_OWNER_ID set at source-add time.
+    request:
+      method: GET
+      path: /v3/services
+      query:
+        - name: owner_id
+          from: input
+          key: SQUADCAST_OWNER_ID
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique service ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Service display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL-safe service identifier.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Service description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: escalation_policy
+        type: Utf8
+        nullable: true
+        description: Name of the escalation policy assigned to this service.
+        expr:
+          kind: path
+          path:
+            - escalation_policy
+            - name
+      - name: owner
+        type: Json
+        nullable: true
+        description: Service owner object.
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: maintainer
+        type: Json
+        nullable: true
+        description: Service maintainer object.
+        expr:
+          kind: path
+          path:
+            - maintainer
+      - name: on_maintenance
+        type: Boolean
+        nullable: true
+        description: Whether the service is currently in maintenance mode.
+        expr:
+          kind: path
+          path:
+            - on_maintenance
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the service was created.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the service was last updated.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw service object.
+        expr:
+          kind: current_row
+
+  - name: users
+    description: >-
+      Lists all users in the Squadcast account. Returns user ID, first and last
+      name, display username, email address, and account role.
+    guide: |
+      Use email to join with Linear assignees for cross-source engineer
+      identity resolution. username_for_display is the display name used in
+      Squadcast notifications and the UI.
+    request:
+      method: GET
+      path: /v3/users
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique user ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: username_for_display
+        type: Utf8
+        nullable: true
+        description: Display username shown in Squadcast notifications and the UI.
+        expr:
+          kind: path
+          path:
+            - username_for_display
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address; primary join key with Linear.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Account role (account_owner, user, or stakeholder).
+        expr:
+          kind: path
+          path:
+            - role
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw user object.
+        expr:
+          kind: current_row
