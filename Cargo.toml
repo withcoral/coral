@@ -6,7 +6,7 @@ resolver = "2"
 edition = "2024"
 version = "0.6.0" # x-release-please-version
 license = "Apache-2.0"
-rust-version = "1.95"
+rust-version = "1.97"
 
 [workspace.lints.rust]
 missing_docs = "warn"
