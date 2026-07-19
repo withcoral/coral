@@ -24,11 +24,21 @@ pub struct IrOperation {
     pub description: String,
     pub deprecated: bool,
     pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naming: Option<IrOperationNaming>,
     pub inputs: Vec<IrOperationInput>,
     pub output: IrOperationOutput,
     pub entity: Option<IrEntityCandidate>,
     pub execution: IrExecutionAttachment,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationNaming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +49,8 @@ pub struct IrOperationInput {
     pub data_type: IrScalarType,
     pub default_value: Option<String>,
     pub description: String,
+    #[serde(default)]
+    pub exclude_from_lookup_keys: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +117,25 @@ pub enum IrScalarType {
     Json,
 }
 
+impl IrScalarType {
+    /// Lowers this import-side scalar into the normalized manifest vocabulary.
+    ///
+    /// This is the single v4-to-runtime type bridge. It is deliberately
+    /// lossy: `Id` collapses into `Utf8` because the runtime does not
+    /// distinguish identifiers from other strings.
+    #[must_use]
+    pub fn lower(self) -> crate::ManifestDataType {
+        match self {
+            Self::String | Self::Id => crate::ManifestDataType::Utf8,
+            Self::Integer => crate::ManifestDataType::Int64,
+            Self::Number => crate::ManifestDataType::Float64,
+            Self::Boolean => crate::ManifestDataType::Boolean,
+            Self::Timestamp => crate::ManifestDataType::Timestamp,
+            Self::Json => crate::ManifestDataType::Json,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum IrInputLocation {
@@ -140,7 +171,8 @@ pub enum IrExecutionAttachment {
 mod tests {
     use super::{
         HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-        IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality, SemanticIr,
+        IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
+        SemanticIr,
     };
     use crate::PaginationSpec;
     use crate::v4::diagnostics::Diagnostic;
@@ -163,6 +195,10 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                naming: Some(IrOperationNaming {
+                    group: Some("issues".to_string()),
+                    operation: Some("list".to_string()),
+                }),
                 inputs: Vec::new(),
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
@@ -219,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_execution_attachment_uses_v2_artifact_schema() {
+    fn mcp_execution_attachment_uses_current_artifact_schema() {
         let ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
@@ -232,6 +268,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                naming: None,
                 inputs: vec![IrOperationInput {
                     name: "cursor".to_string(),
                     location: IrInputLocation::ToolArg,
@@ -239,6 +276,7 @@ mod tests {
                     data_type: IrScalarType::String,
                     default_value: None,
                     description: String::new(),
+                    exclude_from_lookup_keys: false,
                 }],
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
@@ -264,8 +302,10 @@ mod tests {
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize MCP semantic IR");
         assert!(
-            yaml.contains("artifact_schema_version: 2"),
-            "MCP execution variants require the v2 artifact schema: {yaml}"
+            yaml.contains(&format!(
+                "artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}"
+            )),
+            "MCP execution variants require the current artifact schema: {yaml}"
         );
         assert!(
             yaml.contains("surface_type: mcp"),
@@ -320,6 +360,7 @@ diagnostics: []
             data_type: IrScalarType::String,
             default_value: None,
             description: String::new(),
+            exclude_from_lookup_keys: false,
         };
 
         let yaml = serde_yaml::to_string(&input).expect("serialize input");

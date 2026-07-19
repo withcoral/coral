@@ -59,26 +59,171 @@ mod backends;
 mod composition;
 pub mod contracts;
 mod runtime;
+mod types;
 
 pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation, SourceTables,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryMemoryConfig,
-    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
-    QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
+    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
+    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeTableFunctionPublish,
 };
 
 /// High-level query operations for the local query engine.
 pub struct CoralQuery;
 
+/// One request-scoped query runtime with its sources already registered.
+///
+/// The runtime can infer and install UDFs without rebuilding its underlying
+/// `DataFusion` session. Its internals remain engine-owned.
+pub struct PreparedQueryRuntime {
+    inner: runtime::query::QueryRuntimeAdapter,
+}
+
+impl PreparedQueryRuntime {
+    /// Lists queryable tables from this prepared runtime.
+    #[must_use]
+    pub fn list_tables(
+        &self,
+        schema_filter: Option<&str>,
+        table_filter: Option<&str>,
+    ) -> Vec<TableInfo> {
+        self.inner.list_tables(schema_filter, table_filter)
+    }
+
+    /// Lists queryable catalog metadata from this prepared runtime.
+    #[must_use]
+    pub fn list_catalog(&self, schema_filter: Option<&str>) -> CatalogInfo {
+        self.inner.catalog_info(schema_filter)
+    }
+
+    /// Describes one table from this prepared runtime.
+    #[must_use]
+    pub fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
+        self.inner.describe_table(schema_name, table_name)
+    }
+
+    /// Infers typed signatures for multiple UDFs against this runtime.
+    ///
+    /// The outer result reports runtime failures. Each inner result reports
+    /// validation for the UDF at the same input position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if a UDF cannot be planned against the prepared
+    /// source runtime.
+    pub async fn infer_udf_signatures(
+        &self,
+        udfs: Vec<UdfRuntimeSqlDefinition>,
+    ) -> Result<Vec<Result<UdfRuntimeSignature, CoreError>>, CoreError> {
+        let mut results = Vec::with_capacity(udfs.len());
+        for udf in udfs {
+            if udf.sql().trim().is_empty() {
+                results.push(Err(CoreError::InvalidInput(format!(
+                    "udf '{}' SQL body cannot be empty",
+                    udf.name
+                ))));
+                continue;
+            }
+            results.push(runtime::udfs::infer_udf_signature(&self.inner, &udf).await);
+        }
+        Ok(results)
+    }
+
+    /// Installs validated UDFs into this prepared runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if UDF publication conflicts with the prepared
+    /// catalog or a UDF body cannot be planned.
+    pub async fn with_udfs(mut self, udfs: Vec<UdfRuntimeDefinition>) -> Result<Self, CoreError> {
+        self.inner.install_udfs(udfs).await?;
+        Ok(self)
+    }
+
+    /// Executes one `SQL` statement over this prepared runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty or cannot be executed.
+    pub async fn execute_sql(&self, sql: &str) -> Result<QueryExecution, CoreError> {
+        self.execute_sql_with_params(sql, QueryParameters::new())
+            .await
+    }
+
+    /// Executes one parameterized `SQL` statement over this prepared runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, parameter binding fails, or
+    /// the statement cannot be executed.
+    pub async fn execute_sql_with_params(
+        &self,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<QueryExecution, CoreError> {
+        if sql.trim().is_empty() {
+            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+        }
+        self.inner.execute_sql(sql, &params).await
+    }
+
+    /// Explains one `SQL` statement against this prepared runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty or cannot be planned.
+    pub async fn explain_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
+        self.explain_sql_with_params(sql, QueryParameters::new())
+            .await
+    }
+
+    /// Explains one parameterized `SQL` statement against this runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, parameter binding fails, or
+    /// the statement cannot be planned.
+    pub async fn explain_sql_with_params(
+        &self,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<QueryPlan, CoreError> {
+        if sql.trim().is_empty() {
+            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+        }
+        self.inner.explain_sql(sql, &params).await
+    }
+}
+
 impl CoralQuery {
+    /// Builds one request-scoped runtime from the selected sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if source compilation, registration, or runtime
+    /// construction fails.
+    pub async fn prepare(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+    ) -> Result<PreparedQueryRuntime, CoreError> {
+        Ok(PreparedQueryRuntime {
+            inner: runtime::query::build_runtime(sources, runtime).await?,
+        })
+    }
+
     /// Lists queryable tables from the provided source set.
     ///
     /// When `schema_filter` is present, only tables for that visible `SQL`
@@ -95,7 +240,7 @@ impl CoralQuery {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        Ok(runtime::query::build_runtime(sources, runtime)
+        Ok(Self::prepare(sources, runtime)
             .await?
             .list_tables(schema_filter, table_filter))
     }
@@ -117,9 +262,9 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, CoreError> {
-        Ok(runtime::query::build_runtime(sources, runtime)
+        Ok(Self::prepare(sources, runtime)
             .await?
-            .catalog_info(schema_filter))
+            .list_catalog(schema_filter))
     }
 
     /// Describes one table or returns lightweight table metadata for missing-table help.
@@ -138,7 +283,7 @@ impl CoralQuery {
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, CoreError> {
-        Ok(runtime::query::build_runtime(sources, runtime)
+        Ok(Self::prepare(sources, runtime)
             .await?
             .describe_table(schema_name, table_name))
     }
@@ -154,13 +299,71 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         sql: &str,
     ) -> Result<QueryExecution, CoreError> {
+        Self::execute_sql_with_params(sources, runtime, sql, QueryParameters::new()).await
+    }
+
+    /// Executes one `SQL` statement with named query parameter values bound
+    /// into its `$name` placeholders.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// if a supplied parameter is not referenced by the statement, or if the
+    /// runtime cannot execute the statement.
+    pub async fn execute_sql_with_params(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<QueryExecution, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
 
-        runtime::query::build_runtime(sources, runtime)
+        Self::prepare(sources, runtime)
             .await?
-            .execute_sql(sql)
+            .execute_sql_with_params(sql, params)
+            .await
+    }
+
+    /// Infers the typed signature for one UDF by planning its SQL against selected sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if source compilation fails, if the UDF SQL cannot
+    /// plan against the selected sources, or if any SQL parameter has no
+    /// inferred type.
+    pub async fn infer_udf_signature(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        udf: UdfRuntimeSqlDefinition,
+    ) -> Result<UdfRuntimeSignature, CoreError> {
+        let mut results = Self::infer_udf_signatures(sources, runtime, vec![udf]).await?;
+        results.pop().ok_or_else(|| {
+            CoreError::InvalidInput("UDF signature inference returned no result".to_string())
+        })?
+    }
+
+    /// Infers typed signatures for multiple UDFs through one source runtime.
+    ///
+    /// The outer result reports source runtime construction failures. Each
+    /// inner result reports validation for the UDF at the same input position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the shared source runtime cannot be built.
+    pub async fn infer_udf_signatures(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        udfs: Vec<UdfRuntimeSqlDefinition>,
+    ) -> Result<Vec<Result<UdfRuntimeSignature, CoreError>>, CoreError> {
+        if udfs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Self::prepare(sources, runtime)
+            .await?
+            .infer_udf_signatures(udfs)
             .await
     }
 
@@ -178,13 +381,30 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         sql: &str,
     ) -> Result<QueryPlan, CoreError> {
+        Self::explain_sql_with_params(sources, runtime, sql, QueryParameters::new()).await
+    }
+
+    /// Explains one `SQL` statement with named query parameter values bound
+    /// into its `$name` placeholders before planning output is rendered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// if a supplied parameter is not referenced by the statement, or if the
+    /// query engine cannot explain the statement.
+    pub async fn explain_sql_with_params(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<QueryPlan, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
 
-        runtime::query::build_runtime(sources, runtime)
+        Self::prepare(sources, runtime)
             .await?
-            .explain_sql(sql)
+            .explain_sql_with_params(sql, params)
             .await
     }
 
@@ -234,7 +454,10 @@ impl CoralQuery {
 
         let mut query_tests = Vec::with_capacity(test_queries.len());
         for sql in test_queries {
-            match query_runtime.execute_sql(sql).await {
+            match query_runtime
+                .execute_sql(sql, &QueryParameters::new())
+                .await
+            {
                 Ok(execution) => query_tests.push(QueryTestResult::success(
                     sql.clone(),
                     execution.row_count() as u64,

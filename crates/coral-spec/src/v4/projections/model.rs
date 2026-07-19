@@ -2,15 +2,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
-use crate::{
-    DetailHintSpec, ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind,
-};
+use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectionCatalog {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    pub generator_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator_version: Option<String>,
     pub projections: Vec<Projection>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -28,7 +27,6 @@ pub struct Projection {
     pub visibility: ProjectionVisibility,
     pub inputs: Vec<ProjectionInput>,
     pub columns: Vec<ProjectionColumn>,
-    pub pagination: PaginationSpec,
     pub search_limits: Option<SearchLimitsSpec>,
     pub detail_hints: Vec<DetailHintSpec>,
     pub diagnostics: Vec<Diagnostic>,
@@ -60,6 +58,11 @@ pub struct ProjectionInput {
     pub data_type: ManifestDataType,
     pub default_value: Option<String>,
     pub description: String,
+    /// Whether this filter input is a complete exact lookup: the API returns
+    /// every row matching an equality value, so dependent joins may bind to
+    /// it. Meaningless (and false) for non-filter exposures.
+    #[serde(default)]
+    pub lookup_key: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,22 +80,26 @@ pub struct ProjectionColumn {
     pub source_path: Vec<String>,
     pub nullable: bool,
     pub description: String,
+    /// Excludes this column from observed-value indexing when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub do_not_index: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
+        Projection, ProjectionCatalog, ProjectionColumn, ProjectionKind, ProjectionVisibility,
+        SqlInputExposure,
     };
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-    use crate::{ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind};
+    use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
     #[test]
     fn projection_catalog_yaml_uses_editor_friendly_enum_shapes() {
         let catalog = ProjectionCatalog {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
             projections: vec![Projection {
                 name: "search_issues".to_string(),
                 namespace: "demo".to_string(),
@@ -105,8 +112,14 @@ mod tests {
                 operation_id: "issues/search".to_string(),
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
-                columns: Vec::new(),
-                pagination: PaginationSpec::default(),
+                columns: vec![ProjectionColumn {
+                    name: "internal_note".to_string(),
+                    data_type: ManifestDataType::Utf8,
+                    source_path: vec!["internalNote".to_string()],
+                    nullable: true,
+                    description: String::new(),
+                    do_not_index: true,
+                }],
                 search_limits: Some(SearchLimitsSpec {
                     default_top_k: 30,
                     max_top_k: 100,
@@ -131,9 +144,28 @@ mod tests {
             yaml.contains("function_kind: search"),
             "missing function kind: {yaml}"
         );
+        assert!(
+            !yaml.contains("pagination:"),
+            "projection catalog should not serialize pagination: {yaml}"
+        );
+        assert!(
+            yaml.contains("do_not_index: true"),
+            "projection catalog should serialize explicit indexing policy: {yaml}"
+        );
 
-        serde_yaml::from_str::<ProjectionCatalog>(&yaml)
+        let decoded = serde_yaml::from_str::<ProjectionCatalog>(&yaml)
             .expect("projection catalog should round-trip");
+        assert!(
+            decoded
+                .projections
+                .first()
+                .expect("projection")
+                .columns
+                .first()
+                .expect("column")
+                .do_not_index,
+            "projection column policy should survive round-trip"
+        );
     }
 
     #[test]
@@ -155,8 +187,12 @@ projections:
     operation_id: issues/search
     visibility: published
     inputs: []
-    columns: []
-    pagination: {{}}
+    columns:
+      - name: title
+        data_type: Utf8
+        source_path: [title]
+        nullable: true
+        description: ''
     search_limits: null
     detail_hints: []
     diagnostics: []
@@ -170,6 +206,34 @@ diagnostics: []
             catalog.projections.first().expect("projection").namespace,
             ""
         );
+        assert!(
+            !catalog
+                .projections
+                .first()
+                .expect("projection")
+                .columns
+                .first()
+                .expect("column")
+                .do_not_index,
+            "legacy projection columns should default to indexable"
+        );
+    }
+
+    #[test]
+    fn projection_catalog_deserializes_without_generator_version() {
+        let raw = format!(
+            r"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+projections: []
+diagnostics: []
+"
+        );
+
+        let catalog: ProjectionCatalog =
+            serde_yaml::from_str(&raw).expect("projection override catalog should deserialize");
+
+        assert_eq!(catalog.generator_version, None);
     }
 
     #[test]

@@ -40,17 +40,27 @@ root.
 - Keep `state/`, `credentials/`, `workspaces/`, `sources/`, `query/`, and
   `catalog/` as the main internal boundaries. Do not create new sub-boundaries
   unless they own durable, independent behavior.
-- Persist imported manifests as files under app-owned state; do not inline
-  them into `config.toml`.
+- Keep RDBMS-backed durable app-state infrastructure under `state/db`. The
+  initial DB bootstrap may coexist with filesystem-backed source behavior, but
+  repository wiring must keep SQLx pools, transactions, SeaQuery schema
+  identifiers, and row structs inside that module.
+- DB repository behavior should have shared tests that run against SQLite
+  locally and Postgres in CI through the repository harness.
+- Until the RDBMS migration phases replace the relevant stores, persist
+  imported manifests as files under app-owned state; do not inline them into
+  `config.toml`.
 - Persist DSL v4 imported manifests as authored intent plus durability
   normalization only. Descriptor hashes, generated OpenAPI metadata, semantic
   IR, projections, and package fingerprints belong in materialized artifacts
   or runtime package assembly, not in persisted `manifest.yaml`.
 - Treat DSL v4 materialization as a user-chosen lifecycle event: generate at
-  source add, never re-fetch descriptors or recompute projections implicitly
-  during query/list/validate, and fail with re-add guidance when artifacts are
-  missing or incompatible. Do not add migration machinery until the lifecycle is
-  explicitly designed.
+  source add and never re-fetch descriptors, recompute projections, or rewrite
+  artifacts implicitly during query/list/validate. Fingerprints, producer
+  versions, identity metadata, and raw-document hashes are tracing diagnostics,
+  not runtime gates. Load readable, structurally compatible artifacts, degrade
+  per surface, and isolate source-local compatibility failures while preserving
+  fail-closed behavior for operational errors. RDBMS migration machinery must
+  not turn load-time compatibility into silent regeneration.
 - User-facing runtime feature semantics belong in `coral_app::features`; raw
   config-file persistence, locking, and TOML extraction stay in `state/`.
 - Bundled installs persist source identity plus configured variables and

@@ -15,10 +15,12 @@ use crate::state::{
 pub enum Feature {
     /// Expose the optional MCP `feedback` tool.
     Feedback,
-    /// Experimental trajectory-memory episodes (in progress): exposes the MCP
-    /// `open_episode` tool and associates follow-up Coral MCP tool calls with
-    /// the intent they served via the `coral-episode-id` metadata key.
-    Episodes,
+    /// Enable observed-value collection, storage, retrieval, and maintenance
+    /// for Universal Search.
+    ObservedValuesSearch,
+    /// Expose MCP task lifecycle tools and task attribution for follow-up Coral
+    /// MCP tool calls via the `coral-task-id` metadata key.
+    Tasks,
 }
 
 impl Feature {
@@ -79,12 +81,20 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         disable_flag: "disable-feedback",
     },
     FeatureSpec {
-        feature: Feature::Episodes,
-        key: "episodes",
+        feature: Feature::ObservedValuesSearch,
+        key: "observed_values_search",
         default_enabled: false,
-        description: "Experimental trajectory memory (in progress): exposes MCP open_episode and tags follow-up Coral tool calls with episode ids. Off by default.",
-        enable_flag: "enable-episodes",
-        disable_flag: "disable-episodes",
+        description: "Enables collecting, indexing, retrieving, and maintaining values observed during earlier queries. Off by default.",
+        enable_flag: "enable-observed-values-search",
+        disable_flag: "disable-observed-values-search",
+    },
+    FeatureSpec {
+        feature: Feature::Tasks,
+        key: "tasks",
+        default_enabled: false,
+        description: "Exposes MCP task lifecycle tools and tags follow-up Coral tool calls with task ids. Off by default.",
+        enable_flag: "enable-tasks",
+        disable_flag: "disable-tasks",
     },
 ];
 
@@ -213,6 +223,12 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
+    /// Creates a feature store for an already-discovered Coral app state layout.
+    #[must_use]
+    pub(crate) fn from_layout(layout: AppStateLayout) -> Self {
+        Self { layout }
+    }
+
     /// Discovers the Coral app state layout used for runtime feature config.
     ///
     /// # Errors
@@ -331,6 +347,8 @@ fn spec_for_key(key: &str) -> Option<&'static FeatureSpec> {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
 
     fn raw(
@@ -344,6 +362,45 @@ mod tests {
         let features = Features::default();
 
         assert!(!features.enabled(Feature::Feedback));
+    }
+
+    #[test]
+    fn observed_values_search_has_stable_default_off_surface() {
+        let feature = Feature::ObservedValuesSearch;
+        let features = Features::default();
+
+        assert!(!features.enabled(feature));
+        assert_eq!(feature.key(), "observed_values_search");
+        assert_eq!(feature.enable_flag(), "enable-observed-values-search");
+        assert_eq!(feature.disable_flag(), "disable-observed-values-search");
+    }
+
+    #[test]
+    fn feature_store_applies_observed_values_config_and_process_overrides() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+[features]
+observed_values_search = true
+",
+        )
+        .expect("write config");
+        let store = FeatureStore::discover(Some(config_dir)).expect("feature store");
+
+        let configured = store
+            .load_with_overrides(&FeatureOverrides::default())
+            .expect("load configured features");
+        assert!(configured.enabled(Feature::ObservedValuesSearch));
+
+        let mut process_overrides = FeatureOverrides::default();
+        process_overrides.set(Feature::ObservedValuesSearch, false);
+        let overridden = store
+            .load_with_overrides(&process_overrides)
+            .expect("load process-overridden features");
+        assert!(!overridden.enabled(Feature::ObservedValuesSearch));
     }
 
     #[test]
@@ -423,5 +480,6 @@ mod tests {
 
         assert!(error.to_string().contains("unknown feature 'nope'"));
         assert!(error.to_string().contains("feedback"));
+        assert!(error.to_string().contains("observed_values_search"));
     }
 }

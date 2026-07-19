@@ -76,7 +76,7 @@ jobs:
       - name: Detect UI package
         id: detect-ui
         run: |
-          if [ -f ui/package.json ]; then
+          if [ -f apps/ui/package.json ]; then
             echo "has-ui=true" >> "$GITHUB_OUTPUT"
           else
             echo "has-ui=false" >> "$GITHUB_OUTPUT"
@@ -85,23 +85,23 @@ jobs:
         if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
           package-manager-cache: false
       - name: Install UI dependencies
         if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm ci --prefix ui
+        run: npm ci --prefix apps/ui
       - name: Build UI
         if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm run build --prefix ui
+        run: npm run build --prefix apps/ui
       - name: Verify UI entrypoint
         if: steps.detect-ui.outputs.has-ui == 'true'
-        run: test -s ui/dist/index.html
+        run: test -s apps/ui/dist/index.html
       - name: Upload UI artifact
         if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ui-dist
-          path: ui/dist
+          path: apps/ui/dist
 
   build:
     needs:
@@ -138,7 +138,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ui-dist
-          path: ui/dist
+          path: apps/ui/dist
       # No Rust cache here — release builds must compile from a clean state
       # to guard against cache poisoning attacks.
       - name: Install cross

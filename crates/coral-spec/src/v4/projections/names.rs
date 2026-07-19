@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::v4::diagnostics::{Diagnostic, DiagnosticSeverity};
 use crate::v4::ir::{IrExecutionAttachment, IrOperation, OutputCardinality, SemanticIr};
 use crate::v4::manifest::V4SourceManifest;
-use crate::v4::naming::{normalize_identifier, pluralize, singularize, stable_suffix};
-use crate::{PaginationMode, PaginationSpec};
+use crate::v4::naming::{normalize_identifier, stable_suffix};
 
 use super::model::{
     Projection, ProjectionInput, ProjectionKind, ProjectionVisibility, SqlInputExposure,
@@ -189,7 +188,6 @@ fn normalized_path_literal_segment(segment: &str) -> Option<String> {
 pub(super) fn projection_guide(
     kind: &ProjectionKind,
     inputs: &[ProjectionInput],
-    pagination: &PaginationSpec,
     is_search: bool,
 ) -> String {
     let exposed_inputs = inputs
@@ -234,9 +232,6 @@ pub(super) fn projection_guide(
         sentences.push(
             "Use LIMIT to control result size; search endpoints can be rate-limited.".to_string(),
         );
-    } else if pagination.mode != PaginationMode::None {
-        sentences
-            .push("Use LIMIT for spot checks; large result sets paginate quickly.".to_string());
     }
 
     sentences.join(" ")
@@ -253,18 +248,30 @@ fn human_join(items: &[&str]) -> String {
 pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> String {
     let entity = projection_entity_name(operation, is_search);
     if is_search {
-        return format!("search_{}", pluralize(&entity));
+        return format!("search_{entity}");
     }
     match operation.output.cardinality {
-        OutputCardinality::List | OutputCardinality::WrappedList => pluralize(&entity),
         OutputCardinality::Singleton if operation.inputs.iter().any(|input| input.required) => {
-            format!("get_{}", singularize(&entity))
+            format!("get_{entity}")
         }
-        OutputCardinality::Singleton => singularize(&entity),
+        OutputCardinality::List | OutputCardinality::WrappedList | OutputCardinality::Singleton => {
+            entity
+        }
         OutputCardinality::None | OutputCardinality::Unknown => {
             normalize_identifier(&operation.id, "projection")
         }
     }
+}
+
+pub(super) fn projection_name_from_operation_naming(operation: &IrOperation) -> Option<String> {
+    let naming = operation.naming.as_ref()?;
+    let group = non_empty_naming_part(naming.group.as_deref())?;
+    let operation = non_empty_naming_part(naming.operation.as_deref())?;
+    Some(format!("{group}_{operation}"))
+}
+
+fn non_empty_naming_part(part: Option<&str>) -> Option<&str> {
+    part.filter(|part| !part.is_empty())
 }
 
 fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
@@ -281,7 +288,6 @@ fn search_entity_from_path(operation: &IrOperation) -> Option<String> {
     rest_literal_path_segments(operation)
         .into_iter()
         .next_back()
-        .map(|segment| singularize(&segment))
 }
 
 fn normalize_entity_identifier(raw: &str) -> String {

@@ -1,21 +1,9 @@
 //! App-owned selection of optional engine extensions for query runtime builds.
 
-use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::Arc;
 
 use coral_auth_aws::AwsSigV4Authenticator;
-use coral_engine::{
-    EngineExtensions, QuerySource, RequestAuthenticator, SourceInputResolutionContext,
-    SourceInputResolver, SourceInputResolverError,
-};
-use coral_spec::ManifestInputKind;
-
-use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
-use crate::sources::SourceName;
-use crate::state::ConfigStore;
-use crate::workspaces::WorkspaceName;
+use coral_engine::{EngineExtensions, QuerySource, RequestAuthenticator};
 
 /// App-layer provider that selects engine extensions for one runtime build.
 pub trait EngineExtensionsProvider: Send + Sync {
@@ -52,118 +40,6 @@ impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct CredentialRefreshingInputResolver {
-    workspace_name: WorkspaceName,
-    config_store: ConfigStore,
-    credential_manager: CredentialManager,
-    delegate: Option<Arc<dyn SourceInputResolver>>,
-}
-
-impl CredentialRefreshingInputResolver {
-    pub(crate) fn new(
-        workspace_name: WorkspaceName,
-        config_store: ConfigStore,
-        credential_manager: CredentialManager,
-        delegate: Option<Arc<dyn SourceInputResolver>>,
-    ) -> Self {
-        Self {
-            workspace_name,
-            config_store,
-            credential_manager,
-            delegate,
-        }
-    }
-}
-
-impl fmt::Debug for CredentialRefreshingInputResolver {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CredentialRefreshingInputResolver")
-            .field("workspace_name", &self.workspace_name)
-            .field("has_delegate", &self.delegate.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-#[tonic::async_trait]
-impl SourceInputResolver for CredentialRefreshingInputResolver {
-    async fn resolve_inputs(
-        &self,
-        source: &SourceInputResolutionContext,
-    ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
-        let source_name = SourceName::parse(source.source_name())
-            .map_err(|error| SourceInputResolverError::invalid_input(error.to_string()))?;
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let installed_source = self
-            .config_store
-            .get_source(&self.workspace_name, &source_name)
-            .map_err(source_input_error)?;
-        let material =
-            if let Some(credential_storage) = installed_source.credential_storage_for_material() {
-                self.credential_manager
-                    .read_material_for_inputs(
-                        &self.workspace_name,
-                        &credential_set_id,
-                        credential_storage,
-                        source.declared_inputs(),
-                    )
-                    .await
-                    .map_err(source_input_error)?
-            } else {
-                BTreeMap::new()
-            };
-        let mut resolved = resolve_from_material(source, &material);
-        if let Some(delegate) = &self.delegate {
-            let delegated_source = source_with_refreshed_secrets(source, &material);
-            for (key, value) in delegate.resolve_inputs(&delegated_source).await? {
-                resolved.entry(key).or_insert(value);
-            }
-        }
-        let missing_secrets: Vec<String> = source
-            .required_secret_names()
-            .into_iter()
-            .filter(|name| !resolved.contains_key(name))
-            .collect();
-        if let Some((first, rest)) = missing_secrets.split_first() {
-            let detail = if rest.is_empty() {
-                format!("secret '{first}'")
-            } else {
-                format!("secret '{first}' and {} other(s)", rest.len())
-            };
-            return Err(SourceInputResolverError::failed_precondition(format!(
-                "source '{}' is missing {detail}",
-                source.source_name()
-            )));
-        }
-        Ok(resolved)
-    }
-}
-
-fn resolve_from_material(
-    source: &SourceInputResolutionContext,
-    material: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    coral_spec::resolve_inputs(source.declared_inputs(), material, source.variables())
-}
-
-fn source_with_refreshed_secrets(
-    source: &SourceInputResolutionContext,
-    material: &BTreeMap<String, String>,
-) -> SourceInputResolutionContext {
-    let refreshed_secrets = source
-        .declared_inputs()
-        .iter()
-        .filter(|input| input.kind == ManifestInputKind::Secret)
-        .filter_map(|input| {
-            material
-                .get(&input.key)
-                .cloned()
-                .map(|value| (input.key.clone(), value))
-        })
-        .collect();
-    source.with_secrets(refreshed_secrets)
-}
-
 pub(crate) fn engine_extensions_for_providers(
     providers: &[Arc<dyn EngineExtensionsProvider>],
     selected_sources: &[QuerySource],
@@ -174,32 +50,21 @@ pub(crate) fn engine_extensions_for_providers(
         let EngineExtensions {
             source_decorators,
             query_result_observers,
+            source_observation_publishers,
             request_authenticators,
             source_input_resolver,
         } = extra;
         merged.source_decorators.extend(source_decorators);
         merged.query_result_observers.extend(query_result_observers);
+        merged
+            .source_observation_publishers
+            .extend(source_observation_publishers);
         merged.request_authenticators.extend(request_authenticators);
         if source_input_resolver.is_some() {
             merged.source_input_resolver = source_input_resolver;
         }
     }
     merged
-}
-
-fn source_input_error(error: AppError) -> SourceInputResolverError {
-    match error {
-        AppError::InvalidInput(detail) => SourceInputResolverError::invalid_input(detail),
-        AppError::FailedPrecondition(detail) | AppError::CredentialRefresh(detail) => {
-            SourceInputResolverError::failed_precondition(detail)
-        }
-        AppError::Credentials(CredentialsError::Parse(detail)) => {
-            SourceInputResolverError::failed_precondition(format!(
-                "credential material could not be parsed: {detail}"
-            ))
-        }
-        other => SourceInputResolverError::failed_precondition(other.to_string()),
-    }
 }
 
 #[cfg(test)]
@@ -209,8 +74,9 @@ mod tests {
     use arrow::datatypes::Schema;
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
-        QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-        RequestAuthenticatorError,
+        QueryExecutionProvenance, QueryResultObserver, QueryResultObserverError,
+        RequestAuthenticator, RequestAuthenticatorError, SourceObservationPublisher,
+        SourceScanObservation,
     };
     use reqwest::header::{HeaderName, HeaderValue};
 
@@ -250,9 +116,16 @@ mod tests {
             _sql: &str,
             _schema: &Schema,
             _batches: &[RecordBatch],
+            _provenance: &QueryExecutionProvenance,
         ) -> Result<(), QueryResultObserverError> {
             Ok(())
         }
+    }
+
+    struct TestSourceObservationPublisher;
+
+    impl SourceObservationPublisher for TestSourceObservationPublisher {
+        fn publish_source_scan(&self, _observation: SourceScanObservation<'_>) {}
     }
 
     struct TestEngineExtensionsProvider {
@@ -285,12 +158,27 @@ mod tests {
         }
     }
 
+    struct TestSourceObservationPublisherProvider {
+        publisher: Arc<dyn SourceObservationPublisher>,
+    }
+
+    impl EngineExtensionsProvider for TestSourceObservationPublisherProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            let mut extensions = EngineExtensions::default();
+            extensions
+                .source_observation_publishers
+                .push(Arc::clone(&self.publisher));
+            extensions
+        }
+    }
+
     #[test]
     fn noop_provider_installs_no_extensions() {
         let extensions = NoopEngineExtensionsProvider.extensions_for(&[]);
 
         assert!(extensions.source_decorators.is_empty());
         assert!(extensions.query_result_observers.is_empty());
+        assert!(extensions.source_observation_publishers.is_empty());
         assert!(extensions.request_authenticators.is_empty());
     }
 
@@ -348,5 +236,37 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(observer_names, ["base", "extra"]);
+    }
+
+    #[test]
+    fn provider_lists_merge_source_observation_publishers_in_call_order() {
+        let base = Arc::new(TestSourceObservationPublisher) as Arc<dyn SourceObservationPublisher>;
+        let extra = Arc::new(TestSourceObservationPublisher) as Arc<dyn SourceObservationPublisher>;
+        let providers = vec![
+            Arc::new(TestSourceObservationPublisherProvider {
+                publisher: Arc::clone(&base),
+            }) as Arc<dyn EngineExtensionsProvider>,
+            Arc::new(TestSourceObservationPublisherProvider {
+                publisher: Arc::clone(&extra),
+            }),
+        ];
+
+        let extensions = engine_extensions_for_providers(&providers, &[]);
+
+        assert_eq!(extensions.source_observation_publishers.len(), 2);
+        assert!(Arc::ptr_eq(
+            extensions
+                .source_observation_publishers
+                .first()
+                .expect("first publisher"),
+            &base
+        ));
+        assert!(Arc::ptr_eq(
+            extensions
+                .source_observation_publishers
+                .get(1)
+                .expect("second publisher"),
+            &extra
+        ));
     }
 }

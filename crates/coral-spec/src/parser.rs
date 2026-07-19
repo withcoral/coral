@@ -290,6 +290,41 @@ tables:
     }
 
     #[test]
+    fn parse_source_manifest_preserves_do_not_index_policy() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: title
+        type: Utf8
+      - name: internal_note
+        type: Utf8
+        do_not_index: true
+",
+        )
+        .expect("manifest should parse");
+        let columns = manifest
+            .as_file()
+            .expect("file manifest")
+            .tables
+            .first()
+            .expect("messages table")
+            .columns();
+
+        assert!(!columns.first().expect("title column").do_not_index);
+        assert!(columns.get(1).expect("internal note column").do_not_index);
+    }
+
+    #[test]
     fn reserved_source_name_is_rejected() {
         let error = parse_source_manifest_yaml(
             r"

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package coral.v1;
 
+import "coral/v1/resources.proto";
+
 // Query status derived from locally captured spans.
 enum TraceStatus {
   // Status was not recorded or could not be inferred.
@@ -45,6 +47,9 @@ message ListTracesRequest {
   int32 page_size = 1;
   // Opaque token returned by a previous list response.
   string page_token = 2;
+  // Optional workspace that scopes returned traces. Omit to list all local
+  // traces visible to the local server.
+  Workspace workspace = 3;
 }
 
 // Page of locally captured traces.
@@ -59,6 +64,9 @@ message ListTracesResponse {
 message GetTraceRequest {
   // W3C trace identifier.
   string trace_id = 1;
+  // Optional workspace that the trace must belong to. Omit for the global
+  // trace lookup.
+  Workspace workspace = 2;
 }
 
 // One stored trace span.

@@ -6,15 +6,17 @@ use std::time::Duration;
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
     GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceSpan,
-    TraceStatus, TraceSummary,
+    TraceStatus, TraceSummary, Workspace,
 };
 use tonic::{Code, Request, Response, Status};
 
+use crate::bootstrap::app_status;
 use crate::telemetry::local_store::{
     StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
     TraceSummaryRecord,
 };
 use crate::transport::{grpc_span, instrument_grpc};
+use crate::workspaces::WorkspaceName;
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
@@ -44,10 +46,24 @@ impl TraceServiceApi for TraceService {
             let request = request.into_inner();
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
-            let mut summaries = traces
-                .list_traces(page_size.saturating_add(1), offset)
-                .await
-                .map_err(trace_store_status)?;
+            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let mut summaries = match workspace_name {
+                Some(workspace_name) => {
+                    traces
+                        .list_traces_for_workspace(
+                            page_size.saturating_add(1),
+                            offset,
+                            workspace_name,
+                        )
+                        .await
+                }
+                None => {
+                    traces
+                        .list_traces(page_size.saturating_add(1), offset)
+                        .await
+                }
+            }
+            .map_err(trace_store_status)?;
             let next_page_token = if summaries.len() > page_size {
                 summaries.truncate(page_size);
                 offset.saturating_add(page_size).to_string()
@@ -76,10 +92,16 @@ impl TraceServiceApi for TraceService {
                     "invalid input: missing trace_id",
                 ));
             }
-            let trace = traces
-                .get_trace(request.trace_id)
-                .await
-                .map_err(trace_store_status)?;
+            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let trace = match workspace_name {
+                Some(workspace_name) => {
+                    traces
+                        .get_trace_for_workspace(request.trace_id, workspace_name)
+                        .await
+                }
+                None => traces.get_trace(request.trace_id).await,
+            }
+            .map_err(trace_store_status)?;
             Ok(Response::new(trace_detail_to_proto(trace)))
         })
         .await
@@ -108,6 +130,16 @@ fn parse_page_token(page_token: &str) -> Result<usize, Status> {
     })
 }
 
+fn workspace_filter_from_proto(workspace: Option<&Workspace>) -> Result<Option<String>, Status> {
+    workspace
+        .map(|workspace| {
+            WorkspaceName::parse(&workspace.name)
+                .map(|workspace_name| workspace_name.as_str().to_string())
+                .map_err(app_status)
+        })
+        .transpose()
+}
+
 fn trace_store_status(error: TraceStoreError) -> Status {
     match error {
         TraceStoreError::NotFound(trace_id) => {
@@ -116,8 +148,13 @@ fn trace_store_status(error: TraceStoreError) -> Status {
         TraceStoreError::ReadDir { .. }
         | TraceStoreError::OpenFile { .. }
         | TraceStoreError::FileMetadata { .. }
+        | TraceStoreError::WriteFile { .. }
+        | TraceStoreError::RemoveFile { .. }
+        | TraceStoreError::RestoreFile { .. }
+        | TraceStoreError::WriterRegistryPoisoned
+        | TraceStoreError::WriterPoisoned
+        | TraceStoreError::CloseActiveWriter { .. }
         | TraceStoreError::ReadFile { .. }
-        | TraceStoreError::DecodeLine { .. }
         | TraceStoreError::PruneExpired { .. }
         | TraceStoreError::Worker { .. } => Status::new(Code::Internal, error.to_string()),
     }
@@ -183,7 +220,15 @@ fn trace_status_to_proto(status: StoredTraceStatus) -> TraceStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_page_size, parse_page_token};
+    use std::time::Duration;
+
+    use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
+    use coral_api::v1::{GetTraceRequest, ListTracesRequest, Workspace};
+    use serde_json::json;
+    use tempfile::TempDir;
+    use tonic::{Code, Request};
+
+    use super::{TraceService, normalize_page_size, parse_page_token};
 
     #[test]
     fn page_size_defaults_and_caps() {
@@ -198,5 +243,113 @@ mod tests {
         assert_eq!(parse_page_token("").expect("empty token"), 0);
         assert_eq!(parse_page_token("25").expect("offset token"), 25);
         parse_page_token("not-an-offset").unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn trace_service_scopes_list_and_get_by_workspace() {
+        let temp = TempDir::new().expect("temp dir");
+        let trace_store = temp.path().join("trace-store");
+        std::fs::create_dir_all(&trace_store).expect("trace store dir");
+        write_trace_records(
+            &trace_store,
+            &[
+                trace_record_json("alpha-trace", "alpha-span", "alpha", 10, 20),
+                trace_record_json("beta-trace", "beta-span", "beta", 30, 40),
+            ],
+        );
+        let service = TraceService::new(trace_store, Duration::from_mins(1));
+
+        let response = TraceServiceApi::list_traces(
+            &service,
+            Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+                workspace: Some(workspace("alpha")),
+            }),
+        )
+        .await
+        .expect("list alpha traces")
+        .into_inner();
+
+        assert_eq!(response.traces.len(), 1);
+        assert_eq!(
+            response.traces.first().expect("alpha trace").trace_id,
+            "alpha-trace"
+        );
+
+        let detail = TraceServiceApi::get_trace(
+            &service,
+            Request::new(GetTraceRequest {
+                trace_id: "alpha-trace".to_string(),
+                workspace: Some(workspace("alpha")),
+            }),
+        )
+        .await
+        .expect("get alpha trace")
+        .into_inner();
+        assert_eq!(detail.spans.len(), 1);
+
+        let status = TraceServiceApi::get_trace(
+            &service,
+            Request::new(GetTraceRequest {
+                trace_id: "beta-trace".to_string(),
+                workspace: Some(workspace("alpha")),
+            }),
+        )
+        .await
+        .expect_err("beta trace should not match alpha workspace");
+        assert_eq!(status.code(), Code::NotFound);
+    }
+
+    fn workspace(name: &str) -> Workspace {
+        Workspace {
+            name: name.to_string(),
+        }
+    }
+
+    fn write_trace_records(dir: &std::path::Path, records: &[serde_json::Value]) {
+        let mut lines = String::new();
+        for record in records {
+            lines.push_str(&record.to_string());
+            lines.push('\n');
+        }
+        std::fs::write(dir.join("spans-test.jsonl"), lines).expect("write trace records");
+    }
+
+    fn trace_record_json(
+        trace_id: &str,
+        span_id: &str,
+        workspace: &str,
+        start_time_unix_nanos: i64,
+        end_time_unix_nanos: i64,
+    ) -> serde_json::Value {
+        json!({
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "parent_span_id": null,
+            "parent_span_is_remote": false,
+            "name": "coral.query",
+            "kind": "internal",
+            "status": "ok",
+            "status_message": null,
+            "start_time_unix_nanos": start_time_unix_nanos,
+            "end_time_unix_nanos": end_time_unix_nanos,
+            "duration_nanos": end_time_unix_nanos - start_time_unix_nanos,
+            "attributes_json": json!({
+                "workspace": workspace,
+                "sql": format!("SELECT {workspace}"),
+                "status": "ok",
+            }).to_string(),
+            "events_json": "[]",
+            "links_json": "[]",
+            "resource_json": "{}",
+            "scope_name": "test",
+            "scope_version": null,
+            "scope_schema_url": null,
+            "scope_attributes_json": "{}",
+            "trace_flags": 0,
+            "trace_state": "",
+            "is_remote": false
+        })
     }
 }

@@ -3,13 +3,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
-use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
+use crate::{
+    QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver,
+    SourceObservationPublisher,
+};
 use async_trait::async_trait;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
+    ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, FilterSpec, ManifestDataType, ManifestInputKind,
+    ManifestInputSpec, SearchLimitsSpec, SourceBackend, SourceTableFunctionKind,
+    SourceTableFunctionSpec, TableCommon,
 };
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::Expr;
@@ -49,7 +53,7 @@ pub(crate) struct RegisteredTable {
     pub(crate) columns: Vec<RegisteredColumn>,
     pub(crate) filters: Vec<RegisteredFilter>,
     pub(crate) required_filters: Vec<String>,
-    pub(crate) search_limits_json: Option<String>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,12 +61,11 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
-    pub(crate) kind: String,
+    pub(crate) kind: SourceTableFunctionKind,
     pub(crate) description: String,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
-    pub(crate) arg_names: Vec<String>,
-    pub(crate) search_limits_json: Option<String>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +80,7 @@ pub(crate) struct RegisteredFilter {
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTableFunctionArgument {
     pub(crate) name: String,
+    pub(crate) data_type: ManifestDataType,
     pub(crate) required: bool,
     pub(crate) values: Vec<String>,
 }
@@ -127,6 +131,7 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    pub(crate) source_observation_publishers: &'a [Arc<dyn SourceObservationPublisher>],
 }
 
 /// Shared resources available while registering one batch of compiled sources.
@@ -210,7 +215,7 @@ pub(crate) fn registered_filters_from_specs(filters: &[FilterSpec]) -> Vec<Regis
             name: filter.name.clone(),
             mode: filter.mode.as_str().to_string(),
             required: filter.required,
-            data_type: filter.data_type.clone(),
+            data_type: filter.data_type.as_manifest_str().to_string(),
             description: filter.description.clone(),
         })
         .collect()
@@ -228,7 +233,7 @@ pub(crate) fn registered_columns_from_specs(
                 .find(|filter| filter.name == column.name.as_str());
             RegisteredColumn {
                 name: column.name.clone(),
-                data_type: column.data_type.clone(),
+                data_type: column.data_type.as_manifest_str().to_string(),
                 nullable: column.nullable,
                 is_virtual: column.r#virtual,
                 is_required_filter: filter.is_some_and(|filter| filter.required),
@@ -323,7 +328,7 @@ pub(crate) fn build_registered_table(
         columns,
         filters: registered_filters_from_specs(&common.filters),
         required_filters,
-        search_limits_json: common.search_limits.as_ref().map(serialize_search_limits),
+        search_limits: common.search_limits.clone(),
     }
 }
 
@@ -337,6 +342,7 @@ pub(crate) fn build_registered_table_function(
         .iter()
         .map(|arg| RegisteredTableFunctionArgument {
             name: arg.name.clone(),
+            data_type: arg.data_type,
             required: arg.required,
             values: arg.values.clone(),
         })
@@ -355,36 +361,16 @@ pub(crate) fn build_registered_table_function(
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
         factory,
-        kind: function.kind.as_str().to_string(),
+        kind: function.kind,
         description: function.description.clone(),
         arguments,
         result_columns,
-        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
-        search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
+        search_limits: function.search_limits.clone(),
     }
 }
 
-fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
-    serde_json::to_string(limits).expect("search limits json")
-}
-
-pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {
-    match data_type {
-        ManifestDataType::Utf8 | ManifestDataType::Json => DataType::Utf8,
-        ManifestDataType::Int64 => DataType::Int64,
-        ManifestDataType::Boolean => DataType::Boolean,
-        ManifestDataType::Float64 => DataType::Float64,
-        ManifestDataType::Timestamp => {
-            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
-        }
-    }
-}
-
-pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> datafusion::error::Result<DataType> {
-    column
-        .manifest_data_type()
-        .map(manifest_data_type_to_arrow)
-        .map_err(|error| DataFusionError::Execution(error.to_string()))
+pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> DataType {
+    crate::types::arrow_data_type(column.data_type)
 }
 
 pub(crate) fn schema_from_columns(
@@ -400,11 +386,14 @@ pub(crate) fn schema_from_columns(
 
     let mut fields = Vec::with_capacity(columns.len());
     for column in columns {
-        fields.push(Field::new(
-            &column.name,
-            arrow_type_for_column(column)?,
-            column.nullable,
-        ));
+        let mut field = Field::new(&column.name, arrow_type_for_column(column), column.nullable);
+        if column.do_not_index {
+            field = field.with_metadata(HashMap::from([(
+                DO_NOT_INDEX_COLUMN_METADATA_KEY.to_string(),
+                "true".to_string(),
+            )]));
+        }
+        fields.push(field);
     }
     Ok(Arc::new(Schema::new(fields)))
 }
@@ -450,6 +439,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schema_marks_source_authored_do_not_index_columns() {
+        let schema = schema_from_columns(
+            &[
+                test_column("visible", false),
+                test_column("internal_note", true),
+            ],
+            "demo",
+            "items",
+        )
+        .expect("schema");
+
+        assert!(
+            !schema
+                .field_with_name("visible")
+                .expect("visible field")
+                .metadata()
+                .contains_key(DO_NOT_INDEX_COLUMN_METADATA_KEY)
+        );
+        assert_eq!(
+            schema
+                .field_with_name("internal_note")
+                .expect("excluded field")
+                .metadata()
+                .get(DO_NOT_INDEX_COLUMN_METADATA_KEY)
+                .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
     fn default_http_client_is_shared_only_within_registration_context() {
         let build_count = AtomicUsize::new(0);
         let first_context = BackendRegistrationContext::default();
@@ -484,5 +503,17 @@ mod tests {
         reqwest::Client::builder()
             .build()
             .map_err(|error| error.to_string())
+    }
+
+    fn test_column(name: &str, do_not_index: bool) -> ColumnSpec {
+        ColumnSpec {
+            name: name.to_string(),
+            data_type: ManifestDataType::Utf8,
+            nullable: true,
+            r#virtual: false,
+            description: String::new(),
+            expr: None,
+            do_not_index,
+        }
     }
 }

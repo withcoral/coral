@@ -1,25 +1,29 @@
 //! Persists the installed source catalog in top-level `config.toml`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 use tracing::{info_span, warn};
+use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
+use crate::functions::model::{FunctionName, InstalledFunction};
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppConfig {
     version: u32,
     engine: PersistedEngineConfig,
+    workspaces: WorkspaceCatalog,
     catalog: SourceCatalog,
+    functions: FunctionCatalog,
 }
 
 impl Default for AppConfig {
@@ -27,12 +31,18 @@ impl Default for AppConfig {
         Self {
             version: default_config_version(),
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         }
     }
 }
 
 impl AppConfig {
+    pub(crate) fn legacy_workspace_records(&self) -> Vec<WorkspaceRecord> {
+        self.workspaces.list()
+    }
+
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
         self.catalog.workspace_sources(workspace_name)
     }
@@ -175,6 +185,14 @@ pub(crate) enum RawFeatureValue {
 struct PersistedWorkspaceConfig {
     #[serde(default)]
     sources: BTreeMap<String, PersistedInstalledSource>,
+    // The persisted TOML shape is `functions.<name> = {}` so existing workspace
+    // configs keep round-tripping even though installed functions are membership-only.
+    #[expect(
+        clippy::zero_sized_map_values,
+        reason = "persisted function membership uses the existing TOML map shape"
+    )]
+    #[serde(default)]
+    functions: BTreeMap<String, PersistedInstalledFunction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +205,8 @@ struct PersistedInstalledSource {
     secrets: Vec<String>,
     #[serde(default)]
     credential_storage: Option<CredentialStorageKind>,
+    #[serde(default, skip_serializing_if = "Uuid::is_nil")]
+    credential_revision: Uuid,
     origin: SourceOrigin,
 }
 
@@ -198,6 +218,7 @@ impl PersistedInstalledSource {
             variables: self.variables,
             secrets: self.secrets,
             credential_storage: self.credential_storage,
+            credential_revision: self.credential_revision,
             origin: self.origin,
         }
     }
@@ -210,8 +231,53 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
             credential_storage: value.credential_storage,
+            credential_revision: value.credential_revision,
             origin: value.origin,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceCatalog(BTreeSet<WorkspaceName>);
+
+impl Default for WorkspaceCatalog {
+    fn default() -> Self {
+        Self(BTreeSet::from([WorkspaceName::default()]))
+    }
+}
+
+impl WorkspaceCatalog {
+    pub(crate) fn list(&self) -> Vec<WorkspaceRecord> {
+        self.0
+            .iter()
+            .cloned()
+            .map(|name| WorkspaceRecord { name })
+            .collect()
+    }
+
+    pub(crate) fn insert(&mut self, workspace_name: WorkspaceName) -> bool {
+        self.0.insert(workspace_name)
+    }
+
+    pub(crate) fn remove(&mut self, workspace_name: &WorkspaceName) -> bool {
+        self.0.remove(workspace_name)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedInstalledFunction {}
+
+impl PersistedInstalledFunction {
+    fn into_installed_function(function_name: FunctionName) -> InstalledFunction {
+        InstalledFunction {
+            name: function_name,
+        }
+    }
+}
+
+impl From<&InstalledFunction> for PersistedInstalledFunction {
+    fn from(_value: &InstalledFunction) -> Self {
+        Self {}
     }
 }
 
@@ -223,18 +289,6 @@ impl SourceCatalog {
         self.0
             .get(workspace_name)
             .map(|sources| sources.values().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn workspace_source_names(&self, workspace_name: &WorkspaceName) -> Vec<String> {
-        self.0
-            .get(workspace_name)
-            .map(|sources| {
-                sources
-                    .keys()
-                    .map(|source_name| source_name.as_str().to_string())
-                    .collect()
-            })
             .unwrap_or_default()
     }
 
@@ -289,6 +343,80 @@ impl SourceCatalog {
         }
 
         removed
+    }
+
+    pub(crate) fn remove_workspace(
+        &mut self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<BTreeMap<SourceName, InstalledSource>> {
+        self.0.remove(workspace_name)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FunctionCatalog(
+    BTreeMap<WorkspaceName, BTreeMap<FunctionName, InstalledFunction>>,
+);
+
+impl FunctionCatalog {
+    pub(crate) fn workspace_functions(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Vec<InstalledFunction> {
+        self.0
+            .get(workspace_name)
+            .map(|functions| functions.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn get_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Option<InstalledFunction> {
+        self.0
+            .get(workspace_name)
+            .and_then(|functions| functions.get(function_name))
+            .cloned()
+    }
+
+    pub(crate) fn upsert_function(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        function: InstalledFunction,
+    ) {
+        self.0
+            .entry(workspace_name.clone())
+            .or_default()
+            .insert(function.name.clone(), function);
+    }
+
+    pub(crate) fn remove_function(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Option<InstalledFunction> {
+        let mut removed = None;
+        let remove_workspace = match self.0.get_mut(workspace_name) {
+            Some(functions) => {
+                removed = functions.remove(function_name);
+                functions.is_empty()
+            }
+            None => false,
+        };
+
+        if remove_workspace {
+            self.0.remove(workspace_name);
+        }
+
+        removed
+    }
+
+    pub(crate) fn remove_workspace(
+        &mut self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<BTreeMap<FunctionName, InstalledFunction>> {
+        self.0.remove(workspace_name)
     }
 }
 
@@ -408,50 +536,135 @@ impl ConfigStore {
         Ok(())
     }
 
-    fn lock_shared(&self) -> Result<FileLock, AppError> {
+    pub(crate) fn state_lock_shared(&self) -> Result<FileLock, AppError> {
         FileLock::shared(self.layout.state_lock()).map_err(Into::into)
     }
 
-    fn lock_exclusive(&self) -> Result<FileLock, AppError> {
+    pub(crate) fn state_lock_exclusive(&self) -> Result<FileLock, AppError> {
         FileLock::exclusive(self.layout.state_lock()).map_err(Into::into)
     }
 
-    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
-        let _lock = self.lock_shared()?;
+    /// Loads the app config without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in shared or exclusive mode
+    /// while using any filesystem-backed source artifacts derived from the
+    /// returned config.
+    pub(crate) fn load_config_unlocked(&self) -> Result<AppConfig, AppError> {
         self.load_unlocked()
+    }
+
+    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
+        let _lock = self.state_lock_shared()?;
+        self.load_config_unlocked()
+    }
+
+    /// Loads the source catalog without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in shared or exclusive mode
+    /// while using any filesystem-backed source artifacts derived from the
+    /// returned catalog.
+    pub(crate) fn load_catalog_unlocked(&self) -> Result<SourceCatalog, AppError> {
+        self.load_config_unlocked().map(|config| config.catalog)
     }
 
     pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
         let span = info_span!("coral.app.config.load_catalog");
         let _guard = span.enter();
-        self.load_config().map(|config| config.catalog)
+        let _lock = self.state_lock_shared()?;
+        self.load_catalog_unlocked()
     }
 
-    fn update_catalog<T>(
+    fn update_config_unlocked<T>(
+        &self,
+        update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let mut config = self.load_unlocked()?;
+        let result = update(&mut config)?;
+        self.save_unlocked(&config)?;
+        Ok(result)
+    }
+
+    fn update_config<T>(
+        &self,
+        update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let _lock = self.state_lock_exclusive()?;
+        self.update_config_unlocked(update)
+    }
+
+    fn update_catalog_unlocked<T>(
         &self,
         update: impl FnOnce(&mut SourceCatalog) -> T,
     ) -> Result<T, AppError> {
-        let _lock = self.lock_exclusive()?;
-        let mut config = self.load_unlocked()?;
-        let result = update(&mut config.catalog);
-        self.save_unlocked(&config)?;
-        Ok(result)
+        self.update_config_unlocked(|config| Ok(update(&mut config.catalog)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn create_legacy_workspace_entry_for_tests(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceRecord, AppError> {
+        self.update_config(|config| {
+            if config.workspaces.insert(workspace_name.clone()) {
+                Ok(WorkspaceRecord {
+                    name: workspace_name.clone(),
+                })
+            } else {
+                Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()))
+            }
+        })
+    }
+
+    pub(crate) fn remove_workspace_config_entries(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<DeletedWorkspace>, AppError> {
+        self.update_config(|config| {
+            if workspace_name.is_default() {
+                return Err(AppError::FailedPrecondition(
+                    "default workspace cannot be removed".to_string(),
+                ));
+            }
+            let removed = config.workspaces.remove(workspace_name);
+            if removed {
+                let sources = config
+                    .catalog
+                    .remove_workspace(workspace_name)
+                    .map(BTreeMap::into_values)
+                    .map(Iterator::collect)
+                    .unwrap_or_default();
+                config.functions.remove_workspace(workspace_name);
+                return Ok(Some(DeletedWorkspace {
+                    workspace: WorkspaceRecord {
+                        name: workspace_name.clone(),
+                    },
+                    sources,
+                }));
+            }
+            Ok(None)
+        })
     }
 
     pub(crate) fn list_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
-        self.load_catalog()
-            .map(|catalog| catalog.workspace_sources(workspace_name))
+        let config = self.load_config()?;
+        Ok(config.workspace_sources(workspace_name))
     }
 
-    pub(crate) fn list_workspace_source_names(
+    /// Loads one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock while using source artifacts
+    /// associated with the returned config entry.
+    pub(crate) fn get_source_unlocked(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<String>, AppError> {
-        self.load_catalog()
-            .map(|catalog| catalog.workspace_source_names(workspace_name))
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        self.load_catalog_unlocked()?
+            .get_source(workspace_name, source_name)
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
     pub(crate) fn get_source(
@@ -459,27 +672,160 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        self.load_catalog()?
+        let config = self.load_config()?;
+        config
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
+    /// Upserts one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn upsert_source_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
+        self.update_catalog_unlocked(|catalog| catalog.upsert_source(workspace_name, source))
+    }
+
+    #[cfg(test)]
     pub(crate) fn upsert_source(
         &self,
         workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| catalog.upsert_source(workspace_name, source))
+        self.update_config(|config| {
+            config.catalog.upsert_source(workspace_name, source);
+            Ok(())
+        })
     }
 
+    /// Removes one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn remove_source_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), AppError> {
+        self.update_catalog_unlocked(|catalog| {
+            catalog.remove_source(workspace_name, source_name);
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn remove_source(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| {
-            catalog.remove_source(workspace_name, source_name);
+        self.update_config(|config| {
+            config.catalog.remove_source(workspace_name, source_name);
+            Ok(())
         })
+    }
+}
+
+impl ConfigStore {
+    /// Lists installed functions without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock while using function artifacts
+    /// associated with the returned inventory.
+    pub(crate) fn list_workspace_functions_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledFunction>, AppError> {
+        let config = self.load_config_unlocked()?;
+        Ok(config.functions.workspace_functions(workspace_name))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn list_workspace_functions(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledFunction>, AppError> {
+        let _state_lock = self.state_lock_shared()?;
+        self.list_workspace_functions_unlocked(workspace_name)
+    }
+
+    /// Loads one installed function without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock while using the associated
+    /// function artifact.
+    pub(crate) fn get_function_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<InstalledFunction, AppError> {
+        let config = self.load_config_unlocked()?;
+        config
+            .functions
+            .get_function(workspace_name, function_name)
+            .ok_or_else(|| AppError::FunctionNotFound(function_name.to_string()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<InstalledFunction, AppError> {
+        let _state_lock = self.state_lock_shared()?;
+        self.get_function_unlocked(workspace_name, function_name)
+    }
+
+    /// Upserts one installed function without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn upsert_function_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        function: InstalledFunction,
+    ) -> Result<(), AppError> {
+        self.update_config_unlocked(|config| {
+            config.functions.upsert_function(workspace_name, function);
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn upsert_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function: InstalledFunction,
+    ) -> Result<(), AppError> {
+        let _state_lock = self.state_lock_exclusive()?;
+        self.upsert_function_unlocked(workspace_name, function)
+    }
+
+    /// Removes one installed function without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn remove_function_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<(), AppError> {
+        self.update_config_unlocked(|config| {
+            let removed = config
+                .functions
+                .remove_function(workspace_name, function_name);
+            if removed.is_none() {
+                return Err(AppError::FunctionNotFound(function_name.to_string()));
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<(), AppError> {
+        let _state_lock = self.state_lock_exclusive()?;
+        self.remove_function_unlocked(workspace_name, function_name)
     }
 }
 
@@ -495,13 +841,19 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
     doc["version"] = value(i64::from(config.version));
     render_engine_config(&mut doc, &config.engine);
 
-    // Remove and fully rebuild the workspaces section so removed sources don't linger.
+    // Remove and fully rebuild the workspaces section so removed sources and
+    // removed empty workspaces don't linger.
     doc.remove("workspaces");
+
+    for workspace_name in config.workspaces.keys() {
+        ensure_implicit_table(&mut doc["workspaces"]);
+        ensure_explicit_table(&mut doc["workspaces"][workspace_name]);
+    }
 
     for (workspace_name, workspace) in &config.workspaces {
         for (source_name, source) in &workspace.sources {
             ensure_implicit_table(&mut doc["workspaces"]);
-            ensure_implicit_table(&mut doc["workspaces"][workspace_name]);
+            ensure_explicit_table(&mut doc["workspaces"][workspace_name]);
             ensure_implicit_table(&mut doc["workspaces"][workspace_name]["sources"]);
 
             let source_item = &mut doc["workspaces"][workspace_name]["sources"][source_name];
@@ -527,7 +879,31 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("credential_storage");
             }
+            if source.credential_revision.is_nil() {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("credential_revision");
+            } else {
+                source_item["credential_revision"] = value(source.credential_revision.to_string());
+            }
             source_item["origin"] = value(source.origin.as_config_value());
+        }
+
+        for function_name in workspace.functions.keys() {
+            ensure_implicit_table(&mut doc["workspaces"]);
+            ensure_implicit_table(&mut doc["workspaces"][workspace_name]);
+            ensure_implicit_table(&mut doc["workspaces"][workspace_name]["functions"]);
+
+            let function_item = &mut doc["workspaces"][workspace_name]["functions"][function_name];
+            if !function_item.is_table() {
+                *function_item = toml_edit::table();
+            }
+            let function_table = function_item
+                .as_table_mut()
+                .expect("function config entry should be a table after initialization");
+            function_table.remove("origin");
+            function_table.remove("enabled");
         }
     }
 
@@ -598,22 +974,43 @@ fn ensure_implicit_table(item: &mut Item) {
         .set_implicit(true);
 }
 
+fn ensure_explicit_table(item: &mut Item) {
+    if !item.is_table() {
+        *item = toml_edit::table();
+    }
+    item.as_table_mut()
+        .expect("table item must be available")
+        .set_implicit(false);
+}
+
 impl TryFrom<PersistedAppConfig> for AppConfig {
     type Error = AppError;
 
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
+        let mut workspaces = WorkspaceCatalog::default();
         let mut catalog = SourceCatalog::default();
+        let mut functions = FunctionCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            workspaces.insert(workspace_name.clone());
             for (source_name, source) in workspace_config.sources {
                 let source_name = SourceName::parse(&source_name)?;
                 catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
+            }
+            for (function_name, _function) in workspace_config.functions {
+                let function_name = FunctionName::parse(&function_name)?;
+                functions.upsert_function(
+                    &workspace_name,
+                    PersistedInstalledFunction::into_installed_function(function_name),
+                );
             }
         }
         Ok(Self {
             version: value.version,
             engine: value.engine,
+            workspaces,
             catalog,
+            functions,
         })
     }
 }
@@ -621,6 +1018,11 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
 impl From<&AppConfig> for PersistedAppConfig {
     fn from(value: &AppConfig) -> Self {
         let mut workspaces = BTreeMap::new();
+        for workspace in value.workspaces.list() {
+            workspaces
+                .entry(workspace.name.as_str().to_string())
+                .or_insert_with(PersistedWorkspaceConfig::default);
+        }
         for (workspace_name, sources) in &value.catalog.0 {
             let workspace_config = workspaces
                 .entry(workspace_name.as_str().to_string())
@@ -629,6 +1031,17 @@ impl From<&AppConfig> for PersistedAppConfig {
                 workspace_config.sources.insert(
                     source.name.as_str().to_string(),
                     PersistedInstalledSource::from(source),
+                );
+            }
+        }
+        for (workspace_name, functions) in &value.functions.0 {
+            let workspace_config = workspaces
+                .entry(workspace_name.as_str().to_string())
+                .or_insert_with(PersistedWorkspaceConfig::default);
+            for function in functions.values() {
+                workspace_config.functions.insert(
+                    function.name.as_str().to_string(),
+                    PersistedInstalledFunction::from(function),
                 );
             }
         }
@@ -807,11 +1220,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        AppConfig, PersistedAppConfig, PersistedEngineConfig, PersistedMemoryConfig,
-        RawFeatureContainerState, RawFeatureValue, SourceCatalog, load_raw_feature_overrides,
-        render_config, set_raw_feature_override,
+        AppConfig, AppError, ConfigStore, FunctionCatalog, PersistedAppConfig,
+        PersistedEngineConfig, PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue,
+        SourceCatalog, WorkspaceCatalog, load_raw_feature_overrides, render_config,
+        set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
+    use crate::functions::model::{FunctionName, InstalledFunction};
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
@@ -831,7 +1246,14 @@ mod tests {
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
+        }
+    }
+
+    fn installed_function(name: &str) -> InstalledFunction {
+        InstalledFunction {
+            name: FunctionName::parse(name).expect("function"),
         }
     }
 
@@ -881,7 +1303,9 @@ mod tests {
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -895,6 +1319,94 @@ mod tests {
     }
 
     #[test]
+    fn renders_empty_workspaces_as_explicit_tables() {
+        let mut workspaces = WorkspaceCatalog::default();
+        workspaces.insert(WorkspaceName::parse("work").expect("workspace"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces,
+            catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[workspaces.default]"));
+        assert!(raw.contains("[workspaces.work]"));
+    }
+
+    #[test]
+    fn loads_legacy_empty_workspace_tables() {
+        let raw = r"
+version = 1
+
+[workspaces.default]
+
+[workspaces.work]
+";
+
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("workspace config should parse"),
+        )
+        .expect("config");
+        let names = config
+            .legacy_workspace_records()
+            .into_iter()
+            .map(|workspace| workspace.name.as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["default", "work"]);
+    }
+
+    #[test]
+    fn renders_functions_under_workspace_keyed_tables() {
+        let workspace_name = default_workspace();
+        let mut functions = FunctionCatalog::default();
+        functions.upsert_function(&workspace_name, installed_function("review_queue"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+            functions,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(!raw.contains("origin = \"user\""));
+        assert!(!raw.contains("enabled = true"));
+    }
+
+    #[test]
+    fn removes_legacy_function_origin_and_enabled_when_rendering() {
+        let existing = r#"
+version = 1
+
+[workspaces.default.functions.review_queue]
+origin = "user"
+enabled = true
+"#;
+        let workspace_name = default_workspace();
+        let mut functions = FunctionCatalog::default();
+        functions.upsert_function(&workspace_name, installed_function("review_queue"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+            functions,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
+
+        assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(!raw.contains("origin = \"user\""));
+        assert!(!raw.contains("enabled = true"));
+    }
+
+    #[test]
     fn omits_empty_versions_from_rendered_source_entries() {
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
@@ -905,7 +1417,9 @@ mod tests {
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -946,21 +1460,126 @@ origin = "bundled"
     }
 
     #[test]
-    fn lists_workspace_source_names_in_lexical_order() {
-        let workspace_name = default_workspace();
-        let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace_name, installed_source("slack"));
-        catalog.upsert_source(&workspace_name, installed_source("github"));
-        catalog.upsert_source(&workspace_name, installed_source("linear"));
+    fn scoped_config_store_methods_do_not_require_workspace() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+        let function_name = FunctionName::parse("review_queue").expect("function");
 
-        assert_eq!(
-            catalog.workspace_source_names(&workspace_name),
-            vec![
-                "github".to_string(),
-                "linear".to_string(),
-                "slack".to_string()
-            ]
+        assert!(
+            store
+                .list_workspace_sources(&missing_workspace)
+                .expect("list source definitions")
+                .is_empty()
         );
+        assert!(matches!(
+            store.get_source(&missing_workspace, &source_name),
+            Err(AppError::SourceNotFound(_))
+        ));
+        store
+            .upsert_source(&missing_workspace, installed_source("github"))
+            .expect("upsert source definition");
+        assert_eq!(
+            store
+                .get_source(&missing_workspace, &source_name)
+                .expect("get source definition")
+                .name,
+            source_name
+        );
+        store
+            .remove_source(&missing_workspace, &source_name)
+            .expect("remove source definition");
+        assert!(matches!(
+            store.get_source(&missing_workspace, &source_name),
+            Err(AppError::SourceNotFound(_))
+        ));
+        assert!(
+            store
+                .list_workspace_functions(&missing_workspace)
+                .expect("list function definitions")
+                .is_empty()
+        );
+        assert!(matches!(
+            store.get_function(&missing_workspace, &function_name),
+            Err(AppError::FunctionNotFound(_))
+        ));
+        store
+            .upsert_function(&missing_workspace, installed_function("review_queue"))
+            .expect("upsert function definition");
+        assert_eq!(
+            store
+                .get_function(&missing_workspace, &function_name)
+                .expect("get function definition")
+                .name,
+            function_name
+        );
+        store
+            .remove_function(&missing_workspace, &function_name)
+            .expect("remove function definition");
+        assert!(matches!(
+            store.get_function(&missing_workspace, &function_name),
+            Err(AppError::FunctionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn remove_workspace_config_entries_removes_sources_and_functions() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
+
+        store
+            .create_legacy_workspace_entry_for_tests(&workspace_name)
+            .expect("create legacy workspace entry");
+        store
+            .upsert_source(&workspace_name, installed_source("github"))
+            .expect("upsert source");
+        store
+            .upsert_function(&workspace_name, installed_function("review_queue"))
+            .expect("upsert function");
+
+        let deleted = store
+            .remove_workspace_config_entries(&workspace_name)
+            .expect("remove workspace config entries")
+            .expect("workspace config should be removed");
+
+        assert_eq!(deleted.workspace.name, workspace_name);
+        assert_eq!(deleted.sources.len(), 1);
+        assert_eq!(deleted.sources[0].name.as_str(), "github");
+        assert!(
+            store
+                .list_workspace_sources(&deleted.workspace.name)
+                .expect("list source definitions")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_workspace_functions(&deleted.workspace.name)
+                .expect("list function definitions")
+                .is_empty()
+        );
+
+        let rendered = std::fs::read_to_string(store.layout.config_file()).expect("read config");
+        assert!(!rendered.contains("[workspaces.work.functions.review_queue]"));
+    }
+
+    #[test]
+    fn loads_functions_from_workspace_keyed_tables() {
+        let raw = r"
+version = 1
+
+	[workspaces.default.functions.review_queue]
+	";
+
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
+        )
+        .expect("config");
+        let functions = config.functions.workspace_functions(&default_workspace());
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name.as_str(), "review_queue");
     }
 
     #[test]
@@ -1090,7 +1709,9 @@ limit = 2147483648
                 },
                 ..PersistedEngineConfig::default()
             },
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1115,7 +1736,9 @@ flag = true
                 },
                 ..PersistedEngineConfig::default()
             },
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
@@ -1140,7 +1763,9 @@ flag = true
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
@@ -1274,7 +1899,9 @@ max_concurrency = 0
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1289,6 +1916,58 @@ max_concurrency = 0
             sources[0].credential_storage,
             Some(CredentialStorageKind::Keychain)
         );
+    }
+
+    #[test]
+    fn round_trips_non_nil_source_credential_revision() {
+        let workspace_name = default_workspace();
+        let mut source = installed_source("github");
+        source.credential_revision = uuid::Uuid::parse_str("c59a9c41-0e51-45d4-bfb7-f05df71eed53")
+            .expect("credential revision");
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, source.clone());
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog,
+            functions: FunctionCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+        assert!(raw.contains(&format!(
+            "credential_revision = \"{}\"",
+            source.credential_revision
+        )));
+
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        assert_eq!(sources[0].credential_revision, source.credential_revision);
+    }
+
+    #[test]
+    fn source_config_without_credential_revision_defaults_to_nil() {
+        let raw = r#"
+version = 1
+
+[workspaces.default]
+
+[workspaces.default.sources.github]
+variables = {}
+secrets = ["GITHUB_TOKEN"]
+credential_storage = "file"
+origin = "imported"
+"#;
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("legacy config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&default_workspace());
+
+        assert!(sources[0].credential_revision.is_nil());
     }
 
     #[test]
@@ -1379,7 +2058,9 @@ origin = "bundled"
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
@@ -1461,6 +2142,18 @@ origin = "bundled"
         )
         .expect_err("invalid source key should fail");
         assert!(error.to_string().contains("source name"));
+
+        let invalid_function = r#"
+version = 1
+
+	[workspaces.default.functions."bad\\function"]
+	"#;
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(invalid_function)
+                .expect("quoted function key should parse"),
+        )
+        .expect_err("invalid function key should fail");
+        assert!(error.to_string().contains("function name"));
     }
 
     #[test]

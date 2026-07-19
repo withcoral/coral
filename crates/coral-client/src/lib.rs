@@ -20,6 +20,7 @@ mod error;
 mod grpc;
 pub mod local;
 mod propagation;
+mod search;
 mod sources;
 mod status_error;
 
@@ -40,11 +41,16 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, EpisodeClient, FeedbackClient, QueryClient,
-    SourceClient, default_workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, FunctionClient, QueryClient,
+    SearchClient, SourceClient, TaskClient, WorkspaceClient, default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
-pub use propagation::with_episode_metadata;
+pub use propagation::with_task_metadata;
+pub use search::{
+    SearchResponseValue, format_schema_table_equivalent, format_search_response_json,
+    format_search_response_text, format_sql_identifier, minimal_table_function_call_example,
+    search_response_json_value,
+};
 pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,

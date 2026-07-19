@@ -19,6 +19,11 @@ use datafusion::physical_plan::{
 use futures::{TryStreamExt, stream};
 use serde_json::Value;
 
+use crate::SourceObservationSurfaceKind;
+use crate::backends::shared::source_observation::{
+    SourceObservationConfig, SourceObservationPublishers, publish_source_scan_batch,
+};
+
 /// Fetches raw JSON rows for one logical table scan.
 #[async_trait]
 pub(crate) trait RowFetcher: fmt::Debug + Send + Sync {
@@ -31,6 +36,50 @@ pub(crate) trait RowFetcher: fmt::Debug + Send + Sync {
 pub(crate) type Fetcher = Arc<dyn RowFetcher>;
 /// Converts fetched JSON rows into a projected `RecordBatch`.
 pub(crate) type Converter = Arc<dyn Fn(&[Value]) -> Result<RecordBatch> + Send + Sync>;
+
+fn observe_source_scan_batch(
+    source_name: String,
+    surface_name: String,
+    observation: SourceObservationConfig,
+    observation_converter: Converter,
+    output_converter: Converter,
+) -> Converter {
+    Arc::new(move |items| {
+        let output_batch = output_converter(items)?;
+        match observation_converter(items) {
+            Ok(observation_batch) => {
+                publish_source_scan_batch(
+                    &source_name,
+                    &surface_name,
+                    &observation,
+                    &observation_batch,
+                );
+            }
+            Err(error) => {
+                tracing::debug!(
+                    source = source_name,
+                    surface = surface_name,
+                    error = %error,
+                    "failed to convert source-scan observation batch; dropping observation"
+                );
+            }
+        }
+        Ok(output_batch)
+    })
+}
+
+fn observe_output_batch(
+    source_name: String,
+    surface_name: String,
+    observation: SourceObservationConfig,
+    output_converter: Converter,
+) -> Converter {
+    Arc::new(move |items| {
+        let output_batch = output_converter(items)?;
+        publish_source_scan_batch(&source_name, &surface_name, &observation, &output_batch);
+        Ok(output_batch)
+    })
+}
 
 /// Execution-plan node for backends that fetch JSON rows and convert them into
 /// `Arrow` record batches.
@@ -90,6 +139,53 @@ impl JsonExec {
             converter,
             projection,
         })
+    }
+
+    /// Publishes typed source-scan observations after JSON conversion, before
+    /// `DataFusion` projection, and once per emitted `batch_size` chunk. This
+    /// is a shared execution hook; backend adapters should only pass through
+    /// metadata and publishers.
+    #[must_use]
+    pub(crate) fn with_source_observation(
+        mut self,
+        surface_kind: SourceObservationSurfaceKind,
+        publishers: SourceObservationPublishers,
+    ) -> Self {
+        let Some(observation) = SourceObservationConfig::new(surface_kind, publishers) else {
+            return self;
+        };
+        self.converter = observe_output_batch(
+            self.source_name.clone(),
+            self.table_name.clone(),
+            observation,
+            self.converter.clone(),
+        );
+        self
+    }
+
+    /// Publishes typed source-scan observations using a converter that may see
+    /// a less-shaped view of the fetched rows than the query-output converter.
+    ///
+    /// HTTP scans use this to observe upstream rows before Coral-side local
+    /// filters and truncation while still returning the filtered query result.
+    #[must_use]
+    pub(crate) fn with_source_observation_converter(
+        mut self,
+        surface_kind: SourceObservationSurfaceKind,
+        publishers: SourceObservationPublishers,
+        observation_converter: Converter,
+    ) -> Self {
+        let Some(observation) = SourceObservationConfig::new(surface_kind, publishers) else {
+            return self;
+        };
+        self.converter = observe_source_scan_batch(
+            self.source_name.clone(),
+            self.table_name.clone(),
+            observation,
+            observation_converter,
+            self.converter.clone(),
+        );
+        self
     }
 }
 
@@ -206,6 +302,7 @@ async fn next_projected_batch(mut state: ChunkState) -> Result<Option<(RecordBat
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
     use datafusion::arrow::array::Array;
@@ -213,12 +310,23 @@ mod tests {
     use datafusion::arrow::array::RecordBatch;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::prelude::{SessionConfig, SessionContext};
+    use futures::TryStreamExt;
     use serde_json::Value;
 
     use super::{ChunkState, Converter, Fetcher, JsonExec, RowFetcher, next_projected_batch};
+    use crate::backends::shared::source_observation::{
+        source_observation_publishers, test_support::RecordingSourceObservationPublisher,
+    };
+    use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
 
     #[derive(Debug)]
     struct NoopFetcher;
+
+    #[derive(Debug)]
+    struct StaticFetcher {
+        rows: Vec<Value>,
+    }
 
     fn noop_fetcher() -> Fetcher {
         Arc::new(NoopFetcher)
@@ -228,6 +336,13 @@ mod tests {
     impl RowFetcher for NoopFetcher {
         async fn fetch(&self) -> datafusion::error::Result<Vec<Value>> {
             Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl RowFetcher for StaticFetcher {
+        async fn fetch(&self) -> datafusion::error::Result<Vec<Value>> {
+            Ok(self.rows.clone())
         }
     }
 
@@ -299,6 +414,187 @@ mod tests {
             })
             .collect();
         assert_eq!(observed, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn source_observation_publishes_one_event_per_emitted_chunk() {
+        let schema = int_schema();
+        let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+        let exec = JsonExec::new(
+            "demo",
+            "numbers",
+            schema.clone(),
+            Arc::new(StaticFetcher {
+                rows: (0..5).map(Value::from).collect(),
+            }),
+            int_converter(schema),
+            None,
+        )
+        .expect("exec should build")
+        .with_source_observation(
+            SourceObservationSurfaceKind::Table,
+            source_observation_publishers(&[
+                publisher.clone() as Arc<dyn SourceObservationPublisher>
+            ]),
+        );
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(2));
+
+        let batches = exec
+            .execute(0, ctx.task_ctx())
+            .expect("execute should create stream")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("stream should collect");
+
+        assert_eq!(
+            batches
+                .iter()
+                .map(RecordBatch::num_rows)
+                .collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+        assert_eq!(
+            publisher
+                .observations()
+                .iter()
+                .map(|observation| observation.row_count)
+                .collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+    }
+
+    #[tokio::test]
+    async fn source_observation_reuses_output_conversion_when_shapes_match() {
+        let schema = int_schema();
+        let conversion_count = Arc::new(AtomicUsize::new(0));
+        let converter = {
+            let schema = schema.clone();
+            let conversion_count = conversion_count.clone();
+            Arc::new(move |items: &[Value]| {
+                conversion_count.fetch_add(1, Ordering::SeqCst);
+                int_converter(schema.clone())(items)
+            })
+        };
+        let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+        let exec = JsonExec::new(
+            "demo",
+            "numbers",
+            schema,
+            Arc::new(StaticFetcher {
+                rows: vec![Value::from(1), Value::from(2)],
+            }),
+            converter,
+            None,
+        )
+        .expect("exec should build")
+        .with_source_observation(
+            SourceObservationSurfaceKind::Table,
+            source_observation_publishers(&[
+                publisher.clone() as Arc<dyn SourceObservationPublisher>
+            ]),
+        );
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(10));
+
+        let batches = exec
+            .execute(0, ctx.task_ctx())
+            .expect("execute should create stream")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("stream should collect");
+
+        assert_eq!(conversion_count.load(Ordering::SeqCst), 1);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(publisher.observations().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn source_observation_waits_for_successful_output_conversion() {
+        let schema = int_schema();
+        let observation_conversion_count = Arc::new(AtomicUsize::new(0));
+        let observation_converter = {
+            let schema = schema.clone();
+            let observation_conversion_count = observation_conversion_count.clone();
+            Arc::new(move |items: &[Value]| {
+                observation_conversion_count.fetch_add(1, Ordering::SeqCst);
+                int_converter(schema.clone())(items)
+            })
+        };
+        let output_converter: Converter = Arc::new(|_| {
+            Err(datafusion::error::DataFusionError::Execution(
+                "output conversion failed".to_string(),
+            ))
+        });
+        let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+        let exec = JsonExec::new(
+            "demo",
+            "numbers",
+            schema,
+            Arc::new(StaticFetcher {
+                rows: vec![Value::from(1)],
+            }),
+            output_converter,
+            None,
+        )
+        .expect("exec should build")
+        .with_source_observation_converter(
+            SourceObservationSurfaceKind::Table,
+            source_observation_publishers(&[
+                publisher.clone() as Arc<dyn SourceObservationPublisher>
+            ]),
+            observation_converter,
+        );
+        let ctx = SessionContext::new();
+
+        let error = exec
+            .execute(0, ctx.task_ctx())
+            .expect("execute should create stream")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect_err("output conversion should fail");
+
+        assert!(error.to_string().contains("output conversion failed"));
+        assert_eq!(observation_conversion_count.load(Ordering::SeqCst), 0);
+        assert!(publisher.observations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_observation_conversion_failure_is_best_effort() {
+        let schema = int_schema();
+        let observation_converter: Converter = Arc::new(|_| {
+            Err(datafusion::error::DataFusionError::Execution(
+                "observation conversion failed".to_string(),
+            ))
+        });
+        let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+        let exec = JsonExec::new(
+            "demo",
+            "numbers",
+            schema.clone(),
+            Arc::new(StaticFetcher {
+                rows: vec![Value::from(1)],
+            }),
+            int_converter(schema),
+            None,
+        )
+        .expect("exec should build")
+        .with_source_observation_converter(
+            SourceObservationSurfaceKind::Table,
+            source_observation_publishers(&[
+                publisher.clone() as Arc<dyn SourceObservationPublisher>
+            ]),
+            observation_converter,
+        );
+        let ctx = SessionContext::new();
+
+        let batches = exec
+            .execute(0, ctx.task_ctx())
+            .expect("execute should create stream")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("observation conversion should not fail the query");
+
+        assert_eq!(batches.len(), 1);
+        assert!(publisher.observations().is_empty());
     }
 
     #[test]

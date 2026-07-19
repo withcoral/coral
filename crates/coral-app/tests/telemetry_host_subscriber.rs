@@ -63,6 +63,7 @@ async fn host_subscriber_does_not_block_server_startup() {
         .list_traces(Request::new(ListTracesRequest {
             page_size: 10,
             page_token: String::new(),
+            workspace: None,
         }))
         .await
         .expect_err("host-owned subscriber should leave trace service disabled");

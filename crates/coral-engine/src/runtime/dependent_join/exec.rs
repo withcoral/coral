@@ -19,7 +19,11 @@ use datafusion::physical_plan::{
 };
 use futures::{StreamExt, stream};
 
+use crate::SourceObservationSurfaceKind;
 use crate::backends::http::HttpSourceClient;
+use crate::backends::shared::source_observation::{
+    SourceObservationConfig, SourceObservationPublishers,
+};
 use crate::runtime::dependent_join::bindings::BindingProjector;
 use crate::runtime::dependent_join::driver::run_binding_phase;
 use crate::runtime::dependent_join::fetcher::{BindingFetcher, BindingFetcherConfig};
@@ -46,6 +50,7 @@ pub(crate) struct DependentJoinExec {
     max_resolver_rows_per_binding: usize,
     max_concurrency: usize,
     page_hint: Option<usize>,
+    source_observation_publishers: SourceObservationPublishers,
     output_schema: SchemaRef,
     props: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
@@ -67,6 +72,7 @@ pub(crate) struct DependentJoinExecConfig {
     pub(crate) max_resolver_rows_per_binding: usize,
     pub(crate) max_concurrency: usize,
     pub(crate) page_hint: Option<usize>,
+    pub(crate) source_observation_publishers: SourceObservationPublishers,
     pub(crate) output_schema: SchemaRef,
 }
 
@@ -93,6 +99,7 @@ impl DependentJoinExec {
             max_resolver_rows_per_binding: config.max_resolver_rows_per_binding,
             max_concurrency: config.max_concurrency,
             page_hint: config.page_hint,
+            source_observation_publishers: config.source_observation_publishers,
             output_schema: config.output_schema,
             props,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -118,6 +125,7 @@ impl DependentJoinExec {
             max_resolver_rows_per_binding: self.max_resolver_rows_per_binding,
             max_concurrency: self.max_concurrency,
             page_hint: self.page_hint,
+            source_observation_publishers: Arc::clone(&self.source_observation_publishers),
             output_schema: Arc::clone(&self.output_schema),
             props,
             metrics: self.metrics.clone(),
@@ -318,6 +326,7 @@ impl ExecutionPlan for DependentJoinExec {
         let max_concurrency = self.max_concurrency;
         let max_rows_per_binding = self.max_rows_per_binding;
         let page_hint = self.page_hint;
+        let source_observation_publishers = Arc::clone(&self.source_observation_publishers);
         let output_schema = Arc::clone(&self.output_schema);
         let stream_schema = Arc::clone(&self.output_schema);
         let retained_stream_schema = Arc::clone(&self.output_schema);
@@ -345,6 +354,7 @@ impl ExecutionPlan for DependentJoinExec {
                 max_concurrency,
                 max_rows_per_binding,
                 page_hint,
+                source_observation_publishers,
                 metrics,
                 output_schema,
                 memory,
@@ -390,6 +400,7 @@ async fn execute_dependent_join(
     max_concurrency: usize,
     max_rows_per_binding: usize,
     page_hint: Option<usize>,
+    source_observation_publishers: SourceObservationPublishers,
     metrics: DependentJoinMetrics,
     output_schema: SchemaRef,
     memory: RetainedMemory,
@@ -419,6 +430,10 @@ async fn execute_dependent_join(
     metrics.record(&state);
 
     let output_memory = state.memory().new_empty();
+    let source_observation = SourceObservationConfig::new(
+        SourceObservationSurfaceKind::Table,
+        source_observation_publishers,
+    );
     build_joined_batches(
         &BuildJoinedBatchesConfig {
             state: &state,
@@ -430,6 +445,7 @@ async fn execute_dependent_join(
             resolver_projection_len,
             dependent_first,
             output_schema: &output_schema,
+            source_observation: source_observation.as_ref(),
         },
         output_memory,
     )

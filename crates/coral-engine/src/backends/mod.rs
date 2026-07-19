@@ -72,6 +72,7 @@ use std::sync::Arc;
 
 use crate::{
     CoreError, QuerySource, RequestAuthenticator, RuntimeSourceComponent, SourceInputResolver,
+    SourceObservationPublisher,
 };
 #[cfg(test)]
 use coral_spec::ValidatedSourceManifest;
@@ -81,10 +82,10 @@ mod composite;
 pub(crate) use common::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredInput, RegisteredSource,
-    RegisteredTable, RegisteredTableFunction, SourceFunctionProviderFactory,
-    build_registered_inputs, build_registered_table, build_registered_table_function,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns, validate_lookup_key_filter_backend_support,
+    RegisteredTable, RegisteredTableFunction, RegisteredTableFunctionArgument,
+    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
+    build_registered_table_function, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names, schema_from_columns, validate_lookup_key_filter_backend_support,
 };
 
 pub(crate) mod file;
@@ -97,6 +98,7 @@ pub(crate) fn compile_query_source(
     runtime_context: &crate::QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_observation_publishers: &[Arc<dyn SourceObservationPublisher>],
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     if source.components().is_empty() {
         return Err(CoreError::FailedPrecondition(format!(
@@ -111,6 +113,7 @@ pub(crate) fn compile_query_source(
         source_variables: source.variables().clone(),
         request_authenticators,
         source_input_resolver,
+        source_observation_publishers,
     };
     let compiled_components = source
         .components()
@@ -156,6 +159,7 @@ pub(crate) fn compile_source_manifest(
             source_variables,
             request_authenticators: &request_authenticators,
             source_input_resolver: None,
+            source_observation_publishers: &[],
         },
     )
 }

@@ -393,6 +393,19 @@ fn http_manifest_with_function() -> Value {
                     "name": "mode",
                     "values": ["lexical", "semantic", "hybrid"],
                     "bind": { "arg": "search_type" }
+                },
+                // OpenAPI v4 generation does not produce Json HTTP function args.
+                // This fixture verifies typed args still register and list even
+                // though public catalog metadata does not expose arg types yet.
+                {
+                    "name": "metadata",
+                    "type": "Json",
+                    "bind": { "arg": "metadata" }
+                },
+                {
+                    "name": "since",
+                    "type": "Timestamp",
+                    "bind": { "arg": "since" }
                 }
             ],
             "request": {
@@ -486,7 +499,9 @@ async fn coral_table_functions_lists_source_functions() {
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
         json!([
             { "name": "q", "required": true, "values": [] },
-            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] }
+            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] },
+            { "name": "metadata", "required": false, "values": [] },
+            { "name": "since", "required": false, "values": [] }
         ])
     );
     assert_eq!(
@@ -744,13 +759,15 @@ async fn list_catalog_matches_table_function_metadata() {
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.function_name, "search_issues");
     assert_eq!(function.description, "Search issues");
-    assert_eq!(function.arguments.len(), 2);
+    assert_eq!(function.arguments.len(), 4);
     assert_eq!(function.arguments[0].name, "q");
     assert!(function.arguments[0].required);
     assert_eq!(
         function.arguments[1].values,
         ["lexical", "semantic", "hybrid"]
     );
+    assert_eq!(function.arguments[2].name, "metadata");
+    assert_eq!(function.arguments[3].name, "since");
     assert_eq!(function.result_columns.len(), 3);
     assert_eq!(function.result_columns[0].name, "id");
     assert_eq!(function.result_columns[1].name, "title");

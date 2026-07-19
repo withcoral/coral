@@ -1,8 +1,0 @@
-export { Container } from './container'
-export { CopyButton } from './copy-button'
-export { ExternalLink } from './external-link'
-export { Icon } from './icon'
-export { IconButton } from './icon-button'
-export { InternalLink } from './internal-link'
-export { Text } from './text'
-export { TextButton } from './text-button'

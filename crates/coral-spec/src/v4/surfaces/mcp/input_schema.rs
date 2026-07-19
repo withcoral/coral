@@ -1,13 +1,20 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde_json::Value;
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
-use crate::v4::surfaces::json_schema::json_schema_scalar_type;
+use crate::v4::surfaces::json_schema::{
+    JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, direct_json_object_shape,
+    json_schema_default_to_string, json_schema_scalar_type,
+    merge_json_object_shape_annotation_insensitive, resolve_json_schema_ref_with_siblings,
+    with_resolved_json_schema,
+};
 
 use super::import::McpImporter;
 use super::model::McpToolDescriptor;
+
+const MAX_MCP_INPUT_SCHEMA_DEPTH: usize = 64;
 
 impl McpImporter<'_> {
     pub(super) fn import_inputs(
@@ -18,19 +25,33 @@ impl McpImporter<'_> {
     ) -> ImportedInputs {
         let mut resolving_refs = BTreeSet::new();
         let mut schema_complete = true;
-        let Some(shape) = input_object_shape(
-            &tool.input_schema,
-            &tool.input_schema,
-            &self.surface.id,
-            operation_id,
-            &mut resolving_refs,
-            diagnostics,
-            &mut schema_complete,
-        ) else {
-            return ImportedInputs {
-                inputs: Vec::new(),
-                schema_complete: false,
+        let shape = {
+            let mut context = InputSchemaContext {
+                surface_id: &self.surface.id,
+                operation_id,
+                diagnostics,
+                schema_complete: &mut schema_complete,
             };
+            let Some(shape) = input_object_shape(
+                &tool.input_schema,
+                &tool.input_schema,
+                &mut resolving_refs,
+                &mut context,
+                0,
+            ) else {
+                return ImportedInputs {
+                    inputs: Vec::new(),
+                    schema_complete: false,
+                };
+            };
+            if !validate_required_properties(&shape, &mut context) {
+                let schema_complete = *context.schema_complete;
+                return ImportedInputs {
+                    inputs: Vec::new(),
+                    schema_complete,
+                };
+            }
+            shape
         };
         let inputs = shape
             .properties
@@ -43,8 +64,9 @@ impl McpImporter<'_> {
                     location: IrInputLocation::ToolArg,
                     required: shape.required.contains(name.as_str()),
                     data_type,
-                    default_value: property_default(property),
+                    default_value: property.get("default").map(json_schema_default_to_string),
                     description: schema_description(property),
+                    exclude_from_lookup_keys: false,
                 }
             })
             .collect();
@@ -60,235 +82,185 @@ pub(super) struct ImportedInputs {
     pub(super) schema_complete: bool,
 }
 
-#[derive(Default)]
-struct InputObjectShape {
-    properties: BTreeMap<String, Value>,
-    required: BTreeSet<String>,
-}
-
 fn input_object_shape(
     root: &Value,
     schema: &Value,
-    surface_id: &str,
-    operation_id: &str,
     resolving_refs: &mut BTreeSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-    schema_complete: &mut bool,
-) -> Option<InputObjectShape> {
-    let schema = resolve_input_schema_ref(
+    context: &mut InputSchemaContext<'_, '_>,
+    depth: usize,
+) -> Option<JsonObjectShape> {
+    let result = with_resolved_json_schema(
         root,
         schema,
-        surface_id,
-        operation_id,
         resolving_refs,
-        diagnostics,
-        schema_complete,
-    )?;
-
-    if schema.get("anyOf").is_some() || schema.get("oneOf").is_some() {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED",
-            "MCP input schema uses anyOf/oneOf, which cannot be safely imported as SQL inputs",
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        return None;
-    }
-
-    let mut shape = direct_input_object_shape(schema);
-    if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
-        for item in all_of {
-            let item_shape = input_object_shape(
-                root,
-                item,
-                surface_id,
-                operation_id,
-                resolving_refs,
-                diagnostics,
-                schema_complete,
-            )?;
-            if !merge_input_object_shape(
-                &mut shape,
-                item_shape,
-                surface_id,
-                operation_id,
-                diagnostics,
-                schema_complete,
-            ) {
-                return None;
+        depth,
+        MAX_MCP_INPUT_SCHEMA_DEPTH,
+        |schema, resolving_refs, next_depth| {
+            if schema.get("anyOf").is_some() || schema.get("oneOf").is_some() {
+                context.push_unsupported_composition();
+                return Ok(None);
             }
+
+            let mut shape = direct_json_object_shape(schema);
+            if !resolve_input_property_schemas(
+                root,
+                &mut shape,
+                resolving_refs,
+                context,
+                next_depth,
+            ) {
+                return Ok(None);
+            }
+
+            if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
+                for item in all_of {
+                    let Some(item_shape) =
+                        input_object_shape(root, item, resolving_refs, context, next_depth)
+                    else {
+                        return Ok(None);
+                    };
+                    if !merge_input_object_shape(
+                        &mut shape,
+                        item_shape,
+                        context,
+                        depth,
+                        MAX_MCP_INPUT_SCHEMA_DEPTH,
+                    ) {
+                        return Ok(None);
+                    }
+                }
+            }
+            Ok(Some(shape))
+        },
+    );
+    match result {
+        Ok(shape) => shape,
+        Err(error) => {
+            context.push_schema_walk_diagnostic(error);
+            None
         }
     }
-    Some(shape)
 }
 
-fn resolve_input_schema_ref<'a>(
-    root: &'a Value,
-    schema: &'a Value,
-    surface_id: &str,
-    operation_id: &str,
+fn resolve_input_property_schemas(
+    root: &Value,
+    shape: &mut JsonObjectShape,
     resolving_refs: &mut BTreeSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-    schema_complete: &mut bool,
-) -> Option<&'a Value> {
-    let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
-        return Some(schema);
-    };
-    if !reference.starts_with("#/") {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
-            format!("MCP input schema external reference '{reference}' is unsupported"),
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        return None;
-    }
-    if !resolving_refs.insert(reference.to_string()) {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
-            format!("MCP input schema reference cycle includes '{reference}'"),
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        return None;
-    }
-    let pointer = reference.strip_prefix('#').unwrap_or(reference);
-    let resolved = root.pointer(pointer);
-    resolving_refs.remove(reference);
-    if let Some(resolved) = resolved {
-        Some(resolved)
-    } else {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_REF_NOT_FOUND",
-            format!("MCP input schema reference '{reference}' was not found"),
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        None
-    }
-}
-
-fn direct_input_object_shape(schema: &Value) -> InputObjectShape {
-    let Some(schema) = schema.as_object() else {
-        return InputObjectShape::default();
-    };
-    let required = schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
-    let properties = schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|properties| {
-            properties
-                .iter()
-                .map(|(name, property)| (name.clone(), property.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    InputObjectShape {
-        properties,
-        required,
-    }
-}
-
-fn merge_input_object_shape(
-    target: &mut InputObjectShape,
-    source: InputObjectShape,
-    surface_id: &str,
-    operation_id: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-    schema_complete: &mut bool,
+    context: &mut InputSchemaContext<'_, '_>,
+    depth: usize,
 ) -> bool {
-    for (name, property) in source.properties {
-        if let Some(existing) = target.properties.get_mut(&name) {
-            if input_property_schemas_conflict(existing, &property) {
-                *schema_complete = false;
-                diagnostics.push(Diagnostic::warning(
-                    "MCP_INPUT_SCHEMA_CONFLICT",
-                    format!("MCP input schema defines conflicting property '{name}'"),
-                    surface_id.to_string(),
-                    Some(operation_id.to_string()),
-                ));
+    for property in shape.properties.values_mut() {
+        match resolve_json_schema_ref_with_siblings(
+            root,
+            property,
+            resolving_refs,
+            depth,
+            MAX_MCP_INPUT_SCHEMA_DEPTH,
+        ) {
+            Ok(resolved) => *property = resolved,
+            Err(error) => {
+                context.push_schema_walk_diagnostic(error);
                 return false;
             }
-            merge_input_property_metadata(existing, &property);
-        } else {
-            target.properties.insert(name, property);
         }
     }
-    target.required.extend(source.required);
     true
 }
 
-fn input_property_schemas_conflict(existing: &Value, candidate: &Value) -> bool {
-    schema_without_annotation_metadata(existing) != schema_without_annotation_metadata(candidate)
+fn validate_required_properties(
+    shape: &JsonObjectShape,
+    context: &mut InputSchemaContext<'_, '_>,
+) -> bool {
+    let missing = shape
+        .required
+        .iter()
+        .filter(|name| !shape.properties.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return true;
+    }
+    context.push_warning(
+        "MCP_INPUT_SCHEMA_REQUIRED_PROPERTY_MISSING",
+        format!(
+            "MCP input schema marks required properties that are not defined: {}",
+            missing.join(", ")
+        ),
+    );
+    false
 }
 
-fn schema_without_annotation_metadata(schema: &Value) -> Value {
-    schema_without_annotation_metadata_at_key(None, schema)
-}
-
-fn schema_without_annotation_metadata_at_key(key: Option<&str>, schema: &Value) -> Value {
-    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
-    match schema {
-        Value::Object(object) => {
-            let is_schema_name_map = matches!(
-                key,
-                Some("$defs" | "definitions" | "patternProperties" | "properties")
+fn merge_input_object_shape(
+    target: &mut JsonObjectShape,
+    source: JsonObjectShape,
+    context: &mut InputSchemaContext<'_, '_>,
+    depth: usize,
+    max_depth: usize,
+) -> bool {
+    match merge_json_object_shape_annotation_insensitive(target, source, depth, max_depth) {
+        Ok(()) => true,
+        Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
+            context.push_warning(
+                "MCP_INPUT_SCHEMA_CONFLICT",
+                format!("MCP input schema defines conflicting property '{property}'"),
             );
-            Value::Object(
-                object
-                    .iter()
-                    .filter(|(key, _value)| {
-                        is_schema_name_map || !ANNOTATION_KEYS.contains(&key.as_str())
-                    })
-                    .map(|(key, value)| {
-                        (
-                            key.clone(),
-                            schema_without_annotation_metadata_at_key(Some(key), value),
-                        )
-                    })
-                    .collect(),
-            )
+            false
         }
-        Value::Array(values) => {
-            let mut values = values
-                .iter()
-                .map(|value| schema_without_annotation_metadata_at_key(None, value))
-                .collect::<Vec<_>>();
-            if key == Some("type") {
-                values.sort_by_key(Value::to_string);
-            }
-            Value::Array(values)
+        Err(JsonSchemaComparisonError::DepthExceeded) => {
+            context.push_warning(
+                "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED",
+                "MCP input schema exceeds the maximum supported nesting depth",
+            );
+            false
         }
-        other => other.clone(),
     }
 }
 
-fn merge_input_property_metadata(existing: &mut Value, candidate: &Value) {
-    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
-    let (Some(existing), Some(candidate)) = (existing.as_object_mut(), candidate.as_object())
-    else {
-        return;
-    };
-    for key in ANNOTATION_KEYS {
-        if !existing.contains_key(*key)
-            && let Some(value) = candidate.get(*key)
-        {
-            existing.insert((*key).to_string(), value.clone());
-        }
+struct InputSchemaContext<'a, 'b> {
+    surface_id: &'a str,
+    operation_id: &'a str,
+    diagnostics: &'b mut Vec<Diagnostic>,
+    schema_complete: &'b mut bool,
+}
+
+impl InputSchemaContext<'_, '_> {
+    fn push_unsupported_composition(&mut self) {
+        self.push_warning(
+            "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED",
+            "MCP input schema uses anyOf/oneOf, which cannot be safely imported as SQL inputs",
+        );
+    }
+
+    fn push_schema_walk_diagnostic(&mut self, error: JsonSchemaWalkError<'_>) {
+        let (code, message) = match error {
+            JsonSchemaWalkError::ExternalRef(reference) => (
+                "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
+                format!("MCP input schema external reference '{reference}' is unsupported"),
+            ),
+            JsonSchemaWalkError::RefCycle(reference) => (
+                "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
+                format!("MCP input schema reference cycle includes '{reference}'"),
+            ),
+            JsonSchemaWalkError::RefNotFound(reference) => (
+                "MCP_INPUT_SCHEMA_REF_NOT_FOUND",
+                format!("MCP input schema reference '{reference}' was not found"),
+            ),
+            JsonSchemaWalkError::DepthExceeded => (
+                "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED",
+                "MCP input schema exceeds the maximum supported nesting depth".to_string(),
+            ),
+        };
+        self.push_warning(code, message);
+    }
+
+    fn push_warning(&mut self, code: &'static str, message: impl Into<String>) {
+        *self.schema_complete = false;
+        self.diagnostics.push(Diagnostic::warning(
+            code,
+            message,
+            self.surface_id.to_string(),
+            Some(self.operation_id.to_string()),
+        ));
     }
 }
 
@@ -299,11 +271,4 @@ pub(super) fn schema_description(schema: &Value) -> String {
         .or_else(|| schema.get("title").and_then(Value::as_str))
         .unwrap_or_default()
         .to_string()
-}
-
-fn property_default(schema: &Value) -> Option<String> {
-    schema.get("default").map(|value| match value {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    })
 }

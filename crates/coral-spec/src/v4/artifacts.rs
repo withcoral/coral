@@ -14,7 +14,8 @@ use crate::{ManifestError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct V4MaterializedSource {
-    pub fingerprint: Fingerprint,
+    /// Optional provenance metadata. Runtime loading must not depend on it.
+    pub fingerprint: Option<Fingerprint>,
     pub surfaces: Vec<MaterializedSurface>,
     pub projections: ProjectionCatalog,
     pub diagnostics: Vec<Diagnostic>,
@@ -24,7 +25,7 @@ pub struct V4MaterializedSource {
 pub struct MaterializedSurface {
     pub surface_id: String,
     pub semantic_ir: SemanticIr,
-    pub source_document_sha256: String,
+    pub source_document_sha256: Option<String>,
     pub normalized_source_document_path: PathBuf,
     pub raw_source_document_path: PathBuf,
 }
@@ -53,46 +54,35 @@ pub fn validate_materialized_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
 ) -> Result<()> {
-    if materialized.fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
+    validate_materialized_source_structure(manifest, materialized)?;
+    let fingerprint = materialized.fingerprint.as_ref().ok_or_else(|| {
+        ManifestError::validation("new DSL v4 materialization is missing its fingerprint")
+    })?;
+    if fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
         return Err(ManifestError::validation(
             "DSL v4 materialized artifact schema version mismatch",
         ));
     }
-    if materialized.fingerprint.source_name != manifest.common.name {
+    if fingerprint.source_name != manifest.common.name {
         return Err(ManifestError::validation(format!(
             "DSL v4 materialized source identity mismatch for '{}'",
             manifest.common.name
         )));
     }
-    if materialized.fingerprint.importer_version != SURFACE_IMPORTER_VERSION
-        || materialized.fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
+    if fingerprint.importer_version != SURFACE_IMPORTER_VERSION
+        || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
         return Err(ManifestError::validation(
             "DSL v4 materialized importer or generator version mismatch",
         ));
     }
-    if materialized.surfaces.is_empty() {
-        return Err(ManifestError::validation(
-            "DSL v4 materialized source has no surfaces",
-        ));
-    }
-    let mut materialized_surface_ids = BTreeSet::new();
-    for materialized_surface in &materialized.surfaces {
-        if !materialized_surface_ids.insert(materialized_surface.surface_id.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "DSL v4 materialized surface '{}' is repeated",
-                materialized_surface.surface_id
-            )));
-        }
-        if manifest.surface(&materialized_surface.surface_id).is_none() {
-            return Err(ManifestError::validation(format!(
-                "DSL v4 materialized surface '{}' is not declared",
-                materialized_surface.surface_id
-            )));
-        }
-    }
+    let materialized_surface_ids = materialized
+        .surfaces
+        .iter()
+        .map(|surface| surface.surface_id.as_str())
+        .collect::<BTreeSet<_>>();
     let mut fingerprint_surface_ids = BTreeSet::new();
-    for fingerprint_surface in &materialized.fingerprint.surfaces {
+    for fingerprint_surface in &fingerprint.surfaces {
         if !fingerprint_surface_ids.insert(fingerprint_surface.surface_id.as_str()) {
             return Err(ManifestError::validation(format!(
                 "DSL v4 fingerprint surface '{}' is repeated",
@@ -125,6 +115,43 @@ pub fn validate_materialized_source(
     Ok(())
 }
 
+/// Validates runtime invariants independently of optional artifact provenance.
+pub fn validate_materialized_source_structure(
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+) -> Result<()> {
+    if materialized.surfaces.is_empty() {
+        return Err(ManifestError::validation(
+            "DSL v4 materialized source has no surfaces",
+        ));
+    }
+    let mut materialized_surface_ids = BTreeSet::new();
+    for materialized_surface in &materialized.surfaces {
+        if !materialized_surface_ids.insert(materialized_surface.surface_id.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 materialized surface '{}' is repeated",
+                materialized_surface.surface_id
+            )));
+        }
+        if manifest.surface(&materialized_surface.surface_id).is_none() {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 materialized surface '{}' is not declared",
+                materialized_surface.surface_id
+            )));
+        }
+    }
+    let mut projection_names = BTreeSet::new();
+    for projection in &materialized.projections.projections {
+        if !projection_names.insert((projection.surface_id.as_str(), projection.name.as_str())) {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 projection '{}' is repeated for surface '{}'",
+                projection.name, projection.surface_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -139,7 +166,7 @@ mod tests {
 
     use super::{
         Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
-        validate_materialized_source,
+        validate_materialized_source, validate_materialized_source_structure,
     };
 
     fn manifest() -> V4SourceManifest {
@@ -167,7 +194,7 @@ surfaces:
 
     fn materialized_source() -> V4MaterializedSource {
         V4MaterializedSource {
-            fingerprint: Fingerprint {
+            fingerprint: Some(Fingerprint {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "demo".to_string(),
                 manifest_sha256: "manifest-sha".to_string(),
@@ -177,7 +204,7 @@ surfaces:
                 ],
                 importer_version: SURFACE_IMPORTER_VERSION.to_string(),
                 projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
-            },
+            }),
             surfaces: vec![
                 materialized_surface("rest", SurfaceType::OpenApi),
                 materialized_surface("mcp", SurfaceType::Mcp),
@@ -185,7 +212,7 @@ surfaces:
             projections: ProjectionCatalog {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
                 source_name: "demo".to_string(),
-                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
                 projections: Vec::new(),
                 diagnostics: Vec::new(),
             },
@@ -217,7 +244,7 @@ surfaces:
                 types: Vec::new(),
                 diagnostics: Vec::new(),
             },
-            source_document_sha256: format!("{surface_id}-sha"),
+            source_document_sha256: Some(format!("{surface_id}-sha")),
             normalized_source_document_path: PathBuf::from(format!(
                 "surfaces/{surface_id}/source-document.yaml"
             )),
@@ -240,6 +267,8 @@ surfaces:
         let mut materialized = materialized_source();
         materialized
             .fingerprint
+            .as_mut()
+            .expect("fingerprint")
             .surfaces
             .retain(|surface| surface.surface_id != "mcp");
 
@@ -269,6 +298,59 @@ surfaces:
             error
                 .to_string()
                 .contains("fingerprint surface 'mcp' is not materialized"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn structural_validation_rejects_duplicate_projection_names() {
+        let manifest = manifest();
+        let mut materialized = materialized_source();
+        materialized.projections =
+            serde_yaml::from_str(include_str!("fixtures/artefact-schema-v3/projections.yaml"))
+                .expect("decode projection fixture");
+        let duplicate = materialized
+            .projections
+            .projections
+            .first()
+            .expect("fixture projection")
+            .clone();
+        materialized.projections.projections.push(duplicate);
+
+        let error = validate_materialized_source_structure(&manifest, &materialized)
+            .expect_err("duplicate projection should fail structural validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("projection 'items' is repeated for surface 'rest'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn structural_validation_rejects_duplicate_runtime_names_across_artifact_namespaces() {
+        let manifest = manifest();
+        let mut materialized = materialized_source();
+        materialized.projections =
+            serde_yaml::from_str(include_str!("fixtures/artefact-schema-v3/projections.yaml"))
+                .expect("decode projection fixture");
+        let mut duplicate = materialized
+            .projections
+            .projections
+            .first()
+            .expect("fixture projection")
+            .clone();
+        duplicate.namespace = "stale_namespace".to_string();
+        materialized.projections.projections.push(duplicate);
+
+        let error = validate_materialized_source_structure(&manifest, &materialized)
+            .expect_err("runtime duplicate should fail structural validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("projection 'items' is repeated for surface 'rest'"),
             "unexpected error: {error}"
         );
     }

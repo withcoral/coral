@@ -1,0 +1,16 @@
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-es
+    out: app/generated
+    opt:
+      - target=ts
+inputs:
+  - directory: ../../crates/coral-api/proto
+    paths:
+      - ../../crates/coral-api/proto/coral/v1/resources.proto
+      - ../../crates/coral-api/proto/coral/v1/catalog.proto
+      - ../../crates/coral-api/proto/coral/v1/query.proto
+      - ../../crates/coral-api/proto/coral/v1/sources.proto
+      - ../../crates/coral-api/proto/coral/v1/traces.proto
+      - ../../crates/coral-api/proto/coral/v1/workspaces.proto

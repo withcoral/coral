@@ -1,0 +1,472 @@
+---
+title: "CLI reference"
+description: "Reference for Coral CLI commands and options."
+---
+
+## Global feature flags
+
+Experimental runtime features can be overridden for a single process with
+top-level flags:
+
+```shellscript
+coral --enable-<FEATURE> <COMMAND>
+coral --disable-<FEATURE> <COMMAND>
+coral --enable-feedback mcp-stdio
+coral --disable-feedback mcp-stdio
+```
+
+These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
+`coral features disable <FEATURE>` to persist a preference.
+
+## Global workspace selection
+
+Commands that operate on local source state target the `default` workspace
+unless you select another workspace.
+
+```shellscript
+coral --workspace work source list
+coral source add github --workspace work
+coral mcp-stdio --workspace work
+CORAL_WORKSPACE=work coral sql "select * from coral.tables"
+```
+
+The `--workspace <NAME>` flag overrides `CORAL_WORKSPACE` for that process.
+Coral does not persist a separate active-workspace setting; set
+`CORAL_WORKSPACE` in your shell when you want a default for repeated commands.
+
+## `coral sql`
+
+Run one SQL query and exit.
+
+```shellscript
+coral sql "<SQL>"
+```
+
+### Options
+
+| Option     | Type              | Default | Description   |
+| ---------- | ----------------- | ------- | ------------- |
+| `--format` | `table` \| `json` | `table` | Output format |
+
+JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
+
+Use `DESCRIBE <schema>.<table>` to inspect a table's result columns:
+
+```shellscript
+coral sql "DESCRIBE datadog.hosts"
+```
+
+`DESCRIBE` expects a table. To inspect table functions, query
+`coral.table_functions`.
+
+`DESCRIBE SELECT ...` still describes the result schema of the query itself.
+
+## `coral search`
+
+Find relevant Coral tables, table functions, columns, and filters.
+
+```shellscript
+coral search github issues assigned to me
+coral search --limit 5 --json slack messages text
+```
+
+Search returns metadata and provider statuses. It does not fetch source rows or
+answer the question by itself; use the returned `sql_reference` or
+`sql_call_example` with `coral sql`.
+
+### Options
+
+| Option    | Type    | Default | Description                                               |
+| --------- | ------- | ------- | --------------------------------------------------------- |
+| `--json`  | flag    | `false` | Render the shared machine-readable JSON response          |
+| `--limit` | integer | `10`    | Maximum results to return, from 1 to 50                   |
+
+### JSON response
+
+With `--json`, the response separates `results`, `provider_statuses`, and `truncation`. Table results include `sql_reference`. Table-function results include `sql_reference` and `sql_call_example`. Field-level results include `surface_sql_reference`, identifying the table or table function that owns the matching column, filter, argument, or result column.
+
+For catalog search, the `catalog_metadata` provider status reports whether search found matches, completed with no matches, returned partial coverage, or failed. `truncation` reports when more matches were available than returned.
+
+## `coral search-index`
+
+Manage Coral's local search indexes.
+
+### `coral search-index rebuild`
+
+Rebuild all local search indexes. Coral skips a rebuild when an index is already
+up to date unless you pass `--force`.
+
+```shellscript
+coral search-index rebuild
+coral search-index rebuild --force
+```
+
+#### Options
+
+| Option    | Type | Default | Description                                                    |
+| --------- | ---- | ------- | -------------------------------------------------------------- |
+| `--force` | flag | `false` | Rebuild even when the stored projection fingerprint is current |
+
+### `coral search-index clear`
+
+Clear Coral's local search data for one workspace.
+
+Clear deletes local search data, so Coral requires both `--yes` and an explicit
+`--workspace NAME`.
+
+`all` is currently the only supported scope. It clears all local search data
+for the selected workspace.
+
+```shellscript
+coral search-index clear --scope all --workspace work --yes
+```
+
+#### Options
+
+| Option                    | Type   | Default  | Description                               |
+| ------------------------- | ------ | -------- | ----------------------------------------- |
+| `--scope <SCOPE>`         | enum   | required | Scope to clear. Supported value: `all`    |
+| global `--workspace NAME` | string | required | Workspace whose search data will be cleared |
+| `--yes`                   | flag   | required | Confirm destructive search-data deletion  |
+
+## `coral source`
+
+Manage configured sources, either the bundled ones, or your custom source specs.
+
+### `coral source discover`
+
+List the [bundled sources](/reference/bundled-sources) available in your current Coral build.
+
+```shellscript
+coral source discover
+```
+
+The output includes each source name, the bundled version currently shipped in the binary, and whether it is already `installed` or still `available`.
+
+### `coral source list`
+
+List sources currently installed.
+
+```shellscript
+coral source list
+```
+
+The output includes the source's secret storage route: `keychain` or
+`file (plaintext)`.
+
+### `coral source info <NAME>`
+
+Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
+
+```shellscript
+coral source info datadog
+```
+
+#### Options
+
+| Option           | Type | Default | Description                                      |
+| ---------------- | ---- | ------- | ------------------------------------------------ |
+| `-v`, `--verbose` | flag | `false` | Show additional details, such as input hints     |
+
+```shellscript
+coral source info datadog --verbose
+```
+
+### `coral source add <NAME>`
+
+Add a bundled source, update its credentials, or import a custom source spec.
+
+```shellscript
+GITHUB_TOKEN=ghp_... coral source add github
+coral source add --file ./local-messages.yaml
+```
+
+#### Options
+
+| Option          | Type | Default                  | Description                                                   |
+| --------------- | ---- | ------------------------ | ------------------------------------------------------------- |
+| `--file <PATH>` | path | required unless `<NAME>` | Source spec YAML file to import                               |
+| `--interactive` | flag | `false`                  | Prompt for source inputs instead of reading environment variables |
+
+By default, Coral reads each declared input from an environment variable of the
+same name. If a required input is missing, the command exits with an error
+listing the missing keys.
+
+Pass `--interactive` to be prompted for variables and secrets instead. If a
+missing secret declares credential methods, Coral shows those choices in the
+source spec's authored order. `source_config` methods use the normal source
+input path and prompt for the secret value here; OAuth methods open or print an
+authorization URL or device verification URL, wait for provider completion, and
+store the resulting access token without printing token material. When an OAuth
+method declares Dynamic Client Registration, Coral registers the OAuth client
+during this interactive setup before printing the authorization URL. If the
+provider returns refresh metadata, Coral keeps it internally so short-lived
+OAuth access tokens can be refreshed without re-running `coral source add`.
+If the browser runs somewhere that cannot reach Coral's loopback listener, such
+as a host browser authorizing a Coral process in a VM or SSH session, paste the
+final localhost redirect URL into the terminal prompt and Coral submits it to
+the local callback listener.
+Environment variables still win, so a secret value already present in the
+environment bypasses the retrieval choice.
+
+```shellscript
+coral source add --interactive github
+```
+
+If the source is already installed, running this command again replaces its stored credentials with the new values you provide. After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
+
+Sources use OS credential storage by default when Coral can write, read, and
+delete a keychain probe item. If the keychain is unavailable in `auto` mode,
+Coral stores the source secrets in plaintext file storage and shows
+`file (plaintext)` in source output. Sources with no stored secret material show
+`none`.
+
+### `coral source lint <FILE>`
+
+Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.
+
+```shellscript
+coral source lint ./my-source.yaml
+```
+
+### `coral source test <NAME>`
+
+Validate that an installed source can initialize, expose tables, and run any optional top-level `test_queries` declared in its source spec. The command errors when one or more declared query tests fail.
+
+```shellscript
+coral source test github
+coral source test local_messages
+```
+
+### `coral source remove <NAME>`
+
+Remove an installed source.
+
+```shellscript
+coral source remove github
+```
+
+## `coral workspace`
+
+Manage local workspaces. Workspaces isolate installed source metadata and
+workspace-scoped artifacts such as source manifests, local credential material,
+feedback reports, and workspace-attributed local trace history.
+
+Imported source specs and source credential material are attached to the source
+installation in that workspace. Reusable global source specs and reusable
+credential references are separate concepts and are not represented by
+`coral workspace` today.
+
+### `coral workspace list`
+
+List configured workspaces.
+
+```shellscript
+coral workspace list
+```
+
+### `coral workspace create <NAME>`
+
+Create an empty workspace.
+
+```shellscript
+coral workspace create work
+```
+
+### `coral workspace remove <NAME>`
+
+Remove a workspace and its workspace-scoped source/artifact directory. When
+trace history is enabled, this also prunes local trace records attributed to
+that workspace. If trace cleanup fails, workspace removal fails and leaves the
+workspace configured.
+
+```shellscript
+coral workspace remove work
+```
+
+The `default` workspace cannot be removed.
+
+## `coral functions`
+
+Manage workspace functions. A function is a SQL artifact with SQL comment frontmatter that defines a reusable, typed query and publishes it as a SQL table function.
+
+User-installed functions are added to the current workspace with `coral functions add`. Functions commonly publish under `functions.*`.
+
+### `coral functions add --file <PATH>`
+
+Validate, then install or replace, a user-installed function from a SQL artifact.
+
+```shellscript
+coral functions add --file ./open-prs.function.sql
+```
+
+#### Options
+
+| Option          | Type | Default  | Description                  |
+| --------------- | ---- | -------- | ---------------------------- |
+| `--file <PATH>` | path | required | Function SQL artifact to install |
+
+Coral validates the function before storing it in the current workspace. Validation checks the frontmatter shape, installed-source references, SQL publish target collisions, and whether the SQL plans against the current workspace sources. Result columns are inferred from the planned SQL. If runtime validation fails, the function is not installed.
+
+Example function:
+
+```sql
+/*
+name: open_prs
+schema: functions
+description: All open PRs in the specified repo
+*/
+
+select number, title, html_url as url
+from github.pulls
+where owner = $owner and repo = $repo and state = 'open'
+```
+
+The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. Coral infers each required argument and its type from `$argument` uses in the SQL body. If the surrounding SQL does not provide enough type evidence, add an explicit cast such as `cast($limit as BIGINT)`.
+
+### `coral functions list`
+
+List configured functions.
+
+```shellscript
+coral functions list
+```
+
+The list includes every installed function. Runtime-ready entries show their inferred arguments, table-function target, and result-column preview. An artifact that is missing, invalid, or no longer plans successfully stays visible with an `invalid` status and an actionable reason below the table.
+
+If a function publishes a SQL table function and declares required inputs, call it with named arguments:
+
+```sql
+select *
+from functions.open_prs(owner => 'withcoral', repo => 'coral')
+```
+
+Functions without required inputs can be called with empty parentheses.
+
+### `coral functions remove <NAME>`
+
+Remove the user-installed function named `<NAME>`.
+
+```shellscript
+coral functions remove open_prs
+```
+
+Only user-installed functions are managed by this command.
+
+## `coral onboard`
+
+Run the guided source setup flow.
+
+```shellscript
+coral onboard
+```
+
+When a secret input declares credential methods, onboarding asks which method
+to use before consuming a matching environment variable. Choosing a
+`source_config` method still uses the normal environment-variable or prompt
+path.
+
+## `coral features`
+
+Coral ships with experimental runtime features that can be enabled on demand.
+These features are defined in [`config.toml`](/reference/configuration).
+
+### `coral features list`
+
+List all runtime features recognized by the current Coral binary, including their configured and effective status.
+
+```shellscript
+coral features list
+```
+
+### `coral features enable <FEATURE>`
+
+Persistently enables an experimental runtime feature. The default for each
+feature is listed in [Configuration](/reference/configuration#runtime-features).
+
+```shellscript
+coral features enable feedback
+```
+
+### `coral features disable <FEATURE>`
+
+Persistently disables an experimental runtime feature.
+
+```shellscript
+coral features disable feedback
+```
+
+## `coral ui`
+
+Open the local Coral UI in your browser.
+
+```shellscript
+coral ui
+```
+
+### Options
+
+| Option      | Type | Default | Description                                      |
+| ----------- | ---- | ------- | ------------------------------------------------ |
+| `--port`    | port | `1457`  | Loopback port for the local browser-facing server |
+| `--no-open` | flag | `false` | Start the server without opening a browser       |
+
+The UI opens at `http://127.0.0.1:1457` by default, which only accepts connections from your machine. The command keeps running until you press `Ctrl-C`.
+
+The host is fixed to `127.0.0.1`. Use `--port` to bind a different loopback port:
+
+```shellscript
+coral ui --port 1458
+```
+
+Use `--no-open` to start the same loopback server without launching a browser:
+
+```shellscript
+coral ui --no-open
+```
+
+## `coral mcp-stdio`
+
+Expose the local Coral runtime as an MCP stdio server.
+
+```shellscript
+coral mcp-stdio
+coral mcp-stdio --workspace work
+```
+
+This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
+
+By default, this server exposes:
+
+| Type     | Name             | Description                                             |
+| -------- | ---------------- | ------------------------------------------------------- |
+| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `search`         | Find relevant tables, functions, columns, and filters   |
+| Tool     | `list_catalog`   | List database tables and table functions with pagination |
+| Tool     | `describe_table` | Show compact metadata for one database table            |
+| Tool     | `list_columns`   | List columns for one database table with pagination     |
+| Resource | `coral://guide`  | Database workflow guide for agents                     |
+| Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
+
+When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
+
+Discovery helpers include the `coral` system schema, so `search`,
+`list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
+discover `coral.tables`, `coral.columns`, `coral.filters`,
+`coral.table_functions`, and `coral.inputs`.
+
+For client setup, see [Use Coral over MCP](/guides/use-coral-over-mcp).
+
+## `coral completion <SHELL>`
+
+Generate a shell completion script and write it to standard output. Supported shells are `bash`, `zsh`, `fish`, `elvish`, and `powershell`.
+
+```shellscript
+coral completion zsh > ~/.zsh/completions/_coral
+```
+
+To enable completions in the current shell without installing them:
+
+```shellscript
+source <(coral completion bash)
+```
