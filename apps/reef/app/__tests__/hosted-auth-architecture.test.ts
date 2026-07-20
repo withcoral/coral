@@ -68,6 +68,8 @@ describe('hosted auth architecture', () => {
     const routeConfig = read(routeConfigFile)
     const publicTopLevelRoutes = [
       "route('.well-known/oauth-client', 'routes/oauth-client-metadata.ts'),",
+      "route('login', 'routes/login.tsx'),",
+      "route('auth/callback', 'routes/auth.callback.tsx'),",
     ]
 
     const entryLines = routeConfig
