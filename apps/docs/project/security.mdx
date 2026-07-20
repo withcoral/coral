@@ -32,9 +32,12 @@ clients can route source-specific requests to Coral during discovery.
 Secret values are not returned through `coral.inputs`; secret rows show only
 whether a value is configured.
 
-Search reads local catalog metadata by default. Its experimental provider
-fanout is disabled by default and can make upstream calls only when both the
-runtime feature and a source-authored DSL v4 route policy allow them. DSL v3
+Search prepares the current workspace runtime and catalog, then searches a
+local index. Preparation can read stored credentials, initialize source
+providers, and inspect file metadata in local or object storage, but it does
+not execute a data query or return source rows. Experimental provider fanout
+is disabled by default and calls eligible DSL v4 source routes only when both
+the runtime feature and source-authored DSL v4 route policy allow them. DSL v3
 functions are never provider-fanout routes.
 
 ## What Coral protects against
@@ -64,25 +67,48 @@ trust boundary:
 ## Provider fanout boundaries
 
 When `search_provider_fanout` is enabled, one Search request can start at most
-four authorized, retrieval-only and idempotent DSL v4 source routes in one
-wave. Coral requests at most five rows per route, applies a 750 ms fanout cutoff
-and a 600 ms per-call timeout, and does not retry or paginate. A DSL v4 source
-policy is a separate gate: enabling the runtime feature does not authorize a
-route, and invalid or ambiguous routes fail closed.
+four DSL v4 routes in one wave that installed source policy authorizes and
+asserts are retrieval-only and idempotent. Coral requests at most five rows per
+route, applies a 750 ms fanout cutoff from the beginning of the Search request,
+and gives each call at most 600 ms. It does not start a call with less than 100
+ms remaining, does not retry or paginate, and allows at most 25 ms for
+cancellation cleanup after the cutoff. Coral stops its own request work, but an
+arbitrary remote server may still finish work it already accepted. A DSL v4
+source policy is a separate gate: enabling the runtime feature does not
+authorize a route, and invalid or ambiguous routes fail closed.
+
+For each selected route, Coral sends the current Search text through the
+source-designated query input, plus source-authored default arguments and the
+credentials that route normally requires, to the configured upstream provider.
+This is the principal data-flow difference from local catalog and
+observed-value search.
 
 Search returns only bounded, sanitized display fields from connected-source
 results, not raw rows or provider response bodies. It removes credential-like
 fields, secret-shaped values, unsafe URL parameters, and unsafe control
-characters, and reports failures through bounded reason categories rather than
-raw provider errors. Local catalog and observed-value results remain available
-when upstream work fails or times out.
+characters. Native output is capped at five previews per function, 20 per
+request, eight selected attributes per preview, 8 KiB per preview, and 256 KiB
+across native result previews in the response.
+
+Native provider status includes at most 16 bounded diagnostics with stable
+state and reason categories. Those diagnostics do not include raw provider
+errors, request URLs, rendered SQL, query text, arguments, credentials,
+headers, tokens, or provider bodies. Native previews contain only the bounded,
+sanitized fields selected from returned rows. Local catalog and observed-value
+results remain available when upstream work fails or times out.
 
 If `observed_values_search` is also enabled, successfully decoded source
 batches can enter Coral's existing best-effort local observation pipeline
 before Search normalizes the preview. Those observations remain subject to the
 same source scope, `do_not_index`, secret suppression, retention, and storage
 limits as SQL query observations. They can affect only later searches. Coral
-does not add a fanout cache or background crawl.
+does not add a fanout cache or background crawl, upload observed values, or use
+observed user data for Coral's own purposes.
+
+Disable `search_provider_fanout` to stop new provider calls. This rollback
+leaves local catalog and observed-value search intact and requires no database
+migration, observed-value purge, or source reinstall. See [Search connected
+sources](/guides/search-with-coral#search-connected-sources) for the commands.
 
 ## Secret storage configuration
 

@@ -558,7 +558,16 @@ Function args accept an optional `type` field using Coral manifest data type
 names. It defaults to `Utf8`; set it when the provider argument is numeric,
 boolean, timestamp-shaped, or JSON-shaped.
 
+The following complete DSL v3 manifest declares one provider-ranked search
+function for direct SQL use. It remains ineligible for Universal Search
+provider fan-out:
+
 ```yaml
+name: issue_search_v3
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
 functions:
   - name: search_issues
     kind: search
@@ -630,7 +639,7 @@ when calling table functions:
 
 ```sql
 SELECT id, title, html_url
-FROM github.search_issues(q => 'repo:withcoral/coral source functions')
+FROM issue_search_v3.search_issues(q => 'cancellation cleanup')
 LIMIT 10;
 ```
 
@@ -668,6 +677,10 @@ query. Values must be positive. `default_top_k` and `max_top_k` are capped at
 Universal Search fan-out is available only for DSL v4 sources. DSL v3 sources
 cannot author `functions[].universal_search` and do not participate in native
 fan-out. To make a provider available, define a DSL v4 imported-surface source.
+Universal Search authorization is source-authored policy for a `kind: search`
+route. It does not replace `kind` or `search_limits`, and result display
+metadata does not grant authorization. Authorize only an upstream operation
+that you have verified is retrieval-only and idempotent.
 
 Authorization only makes a route eligible. Coral executes eligible routes from
 Search only when the experimental `search_provider_fanout` [runtime
@@ -677,14 +690,15 @@ ordinary SQL execution, catalog search, observed-value search, or the installed
 source.
 
 DSL v4 table functions are generated from one imported surface. Author routes
-at the top level and bind them to the original imported operation identity:
+at the top level and bind them to the original imported operation identity.
+This complete parser-valid manifest uses a URL-backed OpenAPI descriptor:
 
 ```yaml
-name: github_v4
+name: issue_search_v4
 dsl_version: 4
 surface:
   type: openapi
-  url: https://example.com/openapi.json
+  url: https://api.example.com/openapi.json
 
 universal_search:
   routes:
@@ -705,11 +719,13 @@ universal_search:
         attributes: [/state, /author/login]
 ```
 
-The route map key, such as `issue_search`, is the authored authorization ID and
-must match `[a-z][a-z0-9_]*`. Because each DSL v4 source has exactly one
-surface, `operation_id` is its exact current target. Generated schema and
-function names are not authorization identities. `query_input.location` must
-be `path`, `query`, or `tool_arg`;
+The route map key, such as `issue_search`, is the stable authored authorization
+ID and must match `[a-z][a-z0-9_]*`. Because each DSL v4 source has exactly one
+imported surface, its target is the exact
+`operation_id: search_issues_and_pull_requests` from that descriptor. Generated
+schema and function names are query-visible projections, not authorization
+identities, and must never replace the authored route ID and exact target.
+`query_input.location` must be `path`, `query`, or `tool_arg`;
 header, cookie, and body inputs cannot be selected.
 
 Coral derives route arguments and defaults from the imported OpenAPI or MCP

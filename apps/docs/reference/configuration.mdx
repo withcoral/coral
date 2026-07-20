@@ -132,6 +132,13 @@ an eligible top-level DSL v4 `universal_search` route. Enabling the feature does
 not authorize a source by itself. DSL v3 functions are never provider-fanout
 routes.
 
+The persisted setting is:
+
+```toml
+[features]
+search_provider_fanout = true
+```
+
 ```shellscript
 coral features enable search_provider_fanout
 coral features disable search_provider_fanout
@@ -144,6 +151,10 @@ override it for one process with `--enable-search-provider-fanout` or
 enablement. Disabling fanout stops request-triggered provider calls without a
 database migration, observed-value purge, or source reinstall. Local catalog
 and observed-value search remain available.
+
+See [Search connected
+sources](/guides/search-with-coral#search-connected-sources) for the separate
+source-policy gate, execution limits, and partial-result behavior.
 
 ## OpenTelemetry
 
