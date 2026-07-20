@@ -1,10 +1,5 @@
 //! Validated task identifier.
 
-#![allow(
-    dead_code,
-    reason = "The task stack introduces ids before service and store slices consume them."
-)]
-
 use std::fmt;
 
 use crate::bootstrap::AppError;
@@ -28,18 +23,6 @@ impl TaskId {
         uuid::Uuid::parse_str(id)
             .map(Self)
             .map_err(|_err| AppError::InvalidInput("task id must be a UUID".to_string()))
-    }
-
-    /// Borrow the validated UUID for typed boundaries.
-    #[must_use]
-    pub(crate) fn as_uuid(&self) -> &uuid::Uuid {
-        &self.0
-    }
-
-    /// Lower the task id into the validated UUID.
-    #[must_use]
-    pub(crate) fn into_uuid(self) -> uuid::Uuid {
-        self.0
     }
 }
 

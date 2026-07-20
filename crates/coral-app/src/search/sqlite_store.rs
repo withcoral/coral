@@ -1,13 +1,5 @@
 //! Workspace-scoped `SQLite` storage for Universal Search.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "SQLite search substrate is wired by follow-up catalog provider PR"
-    )
-)]
-
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

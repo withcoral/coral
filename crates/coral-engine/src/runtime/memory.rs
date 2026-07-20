@@ -4,40 +4,11 @@ use arrow::array::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::Stream;
 use serde_json::Value;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-
-/// Coral-owned physical operators must declare whether they retain query data.
-pub(crate) trait CoralExecutionPlan: ExecutionPlan {
-    /// Describes how this operator interacts with query memory accounting.
-    fn memory_behavior(&self) -> CoralMemoryBehavior;
-}
-
-/// Memory behavior declaration for Coral-owned physical operators.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CoralMemoryBehavior {
-    /// Operator does not retain significant query data across poll boundaries.
-    #[expect(dead_code, reason = "used by future streaming Coral execution plans")]
-    Streaming,
-    /// Operator retains query data and must reserve against `DataFusion`'s pool.
-    RetainsMemory { consumer_name: String },
-}
-
-impl CoralMemoryBehavior {
-    /// Builds retained-memory accounting for operators that retain query data.
-    pub(crate) fn retained_memory(&self, context: &TaskContext) -> Option<RetainedMemory> {
-        match self {
-            Self::Streaming => None,
-            Self::RetainsMemory { consumer_name } => {
-                Some(RetainedMemory::for_operator(context, consumer_name.clone()))
-            }
-        }
-    }
-}
 
 /// Memory reservation wrapper for one execution that retains Coral-owned data.
 #[derive(Debug)]

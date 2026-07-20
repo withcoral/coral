@@ -1,13 +1,5 @@
 //! Local catalog snapshot loading without query-runtime provider I/O.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "local catalog snapshot loader is consumed by the follow-up catalog provider PR"
-    )
-)]
-
 use coral_engine::{
     CatalogInfo, ColumnInfo, RuntimeSourceComponent, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
@@ -42,10 +34,6 @@ pub(crate) struct CatalogSnapshotLoader {
 }
 
 impl CatalogSnapshotLoader {
-    pub(crate) fn new(config_store: ConfigStore, layout: AppStateLayout) -> Self {
-        Self::with_diagnostic_reporter(config_store, layout, SourceDiagnosticReporter::default())
-    }
-
     pub(crate) fn with_diagnostic_reporter(
         config_store: ConfigStore,
         layout: AppStateLayout,

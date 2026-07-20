@@ -1,13 +1,5 @@
 //! `SQLite` catalog metadata projection and retrieval primitives.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "SQLite catalog index is wired by follow-up catalog provider PR"
-    )
-)]
-
 use std::collections::BTreeMap;
 
 use rusqlite::{

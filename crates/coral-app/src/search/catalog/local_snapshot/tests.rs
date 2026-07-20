@@ -8,6 +8,7 @@ use super::{
 };
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
+use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -179,9 +180,13 @@ tables:
         manifest_yaml,
     );
 
-    let catalog = CatalogSnapshotLoader::new(config_store, layout)
-        .load_catalog(&workspace_name)
-        .expect("catalog");
+    let catalog = CatalogSnapshotLoader::with_diagnostic_reporter(
+        config_store,
+        layout,
+        SourceDiagnosticReporter::default(),
+    )
+    .load_catalog(&workspace_name)
+    .expect("catalog");
 
     assert!(
         catalog
@@ -257,9 +262,13 @@ surfaces:
     )
     .expect("write schema-v3 MCP semantic IR");
 
-    let catalog = CatalogSnapshotLoader::new(config_store, layout)
-        .load_catalog(&workspace_name)
-        .expect("load catalog from schema-v3 materialization");
+    let catalog = CatalogSnapshotLoader::with_diagnostic_reporter(
+        config_store,
+        layout,
+        SourceDiagnosticReporter::default(),
+    )
+    .load_catalog(&workspace_name)
+    .expect("load catalog from schema-v3 materialization");
 
     let table = catalog
         .tables
@@ -330,9 +339,13 @@ fn loader_fails_closed_when_installed_manifest_cannot_be_read() {
         )
         .expect("upsert source");
 
-    let error = CatalogSnapshotLoader::new(config_store, layout)
-        .load_catalog(&workspace_name)
-        .expect_err("missing installed manifest should fail closed");
+    let error = CatalogSnapshotLoader::with_diagnostic_reporter(
+        config_store,
+        layout,
+        SourceDiagnosticReporter::default(),
+    )
+    .load_catalog(&workspace_name)
+    .expect_err("missing installed manifest should fail closed");
 
     assert!(
         matches!(error, AppError::Io(_)),
@@ -389,9 +402,13 @@ surfaces:
 ",
     );
 
-    let catalog = CatalogSnapshotLoader::new(config_store, layout)
-        .load_catalog(&workspace_name)
-        .expect("missing v4 materialization should be isolated");
+    let catalog = CatalogSnapshotLoader::with_diagnostic_reporter(
+        config_store,
+        layout,
+        SourceDiagnosticReporter::default(),
+    )
+    .load_catalog(&workspace_name)
+    .expect("missing v4 materialization should be isolated");
 
     assert!(catalog.tables.iter().any(|table| {
         table.schema_name == healthy_source.as_str() && table.table_name == "messages"
