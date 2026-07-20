@@ -12,6 +12,7 @@ const DEFAULT_MAX_STORAGE_BYTES: u64 = 256 * MEBIBYTE;
 const DEFAULT_WAL_HEADROOM_BYTES: u64 = 32 * MEBIBYTE;
 const DEFAULT_STALE_AFTER_DAYS: u32 = 365;
 const DEFAULT_MAINTENANCE_BATCH_ROWS: usize = 256;
+const FTS_MERGE_PAGE_BUDGET: i64 = 32;
 
 const SELECT_STALE_OBSERVED_VALUE_KEYS_SQL: &str = "
     SELECT
@@ -85,6 +86,12 @@ struct DeleteObservedValueKeysResult {
     budget_exhausted: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ObservedValuesProjectionReclamation {
+    pub(super) evicted_rows: u32,
+    pub(super) made_progress: bool,
+}
+
 #[derive(Debug, Clone)]
 struct ObservedValueKey {
     canonical_rowid: i64,
@@ -118,6 +125,22 @@ pub(super) fn maintain_observed_values(
     policy: ObservedValuesStoragePolicy,
     time_budget: Duration,
 ) -> Result<ObservedValuesGovernanceResult, SqliteSearchError> {
+    maintain_observed_values_with_eviction_limit(
+        connection,
+        workspace_name,
+        policy,
+        policy.maintenance_batch_rows,
+        time_budget,
+    )
+}
+
+pub(super) fn maintain_observed_values_with_eviction_limit(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    policy: ObservedValuesStoragePolicy,
+    max_eviction_rows: usize,
+    time_budget: Duration,
+) -> Result<ObservedValuesGovernanceResult, SqliteSearchError> {
     let deadline = Instant::now() + time_budget;
     let mut result = ObservedValuesGovernanceResult::default();
 
@@ -135,7 +158,8 @@ pub(super) fn maintain_observed_values(
     result.stale_rows_purged = stale_deletion.deleted_rows;
     result.budget_exhausted = stale_deletion.budget_exhausted || has_more_stale;
 
-    let eviction_limit = u32::try_from(policy.maintenance_batch_rows).unwrap_or(u32::MAX);
+    let eviction_limit_rows = policy.maintenance_batch_rows.min(max_eviction_rows);
+    let eviction_limit = u32::try_from(eviction_limit_rows).unwrap_or(u32::MAX);
     while !result.budget_exhausted && result.evicted_rows < eviction_limit {
         if !storage_limit_reached(connection, policy)? {
             break;
@@ -144,8 +168,7 @@ pub(super) fn maintain_observed_values(
             result.budget_exhausted = observed_values_exist(connection, workspace_name)?;
             break;
         }
-        let remaining = policy
-            .maintenance_batch_rows
+        let remaining = eviction_limit_rows
             .saturating_sub(usize::try_from(result.evicted_rows).unwrap_or(usize::MAX));
         let keys = select_observed_value_keys(connection, workspace_name, None, remaining.min(32))?;
         if keys.is_empty() {
@@ -160,6 +183,13 @@ pub(super) fn maintain_observed_values(
     }
 
     result.storage_limit_reached = storage_limit_reached(connection, policy)?;
+    if result.storage_limit_reached && !deadline_expired(deadline) {
+        let _ = merge_observed_fts_index(connection)?;
+        result.storage_limit_reached = storage_limit_reached(connection, policy)?;
+    }
+    if result.storage_limit_reached && observed_fts_mergeable_segments_exist(connection)? {
+        result.budget_exhausted = true;
+    }
     if !result.budget_exhausted
         && result.storage_limit_reached
         && (deadline_expired(deadline) || result.evicted_rows >= eviction_limit)
@@ -168,6 +198,46 @@ pub(super) fn maintain_observed_values(
         result.budget_exhausted = true;
     }
     Ok(result)
+}
+
+pub(super) fn evict_oldest_observed_values_for_projection(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    max_rows: usize,
+    time_budget: Duration,
+) -> Result<ObservedValuesProjectionReclamation, SqliteSearchError> {
+    if time_budget.is_zero() {
+        return Ok(ObservedValuesProjectionReclamation::default());
+    }
+    let deadline = Instant::now() + time_budget;
+    let keys = select_observed_value_keys(connection, workspace_name, None, max_rows)?;
+    if keys.is_empty() {
+        let made_progress = merge_observed_fts_index(connection)?;
+        return Ok(ObservedValuesProjectionReclamation {
+            made_progress,
+            ..ObservedValuesProjectionReclamation::default()
+        });
+    }
+    let deletion = delete_observed_value_keys(connection, workspace_name, keys, deadline)?;
+    Ok(ObservedValuesProjectionReclamation {
+        evicted_rows: deletion.deleted_rows,
+        made_progress: deletion.deleted_rows > 0,
+    })
+}
+
+pub(super) fn observed_fts_mergeable_segments_exist(
+    connection: &Connection,
+) -> Result<bool, SqliteSearchError> {
+    connection
+        .query_row(
+            "
+            SELECT COUNT(DISTINCT segid) > 1
+            FROM observed_values_fts_idx
+            ",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
 }
 
 fn observed_values_exist(
@@ -271,7 +341,35 @@ fn delete_observed_value_keys(
         [],
     )?;
     transaction.commit()?;
+    if result.deleted_rows > 0 && !deadline_expired(deadline) {
+        merge_observed_fts_index(connection)?;
+    }
     Ok(result)
+}
+
+pub(super) fn merge_observed_fts_index(connection: &Connection) -> Result<bool, SqliteSearchError> {
+    // Resume an in-progress merge before starting a forced one. FTS5 reports
+    // real merge work through a total-changes delta of at least two; trying the
+    // positive step first prevents a new b-tree from restarting ongoing work.
+    if execute_observed_fts_merge(connection, FTS_MERGE_PAGE_BUDGET)? {
+        return Ok(true);
+    }
+    execute_observed_fts_merge(connection, -FTS_MERGE_PAGE_BUDGET)
+}
+
+fn execute_observed_fts_merge(
+    connection: &Connection,
+    page_budget: i64,
+) -> Result<bool, SqliteSearchError> {
+    let changes_before = connection.total_changes();
+    connection.execute(
+        "
+        INSERT INTO observed_values_fts(observed_values_fts, rank)
+        VALUES('merge', ?1)
+        ",
+        [page_budget],
+    )?;
+    Ok(connection.total_changes().saturating_sub(changes_before) >= 2)
 }
 
 fn delete_canonical_observed_value_keys(
@@ -437,8 +535,9 @@ mod tests {
 
     use super::{
         ObservedValuesStoragePolicy, SELECT_STALE_OBSERVED_VALUE_KEYS_SQL,
-        delete_observed_value_keys, maintain_observed_values, select_observed_value_keys,
-        storage_limit_reached, workspace_live_database_bytes,
+        delete_observed_value_keys, evict_oldest_observed_values_for_projection,
+        maintain_observed_values, merge_observed_fts_index, observed_fts_mergeable_segments_exist,
+        select_observed_value_keys, storage_limit_reached, workspace_live_database_bytes,
     };
     use crate::workspaces::WorkspaceName;
 
@@ -708,6 +807,96 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bounded_fts_merge_reclaims_legacy_empty_index_pages() {
+        let mut connection = Connection::open_in_memory().expect("connection");
+        connection
+            .execute_batch(include_str!("../migrations/0002_observed_values.sql"))
+            .expect("v2 observed-values schema");
+        let workspace = WorkspaceName::default();
+        seed_legacy_fts_tombstones(&connection);
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0003_observed_values_governance.sql"
+            ))
+            .expect("upgrade observed-values governance schema");
+        let secure_delete: i64 = connection
+            .query_row(
+                "SELECT v FROM observed_values_fts_config WHERE k = 'secure-delete'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("secure-delete setting");
+        assert_eq!(secure_delete, 1);
+        assert!(
+            observed_fts_mergeable_segments_exist(&connection)
+                .expect("mergeable legacy FTS segments")
+        );
+        let live_bytes_before =
+            workspace_live_database_bytes(&connection).expect("live bytes before cleanup");
+
+        for _ in 0..32 {
+            let reclamation = evict_oldest_observed_values_for_projection(
+                &mut connection,
+                &workspace,
+                0,
+                Duration::from_secs(1),
+            )
+            .expect("continue bounded legacy FTS merge");
+            assert_eq!(reclamation.evicted_rows, 0);
+            if !observed_fts_mergeable_segments_exist(&connection)
+                .expect("remaining mergeable FTS segments")
+            {
+                break;
+            }
+        }
+
+        let live_bytes_after =
+            workspace_live_database_bytes(&connection).expect("live bytes after cleanup");
+        assert!(
+            !observed_fts_mergeable_segments_exist(&connection).expect("compacted FTS segments")
+        );
+        assert!(
+            live_bytes_after < live_bytes_before,
+            "bounded FTS continuation should reclaim legacy pages: before={live_bytes_before}, after={live_bytes_after}"
+        );
+    }
+
+    #[test]
+    fn singleton_empty_fts_segment_is_not_reported_as_mergeable() {
+        let connection = observed_values_connection();
+        let workspace = WorkspaceName::default();
+        insert_observed_value(
+            &connection,
+            &workspace,
+            "github",
+            "singleton",
+            "2020-01-01T00:00:00.000Z",
+            1,
+        );
+        connection
+            .execute_batch(
+                "
+                DELETE FROM observed_values;
+                DELETE FROM observed_values_fts;
+                ",
+            )
+            .expect("delete singleton observed value");
+        let segment_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT segid) FROM observed_values_fts_idx",
+                [],
+                |row| row.get(0),
+            )
+            .expect("singleton segment count");
+
+        assert_eq!(segment_count, 1);
+        assert!(
+            !observed_fts_mergeable_segments_exist(&connection).expect("singleton mergeability")
+        );
+        assert!(!merge_observed_fts_index(&connection).expect("bounded merge step"));
+    }
+
     fn wal_checkpoint(connection: &Connection) -> (i64, i64, i64) {
         connection
             .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
@@ -727,6 +916,70 @@ mod tests {
             ))
             .expect("observed-values governance schema");
         connection
+    }
+
+    fn seed_legacy_fts_tombstones(connection: &Connection) {
+        connection
+            .execute_batch(
+                "
+                WITH RECURSIVE rows(id) AS (
+                    VALUES(1)
+                    UNION ALL
+                    SELECT id + 1 FROM rows WHERE id < 512
+                )
+                INSERT INTO observed_values (
+                    workspace,
+                    owner_source_name,
+                    source_name,
+                    source_scope_id,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    value_key,
+                    display_value,
+                    search_text,
+                    first_observed_at,
+                    last_observed_at,
+                    observation_count,
+                    source_generation,
+                    workspace_generation
+                )
+                SELECT
+                    'default', 'github', 'github', 'scope', 'table', 'issues', 'title',
+                    printf('key-%d', id), hex(randomblob(256)), hex(randomblob(256)),
+                    '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', 1, 0, 0
+                FROM rows;
+
+                INSERT INTO observed_values_fts (
+                    workspace,
+                    owner_source_name,
+                    source_name,
+                    source_scope_id,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    value_key,
+                    display_value,
+                    search_text
+                )
+                SELECT
+                    workspace,
+                    owner_source_name,
+                    source_name,
+                    source_scope_id,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    value_key,
+                    display_value,
+                    search_text
+                FROM observed_values;
+
+                DELETE FROM observed_values;
+                DELETE FROM observed_values_fts;
+                ",
+            )
+            .expect("create legacy FTS tombstones");
     }
 
     fn insert_observed_value(

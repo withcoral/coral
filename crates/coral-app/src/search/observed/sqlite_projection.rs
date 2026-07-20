@@ -4,6 +4,9 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
+use crate::search::observed::governance::{
+    ObservedValuesProjectionReclamation, observed_fts_mergeable_segments_exist,
+};
 use crate::search::observed::sqlite_queue::{
     ObservedValueCandidate, ObservedValuesEpoch, ObservedValuesQueuePayload,
     ObservedValuesSurfaceKind,
@@ -124,6 +127,7 @@ enum DrainOneResult {
     StorageDropped {
         job_id: i64,
     },
+    StorageBlocked,
 }
 
 pub(crate) fn drain_observed_queue(
@@ -131,6 +135,11 @@ pub(crate) fn drain_observed_queue(
     workspace_name: &WorkspaceName,
     budget: ObservedValuesDrainBudget,
     storage_limit_reached: impl Fn(&Connection) -> Result<bool, SqliteSearchError>,
+    mut reclaim_storage: impl FnMut(
+        &mut Connection,
+        Duration,
+    )
+        -> Result<ObservedValuesProjectionReclamation, SqliteSearchError>,
 ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
     let mut result = ObservedValuesDrainResult::default();
     let Some(deadline) = deadline_for(budget.time_budget) else {
@@ -140,7 +149,10 @@ pub(crate) fn drain_observed_queue(
     };
 
     let mut last_seen_job_id = 0_i64;
-    for _ in 0..budget.max_jobs {
+    let mut drain_steps = 0_u32;
+    let mut storage_reclamation_stalled = false;
+    let max_drain_steps = u32::try_from(budget.max_jobs).unwrap_or(u32::MAX);
+    while drain_steps < max_drain_steps {
         if Instant::now() >= deadline {
             result.budget_exhausted = true;
             break;
@@ -150,6 +162,7 @@ pub(crate) fn drain_observed_queue(
             && drop_oldest_dead_letter_for_storage(connection, workspace_name)?
         {
             result.storage_jobs_dropped = result.storage_jobs_dropped.saturating_add(1);
+            drain_steps = drain_steps.saturating_add(1);
             continue;
         }
 
@@ -171,30 +184,42 @@ pub(crate) fn drain_observed_queue(
                     .canonical_rows_upserted
                     .saturating_add(canonical_rows);
                 result.fts_rows_written = result.fts_rows_written.saturating_add(fts_rows);
+                drain_steps = drain_steps.saturating_add(1);
             }
             DrainOneResult::Stale { job_id } => {
                 last_seen_job_id = job_id;
                 result.stale_jobs_skipped = result.stale_jobs_skipped.saturating_add(1);
+                drain_steps = drain_steps.saturating_add(1);
             }
             DrainOneResult::Failed { job_id } => {
                 last_seen_job_id = job_id;
                 result.failed_jobs = result.failed_jobs.saturating_add(1);
+                drain_steps = drain_steps.saturating_add(1);
             }
             DrainOneResult::StorageDropped { job_id } => {
                 last_seen_job_id = job_id;
                 result.storage_jobs_dropped = result.storage_jobs_dropped.saturating_add(1);
+                drain_steps = drain_steps.saturating_add(1);
+            }
+            DrainOneResult::StorageBlocked => {
+                let remaining_time = deadline.saturating_duration_since(Instant::now());
+                if remaining_time.is_zero() {
+                    result.budget_exhausted = true;
+                    break;
+                }
+                let reclamation = reclaim_storage(connection, remaining_time)?;
+                result.evicted_rows = result.evicted_rows.saturating_add(reclamation.evicted_rows);
+                if !reclamation.made_progress {
+                    storage_reclamation_stalled = true;
+                    break;
+                }
             }
         }
     }
 
     result.remaining_queue_depth = pending_queue_job_count(connection, workspace_name)?;
-    let jobs_attempted = result
-        .queue_jobs_processed
-        .saturating_add(result.stale_jobs_skipped)
-        .saturating_add(result.failed_jobs)
-        .saturating_add(result.storage_jobs_dropped);
-    let max_jobs_reached = jobs_attempted >= u32::try_from(budget.max_jobs).unwrap_or(u32::MAX);
-    if result.remaining_queue_depth > 0 && max_jobs_reached {
+    let max_jobs_reached = drain_steps >= max_drain_steps;
+    if result.remaining_queue_depth > 0 && (max_jobs_reached || storage_reclamation_stalled) {
         result.budget_exhausted = true;
     }
     if max_jobs_reached
@@ -253,8 +278,12 @@ where
     };
 
     if storage_limit_reached(&transaction)? {
-        delete_queue_job(&transaction, job.id)?;
+        if observed_storage_reclaimable(&transaction, workspace_name)? {
+            transaction.commit()?;
+            return Ok(DrainOneResult::StorageBlocked);
+        }
         let job_id = job.id;
+        delete_queue_job(&transaction, job_id)?;
         transaction.commit()?;
         return Ok(DrainOneResult::StorageDropped { job_id });
     }
@@ -269,7 +298,11 @@ where
                 transaction.execute_batch(
                     "ROLLBACK TO observed_value_projection; RELEASE observed_value_projection",
                 )?;
-                delete_queue_job(&transaction, job.id)?;
+                if observed_storage_reclaimable(&transaction, workspace_name)? {
+                    transaction.commit()?;
+                    return Ok(DrainOneResult::StorageBlocked);
+                }
+                delete_queue_job(&transaction, job_id)?;
                 transaction.commit()?;
                 return Ok(DrainOneResult::StorageDropped { job_id });
             }
@@ -553,6 +586,27 @@ fn delete_queue_job(transaction: &Transaction<'_>, job_id: i64) -> Result<(), Sq
     Ok(())
 }
 
+fn observed_values_exist(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<bool, SqliteSearchError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM observed_values WHERE workspace = ?1 LIMIT 1)",
+            params![workspace_name.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
+}
+
+fn observed_storage_reclaimable(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<bool, SqliteSearchError> {
+    Ok(observed_values_exist(connection, workspace_name)?
+        || observed_fts_mergeable_segments_exist(connection)?)
+}
+
 fn drop_oldest_dead_letter_for_storage(
     connection: &mut Connection,
     workspace_name: &WorkspaceName,
@@ -666,12 +720,14 @@ fn truncate_error(error: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::time::Duration;
 
     use rusqlite::params;
     use tempfile::tempdir;
 
     use super::{ObservedValuesDrainBudget, drain_observed_queue};
+    use crate::search::observed::governance::ObservedValuesProjectionReclamation;
     use crate::search::observed::sqlite_queue::{
         ObservedValuesQueueJob, ObservedValuesSurfaceKind,
     };
@@ -702,6 +758,7 @@ mod tests {
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
             |_| Ok(false),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
         )
         .expect("drain");
 
@@ -750,6 +807,7 @@ mod tests {
                 )?;
                 Ok(projected_rows > 0)
             },
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
         )
         .expect("storage-guarded drain");
 
@@ -770,6 +828,77 @@ mod tests {
                 .expect("row count");
             assert_eq!(row_count, 0, "{table_name} should remain empty");
         }
+    }
+
+    #[test]
+    fn blocked_projection_stops_after_one_no_progress_reclamation() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_identity("github", "github", "old-scope", "old value"),
+                epoch,
+            )
+            .expect("enqueue old observation");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+        drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(1, Duration::from_secs(1)),
+            |_| Ok(false),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
+        )
+        .expect("project old observation");
+        drop(connection);
+        drop(backing);
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_identity("github", "github", "fresh-scope", "fresh value"),
+                epoch,
+            )
+            .expect("enqueue fresh observation");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+        let reclamation_calls = Cell::new(0_u32);
+
+        let result = drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(1, Duration::from_secs(1)),
+            |connection| {
+                connection
+                    .query_row(
+                        "
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM observed_values
+                            WHERE workspace = ?1 AND source_scope_id = 'fresh-scope'
+                        )
+                        ",
+                        params![workspace.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(Into::into)
+            },
+            |_, _| {
+                reclamation_calls.set(reclamation_calls.get().saturating_add(1));
+                Ok(ObservedValuesProjectionReclamation::default())
+            },
+        )
+        .expect("storage-blocked drain");
+
+        assert_eq!(reclamation_calls.get(), 1);
+        assert_eq!(result.queue_jobs_processed, 0);
+        assert_eq!(result.storage_jobs_dropped, 0);
+        assert_eq!(result.remaining_queue_depth, 1);
+        assert!(result.budget_exhausted);
     }
 
     #[test]
@@ -800,6 +929,7 @@ mod tests {
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
             |_| Ok(true),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
         )
         .expect("pressure drain");
 
@@ -839,6 +969,7 @@ mod tests {
                 &workspace,
                 ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
                 |_| Ok(false),
+                |_, _| Ok(ObservedValuesProjectionReclamation::default()),
             )
             .expect("poison retry");
         }
@@ -855,6 +986,7 @@ mod tests {
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
             |_| Ok(true),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
         )
         .expect("pressure drain");
 
@@ -904,6 +1036,7 @@ mod tests {
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
             |_| Ok(false),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
         )
         .expect("drain");
 
@@ -965,6 +1098,7 @@ mod tests {
             &workspace,
             ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
             |_| Ok(false),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
         )
         .expect("drain");
         assert_eq!(result.queue_jobs_processed, 2);

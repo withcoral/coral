@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::governance::{
-    ObservedValuesStoragePolicy, maintain_observed_values, storage_limit_reached,
+    ObservedValuesStoragePolicy, evict_oldest_observed_values_for_projection,
+    maintain_observed_values, maintain_observed_values_with_eviction_limit,
+    merge_observed_fts_index, storage_limit_reached,
 };
 use crate::search::observed::sqlite_projection;
 use crate::search::observed::sqlite_projection::{
@@ -23,6 +25,7 @@ use crate::workspaces::WorkspaceName;
 const MAX_PENDING_QUEUE_JOBS_PER_WORKSPACE: i64 = 1024;
 #[cfg(test)]
 const MAX_PENDING_QUEUE_JOBS_PER_WORKSPACE: i64 = 2;
+const PROJECTION_RECLAMATION_BATCH_ROWS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SqliteObservedValuesStore {
@@ -148,25 +151,52 @@ impl SqliteObservedValuesStore {
             budget.max_jobs,
             budget.time_budget.saturating_sub(started_at.elapsed()),
         );
+        let pre_projection_evicted_rows = pre_projection_governance.map_or(0, |governance| {
+            usize::try_from(governance.evicted_rows).unwrap_or(usize::MAX)
+        });
+        let mut remaining_projection_eviction_rows = self
+            .policy
+            .maintenance_batch_rows
+            .saturating_sub(pre_projection_evicted_rows);
         let mut result = sqlite_projection::drain_observed_queue(
             &mut connection,
             workspace_name,
             projection_budget,
             |connection| storage_limit_reached(connection, self.policy),
+            |connection, time_budget| {
+                let max_rows =
+                    remaining_projection_eviction_rows.min(PROJECTION_RECLAMATION_BATCH_ROWS);
+                let reclamation = evict_oldest_observed_values_for_projection(
+                    connection,
+                    workspace_name,
+                    max_rows,
+                    time_budget,
+                )?;
+                remaining_projection_eviction_rows = remaining_projection_eviction_rows
+                    .saturating_sub(
+                        usize::try_from(reclamation.evicted_rows).unwrap_or(usize::MAX),
+                    );
+                Ok(reclamation)
+            },
         )?;
         let governance = if let Some(governance) = pre_projection_governance {
             governance
         } else {
             let maintenance_budget = budget.time_budget.saturating_sub(started_at.elapsed());
-            maintain_observed_values(
+            let remaining_eviction_rows = self
+                .policy
+                .maintenance_batch_rows
+                .saturating_sub(usize::try_from(result.evicted_rows).unwrap_or(usize::MAX));
+            maintain_observed_values_with_eviction_limit(
                 &mut connection,
                 workspace_name,
                 self.policy,
+                remaining_eviction_rows,
                 maintenance_budget,
             )?
         };
         result.stale_rows_purged = governance.stale_rows_purged;
-        result.evicted_rows = governance.evicted_rows;
+        result.evicted_rows = result.evicted_rows.saturating_add(governance.evicted_rows);
         result.storage_limit_reached = storage_limit_reached(&connection, self.policy)?;
         result.budget_exhausted |= governance.budget_exhausted;
         Ok(result)
@@ -275,7 +305,10 @@ fn enqueue_if_current_in_transaction(
         return Ok(ObservedValuesEnqueueResult::StaleEpoch);
     }
     if storage_limit_reached(transaction, policy)? {
-        return Ok(ObservedValuesEnqueueResult::StorageLimitReached);
+        let _ = merge_observed_fts_index(transaction)?;
+        if storage_limit_reached(transaction, policy)? {
+            return Ok(ObservedValuesEnqueueResult::StorageLimitReached);
+        }
     }
     if pending_queue_job_id(transaction, workspace_name, job, captured_epoch)?.is_none()
         && pending_queue_job_count(transaction, workspace_name)?
@@ -532,13 +565,17 @@ fn advance_source_epoch(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::sync::mpsc::sync_channel;
     use std::thread;
     use std::time::Duration;
 
-    use rusqlite::{TransactionBehavior, params};
+    use rusqlite::{Connection, TransactionBehavior, params};
 
-    use super::super::governance::ObservedValuesStoragePolicy;
+    use super::super::governance::{
+        ObservedValuesStoragePolicy, observed_fts_mergeable_segments_exist,
+    };
     use super::super::sqlite_projection::{
         MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedValuesDrainBudget,
     };
@@ -1011,17 +1048,7 @@ mod tests {
         let generation = ordinary_store
             .capture_epoch(&workspace, "github")
             .expect("generation");
-        let mut job = test_job_with("large-scope", "issues", "unused");
-        let large_value = "x".repeat(512);
-        let values = (0..500)
-            .map(|index| {
-                format!(
-                    r#"{{"column_name":"title","display_value":"{large_value}-{index}","search_text":"{large_value}-{index}","value_key":"key-{index}"}}"#
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        job.payload_json = format!(r#"{{"values":[{values}]}}"#);
+        let job = bulk_test_job("large-scope", "large", 500);
         ordinary_store
             .enqueue_if_current(&workspace, &job, generation)
             .expect("enqueue large job");
@@ -1064,6 +1091,289 @@ mod tests {
                 .projected_value_count(&workspace)
                 .expect("projected value count"),
             0
+        );
+    }
+
+    #[test]
+    fn boundary_crossing_projection_evicts_oldest_values_and_keeps_fresh_job() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = ordinary_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        ordinary_store
+            .enqueue_if_current(
+                &workspace,
+                &bulk_test_job("old-scope", "old", 160),
+                generation,
+            )
+            .expect("enqueue old values");
+        ordinary_store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::from_secs(5)),
+            )
+            .expect("project old values");
+        ordinary_store
+            .enqueue_if_current(
+                &workspace,
+                &bulk_test_job("fresh-scope", "fresh", 160),
+                generation,
+            )
+            .expect("enqueue fresh values");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        let live_bytes = live_database_bytes_for_test(&connection);
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("page size");
+        drop(connection);
+        drop(backing);
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout.clone(),
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: live_bytes
+                    .saturating_add(u64::try_from(page_size).expect("positive page size")),
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 256,
+            },
+        );
+
+        let result = governed_store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(1, Duration::from_secs(10)),
+            )
+            .expect("storage-reclaiming drain");
+
+        assert_eq!(result.queue_jobs_processed, 1);
+        assert_eq!(result.storage_jobs_dropped, 0);
+        assert!(result.evicted_rows > 0);
+        assert_eq!(result.remaining_queue_depth, 0);
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        let fresh_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = ?1 AND source_scope_id = 'fresh-scope'",
+                params![workspace.as_str()],
+                |row| row.get(0),
+            )
+            .expect("fresh projected rows");
+        assert_eq!(fresh_rows, 160);
+    }
+
+    #[test]
+    fn boundary_crossing_projection_respects_eviction_cap_and_keeps_job_queued() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = ordinary_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        ordinary_store
+            .enqueue_if_current(
+                &workspace,
+                &bulk_test_job("old-scope", "old", 160),
+                generation,
+            )
+            .expect("enqueue old values");
+        ordinary_store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::from_secs(5)),
+            )
+            .expect("project old values");
+        ordinary_store
+            .enqueue_if_current(
+                &workspace,
+                &bulk_test_job("fresh-scope", "fresh", 160),
+                generation,
+            )
+            .expect("enqueue fresh values");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        let live_bytes = live_database_bytes_for_test(&connection);
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("page size");
+        drop(connection);
+        drop(backing);
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout.clone(),
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: live_bytes
+                    .saturating_add(u64::try_from(page_size).expect("positive page size")),
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 1,
+            },
+        );
+
+        let result = governed_store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(20, Duration::from_secs(10)),
+            )
+            .expect("storage-reclaiming drain");
+
+        assert_eq!(result.queue_jobs_processed, 0);
+        assert_eq!(result.storage_jobs_dropped, 0);
+        assert_eq!(result.evicted_rows, 1);
+        assert_eq!(result.remaining_queue_depth, 1);
+        assert!(result.budget_exhausted);
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        let fresh_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = ?1 AND source_scope_id = 'fresh-scope'",
+                params![workspace.as_str()],
+                |row| row.get(0),
+            )
+            .expect("fresh projected rows");
+        assert_eq!(fresh_rows, 0);
+    }
+
+    #[test]
+    fn upgraded_v2_fts_tombstones_are_compacted_without_a_queued_job() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let database_path = layout.search_sqlite_file(&workspace);
+        seed_v2_fts_tombstones(&database_path);
+
+        let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = ordinary_store
+            .capture_epoch(&workspace, "github")
+            .expect("upgrade v2 database and capture generation");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        let secure_delete: i64 = connection
+            .query_row(
+                "SELECT v FROM observed_values_fts_config WHERE k = 'secure-delete'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("secure-delete setting");
+        assert_eq!(secure_delete, 1);
+        assert!(
+            observed_fts_mergeable_segments_exist(&connection)
+                .expect("mergeable legacy FTS segments")
+        );
+        let live_bytes_before = live_database_bytes_for_test(&connection);
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("page size");
+        drop(connection);
+        drop(backing);
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: live_bytes_before
+                    .saturating_sub(u64::try_from(page_size).expect("positive page size")),
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 256,
+            },
+        );
+        assert_eq!(
+            governed_store
+                .pending_queue_job_count(&workspace)
+                .expect("empty upgraded queue"),
+            0
+        );
+        let mut final_result = None;
+
+        for _ in 0..32 {
+            let result = governed_store
+                .drain_queue(
+                    &workspace,
+                    ObservedValuesDrainBudget::new(1, Duration::from_secs(5)),
+                )
+                .expect("maintain upgraded tombstone-heavy database");
+            assert_eq!(result.queue_jobs_processed, 0);
+            assert_eq!(result.storage_jobs_dropped, 0);
+            assert_eq!(result.remaining_queue_depth, 0);
+            let complete = !result.storage_limit_reached;
+            final_result = Some(result);
+            if complete {
+                break;
+            }
+        }
+
+        let final_result = final_result.expect("at least one drain result");
+        assert_eq!(final_result.remaining_queue_depth, 0);
+        assert!(!final_result.storage_limit_reached);
+        assert!(matches!(
+            governed_store
+                .enqueue_if_current(&workspace, &test_job(), generation)
+                .expect("enqueue fresh observation after tombstone maintenance"),
+            ObservedValuesEnqueueResult::Enqueued { .. }
+        ));
+        let projection = governed_store
+            .drain_queue(
+                &workspace,
+                ObservedValuesDrainBudget::new(1, Duration::from_secs(5)),
+            )
+            .expect("project fresh observation after tombstone maintenance");
+        assert_eq!(projection.queue_jobs_processed, 1);
+        assert_eq!(projection.storage_jobs_dropped, 0);
+        assert_eq!(projection.remaining_queue_depth, 0);
+        assert_eq!(
+            governed_store
+                .projected_value_count(&workspace)
+                .expect("projected fresh value count"),
+            1
+        );
+    }
+
+    #[test]
+    fn upgraded_v2_fts_tombstones_are_compacted_during_enqueue() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        seed_v2_fts_tombstones(&layout.search_sqlite_file(&workspace));
+        let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = ordinary_store
+            .capture_epoch(&workspace, "github")
+            .expect("upgrade v2 database and capture generation");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        let live_bytes = live_database_bytes_for_test(&connection);
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("page size");
+        drop(connection);
+        drop(backing);
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: live_bytes
+                    .saturating_sub(u64::try_from(page_size).expect("positive page size")),
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 256,
+            },
+        );
+
+        assert!(matches!(
+            governed_store
+                .enqueue_if_current(&workspace, &test_job(), generation)
+                .expect("enqueue after bounded tombstone compaction"),
+            ObservedValuesEnqueueResult::Enqueued { .. }
+        ));
+        assert_eq!(
+            governed_store
+                .pending_queue_job_count(&workspace)
+                .expect("queued fresh observation"),
+            1
         );
     }
 
@@ -1540,6 +1850,129 @@ mod tests {
             surface_name: "issues".to_string(),
             payload_json: payload_json("Shared value"),
         }
+    }
+
+    fn bulk_test_job(
+        source_scope_id: &str,
+        value_prefix: &str,
+        value_count: usize,
+    ) -> ObservedValuesQueueJob {
+        let large_value = "x".repeat(512);
+        let values = (0..value_count)
+            .map(|index| {
+                format!(
+                    r#"{{"column_name":"title","display_value":"{large_value}-{index}","search_text":"{large_value}-{index}","value_key":"{value_prefix}-{index}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut job = test_job_with(source_scope_id, "issues", "unused");
+        job.payload_json = format!(r#"{{"values":[{values}]}}"#);
+        job
+    }
+
+    fn seed_v2_fts_tombstones(database_path: &Path) {
+        fs::create_dir_all(database_path.parent().expect("search database parent"))
+            .expect("create search database parent");
+        let connection = Connection::open(database_path).expect("raw v2 connection");
+        connection
+            .execute_batch(include_str!("../migrations/0001_catalog_search.sql"))
+            .expect("v1 search schema");
+        connection
+            .execute_batch(include_str!("../migrations/0002_observed_values.sql"))
+            .expect("v2 observed-values schema");
+        connection
+            .execute(
+                "
+                INSERT INTO search_meta (key, value)
+                VALUES ('schema_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                ",
+                [],
+            )
+            .expect("record v2 schema version");
+        connection
+            .pragma_update(None, "user_version", 2)
+            .expect("record v2 user version");
+        connection
+            .execute_batch(
+                "
+                WITH RECURSIVE rows(id) AS (
+                    VALUES(1)
+                    UNION ALL
+                    SELECT id + 1 FROM rows WHERE id < 2048
+                )
+                INSERT INTO observed_values (
+                    workspace,
+                    owner_source_name,
+                    source_name,
+                    source_scope_id,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    value_key,
+                    display_value,
+                    search_text,
+                    first_observed_at,
+                    last_observed_at,
+                    observation_count,
+                    source_generation,
+                    workspace_generation
+                )
+                SELECT
+                    'default', 'github', 'github', 'legacy', 'table', 'issues', 'title',
+                    printf('legacy-%d', id), hex(randomblob(256)), hex(randomblob(256)),
+                    '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', 1, 0, 0
+                FROM rows;
+
+                INSERT INTO observed_values_fts (
+                    workspace,
+                    owner_source_name,
+                    source_name,
+                    source_scope_id,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    value_key,
+                    display_value,
+                    search_text
+                )
+                SELECT
+                    workspace,
+                    owner_source_name,
+                    source_name,
+                    source_scope_id,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    value_key,
+                    display_value,
+                    search_text
+                FROM observed_values;
+
+                DELETE FROM observed_values;
+                DELETE FROM observed_values_fts;
+                ",
+            )
+            .expect("create v2 FTS tombstones");
+        assert!(
+            observed_fts_mergeable_segments_exist(&connection).expect("mergeable v2 FTS segments")
+        );
+    }
+
+    fn live_database_bytes_for_test(connection: &rusqlite::Connection) -> u64 {
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("page size");
+        let page_count: i64 = connection
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .expect("page count");
+        let freelist_count: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .expect("freelist count");
+        u64::try_from(page_count.saturating_sub(freelist_count))
+            .expect("non-negative live pages")
+            .saturating_mul(u64::try_from(page_size).expect("positive page size"))
     }
 
     fn payload_json(display_value: &str) -> String {
