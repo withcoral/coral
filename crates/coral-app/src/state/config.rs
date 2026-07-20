@@ -775,17 +775,22 @@ impl ConfigStore {
         self.get_function_unlocked(workspace_name, function_name)
     }
 
-    /// Upserts one installed function without taking the app state lock.
+    /// Upserts one installed function without taking the app state lock and
+    /// reports whether an existing function was replaced.
     ///
     /// Callers must already hold the state lock in exclusive mode.
     pub(crate) fn upsert_function_unlocked(
         &self,
         workspace_name: &WorkspaceName,
         function: InstalledFunction,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         self.update_config_unlocked(|config| {
+            let replaced = config
+                .functions
+                .get_function(workspace_name, &function.name)
+                .is_some();
             config.functions.upsert_function(workspace_name, function);
-            Ok(())
+            Ok(replaced)
         })
     }
 
@@ -797,6 +802,7 @@ impl ConfigStore {
     ) -> Result<(), AppError> {
         let _state_lock = self.state_lock_exclusive()?;
         self.upsert_function_unlocked(workspace_name, function)
+            .map(|_replaced| ())
     }
 
     /// Removes one installed function without taking the app state lock.

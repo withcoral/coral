@@ -70,12 +70,18 @@ message AddFunctionRequest {
   Workspace workspace = 1;
   // Raw function SQL artifact, including SQL comment frontmatter.
   string sql = 2;
+  // Reject the install when a function with the same name already exists.
+  // Defaults to false so callers written before this field was added retain
+  // the original replace-existing behavior.
+  bool fail_if_exists = 3;
 }
 
 // Function install response.
 message AddFunctionResponse {
   // Installed runtime-ready function.
   Function function = 1;
+  // Whether this install replaced an existing function with the same name.
+  bool replaced = 2;
 }
 
 // Lists installed functions and their current runtime status in one workspace.

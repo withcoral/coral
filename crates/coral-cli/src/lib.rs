@@ -1171,6 +1171,7 @@ async fn run_function(
                 .add_function(Request::new(AddFunctionRequest {
                     workspace: Some(workspace.clone()),
                     sql,
+                    fail_if_exists: false,
                 }))
                 .await
                 .map_err(anyhow::Error::from)?

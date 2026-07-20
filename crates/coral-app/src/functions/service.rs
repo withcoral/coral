@@ -13,7 +13,7 @@ use coral_engine::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
-use crate::functions::manager::{FunctionListing, FunctionRuntimeStatus};
+use crate::functions::manager::{FunctionInstallMode, FunctionListing, FunctionRuntimeStatus};
 use crate::functions::model::FunctionName;
 use crate::query::manager::QueryManager;
 use crate::transport::{
@@ -45,12 +45,18 @@ impl FunctionServiceApi for FunctionService {
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
-            let runtime_function = queries
-                .add_user_function(&workspace_name, &inner.sql)
+            let mode = if inner.fail_if_exists {
+                FunctionInstallMode::CreateOnly
+            } else {
+                FunctionInstallMode::ReplaceExisting
+            };
+            let added = queries
+                .add_user_function(&workspace_name, &inner.sql, mode)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(AddFunctionResponse {
-                function: Some(runtime_function_to_proto(&workspace_name, runtime_function)),
+                function: Some(runtime_function_to_proto(&workspace_name, added.definition)),
+                replaced: added.replaced,
             }))
         }))
         .await

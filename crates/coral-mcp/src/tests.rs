@@ -588,6 +588,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
         vec![
             "start_task",
             "sql",
+            "add_function",
             "search",
             "list_catalog",
             "describe_table",
@@ -597,6 +598,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     );
     for name in [
         "sql",
+        "add_function",
         "search",
         "list_catalog",
         "describe_table",
@@ -1047,6 +1049,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         vec![
             "start_task",
             "sql",
+            "add_function",
             "search",
             "list_catalog",
             "describe_table",
@@ -1884,6 +1887,7 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
             vec![
                 "start_task",
                 "sql",
+                "add_function",
                 "search",
                 "list_catalog",
                 "describe_table",
@@ -1935,6 +1939,158 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
+    reason = "This end-to-end MCP function test verifies the schema, create-only default, replacement safety, structured output, and callable result together."
+)]
+async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+    let task_id = start_test_task(client).await;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    let add_function_tool = tool_by_name(&tools, "add_function");
+    let annotations = add_function_tool
+        .annotations
+        .as_ref()
+        .expect("add_function annotations");
+    assert_eq!(annotations.read_only_hint, Some(false));
+    assert_eq!(annotations.destructive_hint, Some(true));
+    assert_eq!(annotations.idempotent_hint, Some(true));
+    assert_eq!(annotations.open_world_hint, Some(false));
+    let required = add_function_tool.input_schema["required"]
+        .as_array()
+        .expect("add_function required arguments");
+    for name in ["schema", "name", "description", "sql", "task_id", "intent"] {
+        assert!(required.iter().any(|value| value == name));
+    }
+    assert_eq!(
+        add_function_tool.input_schema["properties"]["replace_existing"]["default"],
+        false
+    );
+
+    let added = client
+        .call_tool(
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
+                "schema": "functions",
+                "name": "echo_value",
+                "description": "Echo one value",
+                "sql": "select cast($value as VARCHAR) as value"
+            }))),
+        )
+        .await
+        .expect("add function");
+    assert_eq!(added.is_error, Some(false));
+    assert_structured_content_only(&added);
+    let added = added.structured_content.expect("structured function");
+    assert_matches_output_schema(add_function_tool, &added);
+    assert_eq!(added["schema_name"], "functions");
+    assert_eq!(added["function_name"], "echo_value");
+    assert_eq!(added["description"], "Echo one value");
+    assert_eq!(added["arguments"][0]["name"], "value");
+    assert_eq!(added["arguments"][0]["data_type"], "Utf8");
+    assert_eq!(
+        added["sql_call_example"],
+        "functions.echo_value(value => '<value>')"
+    );
+    assert_eq!(added["sql_reference"], "functions.echo_value");
+    assert_eq!(added["result_columns"][0]["column_name"], "value");
+    assert_eq!(added["replaced"], false);
+
+    let query = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &json!({
+                "queries": ["select * from functions.echo_value(value => 'hello')"]
+            }))),
+        )
+        .await
+        .expect("query added function");
+    assert_eq!(query.is_error, Some(false));
+    assert_eq!(
+        query.structured_content.expect("query result")["results"][0]["rows"][0]["value"],
+        "hello"
+    );
+
+    let duplicate = client
+        .call_tool(
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
+                "schema": "functions",
+                "name": "echo_value",
+                "description": "Should not replace",
+                "sql": "select cast($value as VARCHAR) as replacement"
+            }))),
+        )
+        .await
+        .expect("duplicate create should return a tool error");
+    assert_eq!(duplicate.is_error, Some(true));
+    assert_tool_error_text_contains(&duplicate, "already exists");
+
+    let rejected = client
+        .call_tool(
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
+                "schema": "functions",
+                "name": "echo_value",
+                "description": "Invalid replacement",
+                "sql": "select $value as value",
+                "replace_existing": true
+            }))),
+        )
+        .await
+        .expect("invalid replacement should return a tool error");
+    assert_eq!(rejected.is_error, Some(true));
+    assert_tool_error_text_contains(&rejected, "has no inferred type");
+
+    let still_callable = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &json!({
+                "queries": ["select * from functions.echo_value(value => 'still here')"]
+            }))),
+        )
+        .await
+        .expect("query preserved function");
+    assert_eq!(still_callable.is_error, Some(false));
+    assert_eq!(
+        still_callable.structured_content.expect("query result")["results"][0]["rows"][0]["value"],
+        "still here"
+    );
+
+    let replaced = client
+        .call_tool(
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
+                "schema": "functions",
+                "name": "echo_value",
+                "description": "Return a replacement value",
+                "sql": "select cast($value as VARCHAR) as replacement",
+                "replace_existing": true
+            }))),
+        )
+        .await
+        .expect("replace function");
+    assert_eq!(replaced.is_error, Some(false));
+    let replaced = replaced.structured_content.expect("replacement function");
+    assert_matches_output_schema(add_function_tool, &replaced);
+    assert_eq!(replaced["description"], "Return a replacement value");
+    assert_eq!(replaced["result_columns"][0]["column_name"], "replacement");
+    assert_eq!(replaced["replaced"], true);
+
+    let blank = client
+        .call_tool(
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
+                "schema": "functions",
+                "name": "blank",
+                "description": "Blank query",
+                "sql": "   "
+            }))),
+        )
+        .await
+        .expect_err("blank SQL should fail before dispatch");
+    assert!(blank.to_string().contains("missing string argument 'sql'"));
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
     reason = "End-to-end feedback coverage verifies the advertised surface, persistence, result contract, and validation together."
 )]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
@@ -1959,6 +2115,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
         vec![
             "start_task",
             "sql",
+            "add_function",
             "search",
             "list_catalog",
             "describe_table",

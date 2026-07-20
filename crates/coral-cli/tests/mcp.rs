@@ -740,6 +740,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         vec![
             "start_task",
             "sql",
+            "add_function",
             "search",
             "list_catalog",
             "describe_table",
@@ -825,6 +826,7 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
         vec![
             "start_task",
             "sql",
+            "add_function",
             "search",
             "list_catalog",
             "describe_table",
@@ -918,6 +920,7 @@ async fn mcp_stdio_always_lists_task_tools() -> Result<(), Box<dyn std::error::E
         vec![
             "start_task",
             "sql",
+            "add_function",
             "search",
             "list_catalog",
             "describe_table",

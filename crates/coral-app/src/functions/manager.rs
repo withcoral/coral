@@ -51,8 +51,14 @@ pub(crate) enum FunctionRuntimeStatus {
     Invalid(String),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum FunctionInstallMode {
+    CreateOnly,
+    ReplaceExisting,
+}
+
 pub(crate) enum ValidatedFunctionInstall {
-    Installed,
+    Installed { replaced: bool },
     WorkspaceChanged,
 }
 
@@ -90,7 +96,15 @@ impl FunctionManager {
         runtime_function: &UdfRuntimeDefinition,
     ) -> Result<InstalledFunction, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
-        self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
+        self.install_user_function_artifact(
+            workspace_name,
+            &function_name,
+            raw_sql,
+            FunctionInstallMode::ReplaceExisting,
+        )?;
+        Ok(InstalledFunction {
+            name: function_name,
+        })
     }
 
     pub(crate) async fn install_validated_user_function_if_unchanged(
@@ -99,25 +113,27 @@ impl FunctionManager {
         raw_sql: &str,
         runtime_function: &UdfRuntimeDefinition,
         revision: WorkspaceLifecycleRevision,
+        mode: FunctionInstallMode,
     ) -> Result<ValidatedFunctionInstall, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
         let manager = self.clone();
         let operation_workspace_name = workspace_name.clone();
         let raw_sql = raw_sql.to_string();
-        let Some(_) = self
+        let Some(replaced) = self
             .lifecycle_lock
             .run_blocking_workspace_write_if_unchanged(revision, workspace_name, move || {
                 manager.install_user_function_artifact_with_lifecycle_lock(
                     &operation_workspace_name,
                     &function_name,
                     &raw_sql,
+                    mode,
                 )
             })
             .await?
         else {
             return Ok(ValidatedFunctionInstall::WorkspaceChanged);
         };
-        Ok(ValidatedFunctionInstall::Installed)
+        Ok(ValidatedFunctionInstall::Installed { replaced })
     }
 
     #[cfg(test)]
@@ -126,12 +142,14 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
-    ) -> Result<InstalledFunction, AppError> {
+        mode: FunctionInstallMode,
+    ) -> Result<bool, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         self.install_user_function_artifact_with_lifecycle_lock(
             workspace_name,
             function_name,
             raw_sql,
+            mode,
         )
     }
 
@@ -140,8 +158,21 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
-    ) -> Result<InstalledFunction, AppError> {
+        mode: FunctionInstallMode,
+    ) -> Result<bool, AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
+        if matches!(mode, FunctionInstallMode::CreateOnly) {
+            match self
+                .config_store
+                .get_function_unlocked(workspace_name, function_name)
+            {
+                Ok(_existing) => {
+                    return Err(AppError::FunctionAlreadyExists(function_name.to_string()));
+                }
+                Err(AppError::FunctionNotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let installed = InstalledFunction {
             name: function_name.clone(),
         };
@@ -149,23 +180,26 @@ impl FunctionManager {
         let previous_artifact =
             self.artifacts
                 .write_user_function_artifact(workspace_name, function_name, raw_sql)?;
-        if let Err(error) = self
+        let replaced = match self
             .config_store
-            .upsert_function_unlocked(workspace_name, installed.clone())
+            .upsert_function_unlocked(workspace_name, installed)
         {
-            if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
-                workspace_name,
-                function_name,
-                &previous_artifact,
-            ) {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to install function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
-                )));
+            Ok(replaced) => replaced,
+            Err(error) => {
+                if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
+                    workspace_name,
+                    function_name,
+                    &previous_artifact,
+                ) {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "failed to install function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
+                    )));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
 
-        Ok(installed)
+        Ok(replaced)
     }
 
     pub(crate) async fn validate_user_function_sql(

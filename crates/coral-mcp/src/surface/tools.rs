@@ -4,6 +4,7 @@ use serde_json::Value;
 use super::catalog::{describe_table_tool, list_catalog_tool, list_columns_tool};
 use super::context::ToolDescriptionContext;
 use super::feedback::feedback_tool;
+use super::function::add_function_tool;
 use super::search::search_tool;
 use super::sql::sql_tool;
 use super::task::{end_task_tool, start_task_tool, with_task_context_arguments};
@@ -22,6 +23,7 @@ pub(crate) fn available_tools(
     tools.extend(
         [
             sql_tool(context),
+            add_function_tool(),
             search_tool(context, availability.observed_values_search_enabled),
             list_catalog_tool(context),
             describe_table_tool(),
@@ -255,6 +257,7 @@ mod tests {
             vec![
                 "start_task",
                 "sql",
+                "add_function",
                 "search",
                 "list_catalog",
                 "describe_table",

@@ -270,6 +270,7 @@ async fn functions_add_sends_file_to_selected_workspace() {
                 runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
                 ..Function::default()
             }),
+            replaced: false,
         },
     ))
     .await;
@@ -288,6 +289,7 @@ async fn functions_add_sends_file_to_selected_workspace() {
     assert_eq!(requests.len(), 1);
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
     assert_eq!(requests[0].sql, sql);
+    assert!(!requests[0].fail_if_exists);
 
     server.shutdown().await;
 }

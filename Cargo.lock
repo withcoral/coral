@@ -1421,6 +1421,7 @@ dependencies = [
  "coral-api",
  "coral-app",
  "coral-client",
+ "coral-spec",
  "coral-telemetry",
  "futures",
  "jsonschema",

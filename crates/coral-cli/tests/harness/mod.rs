@@ -739,7 +739,10 @@ impl Default for MockServerConfig {
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
-            add_function: MockResult::ok(AddFunctionResponse { function: None }),
+            add_function: MockResult::ok(AddFunctionResponse {
+                function: None,
+                replaced: false,
+            }),
             list_functions: MockResult::ok(ListFunctionsResponse {
                 functions: Vec::new(),
             }),

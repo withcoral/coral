@@ -24,6 +24,9 @@ pub enum AppError {
     /// A requested function was not found in config.
     #[error("function '{0}' not found")]
     FunctionNotFound(String),
+    /// A function cannot be created because the name is already installed.
+    #[error("function '{0}' already exists")]
+    FunctionAlreadyExists(String),
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -294,7 +297,9 @@ fn app_code(error: &AppError) -> Code {
         AppError::SourceNotFound(_)
         | AppError::FunctionNotFound(_)
         | AppError::WorkspaceNotFound(_) => Code::NotFound,
-        AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
+        AppError::FunctionAlreadyExists(_) | AppError::WorkspaceAlreadyExists(_) => {
+            Code::AlreadyExists
+        }
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingSourceInputs { .. }
