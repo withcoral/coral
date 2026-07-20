@@ -974,7 +974,6 @@ pub(crate) fn print_validation_pretty(
         response.tables.iter().map(|table| table.name.as_str()),
         "table",
         "tables",
-        "",
         limit,
     );
     print_source_items(
@@ -985,7 +984,6 @@ pub(crate) fn print_validation_pretty(
             .map(|function| function.name.as_str()),
         "table function",
         "table functions",
-        "()",
         limit,
     );
 
@@ -1038,7 +1036,6 @@ fn print_source_items<'a>(
     items: impl IntoIterator<Item = &'a str>,
     singular: &str,
     plural: &str,
-    suffix: &str,
     limit: TableDisplayLimit,
 ) {
     let mut names = items.into_iter().collect::<Vec<_>>();
@@ -1067,7 +1064,7 @@ fn print_source_items<'a>(
     for (i, name) in names.iter().take(show_count).enumerate() {
         let is_last = i == show_count - 1 && remaining == 0;
         let branch = if is_last { "└─" } else { "├─" };
-        println!("    {} {name}{suffix}", style(branch).dim());
+        println!("    {} {name}", style(branch).dim());
     }
 
     if remaining > 0 {

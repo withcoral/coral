@@ -725,8 +725,12 @@ async fn source_test_renders_validation_summary() {
         "expected table-function schema summary: {stdout}"
     );
     assert!(
-        stdout.contains("search_issues()"),
-        "expected callable table-function name: {stdout}"
+        stdout.contains("search_issues"),
+        "expected table-function name: {stdout}"
+    );
+    assert!(
+        !stdout.contains("search_issues()"),
+        "table-function summary must not imply a zero-argument signature: {stdout}"
     );
 
     let requests = server.validate_source_requests();
@@ -1355,8 +1359,12 @@ surface:
         "expected table-function schema summary after source add: {stdout}"
     );
     assert!(
-        stdout.contains("search_issues()"),
-        "expected callable table-function name after source add: {stdout}"
+        stdout.contains("search_issues"),
+        "expected table-function name after source add: {stdout}"
+    );
+    assert!(
+        !stdout.contains("search_issues()"),
+        "table-function summary must not imply a zero-argument signature after source add: {stdout}"
     );
 
     let requests = server.import_source_requests();
