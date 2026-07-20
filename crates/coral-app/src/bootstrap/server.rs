@@ -42,6 +42,7 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
+use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
@@ -354,7 +355,7 @@ impl ServerBuilder {
             credential_manager,
             query_runtime_context,
             layout.clone(),
-            workspace_lifecycle_lock,
+            workspace_lifecycle_lock.clone(),
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
         );
@@ -367,14 +368,10 @@ impl ServerBuilder {
             workspace_manager.clone(),
             observed_values_search_enabled,
             diagnostic_reporter,
+            CatalogDiscovery::new(query_manager.clone()),
+            workspace_lifecycle_lock,
         );
-        let trace_components =
-            active_trace_store.map_or_else(TraceServerComponents::default, |store| {
-                TraceServerComponents {
-                    local_trace_store_dir: Some(store.dir.clone()),
-                    service: Some(TraceService::new(store.dir, store.retention)),
-                }
-            });
+        let trace_components = trace_components_for_store(active_trace_store);
         start_server(
             ServerDependencies {
                 source: source_manager,
@@ -391,6 +388,17 @@ impl ServerBuilder {
         )
         .await
     }
+}
+
+fn trace_components_for_store(
+    active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+) -> TraceServerComponents {
+    active_trace_store.map_or_else(TraceServerComponents::default, |store| {
+        TraceServerComponents {
+            local_trace_store_dir: Some(store.dir.clone()),
+            service: Some(TraceService::new(store.dir, store.retention)),
+        }
+    })
 }
 
 async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
@@ -855,6 +863,7 @@ mod tests {
         is_native_grpc_content_type, start_server,
     };
     use crate::bootstrap::AppError;
+    use crate::catalog::discovery::CatalogDiscovery;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
@@ -964,12 +973,28 @@ enabled = false
         let db = test_db(&layout, &config_store).await;
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
-            credential_manager,
+            credential_manager.clone(),
             layout.clone(),
             None,
             db,
         );
-        let search = SearchManager::new(layout.clone(), &config_store, workspace_manager, true);
+        let query_manager = QueryManager::new_for_tests(
+            config_store.clone(),
+            workspace_manager.clone(),
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            vec![Arc::new(NoopEngineExtensionsProvider)],
+        );
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let search = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager,
+            true,
+            CatalogDiscovery::new(query_manager),
+            lifecycle_lock,
+        );
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
         let generation = store
@@ -1345,11 +1370,14 @@ backend = "unsupported"
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
             true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
@@ -1794,11 +1822,14 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
             true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
         );
         let running = start_server(
             ServerDependencies {
@@ -1917,11 +1948,14 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
             true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
         );
         let running = start_server(
             ServerDependencies {
@@ -2040,11 +2074,14 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
             true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
         );
         let running = start_server(
             ServerDependencies {

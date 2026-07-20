@@ -60,14 +60,12 @@ pub(crate) struct SourceDiagnosticReporter {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SourceLoadDiagnosticStage {
     Query,
-    Catalog,
 }
 
 impl SourceLoadDiagnosticStage {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Query => "query-source",
-            Self::Catalog => "catalog-source",
         }
     }
 }

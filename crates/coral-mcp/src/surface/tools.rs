@@ -143,7 +143,9 @@ mod tests {
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
         assert!(search_description.contains("42 table(s) and 3 table function(s)"));
         assert!(search_description.contains("locally observed values"));
-        assert!(search_description.contains("does not query connected sources"));
+        assert!(
+            search_description.contains("does not execute your data query or return source rows")
+        );
     }
 
     #[test]

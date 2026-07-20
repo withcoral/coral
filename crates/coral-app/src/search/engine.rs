@@ -1,7 +1,9 @@
 //! Universal Search provider orchestration.
 
 use crate::bootstrap::AppError;
+use crate::catalog::model::CatalogResolution;
 use crate::query::QueryAttribution;
+use crate::query::manager::QueryManagerError;
 use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::provider::ObservedValuesProvider;
@@ -25,7 +27,8 @@ impl UniversalSearchEngine {
     pub(crate) fn search(
         &self,
         request: &SearchRequest,
-        attribution: &QueryAttribution,
+        _attribution: &QueryAttribution,
+        catalog_resolution: Result<&CatalogResolution, &QueryManagerError>,
         observed_policy: Option<Result<&ObservedValuesRetrievalPolicy, &AppError>>,
     ) -> SearchResponse {
         tracing::debug!(
@@ -34,7 +37,7 @@ impl UniversalSearchEngine {
             limit = request.limit,
             "running Universal Search"
         );
-        let catalog = self.catalog.search(request, attribution);
+        let catalog = self.catalog.search(request, catalog_resolution);
         let observed = observed_policy.map_or_else(observed_not_enabled_outcome, |policy| {
             self.observed.search(request, policy)
         });

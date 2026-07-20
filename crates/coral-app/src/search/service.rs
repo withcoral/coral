@@ -76,7 +76,7 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoSearchResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let attribution = QueryAttribution::from_extensions(request.extensions());
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -87,7 +87,7 @@ impl SearchServiceApi for SearchService {
                 .await
                 .map_err(search_status)?;
             Ok(Response::new(search_response_to_proto(response)))
-        })
+        }))
         .await
     }
 
@@ -97,7 +97,7 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoRebuildSearchIndexResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let request = DomainRebuildSearchIndexRequest {
@@ -110,7 +110,7 @@ impl SearchServiceApi for SearchService {
                 .await
                 .map_err(search_status)?;
             Ok(Response::new(rebuild_response_to_proto(response)))
-        })
+        }))
         .await
     }
 

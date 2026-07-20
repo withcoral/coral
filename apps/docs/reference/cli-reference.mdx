@@ -71,11 +71,14 @@ coral search github issues assigned to me
 coral search --limit 5 --json slack messages text
 ```
 
-Search always reads Coral's local catalog and does not query connected sources.
-Catalog results provide a `sql_reference` or `sql_call_example`. When the
-`observed_values_search` feature is enabled, search also reads observed-value
-memory; those results identify the value and the surface and column where Coral
-saw it. Use those clues with `coral sql` to fetch current rows.
+Search prepares the current workspace query runtime and catalog, then searches a
+local index. Runtime preparation can read stored credentials, initialize source
+providers, and inspect file metadata in local or object storage, but it does not
+execute your data query or return source rows. Catalog results provide a
+`sql_reference` or `sql_call_example`. When the `observed_values_search` feature
+is enabled, search also reads observed-value memory; those results identify the
+value and the surface and column where Coral saw it. Use those clues with
+`coral sql` to fetch current rows.
 
 Observed-value collection, retrieval, and maintenance are disabled by default.
 Enable them persistently using Coral [runtime features](/reference/configuration#runtime-features).
@@ -119,6 +122,11 @@ projection is always rebuilt when selected.
 
 Rebuild operates only on Coral's local search state. It does not query connected
 sources or discover new values.
+
+A rebuild performs the same workspace runtime and catalog preparation as
+`coral search`. It can read stored credentials, initialize source providers,
+and inspect file metadata in local or object storage, but it does not execute a
+data query. Observed-value index maintenance reads Coral's local search state.
 
 ```shellscript
 coral search-index rebuild

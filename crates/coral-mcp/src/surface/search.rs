@@ -96,7 +96,7 @@ fn search_description(
         "tables, table functions, columns, and filters in Coral's local catalog"
     };
     format!(
-        "Find relevant Coral {search_scope}. {} {} table(s) and {} table function(s) are currently visible. Search reads local state and does not query connected sources. Returns typed results plus provider statuses; use `sql` to query current data.",
+        "Find relevant Coral {search_scope}. {} {} table(s) and {} table function(s) are currently visible. Runtime preparation may read stored credentials, initialize source providers, and inspect file metadata in local or object storage, but it does not execute your data query or return source rows. Returns typed results plus provider statuses; use `sql` to query current data.",
         context.connected_sources_sentence(),
         context.visible_table_count,
         context.visible_function_count

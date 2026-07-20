@@ -5,7 +5,7 @@ description: "Find the right SQL surface from catalog metadata or values Coral o
 
 `coral search` helps you find where to query before you write SQL. Describe a table, table function, column, filter, or value in natural language, and Coral ranks matching locations in your current workspace.
 
-Catalog search is always available and reads Coral's local catalog metadata. Optional observed-value search can also match samples collected while executing earlier queries. Neither mode queries connected sources or returns source rows.
+Catalog search prepares the current workspace query runtime and catalog, then searches a local index. Runtime preparation can read stored credentials, initialize source providers, and inspect file metadata in local or object storage, but it does not execute your data query or return source rows. Optional observed-value search can also match samples collected while executing earlier queries; it only reads Coral's local search state.
 
 ## Search the catalog
 

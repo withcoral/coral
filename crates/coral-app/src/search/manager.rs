@@ -5,16 +5,18 @@ use std::time::{Duration, Instant};
 use tokio::task;
 
 use crate::bootstrap::AppError;
+use crate::catalog::discovery::CatalogDiscovery;
+use crate::catalog::model::CatalogResolution;
 use crate::query::QueryAttribution;
-use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
+use crate::query::manager::QueryManagerError;
 use crate::search::catalog::provider::{CatalogMetadataProvider, catalog_clear_provider_result};
 use crate::search::engine::UniversalSearchEngine;
 use crate::search::maintenance::{
     ClearSearchDataRequest, ClearSearchDataResponse, DrainSearchQueueRequest,
     DrainSearchQueueResponse, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
     SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchMaintenanceResult,
-    SearchMaintenanceState, SearchProviderClearRequest, SearchProviderMaintenance,
-    SearchProviderRebuildRequest, SearchStorageCleanupResult,
+    SearchMaintenanceState, SearchProviderClearRequest, SearchProviderRebuildRequest,
+    SearchStorageCleanupResult,
 };
 use crate::search::observed::provider::{ObservedValuesProvider, observed_clear_provider_result};
 use crate::search::observed::{
@@ -29,16 +31,20 @@ use crate::search::sqlite_store::{
 };
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::workspaces::{WorkspaceManager, WorkspaceName};
+use crate::workspaces::{
+    WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
+};
 
 #[derive(Clone)]
 pub(crate) struct SearchManager {
+    catalog_discovery: CatalogDiscovery,
     catalog: CatalogMetadataProvider,
     observed: ObservedValuesProvider,
     observed_scope_loader: ObservedValuesLiveScopeLoader,
     observed_values_search_enabled: bool,
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
+    lifecycle_lock: WorkspaceLifecycleLock,
     layout: AppStateLayout,
 }
 
@@ -46,8 +52,22 @@ const DEFAULT_MANUAL_DRAIN_BUDGET_MS: u32 = 1_000;
 const MAX_MANUAL_DRAIN_BUDGET_MS: u32 = 60_000;
 const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
 const SHUTDOWN_DRAIN_SOFT_BUDGET: Duration = Duration::from_secs(1);
+const WORKSPACE_SNAPSHOT_ATTEMPTS: usize = 2;
 const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
 const OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE: &str = "observed value search maintenance is disabled; enable `observed_values_search` to rebuild or drain observed values";
+
+enum CatalogPreload {
+    Ready {
+        revision: WorkspaceLifecycleRevision,
+        resolution: Result<CatalogResolution, QueryManagerError>,
+    },
+    WorkspaceChanged,
+}
+
+enum SnapshotOperation<T> {
+    Complete(T),
+    WorkspaceChanged,
+}
 
 impl SearchManager {
     #[cfg(test)]
@@ -56,6 +76,8 @@ impl SearchManager {
         config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
         observed_values_search_enabled: bool,
+        catalog_discovery: CatalogDiscovery,
+        lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
         Self::with_diagnostic_reporter(
             layout,
@@ -63,6 +85,8 @@ impl SearchManager {
             workspace_manager,
             observed_values_search_enabled,
             SourceDiagnosticReporter::default(),
+            catalog_discovery,
+            lifecycle_lock,
         )
     }
 
@@ -72,13 +96,10 @@ impl SearchManager {
         workspace_manager: WorkspaceManager,
         observed_values_search_enabled: bool,
         diagnostic_reporter: SourceDiagnosticReporter,
+        catalog_discovery: CatalogDiscovery,
+        lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
-        let catalog_loader = CatalogSnapshotLoader::with_diagnostic_reporter(
-            config_store.clone(),
-            layout.clone(),
-            diagnostic_reporter.clone(),
-        );
-        let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
+        let catalog = CatalogMetadataProvider::new(layout.clone());
         let observed = ObservedValuesProvider::new(layout.clone());
         let observed_scope_loader = ObservedValuesLiveScopeLoader::new(
             layout.clone(),
@@ -86,12 +107,14 @@ impl SearchManager {
             diagnostic_reporter,
         );
         Self {
+            catalog_discovery,
             catalog: catalog.clone(),
             observed: observed.clone(),
             observed_scope_loader,
             observed_values_search_enabled,
             engine: UniversalSearchEngine::new(catalog, observed),
             workspaces: workspace_manager,
+            lifecycle_lock,
             layout,
         }
     }
@@ -101,50 +124,130 @@ impl SearchManager {
         request: &SearchRequest,
         attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
-        self.workspaces
-            .require_workspace(&request.workspace_name)
+        for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
+            let CatalogPreload::Ready {
+                revision,
+                resolution,
+            } = self
+                .preload_catalog(&request.workspace_name, attribution)
+                .await?
+            else {
+                continue;
+            };
+            let search = self.clone();
+            let request = request.clone();
+            let attribution = attribution.clone();
+            let operation = run_blocking_search_operation(move || {
+                let Some(_snapshot) = search
+                    .lifecycle_lock
+                    .snapshot_if_unchanged(revision, &request.workspace_name)
+                else {
+                    return Ok(SnapshotOperation::WorkspaceChanged);
+                };
+                let observed_policy = search
+                    .observed_values_search_enabled
+                    .then(|| search.observed_retrieval_policy(&request.workspace_name));
+                Ok(SnapshotOperation::Complete(search.engine.search(
+                    &request,
+                    &attribution,
+                    resolution.as_ref(),
+                    observed_policy.as_ref().map(Result::as_ref),
+                )))
+            })
             .await?;
-        let search = self.clone();
-        let request = request.clone();
-        let attribution = attribution.clone();
-        run_blocking_search_operation(move || {
-            let observed_policy = search
-                .observed_values_search_enabled
-                .then(|| search.observed_retrieval_policy(&request.workspace_name));
-            Ok(search.engine.search(
-                &request,
-                &attribution,
-                observed_policy.as_ref().map(Result::as_ref),
-            ))
-        })
-        .await
+            if let SnapshotOperation::Complete(response) = operation {
+                return Ok(response);
+            }
+        }
+        Err(workspace_changed_error("searching"))
     }
 
     pub(crate) async fn rebuild_index(
         &self,
         request: &RebuildSearchIndexRequest,
     ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
-        self.workspaces
-            .require_workspace(&request.workspace_name)
+        let attribution = QueryAttribution::default();
+        let needs_catalog = matches!(
+            request.provider,
+            SearchIndexProvider::Catalog | SearchIndexProvider::All
+        );
+        for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
+            let (revision, resolution) = if needs_catalog {
+                let CatalogPreload::Ready {
+                    revision,
+                    resolution,
+                } = self
+                    .preload_catalog(&request.workspace_name, &attribution)
+                    .await?
+                else {
+                    continue;
+                };
+                (revision, Some(resolution))
+            } else {
+                let Some(revision) = self
+                    .lifecycle_lock
+                    .revision_if_active(&request.workspace_name)
+                else {
+                    continue;
+                };
+                self.workspaces
+                    .require_workspace(&request.workspace_name)
+                    .await?;
+                (revision, None)
+            };
+            let search = self.clone();
+            let request = request.clone();
+            let operation = run_blocking_search_operation(move || {
+                let Some(_snapshot) = search
+                    .lifecycle_lock
+                    .snapshot_if_unchanged(revision, &request.workspace_name)
+                else {
+                    return Ok(SnapshotOperation::WorkspaceChanged);
+                };
+                let resolution = resolution
+                    .map(|resolution| resolution.map_err(catalog_resolution_error))
+                    .transpose()?;
+                let results = match request.provider {
+                    SearchIndexProvider::Catalog => vec![
+                        search.rebuild_catalog_index(
+                            &request,
+                            resolution
+                                .as_ref()
+                                .expect("catalog rebuild preloads the catalog resolution"),
+                        )?,
+                    ],
+                    SearchIndexProvider::ObservedValues => {
+                        vec![search.rebuild_observed_index(&request)]
+                    }
+                    SearchIndexProvider::All => vec![
+                        search.rebuild_catalog_index(
+                            &request,
+                            resolution
+                                .as_ref()
+                                .expect("catalog rebuild preloads the catalog resolution"),
+                        )?,
+                        search.rebuild_observed_index(&request),
+                    ],
+                };
+                Ok(SnapshotOperation::Complete(RebuildSearchIndexResponse {
+                    results,
+                }))
+            })
             .await?;
-        let search = self.clone();
-        let request = request.clone();
-        run_blocking_search_operation(move || search.rebuild_index_blocking(&request)).await
+            if let SnapshotOperation::Complete(response) = operation {
+                return Ok(response);
+            }
+        }
+        Err(workspace_changed_error("rebuilding the search index"))
     }
 
-    fn rebuild_index_blocking(
+    fn rebuild_catalog_index(
         &self,
         request: &RebuildSearchIndexRequest,
-    ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
-        let results = match request.provider {
-            SearchIndexProvider::Catalog => vec![self.rebuild_catalog_index(request)?],
-            SearchIndexProvider::ObservedValues => vec![self.rebuild_observed_index(request)],
-            SearchIndexProvider::All => vec![
-                self.rebuild_catalog_index(request)?,
-                self.rebuild_observed_index(request),
-            ],
-        };
-        Ok(RebuildSearchIndexResponse { results })
+        resolution: &CatalogResolution,
+    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        self.catalog
+            .rebuild_index(&request.workspace_name, resolution, request.force)
     }
 
     pub(crate) async fn drain_queue(
@@ -174,12 +277,35 @@ impl SearchManager {
         &self,
         request: &ClearSearchDataRequest,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
-        self.workspaces
-            .require_workspace(&request.workspace_name)
+        for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
+            let Some(revision) = self
+                .lifecycle_lock
+                .revision_if_active(&request.workspace_name)
+            else {
+                continue;
+            };
+            self.workspaces
+                .require_workspace(&request.workspace_name)
+                .await?;
+            let search = self.clone();
+            let request = request.clone();
+            let operation = run_blocking_search_operation(move || {
+                let Some(_snapshot) = search
+                    .lifecycle_lock
+                    .snapshot_if_unchanged(revision, &request.workspace_name)
+                else {
+                    return Ok(SnapshotOperation::WorkspaceChanged);
+                };
+                Ok(SnapshotOperation::Complete(
+                    search.clear_data_blocking(&request)?,
+                ))
+            })
             .await?;
-        let search = self.clone();
-        let request = request.clone();
-        run_blocking_search_operation(move || search.clear_data_blocking(&request)).await
+            if let SnapshotOperation::Complete(response) = operation {
+                return Ok(response);
+            }
+        }
+        Err(workspace_changed_error("clearing search data"))
     }
 
     fn clear_data_blocking(
@@ -325,13 +451,23 @@ impl SearchManager {
         .await
     }
 
-    fn rebuild_catalog_index(
+    async fn preload_catalog(
         &self,
-        request: &RebuildSearchIndexRequest,
-    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
-        self.catalog.rebuild_index(SearchProviderRebuildRequest {
-            workspace_name: &request.workspace_name,
-            force: request.force,
+        workspace_name: &WorkspaceName,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogPreload, SearchManagerError> {
+        let Some(revision) = self.lifecycle_lock.revision_if_active(workspace_name) else {
+            return Ok(CatalogPreload::WorkspaceChanged);
+        };
+        self.workspaces.require_workspace(workspace_name).await?;
+        let resolution = self
+            .catalog_discovery
+            .resolve_catalog(workspace_name, attribution)
+            .await;
+        self.workspaces.require_workspace(workspace_name).await?;
+        Ok(CatalogPreload::Ready {
+            revision,
+            resolution,
         })
     }
 
@@ -356,7 +492,6 @@ impl SearchManager {
         self.observed.rebuild_index(
             SearchProviderRebuildRequest {
                 workspace_name: &request.workspace_name,
-                force: request.force,
             },
             &policy,
         )
@@ -390,6 +525,22 @@ impl SearchManager {
             OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS,
         ))
     }
+}
+
+fn catalog_resolution_error(error: QueryManagerError) -> SearchManagerError {
+    match error {
+        QueryManagerError::App(error) => error.into(),
+        QueryManagerError::Core(error) => {
+            AppError::Internal(format!("workspace catalog resolution failed: {error}")).into()
+        }
+    }
+}
+
+fn workspace_changed_error(operation: &str) -> SearchManagerError {
+    AppError::FailedPrecondition(format!(
+        "workspace changed repeatedly while {operation}; retry the request"
+    ))
+    .into()
 }
 
 async fn run_blocking_search_operation<T, F>(operation: F) -> Result<T, SearchManagerError>

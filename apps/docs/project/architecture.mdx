@@ -123,9 +123,12 @@ All inter-crate communication between `coral-client` and `coral-app` goes throug
 `SearchService` searches Coral's catalog and its local memory of values observed
 during supported source scans. It returns typed, bounded matches for tables, table
 functions, columns, filters, and observed values, plus status, coverage, and
-truncation metadata. Search does not query connected sources or answer data
-questions; use the returned locations with `coral sql` or the MCP `sql` tool to
-fetch current data.
+truncation metadata. Before searching its local index, it prepares the current
+workspace query runtime and catalog. Runtime preparation can read stored
+credentials, initialize source providers, and inspect file metadata in local or
+object storage, but it does not execute the user's data query or return source
+rows. Use the returned locations with `coral sql` or the MCP `sql` tool to fetch
+current data.
 
 ## Dependency graph
 
