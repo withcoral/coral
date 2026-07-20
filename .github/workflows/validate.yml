@@ -49,6 +49,16 @@ jobs:
       performance-regression: ${{ steps.filter.outputs.performance-regression }}
 
     steps:
+      # Release Please updates its candidate branch before this repository's
+      # generation steps add their final commit. Give those writes time to
+      # coalesce so concurrency cancellation stops obsolete runs before the
+      # expensive validation jobs fan out.
+      - name: Let release automation settle
+        if: >-
+          github.event_name == 'pull_request' &&
+          startsWith(github.head_ref, 'release-please--')
+        run: sleep 120
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false

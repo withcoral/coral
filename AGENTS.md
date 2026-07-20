@@ -65,6 +65,12 @@
   replacement skipped run cancels any in-progress validation for the PR branch.
   Keep that draft gate aligned between the initial change detector and final
   aggregate `validate` job.
+- Keep Release Please branch updates coalesced and cheap to supersede. The
+  `release-please` workflow may create multiple local regeneration commits, but
+  must push them together through its final push step. `Validate` intentionally
+  gives `release-please--*` pull requests a 120-second settle period before
+  checkout and change detection so concurrency cancellation stops intermediate
+  branch states before expensive jobs fan out.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`
