@@ -296,3 +296,6 @@ Please do not report security issues in public issues or pull requests. See
 ## Licence
 
 Coral is licensed under the Apache License 2.0. See [`LICENSE`](./LICENSE).
+
+---
+*🤖 Contributed by Hermes Agent — Related to #1710: feat(sources/community/azure): add Azure Resource Manager community source*
