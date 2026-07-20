@@ -37,12 +37,14 @@ use url::{Host, Url};
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
 
-/// How many tables to show per schema when pretty-printing validation results.
+/// How many tables or table functions to show per schema when pretty-printing
+/// validation results.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TableDisplayLimit {
-    /// Show every table the source exposes.
+    /// Show every table and table function the source exposes.
     All,
-    /// Show at most this many tables per schema, with a summary for the rest.
+    /// Show at most this many items of each kind per schema, with a summary for
+    /// the rest.
     Max(usize),
 }
 
@@ -1012,6 +1014,8 @@ pub(crate) fn print_validation_pretty(
         }
     }
 
+    print_table_functions_pretty(response, limit);
+
     let query_test_counts = query_test_counts(response);
     if query_test_counts.declared > 0 {
         println!("    {}", style("Query tests").bold());
@@ -1054,6 +1058,58 @@ pub(crate) fn print_validation_pretty(
     println!();
 
     Ok(())
+}
+
+fn print_table_functions_pretty(response: &ValidateSourceResponse, limit: TableDisplayLimit) {
+    // Keep table functions separate so the existing table summary remains
+    // stable while making callable source surfaces equally visible.
+    let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for function in &response.table_functions {
+        by_schema
+            .entry(&function.schema_name)
+            .or_default()
+            .push(&function.name);
+    }
+    for functions in by_schema.values_mut() {
+        functions.sort_unstable();
+    }
+
+    for (schema, functions) in &by_schema {
+        let count = functions.len();
+        println!();
+        println!(
+            "    {}",
+            style(format!(
+                "{schema} ({count} {})",
+                if count == 1 {
+                    "table function"
+                } else {
+                    "table functions"
+                }
+            ))
+            .bold()
+        );
+
+        let show_count = match limit {
+            TableDisplayLimit::All => functions.len(),
+            TableDisplayLimit::Max(max) => functions.len().min(max),
+        };
+        let remaining = functions.len() - show_count;
+
+        for (i, function) in functions.iter().take(show_count).enumerate() {
+            let is_last = i == show_count - 1 && remaining == 0;
+            let branch = if is_last { "└─" } else { "├─" };
+            println!("    {} {}()", style(branch).dim(), function);
+        }
+
+        if remaining > 0 {
+            println!(
+                "    {} {}",
+                style("└─").dim(),
+                style(format!("... and {remaining} more")).dim()
+            );
+        }
+    }
 }
 
 fn validation_follow_up(
