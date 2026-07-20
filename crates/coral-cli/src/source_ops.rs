@@ -969,52 +969,26 @@ pub(crate) fn print_validation_pretty(
         source_credential_storage_label(source.credential_storage)
     );
 
-    // Group tables by schema, sorted.
-    let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for table in &response.tables {
-        by_schema
-            .entry(&table.schema_name)
-            .or_default()
-            .push(&table.name);
-    }
-    for tables in by_schema.values_mut() {
-        tables.sort_unstable();
-    }
-
-    for (schema, tables) in &by_schema {
-        let count = tables.len();
-        println!();
-        println!(
-            "    {}",
-            style(format!(
-                "{schema} ({count} {})",
-                if count == 1 { "table" } else { "tables" }
-            ))
-            .bold()
-        );
-
-        let show_count = match limit {
-            TableDisplayLimit::All => tables.len(),
-            TableDisplayLimit::Max(max) => tables.len().min(max),
-        };
-        let remaining = tables.len() - show_count;
-
-        for (i, table) in tables.iter().take(show_count).enumerate() {
-            let is_last = i == show_count - 1 && remaining == 0;
-            let branch = if is_last { "└─" } else { "├─" };
-            println!("    {} {}", style(branch).dim(), table);
-        }
-
-        if remaining > 0 {
-            println!(
-                "    {} {}",
-                style("└─").dim(),
-                style(format!("... and {remaining} more")).dim()
-            );
-        }
-    }
-
-    print_table_functions_pretty(response, limit);
+    print_schema_items(
+        response
+            .tables
+            .iter()
+            .map(|table| (table.schema_name.as_str(), table.name.as_str())),
+        "table",
+        "tables",
+        "",
+        limit,
+    );
+    print_schema_items(
+        response
+            .table_functions
+            .iter()
+            .map(|function| (function.schema_name.as_str(), function.name.as_str())),
+        "table function",
+        "table functions",
+        "()",
+        limit,
+    );
 
     let query_test_counts = query_test_counts(response);
     if query_test_counts.declared > 0 {
@@ -1060,46 +1034,43 @@ pub(crate) fn print_validation_pretty(
     Ok(())
 }
 
-fn print_table_functions_pretty(response: &ValidateSourceResponse, limit: TableDisplayLimit) {
-    // Keep table functions separate so the existing table summary remains
-    // stable while making callable source surfaces equally visible.
+fn print_schema_items<'a>(
+    items: impl IntoIterator<Item = (&'a str, &'a str)>,
+    singular: &str,
+    plural: &str,
+    suffix: &str,
+    limit: TableDisplayLimit,
+) {
     let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for function in &response.table_functions {
-        by_schema
-            .entry(&function.schema_name)
-            .or_default()
-            .push(&function.name);
+    for (schema, name) in items {
+        by_schema.entry(schema).or_default().push(name);
     }
-    for functions in by_schema.values_mut() {
-        functions.sort_unstable();
+    for names in by_schema.values_mut() {
+        names.sort_unstable();
     }
 
-    for (schema, functions) in &by_schema {
-        let count = functions.len();
+    for (schema, names) in &by_schema {
+        let count = names.len();
         println!();
         println!(
             "    {}",
             style(format!(
                 "{schema} ({count} {})",
-                if count == 1 {
-                    "table function"
-                } else {
-                    "table functions"
-                }
+                if count == 1 { singular } else { plural }
             ))
             .bold()
         );
 
         let show_count = match limit {
-            TableDisplayLimit::All => functions.len(),
-            TableDisplayLimit::Max(max) => functions.len().min(max),
+            TableDisplayLimit::All => names.len(),
+            TableDisplayLimit::Max(max) => names.len().min(max),
         };
-        let remaining = functions.len() - show_count;
+        let remaining = names.len() - show_count;
 
-        for (i, function) in functions.iter().take(show_count).enumerate() {
+        for (i, name) in names.iter().take(show_count).enumerate() {
             let is_last = i == show_count - 1 && remaining == 0;
             let branch = if is_last { "└─" } else { "├─" };
-            println!("    {} {}()", style(branch).dim(), function);
+            println!("    {} {name}{suffix}", style(branch).dim());
         }
 
         if remaining > 0 {
