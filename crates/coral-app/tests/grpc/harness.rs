@@ -1,11 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
     PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, catalog_item, import_source_response,
 };
+use coral_app::EngineExtensionsProvider;
 use coral_app::features::{Feature, FeatureOverrides};
 use coral_client::{
     AppClient, CatalogClient, FunctionClient, QueryClient, SearchClient, SourceClient,
@@ -49,13 +51,42 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
     }
 
+    pub(crate) async fn new_with_engine_extensions_provider(
+        provider: Arc<dyn EngineExtensionsProvider>,
+    ) -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        Self::start_with_builder(
+            temp_dir,
+            config_dir,
+            FeatureOverrides::default(),
+            ServerBuilder::new().add_engine_extensions_provider(provider),
+        )
+        .await
+    }
+
     async fn start_with_parts(
         temp_dir: TempDir,
         config_dir: PathBuf,
         feature_overrides: FeatureOverrides,
     ) -> Self {
+        Self::start_with_builder(
+            temp_dir,
+            config_dir,
+            feature_overrides,
+            ServerBuilder::new(),
+        )
+        .await
+    }
+
+    async fn start_with_builder(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+        feature_overrides: FeatureOverrides,
+        server_builder: ServerBuilder,
+    ) -> Self {
         ensure_file_credentials_config(&config_dir);
-        let server = ServerBuilder::new()
+        let server = server_builder
             .with_config_dir(&config_dir)
             .with_feature_overrides(feature_overrides)
             .start()
