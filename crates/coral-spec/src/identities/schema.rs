@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -17,7 +17,10 @@ const RUST_TRIM_WHITESPACE_PATTERN: &str = "\u{0009}-\u{000d}\u{0020}\u{0085}\u{
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(title = "Coral Identity Manifest")]
+#[schemars(
+    title = "Coral Identity Manifest",
+    extend("$id" = "https://coral.local/identity_manifest.schema.json")
+)]
 enum IdentityManifestSchema {
     #[serde(rename = "oauth")]
     OAuth {
@@ -38,7 +41,7 @@ enum IdentityManifestSchema {
         issuer: String,
         audience: IdentityAudienceSchema,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[schemars(required)]
+        #[schemars(required, transform = constrain_identity_inputs_schema)]
         inputs: Option<BTreeMap<String, IdentityInputSchema>>,
         oauth: IdentityOAuthSchema,
     },
@@ -277,48 +280,18 @@ struct IdentityOAuthClientIdSchema {
 /// Panics only if the schema produced by `schemars` cannot be serialized to
 /// JSON, which would indicate an invalid schema type definition in this crate.
 pub fn generated_identity_manifest_schema() -> Value {
-    let mut schema = serde_json::to_value(schemars::schema_for!(IdentityManifestSchema))
-        .expect("generated identity manifest schema must serialize");
-    post_process_identity_schema(&mut schema);
-    schema
+    serde_json::to_value(schemars::schema_for!(IdentityManifestSchema))
+        .expect("generated identity manifest schema must serialize")
 }
 
-fn post_process_identity_schema(schema: &mut Value) {
-    let root = schema
-        .as_object_mut()
-        .expect("generated identity manifest schema must be an object");
-    root.insert(
-        "$id".to_string(),
-        Value::String("https://coral.local/identity_manifest.schema.json".to_string()),
-    );
-    root.entry("$schema".to_string()).or_insert_with(|| {
-        Value::String("https://json-schema.org/draft/2020-12/schema".to_string())
-    });
-
-    let Some(inputs) = root
-        .get_mut("oneOf")
-        .and_then(Value::as_array_mut)
-        .and_then(|variants| {
-            variants.iter_mut().find(|variant| {
-                variant
-                    .pointer("/properties/type/const")
-                    .and_then(Value::as_str)
-                    == Some("oauth")
-            })
-        })
-        .and_then(|oauth| oauth.pointer_mut("/properties/inputs"))
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-
+fn constrain_identity_inputs_schema(schema: &mut Schema) {
     let mut forbidden_names = vec![json!({"pattern": r"[/\\=\r\n]"}), json!({"pattern": "^#"})];
     forbidden_names.extend(
         RESERVED_INPUT_KEY_PREFIXES
             .iter()
             .map(|prefix| json!({"pattern": format!("^{prefix}")})),
     );
-    inputs.insert(
+    schema.insert(
         "propertyNames".to_string(),
         json!({
             "minLength": 1,
@@ -332,7 +305,7 @@ fn post_process_identity_schema(schema: &mut Value) {
         .map(|marker| ascii_case_insensitive_pattern(marker))
         .collect::<Vec<_>>()
         .join("|");
-    inputs.insert(
+    schema.insert(
         "patternProperties".to_string(),
         json!({
             format!("(^|_)({marker_pattern})(_|$)"): {
