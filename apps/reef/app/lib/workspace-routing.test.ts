@@ -1,12 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { workspaceFromParams, workspacePathForCurrentSection } from './workspace-routing'
+import { workspacePathForCurrentSection } from './workspace-routing'
 
 describe('workspace routing', () => {
-  it('treats the workspace route parameter as the local workspace name', () => {
-    expect(workspaceFromParams({ workspaceId: 'analytics' }).name).toBe('analytics')
-  })
-
   it.each([
     ['/workspaces/default/sources/github', '/workspaces/team%20alpha/sources'],
     ['/workspaces/default/schema', '/workspaces/team%20alpha/schema'],

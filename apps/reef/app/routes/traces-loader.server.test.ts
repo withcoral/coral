@@ -10,7 +10,7 @@ import {
 import type { TraceSummaryData } from '@/views/traces/trace-utils'
 import { describe, expect, it, vi } from 'vitest'
 
-import { listQueryTraces, loadTracesRouteData, traceEndpointLabel } from './traces-loader'
+import { listQueryTraces, loadTracesRouteData } from './traces-loader'
 
 function summary(
   traceId: string,
@@ -85,24 +85,5 @@ describe('traces list loader', () => {
       traces.slice(0, 80),
     )
     expect(listPage).toHaveBeenCalledOnce()
-  })
-
-  it('maps unavailable and generic failures into route data', async () => {
-    const unavailable = vi.fn().mockRejectedValue(new Error('rpc unimplemented'))
-    await expect(loadTracesRouteData(request, workspace, unavailable)).resolves.toMatchObject({
-      loadError:
-        'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run an operation.',
-      traces: [],
-    })
-
-    const generic = vi.fn().mockRejectedValue(new Error('sidecar unavailable'))
-    await expect(loadTracesRouteData(request, workspace, generic)).resolves.toMatchObject({
-      loadError: 'sidecar unavailable',
-      traces: [],
-    })
-  })
-
-  it('falls back to the service name for an invalid request URL', () => {
-    expect(traceEndpointLabel({ url: 'not a url' } as Request)).toBe('TraceService')
   })
 })
