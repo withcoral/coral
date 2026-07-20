@@ -8,35 +8,30 @@ import {
 } from '@/components/query-detail'
 import type { SourceCatalogEntry } from '@/components/sources'
 import { formatSQL } from '@/lib/sql-highlight'
+import { ONBOARDING_SAMPLE_QUERY, type OnboardingSampleQueryRow } from '@/lib/onboarding-query'
 import { Table, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 
 import { OnboardingPage } from './onboarding-page'
 import * as styles from './onboarding-sample-query-page.css'
-import { getOnboardingStepState } from './onboarding-steps'
+import type { OnboardingStepState } from './onboarding-steps'
 import { pluralise } from '~/utils/pluralise'
 
 export type SampleQueryLoadState = 'error' | 'idle' | 'loading' | 'success'
 
-export const ONBOARDING_SAMPLE_QUERY = `SELECT schema_name AS source, COUNT(*) AS tables
-FROM coral.tables
-GROUP BY schema_name
-ORDER BY schema_name`
-
-export interface OnboardingSampleQueryRow {
-  source: string
-  tables: bigint | number | string
-}
+export type { OnboardingSampleQueryRow } from '@/lib/onboarding-query'
 
 export interface OnboardingSampleQueryPageProps {
   connectedSources: SourceCatalogEntry[]
   continueDisabled?: boolean
   continueLabel?: string
   errorMessage?: string | null
+  errorTitle?: string
   loadState?: SampleQueryLoadState
   onContinue?: () => void
   onRetry?: () => void
   rows?: OnboardingSampleQueryRow[]
+  step: OnboardingStepState
 }
 
 export function OnboardingSampleQueryPage({
@@ -44,12 +39,13 @@ export function OnboardingSampleQueryPage({
   continueDisabled = false,
   continueLabel = 'Finish setup',
   errorMessage = null,
+  errorTitle,
   loadState = 'idle',
   onContinue,
   onRetry,
   rows = [],
+  step,
 }: OnboardingSampleQueryPageProps) {
-  const step = getOnboardingStepState('query')
   const sourceCount = connectedSources.length
   const canContinue = sourceCount > 0 && loadState === 'success' && !continueDisabled
 
@@ -85,6 +81,7 @@ export function OnboardingSampleQueryPage({
       <QueryPanelBody
         connectedSources={connectedSources}
         errorMessage={errorMessage}
+        errorTitle={errorTitle}
         loadState={loadState}
         onRetry={onRetry}
         rows={rows}
@@ -96,23 +93,26 @@ export function OnboardingSampleQueryPage({
 function QueryPanelBody({
   connectedSources,
   errorMessage,
+  errorTitle,
   loadState,
   onRetry,
   rows,
 }: {
   connectedSources: SourceCatalogEntry[]
   errorMessage: string | null
+  errorTitle?: string
   loadState: SampleQueryLoadState
   onRetry?: () => void
   rows: OnboardingSampleQueryRow[]
 }) {
-  if (connectedSources.length === 0) {
+  if (connectedSources.length === 0 && loadState !== 'error') {
     return <MissingSourceFallback />
   }
 
   const queryState = getQueryState({
     connectedSourceCount: connectedSources.length,
     errorMessage,
+    errorTitle,
     loadState,
     onRetry,
     rows,
@@ -133,12 +133,14 @@ function QueryPanelBody({
 function getQueryState({
   connectedSourceCount,
   errorMessage,
+  errorTitle,
   loadState,
   onRetry,
   rows,
 }: {
   connectedSourceCount: number
   errorMessage: string | null
+  errorTitle?: string
   loadState: SampleQueryLoadState
   onRetry?: () => void
   rows: OnboardingSampleQueryRow[]
@@ -168,7 +170,7 @@ function getQueryState({
     return {
       content: (
         <ErrorBanner
-          title="Couldn't run the catalog query"
+          title={errorTitle ?? "Couldn't run the catalog query"}
           message={errorMessage ?? 'Check Coral and try again.'}
           onRetry={onRetry}
         />

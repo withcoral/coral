@@ -99,6 +99,7 @@ export function catalogEntries(discovered: SourceInfo[], installed: Source[]): C
       existing.installed = true
       const installedOrigin = originLabel(source.origin)
       if (installedOrigin !== 'unknown') existing.origin = installedOrigin
+      existing.source = toCatalogSource(source)
       existing.version = source.version || existing.version
       continue
     }
@@ -108,6 +109,7 @@ export function catalogEntries(discovered: SourceInfo[], installed: Source[]): C
       installed: true,
       name: source.name,
       origin: originLabel(source.origin),
+      source: toCatalogSource(source),
       version: source.version,
     })
   }

@@ -7,6 +7,7 @@ import { fn } from 'storybook/test'
 import type { CatalogEntry } from '@/lib/sources'
 
 import { OnboardingSourcesPage } from './onboarding-sources-page'
+import { getOnboardingStepState } from './onboarding-steps'
 
 const entries: CatalogEntry[] = [
   {
@@ -75,6 +76,7 @@ const meta = {
     onSearchChange: fn(),
     onSourceSelect: fn(),
     search: '',
+    step: getOnboardingStepState('sources'),
   },
   component: OnboardingSourcesPage,
   parameters: {

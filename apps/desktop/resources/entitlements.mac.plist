@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keep hardened-runtime exceptions to the minimum required by the current
+  Electron runtime. Electron's V8 engine uses MAP_JIT; it does not need
+  unsigned executable memory on Electron 12+, and Coral does not load
+  third-party in-process plug-ins that require disabling library validation.
+-->
+<plist version="1.0">
+  <dict>
+    <!-- V8 JIT-compiles JavaScript into executable memory at runtime. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+  </dict>
+</plist>

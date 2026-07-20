@@ -13,13 +13,19 @@
     "build": "electron-vite build --ignoreConfigWarning",
     "postbuild": "node ./scripts/copy-reef-server.mjs",
     "type-check": "tsc --noEmit",
-    "check": "npm run type-check",
+    "check": "npm run type-check && npm run test:config",
+    "test:config": "node --test scripts/electron-builder-config.test.mjs scripts/electron-vite-config.test.mjs",
+    "test": "vitest run",
+    "verify:release-build": "node ./scripts/verify-release-build.mjs",
     "prepackage": "npm run build",
-    "package": "electron-builder --config electron-builder.config.ts",
+    "package": "electron-builder --publish never --config electron-builder.config.ts",
     "prepackage:dir": "npm run build",
     "package:dir": "electron-builder --dir --config electron-builder.config.ts",
     "prepackage:dmg": "npm run build",
-    "package:dmg": "electron-builder --mac dmg --config electron-builder.config.ts",
+    "package:dmg": "electron-builder --mac dmg --publish never --config electron-builder.config.ts",
+    "prepackage:mac": "CORAL_DESKTOP_UNIVERSAL=1 npm run build",
+    "package:mac": "npm run package:mac:prepared",
+    "package:mac:prepared": "electron-builder --mac --universal --publish never --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
   "dependencies": {
@@ -32,6 +38,7 @@
     "@vanilla-extract/recipes": "0.5.7",
     "add-mcp": "^1.11.0",
     "classnames": "2.5.1",
+    "electron-updater": "^6.8.9",
     "isbot": "5.1.43",
     "jotai": "2.20.1",
     "lucide-react": "1.18.0",
@@ -50,6 +57,7 @@
     "electron-builder": "^26.15.2",
     "electron-vite": "^5.0.0",
     "typescript": "^6.0.3",
-    "vite": "^7.2.7"
+    "vite": "^7.2.7",
+    "vitest": "^4.1.9"
   }
 }

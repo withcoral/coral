@@ -996,7 +996,11 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
+        AppError::IncompatibleInstalledV4Manifest { .. } => "INCOMPATIBLE_INSTALLED_V4_MANIFEST",
         AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
+        AppError::InvalidV4ParameterMetadataOverride { .. } => {
+            "INVALID_V4_PARAMETER_METADATA_OVERRIDE"
+        }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
@@ -1784,8 +1788,7 @@ paths:
                         r"
 name: github_v4_query
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: {}
 ",
@@ -1859,8 +1862,7 @@ surfaces:
                         r"
 name: github_v4_pagination_override
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: {}
 ",
@@ -1942,8 +1944,7 @@ paths:
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) {
-        let override_path =
-            layout.v4_parameter_metadata_override_file(workspace_name, source_name, "rest");
+        let override_path = layout.v4_parameter_metadata_override_file(workspace_name, source_name);
         std::fs::create_dir_all(override_path.parent().expect("override parent"))
             .expect("create override dir");
         std::fs::write(
@@ -2193,8 +2194,7 @@ tables:
             r"
 name: github_v4_missing_artifacts
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
 ",

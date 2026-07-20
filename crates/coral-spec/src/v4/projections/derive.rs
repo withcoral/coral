@@ -27,31 +27,25 @@ type TypeIndex<'a> = HashMap<&'a str, &'a IrType>;
 
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
-    surfaces: &[SemanticIr],
+    surface: &SemanticIr,
 ) -> Result<ProjectionCatalog> {
     let mut projections = Vec::new();
     let mut diagnostics = Vec::new();
-    for ir in surfaces {
-        let namespace = manifest
-            .surface(&ir.surface_id)
-            .map(|surface| surface.relation_namespace.as_str())
-            .ok_or_else(|| {
-                ManifestError::validation(format!(
-                    "projection surface '{}' is not declared in source '{}'",
-                    ir.surface_id, manifest.common.name
-                ))
-            })?;
-        let type_by_id = type_index(ir);
-        for operation in &ir.operations {
-            let projection =
-                generate_projection(ir, namespace, &type_by_id, operation, &mut diagnostics);
-            projections.push(projection);
-        }
-        diagnostics.extend(ir.diagnostics.clone());
+    if surface.source_name != manifest.common.name {
+        return Err(ManifestError::validation(format!(
+            "projection surface source '{}' does not match manifest source '{}'",
+            surface.source_name, manifest.common.name
+        )));
     }
+    let type_by_id = type_index(surface);
+    for operation in &surface.operations {
+        let projection = generate_projection(&type_by_id, operation, &mut diagnostics);
+        projections.push(projection);
+    }
+    diagnostics.extend(surface.diagnostics.clone());
     diagnostics.extend(resolve_projection_name_collisions(
         manifest,
-        surfaces,
+        surface,
         &mut projections,
     ));
     Ok(ProjectionCatalog {
@@ -64,8 +58,6 @@ pub fn generate_projection_catalog(
 }
 
 fn generate_projection(
-    ir: &SemanticIr,
-    namespace: &str,
     type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
@@ -105,7 +97,6 @@ fn generate_projection(
                         "required {:?} input '{}' cannot be exposed in SQL",
                         input.location, input.name
                     ),
-                    ir.surface_id.clone(),
                     Some(operation.id.clone()),
                 ));
             }
@@ -131,11 +122,9 @@ fn generate_projection(
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
         name,
-        namespace: namespace.to_string(),
         kind,
         description: operation.description.clone(),
         guide,
-        surface_id: ir.surface_id.clone(),
         operation_id: operation.id.clone(),
         visibility,
         inputs,

@@ -38,8 +38,8 @@ use coral_api::v1::{
     SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
     SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
     SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableFunction,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response, search_maintenance_result,
     search_result, source_input_spec::Input as ProtoSourceInput,
 };
@@ -354,7 +354,16 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "issues"),
             mock_table("github", "pull_requests"),
         ],
-        table_functions: Vec::new(),
+        table_functions: vec![TableFunction {
+            workspace: Some(workspace()),
+            schema_name: "github".to_string(),
+            name: "search_issues".to_string(),
+            description: "Search issues".to_string(),
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: 0,
+            search_limits: None,
+        }],
         query_tests: Vec::new(),
     }
 }

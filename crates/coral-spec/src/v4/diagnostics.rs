@@ -5,25 +5,20 @@ pub struct Diagnostic {
     pub code: String,
     pub severity: DiagnosticSeverity,
     pub message: String,
-    pub surface_id: Option<String>,
     pub operation_id: Option<String>,
-    pub projection_name: Option<String>,
 }
 
 impl Diagnostic {
     pub(crate) fn warning(
         code: &str,
         message: impl Into<String>,
-        surface_id: impl Into<String>,
         operation_id: Option<String>,
     ) -> Self {
         Self {
             code: code.to_string(),
             severity: DiagnosticSeverity::Warning,
             message: message.into(),
-            surface_id: Some(surface_id.into()),
             operation_id,
-            projection_name: None,
         }
     }
 }

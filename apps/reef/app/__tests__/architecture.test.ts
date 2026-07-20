@@ -351,6 +351,8 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain(
         "route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts')",
       )
+      // Onboarding is a hidden, manually visited flow outside the normal app chrome.
+      expect(routeConfig).toContain("route('onboarding', 'routes/onboarding.tsx')")
       expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
       expect(routeConfig).toContain("index('routes/index.tsx')")
       expect(routeConfig).toContain(
@@ -369,10 +371,11 @@ describe('Architectural Tests', () => {
       // Settings is gated to the desktop build, but the route entry is still present.
       expect(routeConfig).toContain("route(routePattern('settings'), 'routes/settings.tsx')")
 
-      // Structural check: the OAuth streaming resource route stays outside the
-      // app shell, while canonical workspace routes and settings stay inside it.
+      // Structural check: the same-origin resource route and onboarding stay
+      // outside the app shell, while canonical workspace routes and settings
+      // stay inside it.
       expect(routeConfig).toMatch(
-        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
+        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*route\('onboarding', 'routes\/onboarding\.tsx'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
       )
     })
 

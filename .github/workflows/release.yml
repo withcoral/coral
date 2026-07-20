@@ -83,7 +83,7 @@ jobs:
           fi
       - name: Set up Node
         if: steps.detect-ui.outputs.has-ui == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           package-manager-cache: false
@@ -230,6 +230,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
+          if-no-files-found: error
           path: |
             coral-${{ matrix.target }}.tar.gz
             coral-${{ matrix.target }}.zip
@@ -314,13 +315,82 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
+          if-no-files-found: error
           path: |
             coral-${{ matrix.target }}.zip
             coral-${{ matrix.target }}.tar.gz
 
+  build-desktop-macos:
+    needs:
+      - validate-release-ref
+    environment: release
+    runs-on: macos-latest
+    env:
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      - name: Build xtask
+        run: cargo build --locked -p xtask
+
+      # Build before Apple credentials enter the environment: the desktop
+      # build installs UI and Reef dependencies and executes Rust build scripts.
+      # The release flag is compiled into the main process to enable updates;
+      # signing and notarization still happen only in the credentialed step.
+      - name: Build universal desktop inputs
+        env:
+          CORAL_DESKTOP_RELEASE: "1"
+          CORAL_DESKTOP_UNIVERSAL: "1"
+        run: npm run build --prefix apps/desktop
+
+      - name: Verify release updater bundle
+        run: npm run verify:release-build --prefix apps/desktop
+
+      # Version/tag agreement, credential preflight, API-key staging,
+      # packaging, and signature/notarization/artifact verification live in
+      # xtask so they are testable and cannot drift from this workflow.
+      - name: Package, sign, and notarize desktop app
+        env:
+          CSC_LINK: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: |
+          ./target/debug/xtask release-desktop-macos-package \
+            --tag "$TAG_NAME" \
+            --work-dir "$RUNNER_TEMP/coral-desktop-release"
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-desktop-macos
+          if-no-files-found: error
+          path: |
+            apps/desktop/dist/coral-desktop-*.dmg
+            apps/desktop/dist/coral-desktop-*.zip
+            apps/desktop/dist/coral-desktop-*.blockmap
+            apps/desktop/dist/latest-mac.yml
+
   checksums:
     needs:
       - build
+      - build-desktop-macos
       - sign-notarize-macos
     runs-on: ubuntu-latest
     steps:
@@ -332,9 +402,18 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           cd artifacts
-          sha256sum coral-*.tar.gz > checksums.sha256
-          sha256sum coral-*.zip >> checksums.sha256
+          # Only the globs decide "did any archive arrive?"; latest-mac.yml is a
+          # literal that would always survive nullglob and mask an empty set.
+          archives=(coral-*.tar.gz coral-*.zip coral-*.dmg coral-*.blockmap)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "No Coral release archives found" >&2
+            exit 1
+          fi
+          test -s latest-mac.yml
+          sha256sum "${archives[@]}" latest-mac.yml > checksums.sha256
           test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -377,13 +456,25 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          artifacts=(artifacts/coral-*.tar.gz artifacts/coral-*.zip artifacts/checksums.sha256)
-          if [ "${#artifacts[@]}" -lt 2 ]; then
+          # Count only the globbed archives; the literals (latest-mac.yml,
+          # checksums.sha256) would always survive nullglob and defeat the
+          # emptiness guard.
+          archives=(
+            artifacts/coral-*.tar.gz
+            artifacts/coral-*.zip
+            artifacts/coral-*.dmg
+            artifacts/coral-*.blockmap
+          )
+          if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2
             exit 1
           fi
+          test -s artifacts/latest-mac.yml
+          test -s artifacts/checksums.sha256
           gh release upload "$TAG_NAME" \
-            "${artifacts[@]}" \
+            "${archives[@]}" \
+            artifacts/latest-mac.yml \
+            artifacts/checksums.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 

@@ -31,7 +31,9 @@ uses `CORAL_ENDPOINT` to reach the supervised sidecar.
   Windows target)
 - Coral MCP configuration for Codex and Claude Code — from the Settings page and
   the app menu — via `add-mcp`
-- macOS DMG packaging via `electron-builder`
+- macOS DMG and ZIP packaging via `electron-builder`, with a signed and
+  notarized release mode
+- GitHub Releases update metadata for packaged desktop auto-updates
 - macOS system theme support
 
 ## Development
@@ -74,6 +76,13 @@ npm run package:dir --prefix apps/desktop
 ```
 
 Use `npm run package:dmg --prefix apps/desktop` for the macOS drag-and-drop DMG.
+Use `npm run package:mac --prefix apps/desktop` to build the release-shaped
+universal macOS DMG and ZIP with updater metadata.
+
+`CORAL_DESKTOP_RELEASE=1` selects release mode. It requires a complete App Store
+Connect API key credential set, forces Developer ID signing, enables the hardened
+runtime with minimal Electron entitlements, and notarizes the app. Without that
+flag, packaging is deterministically unsigned.
 
 > Run the `--prefix apps/desktop` commands from the repo root. If you are already in
 > `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).

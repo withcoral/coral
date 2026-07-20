@@ -14,22 +14,21 @@ fn imports_and_generates_github_issue_slice() {
         r#"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  GITHUB_API_BASE:
+    kind: variable
+    default: https://api.github.com
+surface:
     type: openapi
     file: /tmp/openapi.yaml
-    inputs:
-      GITHUB_API_BASE:
-        kind: variable
-        default: https://api.github.com
     base_url: "{{input.GITHUB_API_BASE}}"
 "#,
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let published = catalog
         .projections
         .iter()
@@ -46,8 +45,7 @@ fn items_api_catalog(lookup_keys: Option<(bool, &[&str])>) -> ProjectionCatalog 
         r"
 name: items_api
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -55,7 +53,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let spec = r"
 openapi: 3.0.3
 paths:
@@ -82,7 +80,7 @@ paths:
             }
         }
     }
-    generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog")
+    generate_projection_catalog(v4, &ir).expect("catalog")
 }
 
 fn exposure(catalog: &ProjectionCatalog, operation_id: &str, input_name: &str) -> SqlInputExposure {
@@ -167,8 +165,7 @@ fn top_level_scalar_rows_use_scalar_projection_types() {
         r"
 name: scalar_rows
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -176,7 +173,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -207,7 +204,7 @@ paths:
     )
     .expect("import");
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let column_types = catalog
         .projections
         .iter()
@@ -247,8 +244,7 @@ fn tagged_openapi_operations_use_grouped_operation_names() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -256,7 +252,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -383,7 +379,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let names = catalog
         .projections
         .iter()
@@ -422,8 +418,7 @@ fn projection_generation_keeps_pagination_inputs_internal() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -431,9 +426,9 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -523,8 +518,7 @@ fn projection_generation_keeps_link_header_page_inputs_internal() {
         r"
 name: link_pages
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -532,7 +526,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -562,7 +556,7 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -612,8 +606,7 @@ fn projection_generation_keeps_opaque_link_header_page_tokens_public() {
         r"
 name: link_page_tokens
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -621,7 +614,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -651,7 +644,7 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -706,8 +699,7 @@ fn projection_generation_uses_omitted_path_required_for_table_function_args() {
         r"
 name: path_required
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -715,7 +707,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -739,7 +731,7 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -777,8 +769,7 @@ fn request_paths_preserve_path_parameter_defaults() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -786,7 +777,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -854,7 +845,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let list_projection = catalog
         .projections
         .iter()
@@ -928,8 +919,7 @@ fn projection_names_use_path_context_for_collisions() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -937,7 +927,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1025,7 +1015,7 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let names_by_operation = catalog
         .projections
         .iter()
@@ -1096,19 +1086,12 @@ components:
     );
 }
 
-fn rest_mcp_collision_manifest() -> crate::ValidatedSourceManifest {
+fn mcp_manifest() -> crate::ValidatedSourceManifest {
     parse_source_manifest_yaml(
         r"
-name: github
+name: github_mcp
 dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: rest
-    type: openapi
-    file: /tmp/openapi.yaml
-    base_url: https://api.github.com
-  - id: mcp
-    namespace_suffix: mcp
+surface:
     type: mcp
     server:
       transport: stdio
@@ -1116,54 +1099,6 @@ surfaces:
 ",
     )
     .expect("manifest")
-}
-
-fn two_rest_collision_manifest() -> crate::ValidatedSourceManifest {
-    parse_source_manifest_yaml(
-        r"
-name: github
-dsl_version: 4
-surfaces:
-  - id: rest_primary
-    namespace_suffix: rest_primary
-    type: openapi
-    file: /tmp/openapi.yaml
-    base_url: https://api.github.com
-  - id: rest_secondary
-    namespace_suffix: rest_secondary
-    type: openapi
-    file: /tmp/openapi.yaml
-    base_url: https://api.github.com
-",
-    )
-    .expect("manifest")
-}
-
-fn rest_search_openapi() -> &'static [u8] {
-    r"
-openapi: 3.0.3
-paths:
-  /search/issues:
-    get:
-      operationId: issues/search
-      parameters:
-        - {name: q, in: query, required: true, schema: {type: string}}
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id: {type: integer}
-                        title: {type: string}
-"
-    .as_bytes()
 }
 
 fn search_issues_mcp_catalog() -> McpToolCatalog {
@@ -1205,8 +1140,7 @@ fn rest_projection_input_names_keep_legacy_normalization() {
         r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1239,9 +1173,9 @@ paths:
                     id: { type: integer }
 ";
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(v4, surface, openapi.as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let sql_name_by_wire = projection
         .inputs
@@ -1254,72 +1188,18 @@ paths:
 }
 
 #[test]
-fn different_surface_namespaces_keep_colliding_projection_names() {
-    let manifest = rest_mcp_collision_manifest();
-    let v4 = manifest.as_v4().expect("v4");
-    let rest_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "rest")
-        .expect("rest surface");
-    let mcp_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "mcp")
-        .expect("mcp surface");
-    let rest_ir =
-        import_openapi_surface(v4, rest_surface, rest_search_openapi()).expect("rest import");
-    let mcp_ir =
-        import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
-
-    let catalog = generate_projection_catalog(v4, &[rest_ir, mcp_ir]).expect("catalog");
-    let rest_projection = catalog
-        .projections
-        .iter()
-        .find(|projection| {
-            projection.surface_id == "rest" && projection.operation_id == "issues_search"
-        })
-        .expect("rest search projection");
-    assert_eq!(rest_projection.name, "search_issues");
-    assert_eq!(rest_projection.namespace, "github_rest");
-
-    let mcp_projection = catalog
-        .projections
-        .iter()
-        .find(|projection| {
-            projection.surface_id == "mcp" && projection.operation_id == "search_issues"
-        })
-        .expect("mcp search projection");
-    assert_eq!(mcp_projection.name, "search_issues");
-    assert_eq!(mcp_projection.namespace, "github_mcp");
-
-    assert!(
-        !catalog
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
-    );
-}
-
-#[test]
 fn generated_mcp_projection_exposes_current_row_result_columns() {
-    let manifest = rest_mcp_collision_manifest();
+    let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
-    let mcp_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "mcp")
-        .expect("mcp surface");
+    let mcp_surface = &v4.surface;
     let mcp_ir =
         import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
 
-    let catalog = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let catalog = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
     let projection = catalog
         .projections
         .iter()
-        .find(|projection| {
-            projection.surface_id == "mcp" && projection.operation_id == "search_issues"
-        })
+        .find(|projection| projection.operation_id == "search_issues")
         .expect("mcp search projection");
 
     let columns = projection
@@ -1348,13 +1228,9 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
 
 #[test]
 fn generated_mcp_projection_keeps_pagination_cursor_internal() {
-    let manifest = rest_mcp_collision_manifest();
+    let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
-    let mcp_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "mcp")
-        .expect("mcp surface");
+    let mcp_surface = &v4.surface;
     let catalog = McpToolCatalog {
         tools: vec![McpToolDescriptor {
             name: "list_items".to_string(),
@@ -1393,7 +1269,7 @@ fn generated_mcp_projection_keeps_pagination_cursor_internal() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projections = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1415,13 +1291,9 @@ fn generated_mcp_projection_keeps_pagination_cursor_internal() {
 
 #[test]
 fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
-    let manifest = rest_mcp_collision_manifest();
+    let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
-    let mcp_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "mcp")
-        .expect("mcp surface");
+    let mcp_surface = &v4.surface;
     let catalog = McpToolCatalog {
         tools: vec![McpToolDescriptor {
             name: "list_items".to_string(),
@@ -1458,7 +1330,7 @@ fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projections = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1478,13 +1350,9 @@ fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
 
 #[test]
 fn generated_mcp_projection_snake_cases_camel_input_names() {
-    let manifest = rest_mcp_collision_manifest();
+    let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
-    let mcp_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "mcp")
-        .expect("mcp surface");
+    let mcp_surface = &v4.surface;
     let catalog = McpToolCatalog {
         tools: vec![McpToolDescriptor {
             name: "pull_request_read".to_string(),
@@ -1513,7 +1381,7 @@ fn generated_mcp_projection_snake_cases_camel_input_names() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projections = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1536,49 +1404,5 @@ fn generated_mcp_projection_snake_cases_camel_input_names() {
     assert_eq!(
         sql_name_by_wire.get("notificationID"),
         Some(&"notification_id")
-    );
-}
-
-#[test]
-fn same_type_surface_namespaces_keep_colliding_projection_names() {
-    let manifest = two_rest_collision_manifest();
-    let v4 = manifest.as_v4().expect("v4");
-    let primary_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "rest_primary")
-        .expect("primary rest surface");
-    let secondary_surface = v4
-        .surfaces
-        .iter()
-        .find(|surface| surface.id == "rest_secondary")
-        .expect("secondary rest surface");
-    let primary_ir = import_openapi_surface(v4, primary_surface, rest_search_openapi())
-        .expect("primary rest import");
-    let secondary_ir = import_openapi_surface(v4, secondary_surface, rest_search_openapi())
-        .expect("secondary rest import");
-
-    let catalog = generate_projection_catalog(v4, &[primary_ir, secondary_ir]).expect("catalog");
-    let primary_projection = catalog
-        .projections
-        .iter()
-        .find(|projection| projection.surface_id == "rest_primary")
-        .expect("primary projection");
-    assert_eq!(primary_projection.name, "search_issues");
-    assert_eq!(primary_projection.namespace, "github_rest_primary");
-
-    let secondary_projection = catalog
-        .projections
-        .iter()
-        .find(|projection| projection.surface_id == "rest_secondary")
-        .expect("secondary projection");
-    assert_eq!(secondary_projection.name, "search_issues");
-    assert_eq!(secondary_projection.namespace, "github_rest_secondary");
-
-    assert!(
-        !catalog
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
     );
 }

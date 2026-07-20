@@ -12,10 +12,10 @@ use crate::bootstrap::AppError;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
     SourceDiagnosticReporter, SourceLoadDiagnosticStage, incompatible_materialization_error,
-    load_v4_materialization,
+    load_v4_materialization_with_reporter,
 };
 use crate::sources::model::InstalledSource;
-use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::sources::runtime_package::runtime_component_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
@@ -80,7 +80,9 @@ impl CatalogSnapshotLoader {
                 }
                 Err(
                     error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
-                    | AppError::InvalidV4ProjectionOverride { .. }),
+                    | AppError::IncompatibleInstalledV4Manifest { .. }
+                    | AppError::InvalidV4ProjectionOverride { .. }
+                    | AppError::InvalidV4ParameterMetadataOverride { .. }),
                 ) => {
                     self.diagnostic_reporter.report_source_load_failure(
                         SourceLoadDiagnosticStage::Catalog,
@@ -115,7 +117,7 @@ impl CatalogSnapshotLoader {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         if let Some(v4) = source_spec.as_v4() {
-            let materialized = load_v4_materialization(
+            let materialized = load_v4_materialization_with_reporter(
                 &self.layout,
                 workspace_name,
                 &source.name,
@@ -123,19 +125,14 @@ impl CatalogSnapshotLoader {
                 v4,
                 &self.diagnostic_reporter,
             )?;
-            runtime_components_for_v4_source(
-                workspace_name,
-                &source.name,
-                v4,
-                &materialized,
-                &self.diagnostic_reporter,
-            )
-            .map_err(|error| {
-                incompatible_materialization_error(
-                    &source.name,
-                    format!("failed to assemble runtime package: {error}"),
-                )
-            })
+            runtime_component_for_v4_source(v4, &materialized)
+                .map(|component| component.into_iter().collect())
+                .map_err(|error| {
+                    incompatible_materialization_error(
+                        &source.name,
+                        format!("failed to assemble runtime package: {error}"),
+                    )
+                })
         } else {
             Ok(runtime_components_from_manifest(&source_spec))
         }

@@ -262,23 +262,9 @@ impl AppStateLayout {
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-        surface_id: &str,
     ) -> PathBuf {
         self.v4_override_dir(workspace_name, source_name)
-            .join("surfaces")
-            .join(surface_id)
             .join(PARAMETER_METADATA_OVERRIDE_FILENAME)
-    }
-
-    pub(crate) fn v4_surface_dir(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-        surface_id: &str,
-    ) -> PathBuf {
-        self.v4_materialized_dir(workspace_name, source_name)
-            .join("surfaces")
-            .join(surface_id)
     }
 }
 
@@ -397,9 +383,9 @@ mod tests {
             super::V4ProjectionCatalogOrigin::Override
         );
         assert_eq!(
-            layout.v4_parameter_metadata_override_file(&workspace_name, &source_name, "rest"),
+            layout.v4_parameter_metadata_override_file(&workspace_name, &source_name),
             config_dir
-                .join("workspaces/default/sources/github/overrides/surfaces/rest")
+                .join("workspaces/default/sources/github/overrides")
                 .join("parameter_metadata.yaml")
         );
     }

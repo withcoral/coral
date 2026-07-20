@@ -44,11 +44,22 @@
 - Reef changes must pass `npm run check --prefix apps/reef`,
   `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, and
   `npm run build --prefix apps/reef` before submitting.
+- Desktop changes must pass `npm run check --prefix apps/desktop` and
+  `npm test --prefix apps/desktop` before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
   fails when release `coral sql "select * from coral.tables"` has a hyperfine
   mean above 750 ms.
+- Desktop distribution-sensitive PRs must exercise the release-shaped macOS
+  package path, not only the desktop type-check. Validate calls the reusable
+  desktop packaging workflow for desktop, packaging-workflow, release-workflow,
+  Cargo workspace/toolchain, crate-manifest, and build-script changes. Ordinary
+  Rust, Reef, and UI changes use their existing checks. Use manual dispatch as
+  an unsigned packaging preflight for distribution-sensitive changes outside
+  the automatic paths. Validation artifacts stay unsigned and must not be
+  reused for a release; desktop release publishing must rebuild from a clean
+  checkout with signing and notarization.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.
@@ -77,8 +88,12 @@
   projections, or persisted artifacts. Treat fingerprints, producer versions,
   identity metadata, and raw-document hashes as advisory provenance: report
   mismatches through tracing, but load readable, structurally compatible
-  artifacts. Degrade per surface and isolate source-local compatibility
-  failures without hiding operational failures.
+  artifacts. Isolate source-local compatibility failures without hiding
+  operational failures.
+- A DSL v4 source declares top-level `inputs:` and exactly one singular
+  `surface:`. The source `name` is its SQL namespace. Do not add surface ids,
+  namespace suffixes, or multiple surfaces to one manifest; represent distinct
+  provider interfaces as distinct source specs instead.
 - Keep cross-crate W3C trace-context propagation helpers in
   `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
   or `coral-mcp` depend on each other just to share telemetry carrier logic.
@@ -97,8 +112,10 @@
   When docs are warranted, choose the best existing location first and make the
   amount of space match the feature's user-facing weight and visibility.
 - Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
-  specs under `sources/v4/[provider]/manifest.yaml` with distinct manifest names
-  (defined in the manifest's `name` field) such as `<name>_v4`. Do not bundle
+  specs under `sources/v4/[source]/manifest.yaml` with distinct manifest names
+  (defined in the manifest's `name` field) such as `<name>_v4`. When a provider
+  has distinct interfaces, use sibling source directories such as `github` and
+  `github_mcp`. Do not bundle
   `sources/v4` into the binary; install preview v4 sources with
   `coral source add --file`. Do not replace or migrate an existing v3 source
   merely because a preview v4 spec exists.
@@ -112,6 +129,11 @@
   `xtask/src/sources.rs`, performance checks live in `xtask/src/perf.rs`, and
   skill export lives in `xtask/src/skills.rs`. Release signing and
   notarization automation lives in `xtask/src/release.rs`.
+- The Electron desktop app version is tied to the CLI release version through
+  release-please. The release workflow builds the macOS desktop app from
+  `apps/desktop`, uploads its DMG/ZIP/update metadata to the same GitHub
+  Release as the CLI artifacts, and the website should link to the
+  `releases/latest/download` DMG rather than storing desktop binaries itself.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled

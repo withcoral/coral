@@ -4,6 +4,9 @@ import { render } from 'vitest-browser-react'
 import type { SourceCatalogEntry } from '@/components/sources'
 
 import { OnboardingSampleQueryPage } from './onboarding-sample-query-page'
+import { getOnboardingStepState } from './onboarding-steps'
+
+const queryStep = getOnboardingStepState('query')
 
 const github: SourceCatalogEntry = {
   description: 'Sync issues, pull requests, and code from your repositories.',
@@ -28,6 +31,7 @@ describe('OnboardingSampleQueryPage', () => {
         connectedSources={[github]}
         loadState="success"
         rows={[{ source: 'github', tables: 12 }]}
+        step={queryStep}
       />,
     )
 
@@ -45,6 +49,7 @@ describe('OnboardingSampleQueryPage', () => {
           { source: 'github', tables: 12 },
           { source: 'slack', tables: 2 },
         ]}
+        step={queryStep}
       />,
     )
 
@@ -60,6 +65,7 @@ describe('OnboardingSampleQueryPage', () => {
         errorMessage="Catalog unavailable."
         loadState="error"
         onRetry={onRetry}
+        step={queryStep}
       />,
     )
 
@@ -70,7 +76,11 @@ describe('OnboardingSampleQueryPage', () => {
 
   it('allows setup to finish when the catalog query succeeds without result metadata', async () => {
     const screen = await render(
-      <OnboardingSampleQueryPage connectedSources={[github]} loadState="success" />,
+      <OnboardingSampleQueryPage
+        connectedSources={[github]}
+        loadState="success"
+        step={queryStep}
+      />,
     )
 
     await expect.element(screen.getByRole('button', { name: 'Finish setup' })).toBeEnabled()
@@ -87,6 +97,7 @@ describe('OnboardingSampleQueryPage', () => {
           source: `source-${index}`,
           tables: index,
         }))}
+        step={queryStep}
       />,
     )
     const queryPre = screen.getByText('SELECT', { exact: true }).element().closest('pre')
@@ -102,7 +113,7 @@ describe('OnboardingSampleQueryPage', () => {
 
   it('keeps setup blocked when no sources are connected', async () => {
     const screen = await render(
-      <OnboardingSampleQueryPage connectedSources={[]} loadState="success" />,
+      <OnboardingSampleQueryPage connectedSources={[]} loadState="success" step={queryStep} />,
     )
 
     await expect.element(screen.getByRole('button', { name: 'Finish setup' })).toBeDisabled()

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Form, useActionData, useNavigate, useNavigation } from 'react-router'
+import { Form, useNavigate, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
@@ -15,7 +15,6 @@ import type {
   CatalogSourceInputSpec,
   SourceOriginLabel,
 } from '@/lib/sources'
-import type { action as sourceDetailAction } from '@/routes/source-detail'
 import type { SourcesActionData } from '@/routes/sources-action'
 
 import { formatSourceName, ProviderLogo } from '@/components/sources'
@@ -69,6 +68,7 @@ export function SourceDetailView({
 
   return (
     <SourceDetailDialog
+      actionData={actionData}
       entry={entry}
       loadError={loaderData.loadError}
       open
@@ -80,11 +80,13 @@ export function SourceDetailView({
 }
 
 export function SourceDetailDialog({
+  actionData,
   entry,
   loadError,
   open,
   onOpenChange,
 }: {
+  actionData: SourcesActionData
   entry: CatalogEntry | null
   loadError: string | null
   open: boolean
@@ -97,6 +99,7 @@ export function SourceDetailDialog({
         <Dialog.Popup size="l">
           {entry ? (
             <SourceDetailDialogContent
+              actionData={actionData}
               key={entry.name}
               entry={entry}
               loadError={loadError}
@@ -110,17 +113,23 @@ export function SourceDetailDialog({
 }
 
 function SourceDetailDialogContent({
+  actionData,
   entry,
   loadError,
   onClose,
 }: {
+  actionData: SourcesActionData
   entry: CatalogEntry
   loadError: string | null
   onClose: () => void
 }) {
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const { actionError, pendingIntent, removeError } = useSourceDetailActionState(entry, loadError)
+  const { actionError, pendingIntent, removeError } = useSourceDetailActionState(
+    actionData,
+    entry,
+    loadError,
+  )
   const sourceDisplayName = formatSourceName(entry.name)
 
   const source = entry.source ?? null
@@ -385,8 +394,11 @@ function InstalledBindings({
   )
 }
 
-function useSourceDetailActionState(entry: CatalogEntry, loadError: string | null) {
-  const actionData = useActionData<typeof sourceDetailAction>()
+function useSourceDetailActionState(
+  actionData: SourcesActionData,
+  entry: CatalogEntry,
+  loadError: string | null,
+) {
   const navigation = useNavigation()
   const actionError = actionData?.status === 'error' ? actionData : null
   const pendingIntent = formValue(navigation.formData, '_intent')

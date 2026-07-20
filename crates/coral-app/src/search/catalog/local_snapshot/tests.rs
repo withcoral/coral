@@ -8,7 +8,10 @@ use super::{
 };
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::sources::materialization::SourceDiagnosticReporter;
+use crate::sources::materialization::{
+    MaterializationInputs, SourceDiagnosticReporter, build_v4_materialization_tmp,
+    replace_v4_materialization,
+};
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -197,123 +200,6 @@ tables:
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "This test keeps related failure cases together"
-)]
-fn loader_builds_catalog_from_schema_v3_materialization_fixture_bytes() {
-    let temp = tempdir().expect("tempdir");
-    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-    let config_store = ConfigStore::new(layout.clone());
-    let workspace_name = WorkspaceName::parse("work").expect("workspace");
-    let source_name = SourceName::parse("compatibility_fixture").expect("source");
-    let manifest_yaml = r"
-name: compatibility_fixture
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: rest
-    type: openapi
-    file: /tmp/schema-v3-openapi.yaml
-    base_url: https://api.example.com
-  - id: mcp
-    namespace_suffix: mcp
-    type: mcp
-    server:
-      transport: stdio
-      command: schema-v3-mcp-server
-";
-
-    config_store
-        .create_legacy_workspace_entry_for_tests(&workspace_name)
-        .expect("create legacy workspace entry");
-    install_imported_source(
-        &layout,
-        &config_store,
-        &workspace_name,
-        &source_name,
-        manifest_yaml,
-    );
-
-    let materialized_dir = layout.v4_materialized_dir(&workspace_name, &source_name);
-    let rest_dir = materialized_dir.join("surfaces").join("rest");
-    let mcp_dir = materialized_dir.join("surfaces").join("mcp");
-    std::fs::create_dir_all(&rest_dir).expect("create REST artifact dir");
-    std::fs::create_dir_all(&mcp_dir).expect("create MCP artifact dir");
-    std::fs::write(
-        materialized_dir.join("projections.yaml"),
-        include_str!(
-            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/projections.yaml"
-        ),
-    )
-    .expect("write schema-v3 projections");
-    std::fs::write(
-        rest_dir.join("semantic-ir.yaml"),
-        include_str!(
-            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/semantic-ir.yaml"
-        ),
-    )
-    .expect("write schema-v3 REST semantic IR");
-    std::fs::write(
-        mcp_dir.join("semantic-ir.yaml"),
-        include_str!(
-            "../../../../../coral-spec/src/v4/fixtures/artefact-schema-v3/mcp-semantic-ir.yaml"
-        ),
-    )
-    .expect("write schema-v3 MCP semantic IR");
-
-    let catalog = CatalogSnapshotLoader::with_diagnostic_reporter(
-        config_store,
-        layout,
-        SourceDiagnosticReporter::default(),
-    )
-    .load_catalog(&workspace_name)
-    .expect("load catalog from schema-v3 materialization");
-
-    let table = catalog
-        .tables
-        .iter()
-        .find(|table| {
-            table.schema_name == "compatibility_fixture_rest" && table.table_name == "items"
-        })
-        .expect("legacy projection without a namespace should produce the items table");
-    assert_eq!(
-        table
-            .columns
-            .iter()
-            .map(|column| column.name.as_str())
-            .collect::<Vec<_>>(),
-        ["id", "state", "owner"]
-    );
-    assert_eq!(table.required_filters, ["owner"]);
-    let table_function = catalog
-        .table_functions
-        .iter()
-        .find(|table_function| {
-            table_function.schema_name == "compatibility_fixture_mcp"
-                && table_function.function_name == "search_items"
-        })
-        .expect(
-            "legacy projection without a namespace should produce the search_items table function",
-        );
-    assert_eq!(
-        table_function
-            .result_columns
-            .iter()
-            .map(|column| column.name.as_str())
-            .collect::<Vec<_>>(),
-        ["id", "score"]
-    );
-    assert_eq!(table_function.arguments.len(), 1);
-    let first_arg = table_function
-        .arguments
-        .first()
-        .expect("table function should have at least one argument");
-    assert_eq!(first_arg.name, "query");
-    assert!(first_arg.required);
-}
-
-#[test]
 fn loader_fails_closed_when_installed_manifest_cannot_be_read() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -395,8 +281,7 @@ tables:
         r"
 name: stale_v4
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
 ",
@@ -413,6 +298,183 @@ surfaces:
     assert!(catalog.tables.iter().any(|table| {
         table.schema_name == healthy_source.as_str() && table.table_name == "messages"
     }));
+}
+
+#[test]
+fn loader_keeps_healthy_source_when_installed_v4_manifest_uses_legacy_surfaces() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let healthy_source = SourceName::parse("demo").expect("source");
+    let legacy_v4_source = SourceName::parse("legacy_v4").expect("source");
+
+    config_store
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
+    install_healthy_source(&layout, &config_store, &workspace_name, &healthy_source);
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &legacy_v4_source,
+        r"
+name: legacy_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+    );
+
+    let catalog = CatalogSnapshotLoader::with_diagnostic_reporter(
+        config_store,
+        layout,
+        SourceDiagnosticReporter::default(),
+    )
+    .load_catalog(&workspace_name)
+    .expect("legacy v4 manifest should be isolated");
+
+    assert!(catalog.tables.iter().any(|table| {
+        table.schema_name == healthy_source.as_str() && table.table_name == "messages"
+    }));
+    assert!(
+        catalog
+            .tables
+            .iter()
+            .all(|table| table.schema_name != legacy_v4_source.as_str())
+    );
+}
+
+#[test]
+fn loader_keeps_healthy_source_when_v4_parameter_metadata_override_is_invalid() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let healthy_source = SourceName::parse("demo").expect("source");
+    let v4_source = SourceName::parse("metadata_v4").expect("source");
+
+    config_store
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
+    install_healthy_source(&layout, &config_store, &workspace_name, &healthy_source);
+
+    let openapi_file = temp.path().join("openapi.yaml");
+    std::fs::write(&openapi_file, minimal_openapi_fixture()).expect("write descriptor");
+    let manifest_yaml = format!(
+        r"
+name: metadata_v4
+dsl_version: 4
+surface:
+  type: openapi
+  file: {}
+  base_url: https://api.example.com
+",
+        openapi_file.display()
+    );
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &v4_source,
+        &manifest_yaml,
+    );
+    let manifest = parse_source_manifest_yaml(&manifest_yaml)
+        .expect("parse v4 manifest")
+        .as_v4()
+        .expect("v4")
+        .clone();
+    let build = build_v4_materialization_tmp(
+        &layout,
+        &workspace_name,
+        &v4_source,
+        &manifest_yaml,
+        &manifest,
+        &MaterializationInputs::default(),
+        "test",
+    )
+    .expect("build materialization");
+    replace_v4_materialization(&layout, &workspace_name, &v4_source, &build.temp_dir)
+        .expect("install materialization");
+    let override_path = layout.v4_parameter_metadata_override_file(&workspace_name, &v4_source);
+    std::fs::create_dir_all(override_path.parent().expect("override parent"))
+        .expect("create override dir");
+    std::fs::write(override_path, b": not yaml").expect("write invalid override");
+
+    let catalog = CatalogSnapshotLoader::with_diagnostic_reporter(
+        config_store,
+        layout,
+        SourceDiagnosticReporter::default(),
+    )
+    .load_catalog(&workspace_name)
+    .expect("invalid v4 metadata override should be isolated");
+
+    assert!(catalog.tables.iter().any(|table| {
+        table.schema_name == healthy_source.as_str() && table.table_name == "messages"
+    }));
+    assert!(
+        catalog
+            .tables
+            .iter()
+            .all(|table| table.schema_name != v4_source.as_str())
+    );
+}
+
+fn install_healthy_source(
+    layout: &AppStateLayout,
+    config_store: &ConfigStore,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+) {
+    install_imported_source(
+        layout,
+        config_store,
+        workspace_name,
+        source_name,
+        r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+    );
+}
+
+fn minimal_openapi_fixture() -> &'static str {
+    r"
+openapi: 3.0.3
+info:
+  title: Metadata API
+  version: 1.0.0
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        '200':
+          description: Items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+"
 }
 
 fn install_imported_source(

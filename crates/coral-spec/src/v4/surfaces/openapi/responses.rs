@@ -73,7 +73,6 @@ impl OpenApiImporter<'_> {
             diagnostics.push(Diagnostic::warning(
                 "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
                 format!("operation '{operation_id}' response schema could not be resolved"),
-                self.surface.id.clone(),
                 Some(operation_id.to_string()),
             ));
             return (

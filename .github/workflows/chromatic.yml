@@ -37,14 +37,14 @@ jobs:
 
       - name: Setup Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/reef/.node-version
           package-manager-cache: false
 
       - name: Setup Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/reef/.node-version
           cache: npm

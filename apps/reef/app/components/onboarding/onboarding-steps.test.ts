@@ -20,4 +20,8 @@ describe('onboarding steps', () => {
       total: 2,
     })
   })
+
+  it.each([null, 'unknown'])('defaults %s to the first step', (requestedStep) => {
+    expect(getOnboardingStepState(requestedStep)).toEqual(getOnboardingStepState('sources'))
+  })
 })

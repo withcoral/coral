@@ -8,6 +8,7 @@ import {
   OnboardingSampleQueryPage,
   type OnboardingSampleQueryRow,
 } from './onboarding-sample-query-page'
+import { getOnboardingStepState } from './onboarding-steps'
 
 const connectedSources: CatalogEntry[] = [
   connectedSource('clickup', 'Query tasks, lists, and workspace activity from ClickUp.'),
@@ -41,6 +42,7 @@ const meta = {
     onContinue: fn(),
     onRetry: fn(),
     rows,
+    step: getOnboardingStepState('query'),
   },
   component: OnboardingSampleQueryPage,
   parameters: {
