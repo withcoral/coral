@@ -726,6 +726,91 @@ async fn search_reports_partial_catalog_coverage_and_recovers_after_source_repai
 }
 
 #[tokio::test]
+async fn search_isolates_identity_gated_source_as_partial_catalog_failure() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(table_preview_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+
+    let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+    let openapi_file = descriptor_temp.path().join("identity-guard-openapi.yaml");
+    fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+info: {title: Identity Guard}
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+",
+    )
+    .expect("write OpenAPI fixture");
+    harness
+        .import_source(
+            format!(
+                r"
+name: github_v4_identity_guard
+dsl_version: 4
+identity_requirements:
+  accepts:
+    - id: github_api
+      identity_specs: [github_oauth]
+surface:
+  type: openapi
+  file: {}
+",
+                openapi_file.display()
+            ),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "table_preview.messages".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search healthy source")
+        .into_inner();
+
+    assert!(response.results.iter().any(|result| {
+        matches!(
+            result.payload.as_ref(),
+            Some(search_result::Payload::CatalogMetadata(metadata))
+                if metadata.item.as_ref().is_some_and(|item| {
+                    catalog_item_matches(item, "table_preview", "messages")
+                })
+        )
+    }));
+    let status = assert_provider_state(
+        &response,
+        SearchProvider::CatalogMetadata,
+        SearchProviderState::Partial,
+    );
+    let coverage = status.coverage.as_ref().expect("catalog coverage");
+    assert_eq!(coverage.failed_units, 1);
+    assert!(coverage.stale_index);
+    assert!(!coverage.has_more);
+    assert!(status.note.contains("github_v4_identity_guard"));
+}
+
+#[tokio::test]
 async fn rebuild_search_index_forces_catalog_projection_refresh() {
     let harness = GrpcHarness::new().await;
     harness
