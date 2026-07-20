@@ -6,11 +6,17 @@ import * as styles from './menu.css'
 export interface TriggerProps {
   children: React.ReactNode
   className?: string
+  nativeButton?: boolean
   render?: React.ReactElement<Record<string, unknown>>
 }
 
-export function Trigger({ children, className, render }: TriggerProps) {
-  const nativeButton = !render || render.type === 'button'
+export function Trigger({
+  children,
+  className,
+  nativeButton: nativeButtonProp,
+  render,
+}: TriggerProps) {
+  const nativeButton = nativeButtonProp ?? (!render || render.type === 'button')
   return (
     <BaseMenu.Trigger
       className={classNames(styles.trigger, className)}

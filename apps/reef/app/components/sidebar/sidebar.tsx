@@ -3,7 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, useLocation, useParams } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
-import { IconButton } from '@/wax/components/button'
+import {
+  Container as ButtonContainer,
+  Icon as ButtonIcon,
+  IconButton,
+} from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import { Tooltip } from '@/wax/components/tooltip'
@@ -60,6 +64,27 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   // Build-time detection keeps desktop-only navigation stable across SSR and
   // hydration; bridge availability is checked by the Settings page itself.
   const isDesktopApp = isCoralDesktopBuild()
+  const settingsHomeButton = (
+    <ButtonContainer ariaLabel="Home" as={Link} size="22" to={routePath('home')} variant="bare">
+      <ButtonIcon name="ChevronLeft" />
+    </ButtonContainer>
+  )
+  const settingsHeader = (
+    <>
+      {isMinimized ? (
+        <Tooltip content="Home" side="right">
+          {settingsHomeButton}
+        </Tooltip>
+      ) : (
+        settingsHomeButton
+      )}
+      {!isMinimized && (
+        <span className={styles.workspaceSelectorLabel}>
+          <Typography.Body>Settings</Typography.Body>
+        </span>
+      )}
+    </>
+  )
 
   const handleToggleSidebar = (event: KeyboardEvent) => {
     event.preventDefault()
@@ -103,26 +128,16 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
 
         <div className={styles.workspaceSelectorRow}>
           {isSettingsRoute ? (
-            <Link
-              aria-label="Back to Coral home"
-              className={styles.workspaceSelector}
-              to={routePath('home')}
-            >
-              <span className={styles.settingsBackIcon}>
-                <Icon color="secondary" name="ArrowLeft" size="18" />
-              </span>
-              {!isMinimized && (
-                <span className={styles.workspaceSelectorLabel}>
-                  <Typography.Body>Settings</Typography.Body>
-                </span>
-              )}
-            </Link>
+            settingsHeader
           ) : (
             <>
               <Menu.Container>
                 <Menu.Trigger
                   className={styles.workspaceSelector}
-                  render={<button aria-label="Open workspace menu" type="button" />}
+                  nativeButton
+                  render={
+                    <ButtonContainer ariaLabel="Open workspace menu" size="32" variant="bare" />
+                  }
                 >
                   <span
                     className={styles.workspaceSelectorMark({ color: workspaceSelectorMarkColor })}

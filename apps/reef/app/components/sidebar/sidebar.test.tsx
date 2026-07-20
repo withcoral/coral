@@ -211,17 +211,14 @@ describe('Sidebar', () => {
 
     await settings.click()
     await expect.poll(() => screen.router.state.location.pathname).toBe(routePath('settings'))
-    await expect
-      .element(screen.getByRole('link', { name: 'Back to Coral' }))
-      .toHaveAttribute('href', routePath('home'))
   })
 
   it('shows settings navigation instead of workspace navigation on the settings route', async () => {
     vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
     const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
 
-    const backToCoral = screen.getByRole('link', { name: 'Back to Coral' })
-    await expect.element(backToCoral).toHaveAttribute('href', routePath('home'))
+    const homeLink = screen.getByRole('link', { name: 'Home' })
+    await expect.element(homeLink).toHaveAttribute('href', routePath('home'))
     await expect
       .element(screen.getByRole('button', { name: 'Open workspace menu' }))
       .not.toBeInTheDocument()
@@ -230,7 +227,7 @@ describe('Sidebar', () => {
     await expect.element(screen.getByRole('link', { name: 'Schema' })).not.toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: 'Traces' })).not.toBeInTheDocument()
 
-    await backToCoral.click()
+    await homeLink.click()
     await expect.poll(() => screen.router.state.location.pathname).toBe(routePath('home'))
   })
 

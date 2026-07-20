@@ -41,39 +41,15 @@ export const workspaceSelectorRow = style({
   alignItems: 'center',
   display: 'flex',
   gap: '4px',
+  minHeight: '32px',
   minWidth: 0,
 })
 
 export const workspaceSelector = style({
-  alignItems: 'center',
-  background: 'transparent',
-  border: 'none',
-  borderRadius: '8px',
-  color: theme.content.primary,
-  display: 'flex',
   flex: '1 1 auto',
-  gap: '8px',
-  minHeight: '32px',
+  justifyContent: 'flex-start',
   minWidth: 0,
   overflow: 'hidden',
-  paddingInline: '8px',
-  textDecoration: 'none',
-  transition: animation.colorTransition,
-  selectors: {
-    '&[data-popup-open], &:hover': {
-      backgroundColor: theme.surface.onMainContent,
-    },
-    '&:focus-visible': {
-      outline: `1px solid ${theme.button.primary.focus}`,
-      outlineOffset: '2px',
-    },
-  },
-})
-
-export const settingsBackIcon = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexShrink: 0,
 })
 
 export const workspaceSelectorLabel = style({
