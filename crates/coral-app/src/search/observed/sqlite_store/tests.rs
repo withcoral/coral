@@ -1483,6 +1483,16 @@ fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
     store
         .enqueue_if_current(
             &workspace,
+            &test_job_for_owner("github", "removed-scope", "issues", "Payment removed"),
+            github_generation,
+        )
+        .expect("enqueue removed github scope");
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("drain removed github scope");
+    store
+        .enqueue_if_current(
+            &workspace,
             &test_job_for_owner("jira", "unknown-scope", "issues", "Payment blocked"),
             jira_generation,
         )
@@ -1501,6 +1511,38 @@ fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
     assert_eq!(result.canonical_rows_scanned, 1);
     assert_eq!(result.fts_rows_rebuilt, 1);
     assert_eq!(canonical_value_count_for_test(&layout, &workspace), 2);
+    assert_eq!(fts_value_count_for_test(&layout, &workspace), 2);
+
+    let failed_policy = test_policy_with_failed_sources(&[("live-scope", "issues")], &["jira"]);
+    let blocked_while_failed = store
+        .search(&workspace, &[String::from("blocked")], 10, &failed_policy)
+        .expect("search with failed Jira policy");
+    assert!(blocked_while_failed.hits.is_empty());
+
+    let recovered_policy = ObservedValuesRetrievalPolicy::new(
+        vec![
+            test_live_scope_for_owner("github", "live-scope", "issues"),
+            test_live_scope_for_owner("jira", "unknown-scope", "issues"),
+        ],
+        365,
+    );
+    let recovered_hits = store
+        .search(
+            &workspace,
+            &[String::from("blocked")],
+            10,
+            &recovered_policy,
+        )
+        .expect("search after Jira policy recovery");
+    assert_eq!(recovered_hits.hits.len(), 1);
+    assert_eq!(
+        recovered_hits
+            .hits
+            .first()
+            .expect("recovered Jira hit")
+            .display_value,
+        "Payment blocked"
+    );
 }
 
 #[test]
@@ -1777,14 +1819,22 @@ fn test_policy_with_failed_sources(
 fn test_live_scopes(scopes: &[(&str, &str)]) -> Vec<ObservedValuesLiveScope> {
     scopes
         .iter()
-        .map(|(scope, surface)| ObservedValuesLiveScope {
-            owner_source_name: "github".to_string(),
-            source_name: "github".to_string(),
-            source_scope_id: (*scope).to_string(),
-            surface_kind: ObservedValuesSurfaceKind::Table,
-            surface_name: (*surface).to_string(),
-        })
+        .map(|(scope, surface)| test_live_scope_for_owner("github", scope, surface))
         .collect()
+}
+
+fn test_live_scope_for_owner(
+    owner_source_name: &str,
+    source_scope_id: &str,
+    surface_name: &str,
+) -> ObservedValuesLiveScope {
+    ObservedValuesLiveScope {
+        owner_source_name: owner_source_name.to_string(),
+        source_name: owner_source_name.to_string(),
+        source_scope_id: source_scope_id.to_string(),
+        surface_kind: ObservedValuesSurfaceKind::Table,
+        surface_name: surface_name.to_string(),
+    }
 }
 
 fn drain_budget() -> ObservedValuesDrainBudget {
@@ -1888,4 +1938,16 @@ fn canonical_value_count_for_test(layout: &AppStateLayout, workspace: &Workspace
             |row| row.get(0),
         )
         .expect("canonical count")
+}
+
+fn fts_value_count_for_test(layout: &AppStateLayout, workspace: &WorkspaceName) -> i64 {
+    let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM observed_values_fts WHERE workspace = ?1",
+            params![workspace.as_str()],
+            |row| row.get(0),
+        )
+        .expect("FTS count")
 }

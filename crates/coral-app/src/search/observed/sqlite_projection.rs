@@ -275,7 +275,15 @@ pub(crate) fn rebuild_observed_fts(
     purge_stale_observed_values(&transaction, workspace_name, policy)?;
     purge_non_live_observed_values(&transaction, workspace_name)?;
     transaction.execute(
-        "DELETE FROM observed_values_fts WHERE workspace = ?1",
+        "
+        DELETE FROM observed_values_fts
+        WHERE workspace = ?1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM observed_policy_failed_sources failed
+              WHERE failed.owner_source_name = observed_values_fts.owner_source_name
+          )
+        ",
         params![workspace_name.as_str()],
     )?;
 
