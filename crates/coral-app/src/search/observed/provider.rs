@@ -232,37 +232,48 @@ fn observed_provider_note(
     drain_error: Option<&str>,
     policy: &ObservedValuesRetrievalPolicy,
 ) -> String {
-    let load_failure_note = observed_policy_load_failure_note(policy);
-    match (state, drain_error, load_failure_note.as_deref()) {
-        (SearchProviderState::ResultsFound, _, _) => {
+    match state {
+        SearchProviderState::ResultsFound => {
             format!("found {candidate_count} observed value search result(s)")
         }
-        (SearchProviderState::Empty, _, _) => "no observed value search results found".to_string(),
-        (SearchProviderState::Partial, Some(error), Some(policy_note)) => {
-            format!("observed value search used cached local memory; {error}; {policy_note}")
-        }
-        (SearchProviderState::Partial, Some(error), _) => {
-            format!("observed value search used cached local memory; {error}")
-        }
-        (SearchProviderState::Partial, _, Some(policy_note)) => policy_note.to_string(),
-        (SearchProviderState::Partial, _, _) if drain.storage_jobs_dropped > 0 => format!(
-            "observed value search omitted {} queued observation(s) to preserve storage headroom",
+        SearchProviderState::Empty => "no observed value search results found".to_string(),
+        SearchProviderState::Partial => observed_partial_note(drain, drain_error, policy),
+        SearchProviderState::Error
+        | SearchProviderState::NotEnabled
+        | SearchProviderState::Skipped => "observed value search did not run".to_string(),
+    }
+}
+
+fn observed_partial_note(
+    drain: &ObservedValuesDrainResult,
+    drain_error: Option<&str>,
+    policy: &ObservedValuesRetrievalPolicy,
+) -> String {
+    let mut causes = Vec::new();
+    if let Some(error) = drain_error {
+        causes.push(format!(
+            "observed value search used cached local memory; {error}"
+        ));
+    }
+    if let Some(policy_note) = observed_policy_load_failure_note(policy) {
+        causes.push(policy_note);
+    }
+    if drain.storage_jobs_dropped > 0 {
+        causes.push(format!(
+            "observed value search omitted {} queued observation job(s) to preserve storage headroom",
             drain.storage_jobs_dropped
-        ),
-        (SearchProviderState::Partial, _, _) if drain.budget_exhausted => format!(
+        ));
+    }
+    if drain.budget_exhausted {
+        causes.push(format!(
             "observed value search used partial local memory; {} queue job(s) remain",
             drain.remaining_queue_depth
-        ),
-        (SearchProviderState::Partial, _, _) => {
-            "partial observed value results were returned".to_string()
-        }
-        (
-            SearchProviderState::Error
-            | SearchProviderState::NotEnabled
-            | SearchProviderState::Skipped,
-            _,
-            _,
-        ) => "observed value search did not run".to_string(),
+        ));
+    }
+    if causes.is_empty() {
+        "partial observed value results were returned".to_string()
+    } else {
+        causes.join("; ")
     }
 }
 
@@ -332,6 +343,86 @@ fn log_drain_budget_exhaustion(workspace_name: &WorkspaceName, result: &Observed
             evicted_rows = result.evicted_rows,
             storage_limit_reached = result.storage_limit_reached,
             "observed-value drain stopped at a cooperative limit"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::observed_search_outcome;
+    use crate::search::observed::sqlite_projection::{
+        ObservedValuesDrainResult, ObservedValuesSearchHits,
+    };
+    use crate::search::observed::{
+        ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
+    };
+    use crate::search::result::SearchProviderState;
+
+    #[test]
+    fn storage_drops_make_observed_coverage_partial_and_stale() {
+        let drain = ObservedValuesDrainResult {
+            storage_jobs_dropped: 1,
+            ..ObservedValuesDrainResult::default()
+        };
+        let policy = ObservedValuesRetrievalPolicy::new(Vec::new(), 365);
+
+        let outcome = observed_search_outcome(
+            ObservedValuesSearchHits::default(),
+            &drain,
+            None,
+            &policy,
+            25,
+        );
+
+        assert!(outcome.candidates.is_empty());
+        assert_eq!(outcome.status.state, SearchProviderState::Partial);
+        assert!(
+            outcome
+                .status
+                .note
+                .contains("omitted 1 queued observation job")
+        );
+        let coverage = outcome.status.coverage.expect("observed coverage");
+        assert_eq!(coverage.failed_units, 1);
+        assert!(coverage.stale_index);
+    }
+
+    #[test]
+    fn partial_note_reports_storage_drops_with_other_failures() {
+        let drain = ObservedValuesDrainResult {
+            storage_jobs_dropped: 2,
+            ..ObservedValuesDrainResult::default()
+        };
+        let policy = ObservedValuesRetrievalPolicy::with_load_failures(
+            Vec::new(),
+            vec![ObservedValuesLiveScopeLoadFailure {
+                owner_source_name: "github".to_string(),
+                message: "manifest parse failed".to_string(),
+            }],
+            365,
+        );
+
+        let outcome = observed_search_outcome(
+            ObservedValuesSearchHits::default(),
+            &drain,
+            Some("queue drain failed: database busy"),
+            &policy,
+            25,
+        );
+
+        assert_eq!(outcome.status.state, SearchProviderState::Partial);
+        assert!(
+            outcome
+                .status
+                .note
+                .contains("queue drain failed: database busy")
+        );
+        assert!(outcome.status.note.contains("skipped 1 source"));
+        assert!(
+            outcome
+                .status
+                .note
+                .contains("omitted 2 queued observation job")
         );
     }
 }
