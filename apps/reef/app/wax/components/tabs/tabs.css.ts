@@ -3,8 +3,6 @@ import { style } from '@vanilla-extract/css'
 import { breakpoints } from '@/styles/theme.css'
 import { theme, zIndex } from '@/wax/theme/theme.css'
 
-const FADE_WIDTH_PX = 40
-
 export const listRoot = style({
   maxWidth: '100%',
   minWidth: 0,
@@ -18,15 +16,6 @@ export const listViewport = style({
       scrollPaddingInline: '16px',
     },
   },
-  maskImage: `linear-gradient(
-    to right,
-    transparent 0,
-    black min(${FADE_WIDTH_PX}px, var(--scroll-area-overflow-x-start)),
-    black calc(100% - min(${FADE_WIDTH_PX}px, var(--scroll-area-overflow-x-end, ${FADE_WIDTH_PX}px))),
-    transparent 100%
-  )`,
-  maskRepeat: 'no-repeat',
-  overscrollBehavior: 'contain',
   scrollPaddingInline: '32px',
   width: '100%',
 })

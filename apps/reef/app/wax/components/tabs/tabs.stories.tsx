@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { fn } from 'storybook/test'
+import { expect, fn } from 'storybook/test'
 
 import { Tabs } from '@/wax/components'
 
@@ -75,6 +75,14 @@ export const HorizontalScroll: StoryObj<DefaultArgs> = {
       </Tabs.Root>
     </div>
   ),
+  play: async ({ canvas }) => {
+    const list = canvas.getByRole('tablist')
+    const viewport = list.closest<HTMLElement>('[data-id$="-viewport"]')
+
+    await expect(viewport).toBeDefined()
+    await expect(viewport?.scrollWidth).toBeGreaterThan(viewport?.clientWidth ?? 0)
+    await expect(getComputedStyle(viewport!).overflowY).toBe('hidden')
+  },
 }
 
 export const HorizontalScrollLastSelected: StoryObj<DefaultArgs> = {

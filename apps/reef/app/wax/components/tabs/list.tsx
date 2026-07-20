@@ -1,7 +1,8 @@
-import { ScrollArea as BaseScrollArea } from '@base-ui/react/scroll-area'
 import { Tabs as BaseTabs } from '@base-ui/react/tabs'
 import classNames from 'classnames'
 import { useEffect, useRef } from 'react'
+
+import { Container as ScrollArea } from '@/wax/components/scroll-area'
 
 import * as styles from './tabs.css'
 
@@ -36,12 +37,14 @@ export function List({
   }, [])
 
   return (
-    <BaseScrollArea.Root className={styles.listRoot}>
-      <BaseScrollArea.Viewport className={styles.listViewport}>
-        <BaseScrollArea.Content>
-          <BaseTabs.List className={classNames(styles.list, className)} ref={listRef} {...props} />
-        </BaseScrollArea.Content>
-      </BaseScrollArea.Viewport>
-    </BaseScrollArea.Root>
+    <ScrollArea
+      className={styles.listRoot}
+      fade="horizontal"
+      height="auto"
+      scrollDirection="horizontal"
+      viewportClassName={styles.listViewport}
+    >
+      <BaseTabs.List className={classNames(styles.list, className)} ref={listRef} {...props} />
+    </ScrollArea>
   )
 }
