@@ -147,6 +147,8 @@ fn observed_search_outcome(
         .collect::<Vec<_>>();
     let state = if has_more
         || drain.budget_exhausted
+        || drain.failed_jobs > 0
+        || drain.remaining_queue_depth > 0
         || drain.storage_jobs_dropped > 0
         || drain_error.is_some()
         || policy.has_load_failures()
@@ -262,6 +264,22 @@ fn observed_partial_note(
         causes.push(format!(
             "observed value search omitted {} queued observation job(s) to preserve storage headroom",
             drain.storage_jobs_dropped
+        ));
+    }
+    if drain.failed_jobs > 0 {
+        let disposition = if drain.remaining_queue_depth > 0 {
+            "left for retry"
+        } else {
+            "dead-lettered"
+        };
+        causes.push(format!(
+            "observed value search encountered {} failed queue job(s) {disposition}",
+            drain.failed_jobs
+        ));
+    } else if drain.remaining_queue_depth > 0 && !drain.budget_exhausted {
+        causes.push(format!(
+            "observed value search used partial local memory; {} queue job(s) remain",
+            drain.remaining_queue_depth
         ));
     }
     if drain.budget_exhausted {
@@ -424,5 +442,39 @@ mod tests {
                 .note
                 .contains("omitted 2 queued observation job")
         );
+    }
+
+    #[test]
+    fn failed_or_pending_queue_jobs_make_observed_coverage_partial_and_stale() {
+        let policy = ObservedValuesRetrievalPolicy::new(Vec::new(), 365);
+        let drains = [
+            ObservedValuesDrainResult {
+                failed_jobs: 1,
+                ..ObservedValuesDrainResult::default()
+            },
+            ObservedValuesDrainResult {
+                remaining_queue_depth: 1,
+                ..ObservedValuesDrainResult::default()
+            },
+        ];
+
+        for drain in drains {
+            let outcome = observed_search_outcome(
+                ObservedValuesSearchHits::default(),
+                &drain,
+                None,
+                &policy,
+                25,
+            );
+
+            assert_eq!(outcome.status.state, SearchProviderState::Partial);
+            assert!(
+                outcome
+                    .status
+                    .coverage
+                    .expect("observed coverage")
+                    .stale_index
+            );
+        }
     }
 }
