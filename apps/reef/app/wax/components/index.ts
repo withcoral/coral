@@ -8,6 +8,7 @@ export * as Inputs from './inputs'
 export * as KeyboardShortcut from './keyboard-shortcut'
 export * as List from './list'
 export * as Menu from './menu'
+export * as Radio from './radio'
 export * as ScrollArea from './scroll-area'
 export * as Tabs from './tabs'
 export { Card }
