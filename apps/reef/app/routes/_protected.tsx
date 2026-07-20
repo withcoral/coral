@@ -3,14 +3,10 @@ import { Outlet, redirect } from 'react-router'
 import type { Route } from './+types/_protected'
 
 import { reefAuthConfig } from '@/auth/config.server'
+import { markAuthResponsePrivate } from '@/auth/response.server'
 import { requestAuthContext } from '@/auth/server-context'
 import { clearReefSession, readReefSession } from '@/auth/session.server'
 import type { RequiredAuthConfig } from '@/auth/types'
-
-const PRIVATE_RESPONSE_HEADERS = {
-  'Cache-Control': 'private, no-store',
-  Vary: 'Cookie',
-} as const
 
 export const middleware: Route.MiddlewareFunction[] = [
   async ({ context, request }, next) => {
@@ -31,10 +27,9 @@ export const middleware: Route.MiddlewareFunction[] = [
 
     try {
       const response = await next()
-      applyPrivateHeaders(response)
-      return response
+      return markAuthResponsePrivate(response)
     } catch (error) {
-      if (error instanceof Response) applyPrivateHeaders(error)
+      if (error instanceof Response) markAuthResponsePrivate(error)
       throw error
     }
   },
@@ -53,16 +48,10 @@ async function loginRedirect(request: Request, config: RequiredAuthConfig): Prom
   }
 
   const response = redirect(`/login?returnTo=${encodeURIComponent(returnTo)}`, { headers })
-  applyPrivateHeaders(response)
-  return response
+  return markAuthResponsePrivate(response)
 }
 
 function hasSessionCookie(request: Request, name: string): boolean {
   const cookie = request.headers.get('cookie')
   return cookie?.split(';').some((part) => part.trim().startsWith(`${name}=`)) ?? false
-}
-
-function applyPrivateHeaders(response: Response): void {
-  response.headers.set('Cache-Control', PRIVATE_RESPONSE_HEADERS['Cache-Control'])
-  response.headers.append('Vary', PRIVATE_RESPONSE_HEADERS.Vary)
 }

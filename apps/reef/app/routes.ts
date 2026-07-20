@@ -7,6 +7,8 @@ import { routePattern } from './routing/routemap'
 const isDesktopApp = process.env.CORAL_DESKTOP_APP === '1'
 
 export default [
+  route('login', 'routes/login.tsx'),
+  route('auth/callback', 'routes/auth.callback.tsx'),
   layout('routes/_protected.tsx', [
     // Action-only resource route: OAuth/device-code install streams progress over
     // same-origin fetch. It and onboarding share the auth boundary but do not
