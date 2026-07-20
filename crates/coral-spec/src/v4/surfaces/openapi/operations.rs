@@ -414,23 +414,28 @@ fn detect_page_size(inputs: &[IrOperationInput]) -> Option<PageSizeSpec> {
 }
 
 fn detect_page_size_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_query_input(
-        inputs,
-        &[
-            "amount",
-            "count",
-            "itemsperpage",
-            "limit",
-            "maxresults",
-            "pagelimit",
-            "pagesize",
-            "perpage",
-            "resultsperpage",
-            "size",
-            "take",
-            "top",
-        ],
-    )
+    const PAGE_SIZE_TOKENS: &[&str] = &[
+        "amount",
+        "count",
+        "itemsperpage",
+        "limit",
+        "maxresults",
+        "pagelimit",
+        "pagesize",
+        "perpage",
+        "resultsperpage",
+        "size",
+        "take",
+        "top",
+    ];
+
+    inputs
+        .iter()
+        .filter(|input| input.location == IrInputLocation::Query)
+        .find(|input| {
+            input.data_type != IrScalarType::Boolean
+                && PAGE_SIZE_TOKENS.contains(&name_token(&input.name).as_str())
+        })
 }
 
 fn find_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
