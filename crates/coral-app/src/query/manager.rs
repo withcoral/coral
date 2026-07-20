@@ -1,14 +1,15 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceInputResolver, SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
+    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
+    SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -17,6 +18,7 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
+use crate::catalog::model::CatalogResolution;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
 use crate::query::QueryAttribution;
@@ -62,6 +64,52 @@ struct LoadedQuerySource {
     query_source: QuerySource,
     runtime_contract_fingerprint: RuntimeContractFingerprint,
     credential_material: BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+struct QuerySourceLoad {
+    loaded: Vec<LoadedQuerySource>,
+    failed_source_names: BTreeSet<String>,
+}
+
+#[derive(Clone, Default)]
+struct CatalogFailureRecorder {
+    failed_source_names: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl CatalogFailureRecorder {
+    fn failed_source_names(&self) -> BTreeSet<String> {
+        self.failed_source_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl SourceDecorator for CatalogFailureRecorder {
+    fn name(&self) -> &'static str {
+        "catalog_failure_recorder"
+    }
+
+    fn decorate_source(
+        &mut self,
+        _source: &QuerySource,
+        tables: SourceTables,
+    ) -> Result<SourceTables, SourceDecoratorError> {
+        Ok(tables)
+    }
+
+    fn source_failed(
+        &mut self,
+        source: &QuerySource,
+        _error: &CoreError,
+    ) -> Result<SourceFailurePolicy, SourceDecoratorError> {
+        self.failed_source_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(source.source_name().to_string());
+        Ok(SourceFailurePolicy::Ignore)
+    }
 }
 
 #[derive(Clone)]
@@ -173,14 +221,14 @@ impl QueryManager {
             &trace_sql,
             attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .prepared_runtime_with_udfs(
                         workspace_name,
-                        &loaded_sources,
+                        &source_load.loaded,
                         &config,
                         CredentialResolutionMode::StoredOnly,
                         SourceObservationMode::Disabled,
@@ -200,6 +248,18 @@ impl QueryManager {
         schema_filter: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
+        Ok(self
+            .resolve_catalog(workspace_name, schema_filter, attribution)
+            .await?
+            .catalog)
+    }
+
+    pub(crate) async fn resolve_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_filter: Option<&str>,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogResolution, QueryManagerError> {
         let trace_sql = list_catalog_trace_sql(schema_filter);
         run_query_operation(
             QueryOperation::ListCatalog,
@@ -207,28 +267,40 @@ impl QueryManager {
             &trace_sql,
             attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
+                let failure_recorder = CatalogFailureRecorder::default();
                 let runtime = self
-                    .prepared_runtime_with_udfs(
+                    .prepared_catalog_runtime_with_udfs(
                         workspace_name,
-                        &loaded_sources,
+                        &source_load.loaded,
                         &config,
-                        CredentialResolutionMode::StoredOnly,
-                        SourceObservationMode::Disabled,
+                        failure_recorder.clone(),
                     )
                     .await?;
-                Ok(runtime.list_catalog(schema_filter))
+                let mut failed_source_names = source_load.failed_source_names;
+                failed_source_names.extend(failure_recorder.failed_source_names());
+                Ok(CatalogResolution {
+                    catalog: runtime.list_catalog(schema_filter),
+                    runtime_schema_owners: runtime_schema_owners(&source_load.loaded)
+                        .map_err(QueryManagerError::App)?,
+                    failed_source_names,
+                    udf_artifact_fingerprint: self
+                        .function_manager
+                        .artifact_fingerprint(workspace_name)
+                        .map_err(QueryManagerError::App)?,
+                })
             },
-            |catalog| {
+            |resolution| {
                 Some(
                     u64::try_from(
-                        catalog
+                        resolution
+                            .catalog
                             .tables
                             .len()
-                            .saturating_add(catalog.table_functions.len()),
+                            .saturating_add(resolution.catalog.table_functions.len()),
                     )
                     .unwrap_or(u64::MAX),
                 )
@@ -252,14 +324,14 @@ impl QueryManager {
             &trace_sql,
             attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .prepared_runtime_with_udfs(
                         workspace_name,
-                        &loaded_sources,
+                        &source_load.loaded,
                         &config,
                         CredentialResolutionMode::Refreshing,
                         SourceObservationMode::Disabled,
@@ -285,14 +357,14 @@ impl QueryManager {
             sql,
             attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .prepared_runtime_with_udfs(
                         workspace_name,
-                        &loaded_sources,
+                        &source_load.loaded,
                         &config,
                         CredentialResolutionMode::Refreshing,
                         SourceObservationMode::Enabled,
@@ -321,14 +393,14 @@ impl QueryManager {
             sql,
             attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .prepared_runtime_with_udfs(
                         workspace_name,
-                        &loaded_sources,
+                        &source_load.loaded,
                         &config,
                         CredentialResolutionMode::Refreshing,
                         SourceObservationMode::Disabled,
@@ -394,7 +466,7 @@ impl QueryManager {
     async fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<(Vec<LoadedQuerySource>, AppConfig), AppError> {
+    ) -> Result<(QuerySourceLoad, AppConfig), AppError> {
         self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
@@ -412,7 +484,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Vec<LoadedQuerySource> {
+    ) -> QuerySourceLoad {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = tracing::field::Empty,
@@ -421,6 +493,7 @@ impl QueryManager {
         span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
         let _guard = span.enter();
         let mut loaded_sources = Vec::new();
+        let mut failed_source_names = BTreeSet::new();
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((loaded_source, _version)) => {
@@ -432,6 +505,7 @@ impl QueryManager {
                     loaded_sources.push(loaded_source);
                 }
                 Err(error) => {
+                    failed_source_names.insert(source.name.to_string());
                     self.diagnostic_reporter.report_source_load_failure(
                         SourceLoadDiagnosticStage::Query,
                         workspace_name,
@@ -443,7 +517,10 @@ impl QueryManager {
             }
         }
         span.record("source.count", loaded_sources.len());
-        loaded_sources
+        QuerySourceLoad {
+            loaded: loaded_sources,
+            failed_source_names,
+        }
     }
 
     fn load_query_source(
@@ -612,16 +689,16 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<FunctionListing>, QueryManagerError> {
-        let (loaded_sources, config) = self
+        let (source_load, config) = self
             .load_query_sources(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
-        let sources = query_sources_from_loaded(&loaded_sources);
+        let sources = query_sources_from_loaded(&source_load.loaded);
         self.function_manager
             .list_functions(workspace_name, &sources, || {
                 self.runtime_config_without_source_observations(
                     workspace_name,
-                    &loaded_sources,
+                    &source_load.loaded,
                     &config,
                 )
             })
@@ -717,8 +794,8 @@ impl QueryManager {
                 .config_store
                 .load_config_unlocked()
                 .map_err(QueryManagerError::App)?;
-            let loaded_sources = self.load_query_sources_from_config(workspace_name, &config);
-            (loaded_sources, config)
+            let source_load = self.load_query_sources_from_config(workspace_name, &config);
+            (source_load.loaded, config)
         };
         Ok((loaded_sources, config))
     }
@@ -765,6 +842,40 @@ impl QueryManager {
                 source_observation_mode,
             )
             .map_err(QueryManagerError::App)?;
+        self.prepare_runtime_with_udfs(workspace_name, selected_sources, runtime_config)
+            .await
+    }
+
+    async fn prepared_catalog_runtime_with_udfs(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+        failure_recorder: CatalogFailureRecorder,
+    ) -> Result<PreparedQueryRuntime, QueryManagerError> {
+        let mut runtime_config = self
+            .runtime_config_with_credential_mode(
+                workspace_name,
+                selected_sources,
+                config,
+                CredentialResolutionMode::StoredOnly,
+                SourceObservationMode::Disabled,
+            )
+            .map_err(QueryManagerError::App)?;
+        runtime_config
+            .extensions
+            .source_decorators
+            .insert(0, Box::new(failure_recorder));
+        self.prepare_runtime_with_udfs(workspace_name, selected_sources, runtime_config)
+            .await
+    }
+
+    async fn prepare_runtime_with_udfs(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        runtime_config: QueryRuntimeConfig,
+    ) -> Result<PreparedQueryRuntime, QueryManagerError> {
         let query_sources = query_sources_from_loaded(selected_sources);
         let runtime = CoralQuery::prepare(&query_sources, runtime_config)
             .await
@@ -779,6 +890,32 @@ impl QueryManager {
             .await
             .map_err(QueryManagerError::Core)
     }
+}
+
+fn runtime_schema_owners(
+    loaded_sources: &[LoadedQuerySource],
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut owners = BTreeMap::new();
+    for source in loaded_sources {
+        for component in source.query_source.components() {
+            let schema_name = component.source_name();
+            match owners.entry(schema_name.to_string()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(source.source.name.as_str().to_string());
+                }
+                Entry::Occupied(entry) if entry.get() != source.source.name.as_str() => {
+                    return Err(AppError::InvalidInput(format!(
+                        "catalog runtime schema '{}' is owned by both '{}' and '{}'",
+                        entry.key(),
+                        entry.get(),
+                        source.source.name
+                    )));
+                }
+                Entry::Occupied(_) => {}
+            }
+        }
+    }
+    Ok(owners)
 }
 
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
@@ -2291,13 +2428,17 @@ surface:
             )
             .expect("persist source");
 
-        let (sources, _) = fixture
+        let (source_load, _) = fixture
             .manager
             .load_query_sources(&workspace_name)
             .await
             .expect("missing materialization should be isolated");
 
-        assert!(sources.is_empty());
+        assert!(source_load.loaded.is_empty());
+        assert_eq!(
+            source_load.failed_source_names,
+            BTreeSet::from([source_name.to_string()])
+        );
     }
 
     #[tokio::test]
@@ -2306,12 +2447,16 @@ surface:
         let workspace_name = WorkspaceName::default();
         install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
 
-        let (sources, _) = fixture
+        let (source_load, _) = fixture
             .manager
             .load_query_sources(&workspace_name)
             .await
             .expect("unavailable keychain source should be isolated");
-        assert!(sources.is_empty());
+        assert!(source_load.loaded.is_empty());
+        assert_eq!(
+            source_load.failed_source_names,
+            BTreeSet::from(["github".to_string()])
+        );
     }
 
     #[tokio::test]

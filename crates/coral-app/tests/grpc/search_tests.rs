@@ -4,8 +4,9 @@
 )]
 
 use coral_api::v1::{
-    ClearSearchDataRequest, DrainSearchQueueRequest, RebuildSearchIndexRequest, SearchClearTarget,
-    SearchDataScope, SearchFieldRole, SearchIndexProvider, SearchMaintenanceState, SearchProvider,
+    AddFunctionRequest, ClearSearchDataRequest, CreateWorkspaceRequest, DeleteFunctionRequest,
+    DrainSearchQueueRequest, RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope,
+    SearchFieldRole, SearchIndexProvider, SearchMaintenanceState, SearchProvider,
     SearchProviderState, SearchRequest, SearchSurfaceKind, TableFunctionKind,
     ValidateSourceRequest, Workspace, catalog_item, search_clear_target, search_maintenance_result,
     search_result,
@@ -215,6 +216,175 @@ async fn search_returns_catalog_metadata_for_search_functions_and_column_hints()
                 && SearchFieldRole::try_from(hint.field_role)
                     .is_ok_and(|role| role == SearchFieldRole::TableFunctionResultColumn)
                 && hint.data_type == "Utf8"
+    )));
+}
+
+#[tokio::test]
+async fn search_indexes_runtime_udfs_with_inferred_arguments_and_result_columns() {
+    let harness = GrpcHarness::new().await;
+    let workspace = default_workspace();
+    let initial = search_workspace(&harness, workspace.clone(), "review queue reviewer").await;
+    assert_provider_state(
+        &initial,
+        SearchProvider::CatalogMetadata,
+        SearchProviderState::Empty,
+    );
+    harness
+        .function_client()
+        .add_function(Request::new(AddFunctionRequest {
+            workspace: Some(workspace.clone()),
+            sql: review_queue_function_sql("'needs-review'"),
+        }))
+        .await
+        .expect("add function");
+
+    let response = search_workspace(&harness, workspace.clone(), "review queue reviewer").await;
+    assert_provider_state(
+        &response,
+        SearchProvider::CatalogMetadata,
+        SearchProviderState::ResultsFound,
+    );
+
+    let rebuilt = harness
+        .search_client()
+        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+            workspace: Some(workspace.clone()),
+            provider: SearchIndexProvider::Catalog as i32,
+            force: false,
+        }))
+        .await
+        .expect("rebuild catalog")
+        .into_inner();
+    assert!(catalog_rebuild_detail(&rebuilt).new_document_count > 0);
+    assert!(response.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::CatalogMetadata(metadata))
+            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
+                matches!(item, catalog_item::Item::TableFunction(function)
+                    if function.name == "review_queue"
+                        && function.arguments.iter().any(|argument| argument.name == "reviewer")
+                        && function.result_columns.iter().any(|column| column.name == "reviewer")
+                        && function.result_columns.iter().any(|column| column.name == "queue"))
+            })
+    )));
+    assert!(response.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::ColumnHint(hint))
+            if hint.surface_name == "review_queue"
+                && hint.name == "reviewer"
+                && SearchSurfaceKind::try_from(hint.surface_kind)
+                    .is_ok_and(|kind| kind == SearchSurfaceKind::TableFunction)
+                && SearchFieldRole::try_from(hint.field_role)
+                    .is_ok_and(|role| role == SearchFieldRole::TableFunctionArgument)
+    )));
+    assert!(response.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::ColumnHint(hint))
+            if hint.surface_name == "review_queue"
+                && hint.name == "queue"
+                && SearchSurfaceKind::try_from(hint.surface_kind)
+                    .is_ok_and(|kind| kind == SearchSurfaceKind::TableFunction)
+                && SearchFieldRole::try_from(hint.field_role)
+                    .is_ok_and(|role| role == SearchFieldRole::TableFunctionResultColumn)
+    )));
+
+    let work = Workspace {
+        name: "work".to_string(),
+    };
+    harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(work.clone()),
+        }))
+        .await
+        .expect("create isolated workspace");
+    let isolated = search_workspace(&harness, work, "review queue reviewer").await;
+    assert!(!isolated.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::CatalogMetadata(metadata))
+            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
+                matches!(item, catalog_item::Item::TableFunction(function) if function.name == "review_queue")
+            })
+    )));
+}
+
+#[tokio::test]
+async fn catalog_projection_refreshes_when_a_udf_changes_or_is_removed() {
+    let harness = GrpcHarness::new().await;
+    let workspace = default_workspace();
+    harness
+        .function_client()
+        .add_function(Request::new(AddFunctionRequest {
+            workspace: Some(workspace.clone()),
+            sql: review_queue_function_sql("'needs-review'"),
+        }))
+        .await
+        .expect("add function");
+
+    let first = rebuild_catalog_index(&harness, workspace.clone()).await;
+    assert!(catalog_rebuild_detail(&first).projection_changed);
+
+    harness
+        .function_client()
+        .add_function(Request::new(AddFunctionRequest {
+            workspace: Some(workspace.clone()),
+            sql: review_queue_function_sql("'priority-review'"),
+        }))
+        .await
+        .expect("replace function");
+    let changed = rebuild_catalog_index(&harness, workspace.clone()).await;
+    assert!(
+        catalog_rebuild_detail(&changed).projection_changed,
+        "a metadata-neutral function body change must refresh the projection"
+    );
+    assert!(catalog_rebuild_detail(&changed).rebuild_performed);
+
+    harness
+        .function_client()
+        .delete_function(Request::new(DeleteFunctionRequest {
+            workspace: Some(workspace.clone()),
+            name: "review_queue".to_string(),
+        }))
+        .await
+        .expect("delete function");
+    let removed = rebuild_catalog_index(&harness, workspace.clone()).await;
+    assert!(catalog_rebuild_detail(&removed).projection_changed);
+    let response = search_workspace(&harness, workspace, "review queue reviewer").await;
+    assert!(!response.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::CatalogMetadata(metadata))
+            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
+                matches!(item, catalog_item::Item::TableFunction(function) if function.name == "review_queue")
+            })
+    )));
+}
+
+#[tokio::test]
+async fn search_retains_healthy_catalog_results_and_reports_partial_source_loads() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(table_preview_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+    harness
+        .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+    std::fs::remove_file(source_dir(harness.config_dir(), "searchable").join("manifest.yaml"))
+        .expect("break searchable source");
+
+    let response = search_workspace(&harness, default_workspace(), "conversation archive").await;
+    let catalog = assert_provider_state(
+        &response,
+        SearchProvider::CatalogMetadata,
+        SearchProviderState::Partial,
+    );
+    assert_eq!(catalog.coverage.as_ref().expect("coverage").failed_units, 1);
+    assert!(catalog.note.contains("searchable"));
+    assert!(response.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::CatalogMetadata(metadata))
+            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
+                matches!(item, catalog_item::Item::Table(table) if table.name == "messages")
+            })
     )));
 }
 
@@ -957,6 +1127,52 @@ fn search_sqlite_path(harness: &GrpcHarness) -> std::path::PathBuf {
     harness
         .config_dir()
         .join("workspaces/default/search/search.sqlite3")
+}
+
+async fn search_workspace(
+    harness: &GrpcHarness,
+    workspace: Workspace,
+    query: &str,
+) -> coral_api::v1::SearchResponse {
+    harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(workspace),
+            query: query.to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner()
+}
+
+async fn rebuild_catalog_index(
+    harness: &GrpcHarness,
+    workspace: Workspace,
+) -> coral_api::v1::RebuildSearchIndexResponse {
+    harness
+        .search_client()
+        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+            workspace: Some(workspace),
+            provider: SearchIndexProvider::Catalog as i32,
+            force: false,
+        }))
+        .await
+        .expect("rebuild catalog")
+        .into_inner()
+}
+
+fn review_queue_function_sql(queue: &str) -> String {
+    format!(
+        r"/*
+name: review_queue
+schema: functions
+description: Review queue for a reviewer
+*/
+
+select cast($reviewer as VARCHAR) as reviewer, cast({queue} as VARCHAR) as queue
+"
+    )
 }
 
 fn catalog_clear_detail(

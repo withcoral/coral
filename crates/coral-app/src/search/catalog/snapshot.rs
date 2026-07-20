@@ -9,6 +9,7 @@ use coral_engine::{
 use coral_spec::SourceTableFunctionKind;
 use sha2::{Digest as _, Sha256};
 
+use crate::catalog::model::CatalogResolution;
 use crate::search::catalog::sqlite_index::{
     CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
 };
@@ -28,9 +29,26 @@ impl CatalogSearchSnapshot {
         Self::from_catalog_with_runtime_schema_owners(catalog, &BTreeMap::new())
     }
 
+    #[cfg(test)]
     pub(crate) fn from_catalog_with_runtime_schema_owners(
         catalog: &CatalogInfo,
         runtime_schema_owners: &BTreeMap<String, String>,
+    ) -> Self {
+        Self::from_catalog_parts(catalog, runtime_schema_owners, "")
+    }
+
+    pub(crate) fn from_catalog_resolution(resolution: &CatalogResolution) -> Self {
+        Self::from_catalog_parts(
+            &resolution.catalog,
+            &resolution.runtime_schema_owners,
+            &resolution.udf_artifact_fingerprint,
+        )
+    }
+
+    fn from_catalog_parts(
+        catalog: &CatalogInfo,
+        runtime_schema_owners: &BTreeMap<String, String>,
+        udf_artifact_fingerprint: &str,
     ) -> Self {
         let runtime_schema_owners =
             normalized_runtime_schema_owners(catalog, runtime_schema_owners);
@@ -42,21 +60,12 @@ impl CatalogSearchSnapshot {
                 .unwrap_or_else(|| document.source_name.clone());
         }
         documents.sort_by(|left, right| left.doc_id.cmp(&right.doc_id));
-        let fingerprint = catalog_snapshot_fingerprint(catalog, &runtime_schema_owners);
+        let fingerprint =
+            catalog_snapshot_fingerprint(catalog, &runtime_schema_owners, udf_artifact_fingerprint);
         Self {
             documents,
             fingerprint,
         }
-    }
-
-    pub(crate) fn fingerprint_catalog_with_runtime_schema_owners(
-        catalog: &CatalogInfo,
-        runtime_schema_owners: &BTreeMap<String, String>,
-    ) -> String {
-        catalog_snapshot_fingerprint(
-            catalog,
-            &normalized_runtime_schema_owners(catalog, runtime_schema_owners),
-        )
     }
 
     pub(crate) fn index_snapshot(&self) -> CatalogIndexSnapshot {
@@ -409,9 +418,12 @@ fn join_search_text<const N: usize>(parts: [&str; N]) -> String {
 fn catalog_snapshot_fingerprint(
     catalog: &CatalogInfo,
     runtime_schema_owners: &BTreeMap<String, String>,
+    udf_artifact_fingerprint: &str,
 ) -> String {
     let mut hasher = Sha256::new();
     update_hash(&mut hasher, CATALOG_SEARCH_SNAPSHOT_VERSION);
+    update_hash(&mut hasher, "udf_artifact_fingerprint");
+    update_hash(&mut hasher, udf_artifact_fingerprint);
 
     for (runtime_schema_name, owner_source_name) in runtime_schema_owners {
         update_hash(&mut hasher, "runtime_schema_owner");

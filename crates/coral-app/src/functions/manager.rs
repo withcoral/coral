@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use coral_engine::{PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
 use coral_spec::{FunctionSpec, parse_function_sql};
+use sha2::{Digest as _, Sha256};
 
 use crate::bootstrap::AppError;
 use crate::functions::model::{FunctionName, InstalledFunction};
@@ -329,6 +330,32 @@ impl FunctionManager {
         Ok(())
     }
 
+    /// Returns a stable digest of every installed function artifact.
+    ///
+    /// Search uses this only to decide whether its derived projection needs a
+    /// refresh. The function SQL itself remains filesystem-owned and is never
+    /// persisted into the search database.
+    pub(crate) fn artifact_fingerprint(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<String, AppError> {
+        let mut hasher = Sha256::new();
+        for artifact in self.load_function_artifacts(workspace_name)? {
+            update_function_fingerprint(&mut hasher, artifact.name.as_str());
+            match artifact.content {
+                FunctionArtifactContent::Sql(sql) => {
+                    update_function_fingerprint(&mut hasher, "sql");
+                    update_function_fingerprint(&mut hasher, &sql);
+                }
+                FunctionArtifactContent::Unavailable(reason) => {
+                    update_function_fingerprint(&mut hasher, "unavailable");
+                    update_function_fingerprint(&mut hasher, &reason);
+                }
+            }
+        }
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+
     fn load_function_artifacts(
         &self,
         workspace_name: &WorkspaceName,
@@ -388,6 +415,11 @@ impl FunctionManager {
         }
         Ok(())
     }
+}
+
+fn update_function_fingerprint(hasher: &mut Sha256, value: &str) {
+    hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(value.as_bytes());
 }
 
 fn validated_function_name(

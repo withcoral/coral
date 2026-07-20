@@ -281,7 +281,7 @@ async fn initialize_instructions_keep_workspace_name_to_a_single_line() {
 
 #[tokio::test]
 async fn observed_value_feature_controls_mcp_discovery_surfaces() {
-    let disabled = mcp_search_discovery_text(false).await;
+    let disabled = Box::pin(mcp_search_discovery_text(false)).await;
     assert!(disabled.0.contains("filters in Coral's local catalog"));
     assert!(!disabled.0.contains("observed"));
     assert!(disabled.1.contains("Coral's local catalog"));
@@ -295,7 +295,7 @@ async fn observed_value_feature_controls_mcp_discovery_surfaces() {
     );
     assert!(!disabled.3.contains("observed"));
 
-    let enabled = mcp_search_discovery_text(true).await;
+    let enabled = Box::pin(mcp_search_discovery_text(true)).await;
     assert!(
         enabled
             .0

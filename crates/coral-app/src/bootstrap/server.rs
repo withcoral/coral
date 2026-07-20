@@ -290,6 +290,10 @@ impl ServerBuilder {
     /// Returns [`AppError`] if the config directory cannot be determined,
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the app composition root assembles the local server's shared services explicitly"
+    )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
@@ -365,6 +369,7 @@ impl ServerBuilder {
             layout,
             &config_store,
             workspace_manager.clone(),
+            query_manager.clone(),
             observed_values_search_enabled,
             diagnostic_reporter,
         );
@@ -964,12 +969,26 @@ enabled = false
         let db = test_db(&layout, &config_store).await;
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
-            credential_manager,
+            credential_manager.clone(),
             layout.clone(),
             None,
             db,
         );
-        let search = SearchManager::new(layout.clone(), &config_store, workspace_manager, true);
+        let query_manager = QueryManager::new_for_tests(
+            config_store.clone(),
+            workspace_manager.clone(),
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            vec![Arc::new(NoopEngineExtensionsProvider)],
+        );
+        let search = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager,
+            query_manager,
+            true,
+        );
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
         let generation = store
@@ -1349,6 +1368,7 @@ backend = "unsupported"
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
+            query_manager.clone(),
             true,
         );
         let trace_service =
@@ -1798,6 +1818,7 @@ tables:
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
+            query_manager.clone(),
             true,
         );
         let running = start_server(
@@ -1921,6 +1942,7 @@ tables:
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
+            query_manager.clone(),
             true,
         );
         let running = start_server(
@@ -2044,6 +2066,7 @@ tables:
             layout.clone(),
             &config_store,
             workspace_manager.clone(),
+            query_manager.clone(),
             true,
         );
         let running = start_server(

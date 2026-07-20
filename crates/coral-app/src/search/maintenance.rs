@@ -1,6 +1,6 @@
 //! Transport-neutral Universal Search maintenance models.
 
-use crate::search::result::{SearchManagerError, SearchProviderKind};
+use crate::search::result::SearchProviderKind;
 use crate::sources::SourceName;
 use crate::workspaces::WorkspaceName;
 
@@ -40,22 +40,9 @@ pub(crate) struct ClearSearchDataResponse {
     pub(crate) storage_cleanup: SearchStorageCleanupResult,
 }
 
-pub(crate) trait SearchProviderMaintenance {
-    fn rebuild_index(
-        &self,
-        request: SearchProviderRebuildRequest<'_>,
-    ) -> Result<SearchMaintenanceResult, SearchManagerError>;
-
-    fn clear_data(
-        &self,
-        request: SearchProviderClearRequest<'_>,
-    ) -> Result<SearchProviderClearOutcome, SearchManagerError>;
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SearchProviderRebuildRequest<'a> {
     pub(crate) workspace_name: &'a WorkspaceName,
-    pub(crate) force: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -6,15 +6,15 @@ use tokio::task;
 
 use crate::bootstrap::AppError;
 use crate::query::QueryAttribution;
-use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
+use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::search::catalog::provider::{CatalogMetadataProvider, catalog_clear_provider_result};
 use crate::search::engine::UniversalSearchEngine;
 use crate::search::maintenance::{
     ClearSearchDataRequest, ClearSearchDataResponse, DrainSearchQueueRequest,
     DrainSearchQueueResponse, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
     SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchMaintenanceResult,
-    SearchMaintenanceState, SearchProviderClearRequest, SearchProviderMaintenance,
-    SearchProviderRebuildRequest, SearchStorageCleanupResult,
+    SearchMaintenanceState, SearchProviderClearRequest, SearchProviderRebuildRequest,
+    SearchStorageCleanupResult,
 };
 use crate::search::observed::provider::{ObservedValuesProvider, observed_clear_provider_result};
 use crate::search::observed::{
@@ -33,6 +33,7 @@ use crate::workspaces::{WorkspaceManager, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct SearchManager {
+    queries: QueryManager,
     catalog: CatalogMetadataProvider,
     observed: ObservedValuesProvider,
     observed_scope_loader: ObservedValuesLiveScopeLoader,
@@ -55,12 +56,14 @@ impl SearchManager {
         layout: AppStateLayout,
         config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
+        query_manager: QueryManager,
         observed_values_search_enabled: bool,
     ) -> Self {
         Self::with_diagnostic_reporter(
             layout,
             config_store,
             workspace_manager,
+            query_manager,
             observed_values_search_enabled,
             SourceDiagnosticReporter::default(),
         )
@@ -70,15 +73,11 @@ impl SearchManager {
         layout: AppStateLayout,
         config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
+        query_manager: QueryManager,
         observed_values_search_enabled: bool,
         diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
-        let catalog_loader = CatalogSnapshotLoader::with_diagnostic_reporter(
-            config_store.clone(),
-            layout.clone(),
-            diagnostic_reporter.clone(),
-        );
-        let catalog = CatalogMetadataProvider::new(layout.clone(), catalog_loader);
+        let catalog = CatalogMetadataProvider::new(layout.clone());
         let observed = ObservedValuesProvider::new(layout.clone());
         let observed_scope_loader = ObservedValuesLiveScopeLoader::new(
             layout.clone(),
@@ -86,6 +85,7 @@ impl SearchManager {
             diagnostic_reporter,
         );
         Self {
+            queries: query_manager,
             catalog: catalog.clone(),
             observed: observed.clone(),
             observed_scope_loader,
@@ -104,16 +104,19 @@ impl SearchManager {
         self.workspaces
             .require_workspace(&request.workspace_name)
             .await?;
+        let catalog_resolution = self
+            .queries
+            .resolve_catalog(&request.workspace_name, None, attribution)
+            .await;
         let search = self.clone();
         let request = request.clone();
-        let attribution = attribution.clone();
         run_blocking_search_operation(move || {
             let observed_policy = search
                 .observed_values_search_enabled
                 .then(|| search.observed_retrieval_policy(&request.workspace_name));
             Ok(search.engine.search(
                 &request,
-                &attribution,
+                catalog_resolution.as_ref(),
                 observed_policy.as_ref().map(Result::as_ref),
             ))
         })
@@ -127,20 +130,35 @@ impl SearchManager {
         self.workspaces
             .require_workspace(&request.workspace_name)
             .await?;
+        let catalog_resolution = match request.provider {
+            SearchIndexProvider::Catalog | SearchIndexProvider::All => Some(
+                self.queries
+                    .resolve_catalog(&request.workspace_name, None, &QueryAttribution::default())
+                    .await
+                    .map_err(catalog_resolution_error)?,
+            ),
+            SearchIndexProvider::ObservedValues => None,
+        };
         let search = self.clone();
         let request = request.clone();
-        run_blocking_search_operation(move || search.rebuild_index_blocking(&request)).await
+        run_blocking_search_operation(move || {
+            search.rebuild_index_blocking(&request, catalog_resolution.as_ref())
+        })
+        .await
     }
 
     fn rebuild_index_blocking(
         &self,
         request: &RebuildSearchIndexRequest,
+        catalog_resolution: Option<&crate::catalog::model::CatalogResolution>,
     ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
         let results = match request.provider {
-            SearchIndexProvider::Catalog => vec![self.rebuild_catalog_index(request)?],
+            SearchIndexProvider::Catalog => {
+                vec![self.rebuild_catalog_index(request, catalog_resolution)?]
+            }
             SearchIndexProvider::ObservedValues => vec![self.rebuild_observed_index(request)],
             SearchIndexProvider::All => vec![
-                self.rebuild_catalog_index(request)?,
+                self.rebuild_catalog_index(request, catalog_resolution)?,
                 self.rebuild_observed_index(request),
             ],
         };
@@ -328,11 +346,13 @@ impl SearchManager {
     fn rebuild_catalog_index(
         &self,
         request: &RebuildSearchIndexRequest,
+        catalog_resolution: Option<&crate::catalog::model::CatalogResolution>,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
-        self.catalog.rebuild_index(SearchProviderRebuildRequest {
-            workspace_name: &request.workspace_name,
-            force: request.force,
-        })
+        let catalog_resolution = catalog_resolution.ok_or_else(|| {
+            AppError::Internal("catalog rebuild did not resolve a workspace catalog".to_string())
+        })?;
+        self.catalog
+            .rebuild_index(&request.workspace_name, catalog_resolution, request.force)
     }
 
     fn rebuild_observed_index(
@@ -356,7 +376,6 @@ impl SearchManager {
         self.observed.rebuild_index(
             SearchProviderRebuildRequest {
                 workspace_name: &request.workspace_name,
-                force: request.force,
             },
             &policy,
         )
@@ -401,6 +420,15 @@ where
     task::spawn_blocking(move || span.in_scope(operation))
         .await
         .map_err(AppError::from)?
+}
+
+fn catalog_resolution_error(error: QueryManagerError) -> SearchManagerError {
+    match error {
+        QueryManagerError::App(error) => error.into(),
+        QueryManagerError::Core(error) => {
+            AppError::Internal(format!("workspace catalog resolution failed: {error}")).into()
+        }
+    }
 }
 
 fn manual_drain_budget_ms(requested_budget_ms: u32) -> Result<u32, SearchManagerError> {
