@@ -38,6 +38,7 @@ pub(crate) struct ObservedValuesDrainResult {
     pub(crate) queue_jobs_processed: u32,
     pub(crate) stale_jobs_skipped: u32,
     pub(crate) failed_jobs: u32,
+    pub(crate) storage_jobs_dropped: u32,
     pub(crate) canonical_rows_upserted: u32,
     pub(crate) fts_rows_written: u32,
     pub(crate) stale_rows_purged: u32,
@@ -120,13 +121,16 @@ enum DrainOneResult {
     Failed {
         job_id: i64,
     },
+    StorageDropped {
+        job_id: i64,
+    },
 }
 
 pub(crate) fn drain_observed_queue(
     connection: &mut Connection,
     workspace_name: &WorkspaceName,
     budget: ObservedValuesDrainBudget,
-    mut should_stop_after_job: impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+    storage_limit_reached: impl Fn(&Connection) -> Result<bool, SqliteSearchError>,
 ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
     let mut result = ObservedValuesDrainResult::default();
     let Some(deadline) = deadline_for(budget.time_budget) else {
@@ -136,14 +140,25 @@ pub(crate) fn drain_observed_queue(
     };
 
     let mut last_seen_job_id = 0_i64;
-    let mut stopped_after_job = false;
     for _ in 0..budget.max_jobs {
         if Instant::now() >= deadline {
             result.budget_exhausted = true;
             break;
         }
 
-        match drain_one_observed_job(connection, workspace_name, last_seen_job_id)? {
+        if storage_limit_reached(connection)?
+            && drop_oldest_dead_letter_for_storage(connection, workspace_name)?
+        {
+            result.storage_jobs_dropped = result.storage_jobs_dropped.saturating_add(1);
+            continue;
+        }
+
+        match drain_one_observed_job(
+            connection,
+            workspace_name,
+            last_seen_job_id,
+            &storage_limit_reached,
+        )? {
             DrainOneResult::Empty => break,
             DrainOneResult::Processed {
                 job_id,
@@ -165,13 +180,10 @@ pub(crate) fn drain_observed_queue(
                 last_seen_job_id = job_id;
                 result.failed_jobs = result.failed_jobs.saturating_add(1);
             }
-        }
-
-        // Queue jobs are atomic, so storage and other cooperative limits can
-        // only stop the drain safely between committed jobs.
-        if should_stop_after_job(connection)? {
-            stopped_after_job = true;
-            break;
+            DrainOneResult::StorageDropped { job_id } => {
+                last_seen_job_id = job_id;
+                result.storage_jobs_dropped = result.storage_jobs_dropped.saturating_add(1);
+            }
         }
     }
 
@@ -179,21 +191,30 @@ pub(crate) fn drain_observed_queue(
     let jobs_attempted = result
         .queue_jobs_processed
         .saturating_add(result.stale_jobs_skipped)
-        .saturating_add(result.failed_jobs);
-    if result.remaining_queue_depth > 0
-        && (stopped_after_job
-            || jobs_attempted >= u32::try_from(budget.max_jobs).unwrap_or(u32::MAX))
+        .saturating_add(result.failed_jobs)
+        .saturating_add(result.storage_jobs_dropped);
+    let max_jobs_reached = jobs_attempted >= u32::try_from(budget.max_jobs).unwrap_or(u32::MAX);
+    if result.remaining_queue_depth > 0 && max_jobs_reached {
+        result.budget_exhausted = true;
+    }
+    if max_jobs_reached
+        && storage_limit_reached(connection)?
+        && dead_letter_queue_job_exists(connection, workspace_name)?
     {
         result.budget_exhausted = true;
     }
     Ok(result)
 }
 
-fn drain_one_observed_job(
+fn drain_one_observed_job<F>(
     connection: &mut Connection,
     workspace_name: &WorkspaceName,
     after_job_id: i64,
-) -> Result<DrainOneResult, SqliteSearchError> {
+    storage_limit_reached: &F,
+) -> Result<DrainOneResult, SqliteSearchError>
+where
+    F: Fn(&Connection) -> Result<bool, SqliteSearchError>,
+{
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(raw_job) = next_queue_job(&transaction, workspace_name, after_job_id)? else {
         transaction.commit()?;
@@ -231,10 +252,28 @@ fn drain_one_observed_job(
         }
     };
 
+    if storage_limit_reached(&transaction)? {
+        delete_queue_job(&transaction, job.id)?;
+        let job_id = job.id;
+        transaction.commit()?;
+        return Ok(DrainOneResult::StorageDropped { job_id });
+    }
+
+    transaction.execute_batch("SAVEPOINT observed_value_projection")?;
+
     match project_observed_payload(&transaction, workspace_name, &job, job_generation, &payload) {
         Ok((canonical_rows, fts_rows)) => {
             delete_queue_job(&transaction, job.id)?;
             let job_id = job.id;
+            if storage_limit_reached(&transaction)? {
+                transaction.execute_batch(
+                    "ROLLBACK TO observed_value_projection; RELEASE observed_value_projection",
+                )?;
+                delete_queue_job(&transaction, job.id)?;
+                transaction.commit()?;
+                return Ok(DrainOneResult::StorageDropped { job_id });
+            }
+            transaction.execute_batch("RELEASE observed_value_projection")?;
             transaction.commit()?;
             Ok(DrainOneResult::Processed {
                 job_id,
@@ -514,6 +553,53 @@ fn delete_queue_job(transaction: &Transaction<'_>, job_id: i64) -> Result<(), Sq
     Ok(())
 }
 
+fn drop_oldest_dead_letter_for_storage(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<bool, SqliteSearchError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let job_id = transaction
+        .query_row(
+            "
+            SELECT id
+            FROM observed_queue_jobs
+            WHERE workspace = ?1 AND attempts >= ?2
+            ORDER BY id
+            LIMIT 1
+            ",
+            params![workspace_name.as_str(), MAX_OBSERVED_QUEUE_JOB_ATTEMPTS],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(job_id) = job_id else {
+        transaction.commit()?;
+        return Ok(false);
+    };
+    delete_queue_job(&transaction, job_id)?;
+    transaction.commit()?;
+    Ok(true)
+}
+
+fn dead_letter_queue_job_exists(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<bool, SqliteSearchError> {
+    connection
+        .query_row(
+            "
+            SELECT EXISTS(
+                SELECT 1
+                FROM observed_queue_jobs
+                WHERE workspace = ?1 AND attempts >= ?2
+                LIMIT 1
+            )
+            ",
+            params![workspace_name.as_str(), MAX_OBSERVED_QUEUE_JOB_ATTEMPTS],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
+}
+
 fn mark_queue_job_failed(
     transaction: &Transaction<'_>,
     job_id: i64,
@@ -636,6 +722,150 @@ mod tests {
             )
             .expect("attempts");
         assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn storage_guard_rolls_back_projection_and_atomically_drops_job() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+        store
+            .enqueue_if_current(&workspace, &test_job(), epoch)
+            .expect("enqueue");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+
+        let result = drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            |connection| {
+                let projected_rows: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM observed_values WHERE workspace = ?1",
+                    params![workspace.as_str()],
+                    |row| row.get(0),
+                )?;
+                Ok(projected_rows > 0)
+            },
+        )
+        .expect("storage-guarded drain");
+
+        assert_eq!(result.queue_jobs_processed, 0);
+        assert_eq!(result.storage_jobs_dropped, 1);
+        assert_eq!(result.canonical_rows_upserted, 0);
+        assert_eq!(result.fts_rows_written, 0);
+        assert_eq!(result.remaining_queue_depth, 0);
+        for table_name in [
+            "observed_queue_jobs",
+            "observed_values",
+            "observed_values_fts",
+        ] {
+            let row_count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("row count");
+            assert_eq!(row_count, 0, "{table_name} should remain empty");
+        }
+    }
+
+    #[test]
+    fn storage_pressure_keeps_poison_diagnostics_and_reaches_later_job() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+        let mut poison = test_job_with_identity("github", "github", "bad-scope", "Bad value");
+        poison.payload_json = "{not-json".to_string();
+        store
+            .enqueue_if_current(&workspace, &poison, epoch)
+            .expect("enqueue poison");
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_identity("github", "github", "good-scope", "Good value"),
+                epoch,
+            )
+            .expect("enqueue valid job");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+
+        let result = drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            |_| Ok(true),
+        )
+        .expect("pressure drain");
+
+        assert_eq!(result.failed_jobs, 1);
+        assert_eq!(result.storage_jobs_dropped, 1);
+        assert_eq!(result.queue_jobs_processed, 0);
+        assert_eq!(result.remaining_queue_depth, 1);
+        let (attempts, last_error): (i64, String) = connection
+            .query_row(
+                "SELECT attempts, last_error FROM observed_queue_jobs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("poison diagnostics");
+        assert_eq!(attempts, 1);
+        assert!(!last_error.is_empty());
+    }
+
+    #[test]
+    fn storage_pressure_purges_dead_letters_before_active_jobs() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+        let mut poison = test_job_with_identity("github", "github", "bad-scope", "Bad value");
+        poison.payload_json = "{not-json".to_string();
+        store
+            .enqueue_if_current(&workspace, &poison, epoch)
+            .expect("enqueue poison");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+        for _ in 0..super::MAX_OBSERVED_QUEUE_JOB_ATTEMPTS {
+            drain_observed_queue(
+                &mut connection,
+                &workspace,
+                ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+                |_| Ok(false),
+            )
+            .expect("poison retry");
+        }
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_identity("github", "github", "good-scope", "Good value"),
+                epoch,
+            )
+            .expect("enqueue active job");
+
+        let result = drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            |_| Ok(true),
+        )
+        .expect("pressure drain");
+
+        assert_eq!(result.storage_jobs_dropped, 2);
+        assert_eq!(result.remaining_queue_depth, 0);
+        let remaining_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM observed_queue_jobs", [], |row| {
+                row.get(0)
+            })
+            .expect("remaining queue rows");
+        assert_eq!(remaining_rows, 0);
     }
 
     #[test]

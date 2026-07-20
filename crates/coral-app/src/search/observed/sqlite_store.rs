@@ -134,22 +134,40 @@ impl SqliteObservedValuesStore {
         let mut connection = store.connect()?;
         configure_drain_busy_timeout(&connection, budget)?;
         let started_at = Instant::now();
+        let pre_projection_governance = if storage_limit_reached(&connection, self.policy)? {
+            Some(maintain_observed_values(
+                &mut connection,
+                workspace_name,
+                self.policy,
+                budget.time_budget,
+            )?)
+        } else {
+            None
+        };
+        let projection_budget = ObservedValuesDrainBudget::new(
+            budget.max_jobs,
+            budget.time_budget.saturating_sub(started_at.elapsed()),
+        );
         let mut result = sqlite_projection::drain_observed_queue(
             &mut connection,
             workspace_name,
-            budget,
+            projection_budget,
             |connection| storage_limit_reached(connection, self.policy),
         )?;
-        let maintenance_budget = budget.time_budget.saturating_sub(started_at.elapsed());
-        let governance = maintain_observed_values(
-            &mut connection,
-            workspace_name,
-            self.policy,
-            maintenance_budget,
-        )?;
+        let governance = if let Some(governance) = pre_projection_governance {
+            governance
+        } else {
+            let maintenance_budget = budget.time_budget.saturating_sub(started_at.elapsed());
+            maintain_observed_values(
+                &mut connection,
+                workspace_name,
+                self.policy,
+                maintenance_budget,
+            )?
+        };
         result.stale_rows_purged = governance.stale_rows_purged;
         result.evicted_rows = governance.evicted_rows;
-        result.storage_limit_reached = governance.storage_limit_reached;
+        result.storage_limit_reached = storage_limit_reached(&connection, self.policy)?;
         result.budget_exhausted |= governance.budget_exhausted;
         Ok(result)
     }
@@ -938,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_pressure_stops_between_atomic_jobs_and_later_drain_resumes() {
+    fn storage_pressure_drops_best_effort_jobs_without_projecting() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -966,32 +984,86 @@ mod tests {
             },
         );
 
-        let stopped = pressure_store
+        let result = pressure_store
             .drain_queue(&workspace, drain_budget())
             .expect("pressure-limited drain");
 
-        assert_eq!(stopped.queue_jobs_processed, 1);
-        assert_eq!(stopped.remaining_queue_depth, 1);
-        assert!(stopped.budget_exhausted);
-        assert!(stopped.storage_limit_reached);
+        assert_eq!(result.queue_jobs_processed, 0);
+        assert_eq!(result.storage_jobs_dropped, 2);
+        assert_eq!(result.remaining_queue_depth, 0);
+        assert!(!result.budget_exhausted);
+        assert!(result.storage_limit_reached);
         assert_eq!(
             pressure_store
                 .projected_value_count(&workspace)
                 .expect("projected value count"),
-            1
+            0
+        );
+    }
+
+    #[test]
+    fn projection_crossing_live_page_limit_is_rolled_back_and_dropped() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = ordinary_store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        let mut job = test_job_with("large-scope", "issues", "unused");
+        let large_value = "x".repeat(512);
+        let values = (0..500)
+            .map(|index| {
+                format!(
+                    r#"{{"column_name":"title","display_value":"{large_value}-{index}","search_text":"{large_value}-{index}","value_key":"key-{index}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        job.payload_json = format!(r#"{{"values":[{values}]}}"#);
+        ordinary_store
+            .enqueue_if_current(&workspace, &job, generation)
+            .expect("enqueue large job");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = backing.connect_for_test().expect("connection");
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("page size");
+        let page_count: i64 = connection
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .expect("page count");
+        let freelist_count: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .expect("freelist count");
+        let live_bytes = u64::try_from(page_count.saturating_sub(freelist_count))
+            .expect("non-negative live pages")
+            .saturating_mul(u64::try_from(page_size).expect("positive page size"));
+        drop(connection);
+        drop(backing);
+        let governed_store = SqliteObservedValuesStore::with_policy(
+            layout,
+            ObservedValuesStoragePolicy {
+                max_storage_bytes: live_bytes
+                    .saturating_add(u64::try_from(page_size).expect("positive page size")),
+                wal_headroom_bytes: 0,
+                stale_after_days: u32::MAX,
+                maintenance_batch_rows: 0,
+            },
         );
 
-        let resumed = ordinary_store
+        let result = governed_store
             .drain_queue(&workspace, drain_budget())
-            .expect("resumed drain");
+            .expect("storage-guarded drain");
 
-        assert_eq!(resumed.queue_jobs_processed, 1);
-        assert_eq!(resumed.remaining_queue_depth, 0);
+        assert_eq!(result.queue_jobs_processed, 0);
+        assert_eq!(result.storage_jobs_dropped, 1);
+        assert_eq!(result.remaining_queue_depth, 0);
         assert_eq!(
-            ordinary_store
+            governed_store
                 .projected_value_count(&workspace)
                 .expect("projected value count"),
-            2
+            0
         );
     }
 
