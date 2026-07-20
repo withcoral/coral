@@ -51,11 +51,13 @@ export function SourceHeader({
 
 export function SourceInputField({
   children,
+  htmlFor,
   input,
   showHint = true,
   showLabel = true,
 }: {
   children: ReactNode
+  htmlFor?: string
   input: CatalogSourceInputSpec
   showHint?: boolean
   showLabel?: boolean
@@ -63,6 +65,7 @@ export function SourceInputField({
   return (
     <SourceField
       hint={showHint ? input.hint : undefined}
+      htmlFor={htmlFor}
       label={showLabel ? formatFieldName(input.key) : undefined}
     >
       {children}
@@ -84,15 +87,25 @@ export function SourceNoConfiguration() {
 export function SourceField({
   children,
   hint,
+  htmlFor,
   label,
 }: {
   children: ReactNode
   hint?: string
+  htmlFor?: string
   label?: string
 }) {
   return (
     <div className={styles.fieldItem}>
-      {label ? <Typography.BodyStrong variant="primary">{label}</Typography.BodyStrong> : null}
+      {label ? (
+        htmlFor ? (
+          <Typography.BodyStrong as="label" htmlFor={htmlFor} variant="primary">
+            {label}
+          </Typography.BodyStrong>
+        ) : (
+          <Typography.BodyStrong variant="primary">{label}</Typography.BodyStrong>
+        )
+      ) : null}
       {children}
       {hint ? <Markdown>{hint}</Markdown> : null}
     </div>
