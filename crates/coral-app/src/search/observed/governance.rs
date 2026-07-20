@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::workspaces::WorkspaceName;
@@ -261,13 +261,51 @@ fn delete_observed_value_keys(
         &format!("DELETE FROM temp.{GOVERNANCE_DELETE_KEYS_TABLE}"),
         [],
     )?;
+    let result =
+        delete_canonical_observed_value_keys(&transaction, workspace_name, keys, deadline)?;
+    if result.deleted_rows > 0 {
+        delete_staged_fts_rows(&transaction)?;
+    }
+    transaction.execute(
+        &format!("DELETE FROM temp.{GOVERNANCE_DELETE_KEYS_TABLE}"),
+        [],
+    )?;
+    transaction.commit()?;
+    Ok(result)
+}
+
+fn delete_canonical_observed_value_keys(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    keys: Vec<ObservedValueKey>,
+    deadline: Instant,
+) -> Result<DeleteObservedValueKeysResult, SqliteSearchError> {
     let mut result = DeleteObservedValueKeysResult::default();
     for key in keys {
         if deadline_expired(deadline) {
             result.budget_exhausted = true;
             break;
         }
-        let canonical_deleted = transaction.execute(
+        let canonical_deleted =
+            delete_canonical_observed_value_key(transaction, workspace_name, &key)?;
+        if canonical_deleted == 0 {
+            continue;
+        }
+        stage_governance_delete_key(transaction, workspace_name, &key)?;
+        result.deleted_rows = result
+            .deleted_rows
+            .saturating_add(u32::try_from(canonical_deleted).unwrap_or(u32::MAX));
+    }
+    Ok(result)
+}
+
+fn delete_canonical_observed_value_key(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    key: &ObservedValueKey,
+) -> Result<usize, SqliteSearchError> {
+    transaction
+        .execute(
             "
             DELETE FROM observed_values
             WHERE rowid = ?1
@@ -295,68 +333,66 @@ fn delete_observed_value_keys(
                 &key.last_observed_at,
                 key.observation_count,
             ],
-        )?;
-        if canonical_deleted == 0 {
-            continue;
-        }
-        transaction.execute(
-            &format!(
-                "
-                INSERT INTO temp.{GOVERNANCE_DELETE_KEYS_TABLE} (
-                    workspace,
-                    owner_source_name,
-                    source_name,
-                    source_scope_id,
-                    surface_kind,
-                    surface_name,
-                    column_name,
-                    value_key
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                "
-            ),
-            params![
-                workspace_name.as_str(),
-                key.owner_source_name,
-                key.source_name,
-                key.source_scope_id,
-                key.surface_kind,
-                key.surface_name,
-                key.column_name,
-                key.value_key,
-            ],
-        )?;
-        result.deleted_rows = result
-            .deleted_rows
-            .saturating_add(u32::try_from(canonical_deleted).unwrap_or(u32::MAX));
-    }
-    if result.deleted_rows > 0 {
-        transaction.execute(
-            &format!(
-                "
-                DELETE FROM observed_values_fts
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM temp.{GOVERNANCE_DELETE_KEYS_TABLE} AS deletion
-                    WHERE deletion.workspace = observed_values_fts.workspace
-                      AND deletion.owner_source_name = observed_values_fts.owner_source_name
-                      AND deletion.source_name = observed_values_fts.source_name
-                      AND deletion.source_scope_id = observed_values_fts.source_scope_id
-                      AND deletion.surface_kind = observed_values_fts.surface_kind
-                      AND deletion.surface_name = observed_values_fts.surface_name
-                      AND deletion.column_name = observed_values_fts.column_name
-                      AND deletion.value_key = observed_values_fts.value_key
-                )
-                "
-            ),
-            [],
-        )?;
-    }
+        )
+        .map_err(SqliteSearchError::from)
+}
+
+fn stage_governance_delete_key(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    key: &ObservedValueKey,
+) -> Result<(), SqliteSearchError> {
     transaction.execute(
-        &format!("DELETE FROM temp.{GOVERNANCE_DELETE_KEYS_TABLE}"),
+        &format!(
+            "
+            INSERT INTO temp.{GOVERNANCE_DELETE_KEYS_TABLE} (
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                column_name,
+                value_key
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "
+        ),
+        params![
+            workspace_name.as_str(),
+            &key.owner_source_name,
+            &key.source_name,
+            &key.source_scope_id,
+            &key.surface_kind,
+            &key.surface_name,
+            &key.column_name,
+            &key.value_key,
+        ],
+    )?;
+    Ok(())
+}
+
+fn delete_staged_fts_rows(transaction: &Transaction<'_>) -> Result<(), SqliteSearchError> {
+    transaction.execute(
+        &format!(
+            "
+            DELETE FROM observed_values_fts
+            WHERE EXISTS (
+                SELECT 1
+                FROM temp.{GOVERNANCE_DELETE_KEYS_TABLE} AS deletion
+                WHERE deletion.workspace = observed_values_fts.workspace
+                  AND deletion.owner_source_name = observed_values_fts.owner_source_name
+                  AND deletion.source_name = observed_values_fts.source_name
+                  AND deletion.source_scope_id = observed_values_fts.source_scope_id
+                  AND deletion.surface_kind = observed_values_fts.surface_kind
+                  AND deletion.surface_name = observed_values_fts.surface_name
+                  AND deletion.column_name = observed_values_fts.column_name
+                  AND deletion.value_key = observed_values_fts.value_key
+            )
+            "
+        ),
         [],
     )?;
-    transaction.commit()?;
-    Ok(result)
+    Ok(())
 }
 
 fn ensure_governance_delete_keys_table(connection: &Connection) -> Result<(), SqliteSearchError> {
