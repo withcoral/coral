@@ -86,15 +86,13 @@ export default function SettingsRoute() {
     <main className={styles.page}>
       <div className={styles.container}>
         <header className={styles.header}>
-          <Typography.HeadingLarge as="h1">Settings</Typography.HeadingLarge>
+          <Typography.HeadingLarge as="h1">MCP Clients</Typography.HeadingLarge>
+          <Typography.Body variant="secondary">
+            Configure Coral as an MCP server for supported clients on this device.
+          </Typography.Body>
         </header>
 
         <section className={styles.section}>
-          <div className={styles.sectionHead}>
-            <Typography.HeadingXSmall as="h2">MCP clients</Typography.HeadingXSmall>
-            <span className={styles.sectionCount}>{clients.length}</span>
-          </div>
-
           {loadError && (
             <Typography.BodySmall className={styles.status} variant="error">
               {loadError}

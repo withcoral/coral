@@ -1,5 +1,5 @@
 import { createMemoryRouter, data, RouterProvider } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
 
@@ -71,6 +71,7 @@ describe('Sidebar', () => {
   })
 
   afterEach(async () => {
+    vi.unstubAllEnvs()
     document.cookie = `${SIDEBAR_COOKIE_NAME}=; Max-Age=0; Path=/`
     await page.viewport(1024, 768)
   })
@@ -188,6 +189,51 @@ describe('Sidebar', () => {
       .not.toBeInTheDocument()
   })
 
+  it('opens desktop settings after a divider below create workspace', async () => {
+    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+    const createWorkspace = screen.getByRole('menuitem', { name: 'Create workspace' }).element()
+    const settings = screen.getByRole('menuitem', { name: 'Settings' })
+    const settingsElement = settings.element()
+    const separatorBetween = [...document.querySelectorAll('[role="separator"]')].some(
+      (separator) =>
+        Boolean(
+          createWorkspace.compareDocumentPosition(separator) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ) &&
+        Boolean(
+          separator.compareDocumentPosition(settingsElement) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+    )
+
+    expect(separatorBetween).toBe(true)
+
+    await settings.click()
+    await expect.poll(() => screen.router.state.location.pathname).toBe(routePath('settings'))
+    await expect
+      .element(screen.getByRole('link', { name: 'Back to Coral' }))
+      .toHaveAttribute('href', routePath('home'))
+  })
+
+  it('shows settings navigation instead of workspace navigation on the settings route', async () => {
+    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
+    const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
+
+    const backToCoral = screen.getByRole('link', { name: 'Back to Coral' })
+    await expect.element(backToCoral).toHaveAttribute('href', routePath('home'))
+    await expect
+      .element(screen.getByRole('button', { name: 'Open workspace menu' }))
+      .not.toBeInTheDocument()
+    await expect.element(screen.getByRole('link', { name: 'MCP Clients' })).toBeVisible()
+    await expect.element(screen.getByRole('link', { name: 'Sources' })).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('link', { name: 'Schema' })).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('link', { name: 'Traces' })).not.toBeInTheDocument()
+
+    await backToCoral.click()
+    await expect.poll(() => screen.router.state.location.pathname).toBe(routePath('home'))
+  })
+
   it('keeps the create workspace dialog closed after back and forward navigation', async () => {
     const tracesPath = routePath('workspaceTraces', { workspaceId: 'analytics' })
     const sourcesPath = routePath('workspaceSources', { workspaceId: 'analytics' })
@@ -267,7 +313,7 @@ describe('Sidebar', () => {
   })
 
   it('falls back to the first workspace outside a canonical workspace route', async () => {
-    const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
+    const screen = await renderSidebar(false, routePath('home'), WORKSPACES)
 
     await expect.element(screen.getByText('default', { exact: true })).toBeVisible()
     await expect

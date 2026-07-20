@@ -57,6 +57,7 @@ export const workspaceSelector = style({
   minWidth: 0,
   overflow: 'hidden',
   paddingInline: '8px',
+  textDecoration: 'none',
   transition: animation.colorTransition,
   selectors: {
     '&[data-popup-open], &:hover': {
@@ -67,6 +68,12 @@ export const workspaceSelector = style({
       outlineOffset: '2px',
     },
   },
+})
+
+export const settingsBackIcon = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
 })
 
 export const workspaceSelectorLabel = style({
@@ -123,12 +130,4 @@ export const nav = style({
   gap: '4px',
   marginBlockStart: '24px',
   minHeight: 0,
-})
-
-export const footer = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flexShrink: 0,
-  gap: '4px',
-  marginTop: 'auto',
 })
