@@ -164,6 +164,7 @@ impl ObservedValuesProvider {
             .map_err(|error| observed_sqlite_app_error(&error))?;
         Ok(observed_rebuild_provider_result(
             &drain,
+            policy,
             result.canonical_rows_scanned,
             result.fts_rows_rebuilt,
         ))
@@ -190,7 +191,7 @@ impl ObservedValuesProvider {
                 .map_err(|error| observed_sqlite_app_error(&error))?,
             SearchClearTarget::Source(owner_source_name) => self
                 .store
-                .clear_source_and_advance_epoch(request.workspace_name, owner_source_name)
+                .clear_source_and_advance_epoch(request.workspace_name, owner_source_name.as_str())
                 .map_err(|error| observed_sqlite_app_error(&error))?,
         };
         Ok(SearchProviderClearOutcome {
@@ -439,39 +440,48 @@ fn observed_drain_provider_result(result: &ObservedValuesDrainResult) -> SearchM
         state,
         note: observed_drain_note(result),
         detail: Some(SearchMaintenanceDetail::ObservedDrain(
-            ObservedDrainMaintenanceResult {
-                queue_jobs_processed: result.queue_jobs_processed,
-                stale_jobs_skipped: result.stale_jobs_skipped,
-                failed_jobs: result.failed_jobs,
-                canonical_rows_upserted: result.canonical_rows_upserted,
-                fts_rows_written: result.fts_rows_written,
-                remaining_queue_depth: result.remaining_queue_depth,
-                budget_exhausted: result.budget_exhausted,
-                stale_rows_purged: result.stale_rows_purged,
-                evicted_rows: result.evicted_rows,
-                storage_limit_reached: result.storage_limit_reached,
-            },
+            observed_drain_maintenance_result(result),
         )),
+    }
+}
+
+fn observed_drain_maintenance_result(
+    result: &ObservedValuesDrainResult,
+) -> ObservedDrainMaintenanceResult {
+    ObservedDrainMaintenanceResult {
+        queue_jobs_processed: result.queue_jobs_processed,
+        stale_jobs_skipped: result.stale_jobs_skipped,
+        failed_jobs: result.failed_jobs,
+        canonical_rows_upserted: result.canonical_rows_upserted,
+        fts_rows_written: result.fts_rows_written,
+        remaining_queue_depth: result.remaining_queue_depth,
+        budget_exhausted: result.budget_exhausted,
+        stale_rows_purged: result.stale_rows_purged,
+        evicted_rows: result.evicted_rows,
+        storage_limit_reached: result.storage_limit_reached,
+        storage_jobs_dropped: result.storage_jobs_dropped,
     }
 }
 
 fn observed_rebuild_provider_result(
     drain: &ObservedValuesDrainResult,
+    policy: &ObservedValuesRetrievalPolicy,
     canonical_rows_scanned: u32,
     fts_rows_rebuilt: u32,
 ) -> SearchMaintenanceResult {
     SearchMaintenanceResult {
         provider: SearchProviderKind::ObservedValues,
-        state: if observed_drain_is_partial(drain) {
+        state: if observed_drain_is_partial(drain) || policy.has_load_failures() {
             SearchMaintenanceState::Partial
         } else {
             SearchMaintenanceState::Completed
         },
-        note: observed_rebuild_note(drain, canonical_rows_scanned),
+        note: observed_rebuild_note(drain, policy, canonical_rows_scanned),
         detail: Some(SearchMaintenanceDetail::ObservedRebuild(
             ObservedRebuildMaintenanceResult {
                 canonical_rows_scanned,
                 fts_rows_rebuilt,
+                drain: observed_drain_maintenance_result(drain),
             },
         )),
     }
@@ -573,16 +583,21 @@ fn observed_drain_note(result: &ObservedValuesDrainResult) -> String {
     note
 }
 
-fn observed_rebuild_note(drain: &ObservedValuesDrainResult, canonical_rows_scanned: u32) -> String {
-    let drained_jobs = drain
+fn observed_rebuild_note(
+    drain: &ObservedValuesDrainResult,
+    policy: &ObservedValuesRetrievalPolicy,
+    canonical_rows_scanned: u32,
+) -> String {
+    let attempted_jobs = drain
         .queue_jobs_processed
         .saturating_add(drain.stale_jobs_skipped)
-        .saturating_add(drain.failed_jobs);
-    let mut note = if drained_jobs == 0 {
+        .saturating_add(drain.failed_jobs)
+        .saturating_add(drain.storage_jobs_dropped);
+    let mut note = if attempted_jobs == 0 {
         format!("rebuilt observed-value FTS projection from {canonical_rows_scanned} row(s)")
     } else {
         format!(
-            "drained {drained_jobs} observed-value queue job(s), then rebuilt observed-value FTS projection from {canonical_rows_scanned} row(s)"
+            "attempted {attempted_jobs} observed-value queue job(s), then rebuilt observed-value FTS projection from {canonical_rows_scanned} row(s)"
         )
     };
     let drain_note = observed_drain_note(drain);
@@ -592,6 +607,12 @@ fn observed_rebuild_note(drain: &ObservedValuesDrainResult, canonical_rows_scann
             .unwrap_or((drain_note.as_str(), drain_note.as_str()));
         note.push_str("; ");
         note.push_str(partial_detail);
+    }
+    if policy.has_load_failures() {
+        note.push_str("; skipped ");
+        note.push_str(&policy.failed_source_count().to_string());
+        note.push_str(" owner source(s) whose live scopes could not be loaded: ");
+        note.push_str(&policy.failed_owner_source_names().join(", "));
     }
     note
 }
@@ -1031,6 +1052,11 @@ mod tests {
         let provider_result = observed_drain_provider_result(&result);
 
         assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+        let Some(SearchMaintenanceDetail::ObservedDrain(detail)) = provider_result.detail.as_ref()
+        else {
+            panic!("expected observed drain detail");
+        };
+        assert_eq!(detail.storage_jobs_dropped, 2);
         assert!(
             provider_result
                 .note
@@ -1069,21 +1095,59 @@ mod tests {
     fn observed_rebuild_failed_jobs_report_partial() {
         let drain = ObservedValuesDrainResult {
             failed_jobs: 1,
-            remaining_queue_depth: 0,
+            remaining_queue_depth: 1,
             ..ObservedValuesDrainResult::default()
         };
 
-        let provider_result = observed_rebuild_provider_result(&drain, 3, 3);
+        let policy = ObservedValuesRetrievalPolicy::new(Vec::new(), 365);
+        let provider_result = observed_rebuild_provider_result(&drain, &policy, 3, 3);
 
         assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+        assert!(provider_result.note.contains("attempted 1"));
+        assert!(!provider_result.note.contains("drained 1"));
+        let Some(SearchMaintenanceDetail::ObservedRebuild(detail)) = provider_result.detail else {
+            panic!("expected observed rebuild detail");
+        };
+        assert_eq!(detail.drain.failed_jobs, 1);
+        assert_eq!(detail.drain.remaining_queue_depth, 1);
     }
 
     #[test]
     fn observed_rebuild_with_no_rows_still_reports_completed() {
+        let policy = ObservedValuesRetrievalPolicy::new(Vec::new(), 365);
         let provider_result =
-            observed_rebuild_provider_result(&ObservedValuesDrainResult::default(), 0, 0);
+            observed_rebuild_provider_result(&ObservedValuesDrainResult::default(), &policy, 0, 0);
 
         assert_eq!(provider_result.state, SearchMaintenanceState::Completed);
+    }
+
+    #[test]
+    fn observed_rebuild_reports_failed_live_scope_owners_as_partial() {
+        let policy = ObservedValuesRetrievalPolicy::with_load_failures(
+            Vec::new(),
+            vec![
+                ObservedValuesLiveScopeLoadFailure {
+                    owner_source_name: "jira".to_string(),
+                    message: "manifest parse failed".to_string(),
+                },
+                ObservedValuesLiveScopeLoadFailure {
+                    owner_source_name: "slack".to_string(),
+                    message: "materialization missing".to_string(),
+                },
+            ],
+            365,
+        );
+
+        let provider_result =
+            observed_rebuild_provider_result(&ObservedValuesDrainResult::default(), &policy, 3, 1);
+
+        assert_eq!(provider_result.state, SearchMaintenanceState::Partial);
+        assert!(
+            provider_result
+                .note
+                .contains("skipped 2 owner source(s) whose live scopes could not be loaded")
+        );
+        assert!(provider_result.note.contains("jira, slack"));
     }
 
     #[test]

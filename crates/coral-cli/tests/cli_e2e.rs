@@ -1061,6 +1061,15 @@ async fn search_index_rebuild_calls_app_maintenance_rpc() {
         stdout.contains("Rebuilt catalog search index"),
         "expected rebuild output: {stdout}"
     );
+    assert!(
+        stdout.contains("Rebuilt observed-values search index")
+            && stdout.contains("Pre-rebuild queue: processed 2")
+            && stdout.contains("upserted 2")
+            && stdout.contains("wrote 2 FTS rows")
+            && stdout.contains("failed 1")
+            && stdout.contains("remaining 1"),
+        "expected structured observed pre-rebuild drain output: {stdout}"
+    );
 
     assert!(
         server.search_requests().is_empty(),
@@ -1131,6 +1140,10 @@ async fn search_index_drain_calls_app_maintenance_rpc() {
     assert!(
         stdout.contains("Drained observed-values search queue"),
         "expected drain output: {stdout}"
+    );
+    assert!(
+        stdout.contains("dropped 1"),
+        "expected dropped storage job count: {stdout}"
     );
 
     assert!(

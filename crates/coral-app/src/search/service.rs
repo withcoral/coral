@@ -50,6 +50,7 @@ use crate::search::result::{
     SearchProviderState as DomainProviderState, SearchRequest, SearchResponse, SearchSurfaceKind,
     TableColumnPreview as DomainTableColumnPreview,
 };
+use crate::sources::SourceName;
 use crate::transport::{
     catalog_item_to_proto, grpc_span, instrument_grpc, workspace_name_from_proto,
 };
@@ -284,6 +285,7 @@ fn maintenance_state_to_proto(state: SearchMaintenanceState) -> ProtoSearchMaint
     match state {
         SearchMaintenanceState::Completed => ProtoSearchMaintenanceState::Completed,
         SearchMaintenanceState::Noop => ProtoSearchMaintenanceState::Noop,
+        SearchMaintenanceState::Skipped => ProtoSearchMaintenanceState::Skipped,
         SearchMaintenanceState::Partial => ProtoSearchMaintenanceState::Partial,
         SearchMaintenanceState::Failed => ProtoSearchMaintenanceState::Failed,
     }
@@ -301,6 +303,7 @@ fn observed_drain_to_proto(result: ObservedDrainMaintenanceResult) -> ProtoObser
         stale_rows_purged: result.stale_rows_purged,
         evicted_rows: result.evicted_rows,
         storage_limit_reached: result.storage_limit_reached,
+        storage_jobs_dropped: result.storage_jobs_dropped,
     }
 }
 
@@ -310,6 +313,7 @@ fn observed_rebuild_to_proto(
     ProtoObservedRebuildResult {
         canonical_rows_scanned: result.canonical_rows_scanned,
         fts_rows_rebuilt: result.fts_rows_rebuilt,
+        drain: Some(observed_drain_to_proto(result.drain)),
     }
 }
 
@@ -365,14 +369,16 @@ fn clear_target_from_proto(
         Some(ProtoSearchClearTargetKind::Workspace(false)) => Err(app_status(
             AppError::InvalidInput("search clear workspace target must be true".to_string()),
         )),
-        Some(ProtoSearchClearTargetKind::SourceName(source_name))
-            if !source_name.trim().is_empty() =>
-        {
-            Ok(SearchClearTarget::Source(source_name))
+        Some(ProtoSearchClearTargetKind::SourceName(source_name)) => {
+            let parsed = SourceName::parse(&source_name).map_err(app_status)?;
+            if parsed.as_str() != source_name {
+                return Err(app_status(AppError::InvalidInput(
+                    "search clear source_name target must not contain surrounding whitespace"
+                        .to_string(),
+                )));
+            }
+            Ok(SearchClearTarget::Source(parsed))
         }
-        Some(ProtoSearchClearTargetKind::SourceName(_)) => Err(app_status(AppError::InvalidInput(
-            "search clear source_name target must not be empty".to_string(),
-        ))),
         None => Err(app_status(AppError::InvalidInput(
             "search clear target is required".to_string(),
         ))),
@@ -521,9 +527,14 @@ fn field_role_to_proto(field_role: SearchFieldRole) -> ProtoSearchFieldRole {
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::SearchProviderState as ProtoSearchProviderState;
+    use coral_api::v1::{
+        SearchClearTarget as ProtoSearchClearTarget,
+        SearchProviderState as ProtoSearchProviderState, search_clear_target,
+    };
+    use tonic::Code;
 
-    use super::provider_status_to_proto;
+    use super::{clear_target_from_proto, provider_status_to_proto};
+    use crate::search::maintenance::SearchClearTarget;
     use crate::search::result::{
         ProviderCoverage, ProviderStatus, SearchProviderKind,
         SearchProviderState as DomainProviderState,
@@ -546,5 +557,48 @@ mod tests {
             proto.coverage.is_none(),
             "skipped provider coverage should be absent"
         );
+    }
+
+    #[test]
+    fn clear_source_target_is_parsed_into_source_identity() {
+        for source_name in ["github_v4", "github issues"] {
+            let target = clear_target_from_proto(Some(ProtoSearchClearTarget {
+                target: Some(search_clear_target::Target::SourceName(
+                    source_name.to_string(),
+                )),
+            }))
+            .expect("valid source target");
+
+            let SearchClearTarget::Source(parsed) = target else {
+                panic!("expected source target");
+            };
+            assert_eq!(parsed.as_str(), source_name);
+        }
+    }
+
+    #[test]
+    fn clear_source_target_rejects_unsafe_source_identities() {
+        for source_name in [
+            "",
+            " github",
+            "github ",
+            "github/child",
+            r"github\child",
+            ".",
+            "..",
+        ] {
+            let status = clear_target_from_proto(Some(ProtoSearchClearTarget {
+                target: Some(search_clear_target::Target::SourceName(
+                    source_name.to_string(),
+                )),
+            }))
+            .expect_err("unsafe source target should fail");
+
+            assert_eq!(
+                status.code(),
+                Code::InvalidArgument,
+                "source={source_name:?}"
+            );
+        }
     }
 }

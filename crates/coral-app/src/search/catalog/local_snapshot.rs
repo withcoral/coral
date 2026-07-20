@@ -1,5 +1,7 @@
 //! Local catalog snapshot loading without query-runtime provider I/O.
 
+use std::collections::{BTreeMap, btree_map::Entry};
+
 use coral_engine::{
     CatalogInfo, ColumnInfo, RuntimeSourceComponent, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
@@ -18,6 +20,13 @@ use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_component_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedCatalogSnapshot {
+    pub(crate) catalog: CatalogInfo,
+    /// Runtime schema name to canonical installed source owner.
+    pub(crate) runtime_schema_owners: BTreeMap<String, String>,
+}
 
 /// Builds catalog metadata from persisted app state and local source artifacts.
 ///
@@ -46,33 +55,60 @@ impl CatalogSnapshotLoader {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn load_catalog(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<CatalogInfo, AppError> {
-        let _state_lock = self.config_store.state_lock_shared()?;
-        let config = self.config_store.load_config_unlocked()?;
-        self.load_catalog_from_config(workspace_name, &config)
+        Ok(self.load_snapshot(workspace_name)?.catalog)
     }
 
-    fn load_catalog_from_config(
+    pub(crate) fn load_snapshot(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<LoadedCatalogSnapshot, AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        let config = self.config_store.load_config_unlocked()?;
+        self.load_snapshot_from_config(workspace_name, &config)
+    }
+
+    fn load_snapshot_from_config(
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Result<CatalogInfo, AppError> {
+    ) -> Result<LoadedCatalogSnapshot, AppError> {
         let mut catalog = CatalogInfo {
             tables: Vec::new(),
             table_functions: Vec::new(),
         };
+        let mut runtime_schema_owners = BTreeMap::new();
 
         for source in config.workspace_sources(workspace_name) {
             match self.load_source_catalog(workspace_name, &source) {
-                Ok(source_catalog) => {
+                Ok((source_catalog, runtime_schema_names)) => {
                     self.diagnostic_reporter.clear_source_load_failure(
                         SourceLoadDiagnosticStage::Catalog,
                         workspace_name,
                         &source.name,
                     );
+                    for runtime_schema_name in runtime_schema_names {
+                        match runtime_schema_owners.entry(runtime_schema_name) {
+                            Entry::Vacant(entry) => {
+                                entry.insert(source.name.as_str().to_string());
+                            }
+                            Entry::Occupied(entry)
+                                if entry.get().as_str() != source.name.as_str() =>
+                            {
+                                return Err(AppError::InvalidInput(format!(
+                                    "catalog runtime schema '{}' is owned by both '{}' and '{}'",
+                                    entry.key(),
+                                    entry.get(),
+                                    source.name
+                                )));
+                            }
+                            Entry::Occupied(_) => {}
+                        }
+                    }
                     catalog.tables.extend(source_catalog.tables);
                     catalog
                         .table_functions
@@ -97,16 +133,27 @@ impl CatalogSnapshotLoader {
         }
 
         sort_catalog(&mut catalog);
-        Ok(catalog)
+        Ok(LoadedCatalogSnapshot {
+            catalog,
+            runtime_schema_owners,
+        })
     }
 
     fn load_source_catalog(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
-    ) -> Result<CatalogInfo, AppError> {
+    ) -> Result<(CatalogInfo, Vec<String>), AppError> {
         let components = self.runtime_components_for_installed_source(workspace_name, source)?;
-        Ok(catalog_info_from_components(&components))
+        let runtime_schema_names = components
+            .iter()
+            .map(RuntimeSourceComponent::source_name)
+            .map(str::to_string)
+            .collect();
+        Ok((
+            catalog_info_from_components(&components),
+            runtime_schema_names,
+        ))
     }
 
     fn runtime_components_for_installed_source(

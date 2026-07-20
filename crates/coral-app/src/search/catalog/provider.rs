@@ -7,7 +7,7 @@ use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogItem;
 use crate::query::QueryAttribution;
-use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
+use crate::search::catalog::local_snapshot::{CatalogSnapshotLoader, LoadedCatalogSnapshot};
 use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_hits};
 use crate::search::catalog::snapshot::{
     CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
@@ -71,11 +71,11 @@ impl CatalogMetadataProvider {
         request: &SearchRequest,
         _attribution: &QueryAttribution,
     ) -> ProviderSearchOutcome {
-        let catalog = match self.load_catalog(request) {
-            Ok(catalog) => catalog,
+        let catalog_snapshot = match self.load_catalog(request) {
+            Ok(catalog_snapshot) => catalog_snapshot,
             Err(error) => return catalog_query_error_outcome(&error),
         };
-        let projection = match self.prepare_projection(request, &catalog) {
+        let projection = match self.prepare_projection(request, &catalog_snapshot) {
             Ok(projection) => projection,
             Err(error) => return catalog_index_error_outcome(&error),
         };
@@ -87,19 +87,23 @@ impl CatalogMetadataProvider {
             return outcome;
         }
 
-        catalog_search_outcome(request, &catalog, search_hits, &projection)
+        catalog_search_outcome(request, &catalog_snapshot.catalog, search_hits, &projection)
     }
 
-    fn load_catalog(&self, request: &SearchRequest) -> Result<CatalogInfo, AppError> {
-        self.catalog_loader.load_catalog(&request.workspace_name)
+    fn load_catalog(&self, request: &SearchRequest) -> Result<LoadedCatalogSnapshot, AppError> {
+        self.catalog_loader.load_snapshot(&request.workspace_name)
     }
 
     fn prepare_projection(
         &self,
         request: &SearchRequest,
-        catalog: &CatalogInfo,
+        catalog_snapshot: &LoadedCatalogSnapshot,
     ) -> Result<CatalogProjection, SqliteSearchError> {
-        let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(catalog);
+        let catalog_fingerprint =
+            CatalogSearchSnapshot::fingerprint_catalog_with_runtime_schema_owners(
+                &catalog_snapshot.catalog,
+                &catalog_snapshot.runtime_schema_owners,
+            );
         let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
         let capabilities = store.capabilities();
         tracing::debug!(
@@ -109,7 +113,12 @@ impl CatalogMetadataProvider {
             trigram = capabilities.trigram,
             "using SQLite catalog search store"
         );
-        let state = Self::prepare_projection_state(request, catalog, &store, &catalog_fingerprint)?;
+        let state = Self::prepare_projection_state(
+            request,
+            catalog_snapshot,
+            &store,
+            &catalog_fingerprint,
+        )?;
         tracing::debug!(
             workspace = %request.workspace_name,
             refreshed = state.refresh.refreshed,
@@ -128,7 +137,7 @@ impl CatalogMetadataProvider {
 
     fn prepare_projection_state(
         request: &SearchRequest,
-        catalog: &CatalogInfo,
+        catalog_snapshot: &LoadedCatalogSnapshot,
         store: &SqliteSearchStore,
         catalog_fingerprint: &str,
     ) -> Result<CatalogProjectionState, SqliteSearchError> {
@@ -145,7 +154,10 @@ impl CatalogMetadataProvider {
             });
         }
 
-        let snapshot = CatalogSearchSnapshot::from_catalog(catalog);
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+            &catalog_snapshot.catalog,
+            &catalog_snapshot.runtime_schema_owners,
+        );
         let expected_document_count = u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
         let index_snapshot = snapshot.index_snapshot();
         match store.refresh_catalog_projection(&index_snapshot) {
@@ -193,8 +205,12 @@ impl SearchProviderMaintenance for CatalogMetadataProvider {
         &self,
         request: SearchProviderRebuildRequest<'_>,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
-        let catalog = self.catalog_loader.load_catalog(request.workspace_name)?;
-        let snapshot = CatalogSearchSnapshot::from_catalog(&catalog).index_snapshot();
+        let catalog_snapshot = self.catalog_loader.load_snapshot(request.workspace_name)?;
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+            &catalog_snapshot.catalog,
+            &catalog_snapshot.runtime_schema_owners,
+        )
+        .index_snapshot();
         let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
             .map_err(|error| search_sqlite_app_error(&error))?;
         let result = store
@@ -238,7 +254,7 @@ impl SearchProviderMaintenance for CatalogMetadataProvider {
                 let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
                     .map_err(|error| search_sqlite_app_error(&error))?;
                 let result = store
-                    .clear_catalog_source(source_name)
+                    .clear_catalog_source(source_name.as_str())
                     .map_err(|error| search_sqlite_app_error(&error))?;
                 Ok(SearchProviderClearOutcome {
                     result: catalog_clear_provider_result(result.deleted_document_count),

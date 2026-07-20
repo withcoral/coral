@@ -1326,11 +1326,12 @@ fn print_search_rebuild_response(response: &coral_api::v1::RebuildSearchIndexRes
             }
             Some(search_maintenance_result::Detail::ObservedDrain(detail)) => {
                 println!(
-                    "Drained {} search queue before rebuild: processed {}, stale {}, failed {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
+                    "Drained {} search queue before rebuild: processed {}, stale {}, failed {}, dropped {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
                     search_provider_label(result.provider),
                     detail.queue_jobs_processed,
                     detail.stale_jobs_skipped,
                     detail.failed_jobs,
+                    detail.storage_jobs_dropped,
                     detail.remaining_queue_depth,
                     yes_no(detail.budget_exhausted),
                     detail.stale_rows_purged,
@@ -1345,6 +1346,22 @@ fn print_search_rebuild_response(response: &coral_api::v1::RebuildSearchIndexRes
                     detail.canonical_rows_scanned,
                     detail.fts_rows_rebuilt
                 );
+                if let Some(drain) = detail.drain.as_ref() {
+                    println!(
+                        "Pre-rebuild queue: processed {}, upserted {}, wrote {} FTS rows, stale {}, failed {}, dropped {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
+                        drain.queue_jobs_processed,
+                        drain.canonical_rows_upserted,
+                        drain.fts_rows_written,
+                        drain.stale_jobs_skipped,
+                        drain.failed_jobs,
+                        drain.storage_jobs_dropped,
+                        drain.remaining_queue_depth,
+                        yes_no(drain.budget_exhausted),
+                        drain.stale_rows_purged,
+                        drain.evicted_rows,
+                        yes_no(drain.storage_limit_reached)
+                    );
+                }
                 if !result.note.is_empty() {
                     println!("{}", result.note);
                 }
@@ -1365,13 +1382,14 @@ fn print_search_drain_response(response: &coral_api::v1::DrainSearchQueueRespons
         match result.detail.as_ref() {
             Some(search_maintenance_result::Detail::ObservedDrain(detail)) => {
                 println!(
-                    "Drained {} search queue: processed {}, upserted {}, wrote {} FTS rows, stale {}, failed {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
+                    "Drained {} search queue: processed {}, upserted {}, wrote {} FTS rows, stale {}, failed {}, dropped {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
                     search_provider_label(result.provider),
                     detail.queue_jobs_processed,
                     detail.canonical_rows_upserted,
                     detail.fts_rows_written,
                     detail.stale_jobs_skipped,
                     detail.failed_jobs,
+                    detail.storage_jobs_dropped,
                     detail.remaining_queue_depth,
                     yes_no(detail.budget_exhausted),
                     detail.stale_rows_purged,

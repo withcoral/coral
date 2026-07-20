@@ -9,13 +9,17 @@ use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 use crate::search::catalog::sqlite_index::{
     CatalogClearResult, CatalogIndexSnapshot, CatalogRebuildResult, CatalogRefreshResult,
     CatalogSearchHits, SqliteCatalogIndex, clear_catalog_source_documents_in_transaction,
+    clear_catalog_workspace_documents_in_transaction,
 };
-use crate::search::observed::{ObservedValuesClearResult, clear_observed_source_in_transaction};
+use crate::search::observed::{
+    ObservedValuesClearResult, clear_observed_source_in_transaction,
+    clear_observed_workspace_in_transaction,
+};
 use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 3;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 4;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -37,6 +41,10 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
     SearchSqliteMigration {
         version: 3,
         sql: include_str!("migrations/0003_observed_values_governance.sql"),
+    },
+    SearchSqliteMigration {
+        version: 4,
+        sql: include_str!("migrations/0004_catalog_source_ownership.sql"),
     },
 ];
 
@@ -169,6 +177,18 @@ impl SqliteSearchStore {
             &self.workspace_name,
             owner_source_name,
         )?;
+        transaction.commit()?;
+        Ok((catalog, observed))
+    }
+
+    pub(crate) fn clear_workspace_all(
+        &self,
+    ) -> Result<(CatalogClearResult, ObservedValuesClearResult), SqliteSearchError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let catalog =
+            clear_catalog_workspace_documents_in_transaction(&transaction, &self.workspace_name)?;
+        let observed = clear_observed_workspace_in_transaction(&transaction, &self.workspace_name)?;
         transaction.commit()?;
         Ok((catalog, observed))
     }
@@ -595,7 +615,20 @@ fn apply_migration(
     migration: &SearchSqliteMigration,
 ) -> Result<(), SqliteSearchError> {
     let transaction = connection.transaction()?;
+    let initializes_catalog_source_ownership =
+        migration.version == 4 && !tables_exist(&transaction, &["catalog_source_owners"])?;
     transaction.execute_batch(migration.sql)?;
+    if initializes_catalog_source_ownership {
+        // Existing catalog rows predate durable installed-owner identity. They
+        // are disposable and cannot be safely backfilled for multi-component
+        // sources without loading source artifacts during migration.
+        transaction.execute("DELETE FROM catalog_documents_fts", [])?;
+        transaction.execute("DELETE FROM catalog_documents", [])?;
+        transaction.execute(
+            "DELETE FROM search_meta WHERE key GLOB 'catalog_snapshot_fingerprint:*'",
+            [],
+        )?;
+    }
     transaction.execute(
         "
         INSERT INTO search_meta (key, value, updated_at)
@@ -624,7 +657,12 @@ fn schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError>
 fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError> {
     if !tables_exist(
         connection,
-        &["search_meta", "catalog_documents", "catalog_documents_fts"],
+        &[
+            "search_meta",
+            "catalog_documents",
+            "catalog_documents_fts",
+            "catalog_source_owners",
+        ],
     )? {
         return Ok(false);
     }
@@ -668,7 +706,26 @@ fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSear
         LIMIT 0
         ",
     )?;
-    Ok(search_meta_is_valid && catalog_table_is_valid && catalog_fts_is_valid)
+    let catalog_source_owners_is_valid = schema_query_is_valid(
+        connection,
+        "
+        SELECT
+            workspace,
+            source_name,
+            owner_source_name,
+            snapshot_fingerprint,
+            updated_at
+        FROM catalog_source_owners
+        LIMIT 0
+        ",
+    )?;
+    let catalog_source_owner_index_is_valid =
+        indexes_exist(connection, &["idx_catalog_source_owners_workspace_owner"])?;
+    Ok(search_meta_is_valid
+        && catalog_table_is_valid
+        && catalog_fts_is_valid
+        && catalog_source_owners_is_valid
+        && catalog_source_owner_index_is_valid)
 }
 
 fn observed_values_schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError> {
@@ -837,6 +894,9 @@ mod tests {
         SqliteSearchStore, WalCheckpointOutcome, classify_capability_probe, configure_connection,
         sqlite_file_creation_result, wal_checkpoint_truncate,
     };
+    use crate::search::catalog::sqlite_index::{
+        CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
+    };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
@@ -893,7 +953,44 @@ mod tests {
     }
 
     #[test]
-    fn opening_v1_repairs_missing_search_meta_before_upgrade() {
+    fn opening_v3_invalidates_catalog_rows_without_durable_source_ownership() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let mut connection = Connection::open(&path).expect("raw v3 connection");
+        for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(3) {
+            super::apply_migration(&mut connection, migration).expect("apply v3 history");
+        }
+        seed_catalog_document(&connection);
+        seed_observed_queue_job(&connection);
+        connection
+            .execute(
+                "INSERT INTO search_meta (key, value) VALUES ('catalog_snapshot_fingerprint:default', 'legacy')",
+                [],
+            )
+            .expect("seed legacy fingerprint");
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+        let catalog_fingerprint = connection
+            .query_row(
+                "SELECT value FROM search_meta WHERE key = 'catalog_snapshot_fingerprint:default'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .expect("catalog fingerprint query");
+
+        assert_eq!(catalog_document_count(&connection), 0);
+        assert_eq!(observed_queue_job_count(&connection), 1);
+        assert_eq!(catalog_fingerprint, None);
+        assert!(index_exists(
+            &connection,
+            "idx_catalog_source_owners_workspace_owner"
+        ));
+    }
+
+    #[test]
+    fn opening_v1_repairs_missing_search_meta_and_discards_unowned_catalog() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
         let connection = v1_search_connection(&path);
@@ -904,7 +1001,7 @@ mod tests {
         drop(connection);
 
         let connection = open_current_search_connection(&path);
-        assert_eq!(catalog_document_count(&connection), 1);
+        assert_eq!(catalog_document_count(&connection), 0);
     }
 
     #[test]
@@ -922,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_v1_repairs_missing_catalog_fts_before_upgrade() {
+    fn opening_v1_repairs_missing_catalog_fts_and_discards_unowned_catalog() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
         let connection = v1_search_connection(&path);
@@ -933,7 +1030,7 @@ mod tests {
         drop(connection);
 
         let connection = open_current_search_connection(&path);
-        assert_eq!(catalog_document_count(&connection), 1);
+        assert_eq!(catalog_document_count(&connection), 0);
     }
 
     #[test]
@@ -1183,6 +1280,12 @@ mod tests {
             .expect("seed catalog document");
         connection
             .execute(
+                "INSERT INTO catalog_source_owners (workspace, source_name, owner_source_name, snapshot_fingerprint) VALUES ('default', 'github', 'github', 'fingerprint')",
+                [],
+            )
+            .expect("seed catalog source owner");
+        connection
+            .execute(
                 "INSERT INTO observed_values (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', 'github', 'github_v4_mcp', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0)",
                 [],
             )
@@ -1213,6 +1316,13 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("observed count");
+        let catalog_owner_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default' AND owner_source_name = 'github'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("catalog owner count");
         let generation_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM observed_source_generations WHERE workspace = 'default' AND source_name = 'github'",
@@ -1222,7 +1332,94 @@ mod tests {
             .expect("generation count");
         assert_eq!(catalog_count, 1);
         assert_eq!(observed_count, 1);
+        assert_eq!(catalog_owner_count, 1);
         assert_eq!(generation_count, 0);
+    }
+
+    #[test]
+    fn workspace_all_clear_rolls_back_every_data_class_when_epoch_advance_fails() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let connection = store.connect_for_test().expect("connect");
+        seed_workspace_all_clear_rollback_fixture(&connection);
+        let before = workspace_all_clear_rollback_snapshot(&connection);
+        assert_eq!(before, expected_workspace_all_clear_rollback_snapshot());
+        drop(connection);
+
+        store
+            .clear_workspace_all()
+            .expect_err("combined clear should fail");
+
+        let connection = store.connect_for_test().expect("reconnect");
+        let after = workspace_all_clear_rollback_snapshot(&connection);
+        assert_eq!(
+            after, before,
+            "failed clear must roll back every data class"
+        );
+    }
+
+    #[test]
+    fn source_all_clear_uses_persisted_catalog_ownership_after_restart() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SqliteSearchStore::open(&path, workspace.clone()).expect("store");
+        store
+            .refresh_catalog_projection(&CatalogIndexSnapshot {
+                fingerprint: "multi-component-v1".to_string(),
+                documents: vec![
+                    catalog_document("github_v4", "github_v4_rest", "issues"),
+                    catalog_document("github_v4", "github_v4_mcp", "search_issues"),
+                    catalog_document("slack_v4", "slack_v4_rest", "messages"),
+                ],
+            })
+            .expect("refresh catalog projection");
+        let connection = store.connect_for_test().expect("connect");
+        for (owner_source_name, source_name, display_value) in [
+            ("github_v4", "github_v4_rest", "Payment issue"),
+            ("slack_v4", "slack_v4_rest", "Payment message"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO observed_values (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', ?1, ?2, 'scope', 'table', 'items', 'title', ?3, ?3, ?3, 0, 0)",
+                    (owner_source_name, source_name, display_value),
+                )
+                .expect("seed observed value");
+        }
+        drop(connection);
+        drop(store);
+
+        let reopened = SqliteSearchStore::open(&path, workspace).expect("reopen store");
+        let (catalog, observed) = reopened
+            .clear_source_all("github_v4")
+            .expect("clear installed source");
+
+        assert_eq!(catalog.deleted_document_count, 2);
+        assert_eq!(observed.values, 1);
+        let connection = reopened.connect_for_test().expect("reconnect");
+        let remaining_catalog_sources = connection
+            .prepare(
+                "SELECT source_name FROM catalog_documents WHERE workspace = 'default' ORDER BY source_name",
+            )
+            .expect("prepare catalog sources")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query catalog sources")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("catalog sources");
+        let remaining_observed_owners = connection
+            .prepare(
+                "SELECT owner_source_name FROM observed_values WHERE workspace = 'default' ORDER BY owner_source_name",
+            )
+            .expect("prepare observed owners")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query observed owners")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("observed owners");
+        assert_eq!(remaining_catalog_sources, ["slack_v4_rest"]);
+        assert_eq!(remaining_observed_owners, ["slack_v4"]);
     }
 
     #[test]
@@ -1268,7 +1465,12 @@ mod tests {
         let store =
             SqliteSearchStore::open(&path, WorkspaceName::default()).expect("repair schema");
         let connection = store.connect_for_test().expect("connect");
-        for table_name in ["search_meta", "catalog_documents", "catalog_documents_fts"] {
+        for table_name in [
+            "search_meta",
+            "catalog_documents",
+            "catalog_documents_fts",
+            "catalog_source_owners",
+        ] {
             let exists: bool = connection
                 .query_row(
                     "
@@ -1284,6 +1486,41 @@ mod tests {
                 .expect("schema object lookup");
             assert!(exists, "{table_name} should exist after repair");
         }
+    }
+
+    #[test]
+    fn opening_current_version_repairs_missing_catalog_ownership_and_invalidates_rows() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let connection = open_current_search_connection(&path);
+        seed_catalog_document(&connection);
+        connection
+            .execute(
+                "INSERT INTO search_meta (key, value) VALUES ('catalog_snapshot_fingerprint:default', 'current')",
+                [],
+            )
+            .expect("seed catalog fingerprint");
+        connection
+            .execute_batch("DROP TABLE catalog_source_owners")
+            .expect("remove ownership table");
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+        let catalog_fingerprint = connection
+            .query_row(
+                "SELECT value FROM search_meta WHERE key = 'catalog_snapshot_fingerprint:default'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .expect("catalog fingerprint query");
+
+        assert_eq!(catalog_document_count(&connection), 0);
+        assert_eq!(catalog_fingerprint, None);
+        assert!(index_exists(
+            &connection,
+            "idx_catalog_source_owners_workspace_owner"
+        ));
     }
 
     #[test]
@@ -1415,6 +1652,134 @@ mod tests {
                 [],
             )
             .expect("seed catalog document");
+    }
+
+    fn catalog_document(
+        owner_source_name: &str,
+        source_name: &str,
+        surface_name: &str,
+    ) -> CatalogIndexDocument {
+        let qualified_name = format!("{source_name}.{surface_name}");
+        CatalogIndexDocument {
+            doc_id: format!("catalog:table:{qualified_name}"),
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            owner_source_name: owner_source_name.to_string(),
+            source_name: source_name.to_string(),
+            surface_kind: "table".to_string(),
+            surface_name: surface_name.to_string(),
+            field_name: String::new(),
+            field_role: String::new(),
+            qualified_name,
+            title: surface_name.to_string(),
+            description: String::new(),
+            searchable_text: surface_name.to_string(),
+            payload_json: "{}".to_string(),
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct WorkspaceAllClearRollbackSnapshot {
+        catalog_documents: i64,
+        catalog_fts_documents: i64,
+        catalog_source_owners: i64,
+        catalog_fingerprints: i64,
+        observed_values: i64,
+        observed_fts_values: i64,
+        observed_queue_jobs: i64,
+        observed_workspace_generations: i64,
+    }
+
+    fn seed_workspace_all_clear_rollback_fixture(connection: &Connection) {
+        connection
+            .execute_batch(
+                "
+                INSERT INTO catalog_documents (workspace, doc_id, doc_kind, source_name, title, payload_json, snapshot_fingerprint)
+                VALUES ('default', 'doc', 'catalog_table', 'github', 'Issues', '{}', 'fingerprint');
+                INSERT INTO catalog_documents_fts (workspace, doc_id, title, qualified_name, description, searchable_text)
+                VALUES ('default', 'doc', 'Issues', 'github.issues', 'GitHub issues', 'github issues');
+                INSERT INTO catalog_source_owners (workspace, source_name, owner_source_name, snapshot_fingerprint)
+                VALUES ('default', 'github', 'github', 'fingerprint');
+                INSERT INTO search_meta (key, value)
+                VALUES ('catalog_snapshot_fingerprint:default', 'fingerprint');
+                INSERT INTO observed_values (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation)
+                VALUES ('default', 'github', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0);
+                INSERT INTO observed_values_fts (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text)
+                VALUES ('default', 'github', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue');
+                CREATE TRIGGER fail_workspace_epoch_insert
+                BEFORE INSERT ON observed_workspace_generations
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced workspace epoch failure');
+                END;
+                ",
+            )
+            .expect("seed workspace clear rollback fixture");
+        seed_observed_queue_job(connection);
+    }
+
+    fn workspace_all_clear_rollback_snapshot(
+        connection: &Connection,
+    ) -> WorkspaceAllClearRollbackSnapshot {
+        WorkspaceAllClearRollbackSnapshot {
+            catalog_documents: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM catalog_documents WHERE workspace = 'default'",
+                "catalog document count",
+            ),
+            catalog_fts_documents: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM catalog_documents_fts WHERE workspace = 'default' AND doc_id = 'doc' AND title = 'Issues' AND qualified_name = 'github.issues' AND description = 'GitHub issues' AND searchable_text = 'github issues'",
+                "catalog FTS document count",
+            ),
+            catalog_source_owners: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default'",
+                "catalog source owner count",
+            ),
+            catalog_fingerprints: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM search_meta WHERE key = 'catalog_snapshot_fingerprint:default' AND value = 'fingerprint'",
+                "catalog fingerprint count",
+            ),
+            observed_values: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default'",
+                "observed value count",
+            ),
+            observed_fts_values: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM observed_values_fts WHERE workspace = 'default' AND owner_source_name = 'github' AND source_name = 'github' AND source_scope_id = 'scope' AND surface_kind = 'table' AND surface_name = 'issues' AND column_name = 'title' AND value_key = 'value' AND display_value = 'Payment issue' AND search_text = 'payment issue'",
+                "observed FTS value count",
+            ),
+            observed_queue_jobs: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM observed_queue_jobs WHERE workspace = 'default' AND owner_source_name = 'github' AND source_name = 'github' AND source_scope_id = 'fixture-scope' AND surface_kind = 'table' AND surface_name = 'issues' AND workspace_generation = 0 AND source_generation = 0 AND payload_json = '{}'",
+                "observed queue job count",
+            ),
+            observed_workspace_generations: matching_row_count(
+                connection,
+                "SELECT COUNT(*) FROM observed_workspace_generations WHERE workspace = 'default'",
+                "observed workspace generation count",
+            ),
+        }
+    }
+
+    fn expected_workspace_all_clear_rollback_snapshot() -> WorkspaceAllClearRollbackSnapshot {
+        WorkspaceAllClearRollbackSnapshot {
+            catalog_documents: 1,
+            catalog_fts_documents: 1,
+            catalog_source_owners: 1,
+            catalog_fingerprints: 1,
+            observed_values: 1,
+            observed_fts_values: 1,
+            observed_queue_jobs: 1,
+            observed_workspace_generations: 0,
+        }
+    }
+
+    fn matching_row_count(connection: &Connection, query: &str, context: &str) -> i64 {
+        connection
+            .query_row(query, [], |row| row.get(0))
+            .expect(context)
     }
 
     fn seed_observed_queue_job(connection: &Connection) {

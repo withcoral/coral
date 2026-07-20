@@ -1,6 +1,7 @@
 //! Transport-neutral Universal Search maintenance models.
 
 use crate::search::result::{SearchManagerError, SearchProviderKind};
+use crate::sources::SourceName;
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
@@ -87,7 +88,7 @@ pub(crate) enum SearchDataScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SearchClearTarget {
     Workspace,
-    Source(String),
+    Source(SourceName),
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +103,7 @@ pub(crate) struct SearchMaintenanceResult {
 pub(crate) enum SearchMaintenanceState {
     Completed,
     Noop,
+    Skipped,
     Partial,
     Failed,
 }
@@ -140,12 +142,14 @@ pub(crate) struct ObservedDrainMaintenanceResult {
     pub(crate) stale_rows_purged: u32,
     pub(crate) evicted_rows: u32,
     pub(crate) storage_limit_reached: bool,
+    pub(crate) storage_jobs_dropped: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ObservedRebuildMaintenanceResult {
     pub(crate) canonical_rows_scanned: u32,
     pub(crate) fts_rows_rebuilt: u32,
+    pub(crate) drain: ObservedDrainMaintenanceResult,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

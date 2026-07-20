@@ -1,9 +1,10 @@
 //! `SQLite` observed-values projection, drainage, and retrieval.
 
 use std::collections::HashSet;
+use std::io;
 use std::time::{Duration, Instant};
 
-use rusqlite::types::Type;
+use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::ObservedValuesRetrievalPolicy;
@@ -18,6 +19,11 @@ use crate::search::sqlite_store::SqliteSearchError;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const MAX_OBSERVED_QUEUE_JOB_ATTEMPTS: i64 = 3;
+
+/// Bounds the text copied into one FTS rebuild transaction. Observed values
+/// are individually capped by the collector, so one oversized row is still
+/// allowed to make progress.
+pub(crate) const OBSERVED_FTS_REBUILD_BATCH_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 /// Cooperative limits for one observed-values drain.
@@ -109,6 +115,106 @@ struct RawObservedQueueJobRow {
     workspace_generation: i64,
     source_generation: i64,
     payload_json: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ObservedRowidRange {
+    first: i64,
+    last: i64,
+}
+
+#[derive(Debug)]
+struct ObservedFtsRebuildSnapshot {
+    retention_cutoff: String,
+    purge_stale_rows: bool,
+    canonical_rows_scanned: u32,
+    fts_rowid_range: Option<ObservedRowidRange>,
+    canonical_rowid_range: Option<ObservedRowidRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObservedFtsRebuildPhase {
+    SnapshotRead,
+    FtsCleanup,
+    CanonicalReconciliation,
+}
+
+#[derive(Debug)]
+struct CanonicalObservedFtsRow {
+    rowid: i64,
+    workspace: String,
+    owner_source_name: String,
+    source_name: String,
+    source_scope_id: String,
+    surface_kind: String,
+    surface_name: String,
+    column_name: String,
+    value_key: String,
+    display_value: String,
+    search_text: String,
+    last_observed_at: String,
+}
+
+impl CanonicalObservedFtsRow {
+    fn payload_bytes(&self) -> usize {
+        self.workspace
+            .len()
+            .saturating_add(self.owner_source_name.len())
+            .saturating_add(self.source_name.len())
+            .saturating_add(self.source_scope_id.len())
+            .saturating_add(self.surface_kind.len())
+            .saturating_add(self.surface_name.len())
+            .saturating_add(self.column_name.len())
+            .saturating_add(self.value_key.len())
+            .saturating_add(self.display_value.len())
+            .saturating_add(self.search_text.len())
+            .saturating_add(self.last_observed_at.len())
+    }
+}
+
+#[derive(Debug)]
+struct RawObservedFtsRow {
+    rowid: i64,
+    workspace: Value,
+    owner_source_name: Value,
+    source_name: Value,
+    source_scope_id: Value,
+    surface_kind: Value,
+    surface_name: Value,
+    column_name: Value,
+    value_key: Value,
+    display_value: Value,
+    search_text: Value,
+}
+
+impl RawObservedFtsRow {
+    fn payload_bytes(&self) -> usize {
+        observed_fts_value_payload_bytes(&self.workspace)
+            .saturating_add(observed_fts_value_payload_bytes(&self.owner_source_name))
+            .saturating_add(observed_fts_value_payload_bytes(&self.source_name))
+            .saturating_add(observed_fts_value_payload_bytes(&self.source_scope_id))
+            .saturating_add(observed_fts_value_payload_bytes(&self.surface_kind))
+            .saturating_add(observed_fts_value_payload_bytes(&self.surface_name))
+            .saturating_add(observed_fts_value_payload_bytes(&self.column_name))
+            .saturating_add(observed_fts_value_payload_bytes(&self.value_key))
+            .saturating_add(observed_fts_value_payload_bytes(&self.display_value))
+            .saturating_add(observed_fts_value_payload_bytes(&self.search_text))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CanonicalObservedMutation {
+    delete_fts: bool,
+    delete_canonical: bool,
+    insert_fts: bool,
+}
+
+impl CanonicalObservedMutation {
+    fn mutation_rows(self) -> usize {
+        usize::from(self.delete_fts)
+            .saturating_add(usize::from(self.delete_canonical))
+            .saturating_add(usize::from(self.insert_fts))
+    }
 }
 
 impl RawObservedQueueJobRow {
@@ -269,29 +375,1000 @@ pub(crate) fn rebuild_observed_fts(
     connection: &mut Connection,
     workspace_name: &WorkspaceName,
     policy: &ObservedValuesRetrievalPolicy,
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+    mut storage_limit_reached: impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
 ) -> Result<ObservedValuesRebuildResult, SqliteSearchError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    prepare_policy_tables(&transaction, policy)?;
-    purge_stale_observed_values(&transaction, workspace_name, policy)?;
-    purge_non_live_observed_values(&transaction, workspace_name)?;
-    transaction.execute(
-        "
-        DELETE FROM observed_values_fts
-        WHERE workspace = ?1
-          AND NOT EXISTS (
-              SELECT 1
-              FROM observed_policy_failed_sources failed
-              WHERE failed.owner_source_name = observed_values_fts.owner_source_name
-          )
-        ",
-        params![workspace_name.as_str()],
+    rebuild_observed_fts_with_callbacks(
+        connection,
+        workspace_name,
+        policy,
+        max_batch_rows,
+        max_batch_payload_bytes,
+        &mut storage_limit_reached,
+        &mut |_| Ok(()),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn rebuild_observed_fts_with_hook(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    policy: &ObservedValuesRetrievalPolicy,
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+    mut storage_limit_reached: impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+    mut before_batch_write: impl FnMut(ObservedFtsRebuildPhase) -> Result<(), SqliteSearchError>,
+) -> Result<ObservedValuesRebuildResult, SqliteSearchError> {
+    rebuild_observed_fts_with_callbacks(
+        connection,
+        workspace_name,
+        policy,
+        max_batch_rows,
+        max_batch_payload_bytes,
+        &mut storage_limit_reached,
+        &mut before_batch_write,
+    )
+}
+
+fn rebuild_observed_fts_with_callbacks(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    policy: &ObservedValuesRetrievalPolicy,
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+    storage_limit_reached: &mut impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+    before_batch_write: &mut impl FnMut(ObservedFtsRebuildPhase) -> Result<(), SqliteSearchError>,
+) -> Result<ObservedValuesRebuildResult, SqliteSearchError> {
+    prepare_policy_tables(connection, policy)?;
+    let max_batch_rows = max_batch_rows.max(1);
+    let max_batch_payload_bytes = max_batch_payload_bytes.max(1);
+    ensure_observed_fts_rebuild_wal_headroom(connection)?;
+    let snapshot = capture_observed_fts_rebuild_snapshot(
+        connection,
+        workspace_name,
+        policy,
+        before_batch_write,
     )?;
 
+    let mut fts_rows_rebuilt = reconcile_canonical_observed_rows(
+        connection,
+        workspace_name,
+        &snapshot.retention_cutoff,
+        snapshot.purge_stale_rows,
+        snapshot.canonical_rowid_range,
+        max_batch_rows,
+        max_batch_payload_bytes,
+        storage_limit_reached,
+        before_batch_write,
+    )?;
+    let canonical_target_freed = cleanup_observed_fts_rows(
+        connection,
+        workspace_name,
+        &snapshot.retention_cutoff,
+        snapshot.fts_rowid_range,
+        max_batch_rows,
+        max_batch_payload_bytes,
+        storage_limit_reached,
+        before_batch_write,
+    )?;
+    if canonical_target_freed {
+        fts_rows_rebuilt = fts_rows_rebuilt.saturating_add(reconcile_canonical_observed_rows(
+            connection,
+            workspace_name,
+            &snapshot.retention_cutoff,
+            snapshot.purge_stale_rows,
+            snapshot.canonical_rowid_range,
+            max_batch_rows,
+            max_batch_payload_bytes,
+            storage_limit_reached,
+            before_batch_write,
+        )?);
+        let canonical_target_freed_again = cleanup_observed_fts_rows(
+            connection,
+            workspace_name,
+            &snapshot.retention_cutoff,
+            snapshot.fts_rowid_range,
+            max_batch_rows,
+            max_batch_payload_bytes,
+            storage_limit_reached,
+            before_batch_write,
+        )?;
+        if canonical_target_freed_again {
+            fts_rows_rebuilt = fts_rows_rebuilt.saturating_add(reconcile_canonical_observed_rows(
+                connection,
+                workspace_name,
+                &snapshot.retention_cutoff,
+                snapshot.purge_stale_rows,
+                snapshot.canonical_rowid_range,
+                max_batch_rows,
+                max_batch_payload_bytes,
+                storage_limit_reached,
+                before_batch_write,
+            )?);
+        }
+    }
+
+    Ok(ObservedValuesRebuildResult {
+        canonical_rows_scanned: snapshot.canonical_rows_scanned,
+        fts_rows_rebuilt,
+    })
+}
+
+fn capture_observed_fts_rebuild_snapshot(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    policy: &ObservedValuesRetrievalPolicy,
+    phase_hook: &mut impl FnMut(ObservedFtsRebuildPhase) -> Result<(), SqliteSearchError>,
+) -> Result<ObservedFtsRebuildSnapshot, SqliteSearchError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let retention_cutoff: String = transaction.query_row(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+        params![sqlite_retention_modifier(policy)],
+        |row| row.get(0),
+    )?;
+    let purge_stale_rows =
+        observed_stale_purge_is_safe_at_cutoff(&transaction, workspace_name, &retention_cutoff)?;
     let canonical_rows_scanned =
-        eligible_observed_value_count(&transaction, workspace_name, policy)?;
-    let fts_rows_rebuilt = transaction.execute(
+        eligible_observed_value_count_at_cutoff(&transaction, workspace_name, &retention_cutoff)?;
+    let fts_rowid_range = observed_fts_rowid_range(&transaction)?;
+    let canonical_rowid_range = canonical_observed_rowid_range(&transaction)?;
+    phase_hook(ObservedFtsRebuildPhase::SnapshotRead)?;
+    transaction.commit()?;
+    Ok(ObservedFtsRebuildSnapshot {
+        retention_cutoff,
+        purge_stale_rows,
+        canonical_rows_scanned,
+        fts_rowid_range,
+        canonical_rowid_range,
+    })
+}
+
+fn observed_fts_rowid_range(
+    connection: &Connection,
+) -> Result<Option<ObservedRowidRange>, SqliteSearchError> {
+    connection
+        .query_row(
+            "
+            SELECT
+                (SELECT rowid FROM observed_values_fts ORDER BY rowid LIMIT 1),
+                (SELECT rowid FROM observed_values_fts ORDER BY rowid DESC LIMIT 1)
+            ",
+            [],
+            |row| {
+                Ok(
+                    match (row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?) {
+                        (Some(first), Some(last)) => Some(ObservedRowidRange { first, last }),
+                        _ => None,
+                    },
+                )
+            },
+        )
+        .map_err(SqliteSearchError::from)
+}
+
+fn canonical_observed_rowid_range(
+    connection: &Connection,
+) -> Result<Option<ObservedRowidRange>, SqliteSearchError> {
+    connection
+        .query_row(
+            "
+            SELECT
+                (SELECT rowid FROM observed_values ORDER BY rowid LIMIT 1),
+                (SELECT rowid FROM observed_values ORDER BY rowid DESC LIMIT 1)
+            ",
+            [],
+            |row| {
+                Ok(
+                    match (row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?) {
+                        (Some(first), Some(last)) => Some(ObservedRowidRange { first, last }),
+                        _ => None,
+                    },
+                )
+            },
+        )
+        .map_err(SqliteSearchError::from)
+}
+
+fn next_raw_observed_fts_rows(
+    connection: &Connection,
+    range: ObservedRowidRange,
+    cursor: Option<i64>,
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+) -> Result<Vec<RawObservedFtsRow>, SqliteSearchError> {
+    let first_sql = "
+        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+               surface_kind, surface_name, column_name, value_key, display_value, search_text
+        FROM observed_values_fts
+        WHERE rowid >= ?1 AND rowid <= ?2
+        ORDER BY rowid
+        LIMIT ?3
+        ";
+    let next_sql = "
+        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+               surface_kind, surface_name, column_name, value_key, display_value, search_text
+        FROM observed_values_fts
+        WHERE rowid > ?1 AND rowid <= ?2
+        ORDER BY rowid
+        LIMIT ?3
+        ";
+    let mut statement = connection.prepare(if cursor.is_some() {
+        next_sql
+    } else {
+        first_sql
+    })?;
+    let lower_bound = cursor.unwrap_or(range.first);
+    let mut rows = statement.query(params![
+        lower_bound,
+        range.last,
+        i64::try_from(max_batch_rows).unwrap_or(i64::MAX),
+    ])?;
+    collect_raw_observed_fts_rows(&mut rows, max_batch_payload_bytes)
+}
+
+fn collect_raw_observed_fts_rows(
+    rows: &mut rusqlite::Rows<'_>,
+    max_batch_payload_bytes: usize,
+) -> Result<Vec<RawObservedFtsRow>, SqliteSearchError> {
+    let mut batch = Vec::new();
+    let mut payload_bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let value = raw_observed_fts_row(row)?;
+        let row_payload_bytes = value.payload_bytes();
+        if !batch.is_empty()
+            && payload_bytes.saturating_add(row_payload_bytes) > max_batch_payload_bytes
+        {
+            break;
+        }
+        payload_bytes = payload_bytes.saturating_add(row_payload_bytes);
+        batch.push(value);
+    }
+    Ok(batch)
+}
+
+fn raw_observed_fts_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawObservedFtsRow> {
+    Ok(RawObservedFtsRow {
+        rowid: row.get(0)?,
+        workspace: row.get(1)?,
+        owner_source_name: row.get(2)?,
+        source_name: row.get(3)?,
+        source_scope_id: row.get(4)?,
+        surface_kind: row.get(5)?,
+        surface_name: row.get(6)?,
+        column_name: row.get(7)?,
+        value_key: row.get(8)?,
+        display_value: row.get(9)?,
+        search_text: row.get(10)?,
+    })
+}
+
+fn raw_observed_fts_row_by_rowid(
+    connection: &Connection,
+    rowid: i64,
+) -> Result<Option<RawObservedFtsRow>, SqliteSearchError> {
+    connection
+        .query_row(
+            "
+            SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+                   surface_kind, surface_name, column_name, value_key, display_value, search_text
+            FROM observed_values_fts
+            WHERE rowid = ?1
+            ",
+            params![rowid],
+            raw_observed_fts_row,
+        )
+        .optional()
+        .map_err(SqliteSearchError::from)
+}
+
+fn next_canonical_observed_rows(
+    connection: &Connection,
+    range: ObservedRowidRange,
+    cursor: Option<i64>,
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+) -> Result<Vec<CanonicalObservedFtsRow>, SqliteSearchError> {
+    let first_sql = "
+        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+               surface_kind, surface_name, column_name, value_key, display_value,
+               search_text, last_observed_at
+        FROM observed_values
+        WHERE rowid >= ?1 AND rowid <= ?2
+        ORDER BY rowid
+        LIMIT ?3
+        ";
+    let next_sql = "
+        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+               surface_kind, surface_name, column_name, value_key, display_value,
+               search_text, last_observed_at
+        FROM observed_values
+        WHERE rowid > ?1 AND rowid <= ?2
+        ORDER BY rowid
+        LIMIT ?3
+        ";
+    let mut statement = connection.prepare(if cursor.is_some() {
+        next_sql
+    } else {
+        first_sql
+    })?;
+    let lower_bound = cursor.unwrap_or(range.first);
+    let mut rows = statement.query(params![
+        lower_bound,
+        range.last,
+        i64::try_from(max_batch_rows).unwrap_or(i64::MAX),
+    ])?;
+    collect_canonical_observed_rows(&mut rows, max_batch_payload_bytes)
+}
+
+fn collect_canonical_observed_rows(
+    rows: &mut rusqlite::Rows<'_>,
+    max_batch_payload_bytes: usize,
+) -> Result<Vec<CanonicalObservedFtsRow>, SqliteSearchError> {
+    let mut batch = Vec::new();
+    let mut payload_bytes = 0_usize;
+    while let Some(row) = rows.next()? {
+        let value = canonical_observed_fts_row(row)?;
+        let row_payload_bytes = value.payload_bytes();
+        if !batch.is_empty()
+            && payload_bytes.saturating_add(row_payload_bytes) > max_batch_payload_bytes
+        {
+            break;
+        }
+        payload_bytes = payload_bytes.saturating_add(row_payload_bytes);
+        batch.push(value);
+    }
+    Ok(batch)
+}
+
+fn canonical_observed_fts_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CanonicalObservedFtsRow> {
+    Ok(CanonicalObservedFtsRow {
+        rowid: row.get(0)?,
+        workspace: row.get(1)?,
+        owner_source_name: row.get(2)?,
+        source_name: row.get(3)?,
+        source_scope_id: row.get(4)?,
+        surface_kind: row.get(5)?,
+        surface_name: row.get(6)?,
+        column_name: row.get(7)?,
+        value_key: row.get(8)?,
+        display_value: row.get(9)?,
+        search_text: row.get(10)?,
+        last_observed_at: row.get(11)?,
+    })
+}
+
+fn canonical_observed_row_by_rowid(
+    connection: &Connection,
+    rowid: i64,
+) -> Result<Option<CanonicalObservedFtsRow>, SqliteSearchError> {
+    connection
+        .query_row(
+            "
+            SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+                   surface_kind, surface_name, column_name, value_key, display_value,
+                   search_text, last_observed_at
+            FROM observed_values
+            WHERE rowid = ?1
+            ",
+            params![rowid],
+            canonical_observed_fts_row,
+        )
+        .optional()
+        .map_err(SqliteSearchError::from)
+}
+
+fn canonical_observed_row_for_fts_key(
+    connection: &Connection,
+    fts: &RawObservedFtsRow,
+) -> Result<Option<CanonicalObservedFtsRow>, SqliteSearchError> {
+    let (
+        Some(workspace),
+        Some(owner_source_name),
+        Some(source_name),
+        Some(source_scope_id),
+        Some(surface_kind),
+        Some(surface_name),
+        Some(column_name),
+        Some(value_key),
+    ) = (
+        observed_fts_text(&fts.workspace),
+        observed_fts_text(&fts.owner_source_name),
+        observed_fts_text(&fts.source_name),
+        observed_fts_text(&fts.source_scope_id),
+        observed_fts_text(&fts.surface_kind),
+        observed_fts_text(&fts.surface_name),
+        observed_fts_text(&fts.column_name),
+        observed_fts_text(&fts.value_key),
+    )
+    else {
+        return Ok(None);
+    };
+    connection
+        .query_row(
+            "
+            SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+                   surface_kind, surface_name, column_name, value_key, display_value,
+                   search_text, last_observed_at
+            FROM observed_values
+            WHERE workspace = ?1
+              AND owner_source_name = ?2
+              AND source_name = ?3
+              AND source_scope_id = ?4
+              AND surface_kind = ?5
+              AND surface_name = ?6
+              AND column_name = ?7
+              AND value_key = ?8
+            ",
+            params![
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                column_name,
+                value_key,
+            ],
+            canonical_observed_fts_row,
+        )
+        .optional()
+        .map_err(SqliteSearchError::from)
+}
+
+fn observed_fts_row_matches_canonical(
+    fts: &RawObservedFtsRow,
+    canonical: &CanonicalObservedFtsRow,
+) -> bool {
+    fts.rowid == canonical.rowid && observed_fts_content_matches_canonical(fts, canonical)
+}
+
+fn observed_fts_content_matches_canonical(
+    fts: &RawObservedFtsRow,
+    canonical: &CanonicalObservedFtsRow,
+) -> bool {
+    observed_fts_text(&fts.workspace) == Some(canonical.workspace.as_str())
+        && observed_fts_text(&fts.owner_source_name) == Some(canonical.owner_source_name.as_str())
+        && observed_fts_text(&fts.source_name) == Some(canonical.source_name.as_str())
+        && observed_fts_text(&fts.source_scope_id) == Some(canonical.source_scope_id.as_str())
+        && observed_fts_text(&fts.surface_kind) == Some(canonical.surface_kind.as_str())
+        && observed_fts_text(&fts.surface_name) == Some(canonical.surface_name.as_str())
+        && observed_fts_text(&fts.column_name) == Some(canonical.column_name.as_str())
+        && observed_fts_text(&fts.value_key) == Some(canonical.value_key.as_str())
+        && observed_fts_text(&fts.display_value) == Some(canonical.display_value.as_str())
+        && observed_fts_text(&fts.search_text) == Some(canonical.search_text.as_str())
+}
+
+fn observed_fts_text(value: &Value) -> Option<&str> {
+    match value {
+        Value::Text(value) => Some(value),
+        Value::Null | Value::Integer(_) | Value::Real(_) | Value::Blob(_) => None,
+    }
+}
+
+fn observed_fts_value_payload_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null => 0,
+        Value::Integer(_) | Value::Real(_) => std::mem::size_of::<i64>(),
+        Value::Text(value) => value.len(),
+        Value::Blob(value) => value.len(),
+    }
+}
+
+fn observed_owner_failed(
+    connection: &Connection,
+    owner_source_name: &str,
+) -> Result<bool, SqliteSearchError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM observed_policy_failed_sources WHERE owner_source_name = ?1)",
+            params![owner_source_name],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
+}
+
+fn canonical_observed_scope_is_live(
+    connection: &Connection,
+    canonical: &CanonicalObservedFtsRow,
+) -> Result<bool, SqliteSearchError> {
+    connection
+        .query_row(
+            "
+            SELECT EXISTS(
+                SELECT 1
+                FROM observed_live_source_scopes
+                WHERE owner_source_name = ?1
+                  AND source_name = ?2
+                  AND source_scope_id = ?3
+                  AND surface_kind = ?4
+                  AND surface_name = ?5
+            )
+            ",
+            params![
+                &canonical.owner_source_name,
+                &canonical.source_name,
+                &canonical.source_scope_id,
+                &canonical.surface_kind,
+                &canonical.surface_name,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
+}
+
+fn raw_observed_fts_owner_failed(
+    connection: &Connection,
+    fts: &RawObservedFtsRow,
+) -> Result<bool, SqliteSearchError> {
+    let Some(owner_source_name) = observed_fts_text(&fts.owner_source_name) else {
+        return Ok(false);
+    };
+    observed_owner_failed(connection, owner_source_name)
+}
+
+fn canonical_observed_row_is_retrievable_at_cutoff(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    canonical: &CanonicalObservedFtsRow,
+) -> Result<bool, SqliteSearchError> {
+    Ok(canonical.workspace == workspace_name.as_str()
+        && !observed_owner_failed(connection, &canonical.owner_source_name)?
+        && canonical_observed_scope_is_live(connection, canonical)?
+        && canonical.last_observed_at.as_str() >= retention_cutoff)
+}
+
+fn raw_observed_fts_is_valid_unrelated_occupant(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    target_rowid: i64,
+    fts: &RawObservedFtsRow,
+) -> Result<bool, SqliteSearchError> {
+    let Some(occupant_canonical) = canonical_observed_row_for_fts_key(connection, fts)? else {
+        return Ok(false);
+    };
+    if occupant_canonical.rowid == target_rowid
+        || !canonical_observed_row_is_retrievable_at_cutoff(
+            connection,
+            workspace_name,
+            retention_cutoff,
+            &occupant_canonical,
+        )?
+        || !observed_fts_content_matches_canonical(fts, &occupant_canonical)
+    {
+        return Ok(false);
+    }
+    let aligned = raw_observed_fts_row_by_rowid(connection, occupant_canonical.rowid)?;
+    Ok(!aligned
+        .as_ref()
+        .is_some_and(|aligned| observed_fts_row_matches_canonical(aligned, &occupant_canonical)))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the rebuild limits, guards, and fixed policy snapshot must remain explicit"
+)]
+fn cleanup_observed_fts_rows(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    rowid_range: Option<ObservedRowidRange>,
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+    storage_limit_reached: &mut impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+    before_batch_write: &mut impl FnMut(ObservedFtsRebuildPhase) -> Result<(), SqliteSearchError>,
+) -> Result<bool, SqliteSearchError> {
+    let Some(rowid_range) = rowid_range else {
+        return Ok(false);
+    };
+    let mut cursor = None;
+    let mut canonical_target_freed = false;
+    loop {
+        let batch = next_raw_observed_fts_rows(
+            connection,
+            rowid_range,
+            cursor,
+            max_batch_rows,
+            max_batch_payload_bytes,
+        )?;
+        if batch.is_empty() {
+            break;
+        }
+        before_batch_write(ObservedFtsRebuildPhase::FtsCleanup)?;
+        let result = apply_observed_fts_cleanup_batch(
+            connection,
+            workspace_name,
+            retention_cutoff,
+            &batch,
+            max_batch_rows,
+            max_batch_payload_bytes,
+            storage_limit_reached,
+        )?;
+        cursor = Some(result.cursor);
+        canonical_target_freed |= result.canonical_target_freed;
+        if result.cursor >= rowid_range.last {
+            break;
+        }
+    }
+    Ok(canonical_target_freed)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ObservedFtsCleanupBatchResult {
+    cursor: i64,
+    canonical_target_freed: bool,
+}
+
+fn apply_observed_fts_cleanup_batch(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    scanned_rows: &[RawObservedFtsRow],
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+    storage_limit_reached: &mut impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+) -> Result<ObservedFtsCleanupBatchResult, SqliteSearchError> {
+    ensure_observed_fts_rebuild_wal_headroom(connection)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let live_bytes_before = observed_fts_rebuild_live_database_bytes(&transaction)?;
+    let mut processed_cursor = None;
+    let mut mutation_rows = 0_usize;
+    let mut payload_bytes = 0_usize;
+    let mut canonical_target_freed = false;
+
+    for scanned in scanned_rows {
+        let Some(current) = raw_observed_fts_row_by_rowid(&transaction, scanned.rowid)? else {
+            processed_cursor = Some(scanned.rowid);
+            continue;
+        };
+        let current_payload_bytes = current.payload_bytes();
+        if processed_cursor.is_some()
+            && payload_bytes.saturating_add(current_payload_bytes) > max_batch_payload_bytes
+        {
+            break;
+        }
+        let decision = observed_fts_cleanup_decision(
+            &transaction,
+            workspace_name,
+            retention_cutoff,
+            &current,
+        )?;
+        if decision.delete && mutation_rows >= max_batch_rows {
+            break;
+        }
+        if decision.delete {
+            transaction.execute(
+                "DELETE FROM observed_values_fts WHERE rowid = ?1",
+                params![current.rowid],
+            )?;
+            mutation_rows = mutation_rows.saturating_add(1);
+            canonical_target_freed |= decision.canonical_target_freed;
+        }
+        payload_bytes = payload_bytes.saturating_add(current_payload_bytes);
+        processed_cursor = Some(scanned.rowid);
+    }
+
+    let cursor = processed_cursor.ok_or_else(observed_fts_rebuild_no_progress_error)?;
+    commit_observed_fts_rebuild_batch(
+        transaction,
+        live_bytes_before,
+        false,
+        storage_limit_reached,
+    )?;
+    Ok(ObservedFtsCleanupBatchResult {
+        cursor,
+        canonical_target_freed,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ObservedFtsCleanupDecision {
+    delete: bool,
+    canonical_target_freed: bool,
+}
+
+impl ObservedFtsCleanupDecision {
+    const PRESERVE: Self = Self {
+        delete: false,
+        canonical_target_freed: false,
+    };
+}
+
+fn observed_fts_cleanup_decision(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    fts: &RawObservedFtsRow,
+) -> Result<ObservedFtsCleanupDecision, SqliteSearchError> {
+    if raw_observed_fts_owner_failed(connection, fts)? {
+        return Ok(ObservedFtsCleanupDecision::PRESERVE);
+    }
+    match observed_fts_text(&fts.workspace) {
+        Some(workspace) if workspace != workspace_name.as_str() => {
+            return Ok(ObservedFtsCleanupDecision::PRESERVE);
+        }
+        Some(_) | None => {}
+    }
+    let target_canonical = canonical_observed_row_by_rowid(connection, fts.rowid)?;
+    if let Some(target_canonical) = target_canonical.as_ref()
+        && (target_canonical.workspace != workspace_name.as_str()
+            || observed_owner_failed(connection, &target_canonical.owner_source_name)?)
+    {
+        return Ok(ObservedFtsCleanupDecision::PRESERVE);
+    }
+    let Some(canonical) = canonical_observed_row_for_fts_key(connection, fts)? else {
+        return Ok(ObservedFtsCleanupDecision {
+            delete: true,
+            canonical_target_freed: target_canonical.is_some(),
+        });
+    };
+    if canonical.workspace != workspace_name.as_str()
+        || observed_owner_failed(connection, &canonical.owner_source_name)?
+    {
+        return Ok(ObservedFtsCleanupDecision::PRESERVE);
+    }
+    if !canonical_observed_scope_is_live(connection, &canonical)?
+        || canonical.last_observed_at.as_str() < retention_cutoff
+        || !observed_fts_content_matches_canonical(fts, &canonical)
+    {
+        return Ok(ObservedFtsCleanupDecision {
+            delete: true,
+            canonical_target_freed: target_canonical.is_some(),
+        });
+    }
+    if observed_fts_row_matches_canonical(fts, &canonical) {
+        return Ok(ObservedFtsCleanupDecision::PRESERVE);
+    }
+    let aligned = raw_observed_fts_row_by_rowid(connection, canonical.rowid)?;
+    let aligned_copy_exists = aligned
+        .as_ref()
+        .is_some_and(|aligned| observed_fts_row_matches_canonical(aligned, &canonical));
+    let breaks_collision_cycle = target_canonical
+        .as_ref()
+        .is_some_and(|target_canonical| target_canonical.rowid < canonical.rowid);
+    Ok(if aligned_copy_exists || breaks_collision_cycle {
+        ObservedFtsCleanupDecision {
+            delete: true,
+            canonical_target_freed: target_canonical.is_some(),
+        }
+    } else {
+        ObservedFtsCleanupDecision::PRESERVE
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the rebuild limits, guards, and fixed policy snapshot must remain explicit"
+)]
+fn reconcile_canonical_observed_rows(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    purge_stale_rows: bool,
+    rowid_range: Option<ObservedRowidRange>,
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+    storage_limit_reached: &mut impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+    before_batch_write: &mut impl FnMut(ObservedFtsRebuildPhase) -> Result<(), SqliteSearchError>,
+) -> Result<u32, SqliteSearchError> {
+    let Some(rowid_range) = rowid_range else {
+        return Ok(0);
+    };
+    let mut cursor = None;
+    let mut fts_rows_rebuilt = 0_u32;
+    loop {
+        let batch = next_canonical_observed_rows(
+            connection,
+            rowid_range,
+            cursor,
+            max_batch_rows,
+            max_batch_payload_bytes,
+        )?;
+        if batch.is_empty() {
+            break;
+        }
+        before_batch_write(ObservedFtsRebuildPhase::CanonicalReconciliation)?;
+        let result = apply_canonical_observed_batch(
+            connection,
+            workspace_name,
+            retention_cutoff,
+            purge_stale_rows,
+            &batch,
+            max_batch_rows,
+            max_batch_payload_bytes,
+            storage_limit_reached,
+        )?;
+        cursor = result.cursor.or(cursor);
+        fts_rows_rebuilt = fts_rows_rebuilt.saturating_add(result.fts_rows_rebuilt);
+        if cursor.is_some_and(|cursor| cursor >= rowid_range.last) {
+            break;
+        }
+    }
+    Ok(fts_rows_rebuilt)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CanonicalObservedBatchResult {
+    cursor: Option<i64>,
+    fts_rows_rebuilt: u32,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the rebuild limits and fixed policy snapshot must remain explicit"
+)]
+fn apply_canonical_observed_batch(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    purge_stale_rows: bool,
+    scanned_rows: &[CanonicalObservedFtsRow],
+    max_batch_rows: usize,
+    max_batch_payload_bytes: usize,
+    storage_limit_reached: &mut impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+) -> Result<CanonicalObservedBatchResult, SqliteSearchError> {
+    ensure_observed_fts_rebuild_wal_headroom(connection)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let live_bytes_before = observed_fts_rebuild_live_database_bytes(&transaction)?;
+    let mut cursor = None;
+    let mut mutation_rows = 0_usize;
+    let mut payload_bytes = 0_usize;
+    let mut fts_rows_rebuilt = 0_u32;
+
+    for scanned in scanned_rows {
+        let Some(canonical) = canonical_observed_row_by_rowid(&transaction, scanned.rowid)? else {
+            cursor = Some(scanned.rowid);
+            continue;
+        };
+        let fts = raw_observed_fts_row_by_rowid(&transaction, canonical.rowid)?;
+        let mutation = canonical_observed_mutation(
+            &transaction,
+            workspace_name,
+            retention_cutoff,
+            purge_stale_rows,
+            &canonical,
+            fts.as_ref(),
+        )?;
+        let row_payload_bytes = canonical
+            .payload_bytes()
+            .saturating_add(fts.as_ref().map_or(0, RawObservedFtsRow::payload_bytes));
+        if cursor.is_some()
+            && payload_bytes.saturating_add(row_payload_bytes) > max_batch_payload_bytes
+        {
+            break;
+        }
+        let remaining_rows = max_batch_rows.saturating_sub(mutation_rows);
+        if mutation_rows > 0 && mutation.mutation_rows() > remaining_rows {
+            break;
+        }
+        fts_rows_rebuilt = fts_rows_rebuilt.saturating_add(apply_canonical_observed_mutation(
+            &transaction,
+            workspace_name,
+            &canonical,
+            mutation,
+        )?);
+        mutation_rows = mutation_rows.saturating_add(mutation.mutation_rows());
+        payload_bytes = payload_bytes.saturating_add(row_payload_bytes);
+        cursor = Some(scanned.rowid);
+        if mutation_rows >= max_batch_rows {
+            break;
+        }
+    }
+
+    commit_observed_fts_rebuild_batch(
+        transaction,
+        live_bytes_before,
+        fts_rows_rebuilt > 0,
+        storage_limit_reached,
+    )?;
+    Ok(CanonicalObservedBatchResult {
+        cursor,
+        fts_rows_rebuilt,
+    })
+}
+
+fn canonical_observed_mutation(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+    purge_stale_rows: bool,
+    canonical: &CanonicalObservedFtsRow,
+    fts: Option<&RawObservedFtsRow>,
+) -> Result<CanonicalObservedMutation, SqliteSearchError> {
+    if canonical.workspace != workspace_name.as_str()
+        || observed_owner_failed(connection, &canonical.owner_source_name)?
+    {
+        return Ok(CanonicalObservedMutation {
+            delete_fts: false,
+            delete_canonical: false,
+            insert_fts: false,
+        });
+    }
+    let protected_fts = match fts {
+        Some(fts) => {
+            raw_observed_fts_owner_failed(connection, fts)?
+                || observed_fts_text(&fts.workspace)
+                    .is_some_and(|workspace| workspace != workspace_name.as_str())
+                || raw_observed_fts_is_valid_unrelated_occupant(
+                    connection,
+                    workspace_name,
+                    retention_cutoff,
+                    canonical.rowid,
+                    fts,
+                )?
+        }
+        None => false,
+    };
+    let is_live = canonical_observed_scope_is_live(connection, canonical)?;
+    let is_fresh = canonical.last_observed_at.as_str() >= retention_cutoff;
+    if !is_live || (!is_fresh && purge_stale_rows) {
+        return Ok(CanonicalObservedMutation {
+            delete_fts: fts.is_some() && !protected_fts,
+            delete_canonical: true,
+            insert_fts: false,
+        });
+    }
+    if !is_fresh {
+        return Ok(CanonicalObservedMutation {
+            delete_fts: fts.is_some() && !protected_fts,
+            delete_canonical: false,
+            insert_fts: false,
+        });
+    }
+    let fts_is_current = fts.is_some_and(|fts| observed_fts_row_matches_canonical(fts, canonical));
+    Ok(CanonicalObservedMutation {
+        delete_fts: fts.is_some() && !fts_is_current && !protected_fts,
+        delete_canonical: false,
+        insert_fts: !fts_is_current && !protected_fts,
+    })
+}
+
+fn apply_canonical_observed_mutation(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    canonical: &CanonicalObservedFtsRow,
+    mutation: CanonicalObservedMutation,
+) -> Result<u32, SqliteSearchError> {
+    if mutation.delete_fts {
+        delete_observed_fts_by_rowid(transaction, canonical.rowid)?;
+    }
+    if mutation.delete_canonical {
+        transaction.execute(
+            "DELETE FROM observed_values WHERE rowid = ?1 AND workspace = ?2",
+            params![canonical.rowid, workspace_name.as_str()],
+        )?;
+        return Ok(0);
+    }
+    if mutation.insert_fts {
+        insert_aligned_observed_fts_row(transaction, canonical)?;
+        return Ok(1);
+    }
+    Ok(0)
+}
+
+fn delete_observed_fts_by_rowid(
+    connection: &Connection,
+    rowid: i64,
+) -> Result<(), SqliteSearchError> {
+    connection.execute(
+        "DELETE FROM observed_values_fts WHERE rowid = ?1",
+        params![rowid],
+    )?;
+    Ok(())
+}
+
+fn insert_aligned_observed_fts_row(
+    connection: &Connection,
+    canonical: &CanonicalObservedFtsRow,
+) -> Result<(), SqliteSearchError> {
+    connection.execute(
         "
         INSERT INTO observed_values_fts (
+            rowid,
             workspace,
             owner_source_name,
             source_name,
@@ -302,35 +1379,106 @@ pub(crate) fn rebuild_observed_fts(
             value_key,
             display_value,
             search_text
-        )
-        SELECT
-            v.workspace,
-            v.owner_source_name,
-            v.source_name,
-            v.source_scope_id,
-            v.surface_kind,
-            v.surface_name,
-            v.column_name,
-            v.value_key,
-            v.display_value,
-            v.search_text
-        FROM observed_values v
-        JOIN observed_live_source_scopes s
-            ON s.owner_source_name = v.owner_source_name
-            AND s.source_name = v.source_name
-            AND s.source_scope_id = v.source_scope_id
-            AND s.surface_kind = v.surface_kind
-            AND s.surface_name = v.surface_name
-        WHERE v.workspace = ?1
-            AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         ",
-        params![workspace_name.as_str(), sqlite_retention_modifier(policy)],
+        params![
+            canonical.rowid,
+            &canonical.workspace,
+            &canonical.owner_source_name,
+            &canonical.source_name,
+            &canonical.source_scope_id,
+            &canonical.surface_kind,
+            &canonical.surface_name,
+            &canonical.column_name,
+            &canonical.value_key,
+            &canonical.display_value,
+            &canonical.search_text,
+        ],
     )?;
+    Ok(())
+}
+
+fn commit_observed_fts_rebuild_batch(
+    transaction: Transaction<'_>,
+    live_bytes_before: u64,
+    inserted_fts_rows: bool,
+    storage_limit_reached: &mut impl FnMut(&Connection) -> Result<bool, SqliteSearchError>,
+) -> Result<(), SqliteSearchError> {
+    let live_bytes_after = observed_fts_rebuild_live_database_bytes(&transaction)?;
+    let needs_storage_guard = inserted_fts_rows || live_bytes_after > live_bytes_before;
+    if needs_storage_guard {
+        let at_storage_limit = match storage_limit_reached(&transaction) {
+            Ok(at_storage_limit) => at_storage_limit,
+            Err(error) => {
+                transaction.rollback()?;
+                return Err(error);
+            }
+        };
+        if at_storage_limit {
+            transaction.rollback()?;
+            return Err(observed_fts_rebuild_storage_limit_error());
+        }
+    }
     transaction.commit()?;
-    Ok(ObservedValuesRebuildResult {
-        canonical_rows_scanned,
-        fts_rows_rebuilt: u32::try_from(fts_rows_rebuilt).unwrap_or(u32::MAX),
-    })
+    Ok(())
+}
+
+fn ensure_observed_fts_rebuild_wal_headroom(
+    connection: &Connection,
+) -> Result<(), SqliteSearchError> {
+    let (busy, log_frame_count, checkpointed_frame_count) =
+        connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+    if busy != 0 || checkpointed_frame_count < log_frame_count {
+        return Err(observed_fts_rebuild_wal_headroom_error(
+            log_frame_count,
+            checkpointed_frame_count,
+        ));
+    }
+    Ok(())
+}
+
+fn observed_fts_rebuild_live_database_bytes(
+    connection: &Connection,
+) -> Result<u64, SqliteSearchError> {
+    let page_size: i64 = connection.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+    let page_count: i64 = connection.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+    let freelist_count: i64 =
+        connection.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+    let live_pages = page_count.saturating_sub(freelist_count).max(0);
+    Ok(u64::try_from(live_pages)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(u64::try_from(page_size).unwrap_or(u64::MAX)))
+}
+
+fn observed_fts_rebuild_storage_limit_error() -> SqliteSearchError {
+    io::Error::new(
+        io::ErrorKind::StorageFull,
+        "observed-value FTS rebuild reached the configured workspace storage limit",
+    )
+    .into()
+}
+
+fn observed_fts_rebuild_wal_headroom_error(
+    log_frame_count: i64,
+    checkpointed_frame_count: i64,
+) -> SqliteSearchError {
+    io::Error::new(
+        io::ErrorKind::StorageFull,
+        format!(
+            "observed-value FTS rebuild cannot reclaim the prior WAL batch while a reader is active (log frames: {log_frame_count}, checkpointed frames: {checkpointed_frame_count})"
+        ),
+    )
+    .into()
+}
+
+fn observed_fts_rebuild_no_progress_error() -> SqliteSearchError {
+    io::Error::other("observed-value FTS rebuild batch made no keyset progress").into()
 }
 
 pub(crate) fn search_observed_values(
@@ -629,8 +1777,9 @@ fn project_observed_payload(
     let mut canonical_rows = 0_u32;
     let mut fts_rows = 0_u32;
     for value in &payload.values {
-        upsert_observed_value(transaction, workspace_name, job, generation, value)?;
-        refresh_observed_fts_row(transaction, workspace_name, job, value)?;
+        let canonical_rowid =
+            upsert_observed_value(transaction, workspace_name, job, generation, value)?;
+        refresh_observed_fts_row(transaction, canonical_rowid, workspace_name, job, value)?;
         canonical_rows = canonical_rows.saturating_add(1);
         fts_rows = fts_rows.saturating_add(1);
     }
@@ -643,9 +1792,10 @@ fn upsert_observed_value(
     job: &ObservedQueueJobRow,
     generation: ObservedValuesEpoch,
     value: &ObservedValueCandidate,
-) -> Result<(), SqliteSearchError> {
-    transaction.execute(
-        "
+) -> Result<i64, SqliteSearchError> {
+    transaction
+        .query_row(
+            "
         INSERT INTO observed_values (
             workspace,
             owner_source_name,
@@ -696,35 +1846,39 @@ fn upsert_observed_value(
             observation_count = observed_values.observation_count + 1,
             source_generation = excluded.source_generation,
             workspace_generation = excluded.workspace_generation
+        RETURNING rowid
         ",
-        params![
-            workspace_name.as_str(),
-            &job.owner_source_name,
-            &job.source_name,
-            &job.source_scope_id,
-            job.surface_kind.as_str(),
-            &job.surface_name,
-            &value.column_name,
-            &value.value_key,
-            &value.display_value,
-            &value.search_text,
-            generation.source_generation,
-            generation.workspace_generation,
-        ],
-    )?;
-    Ok(())
+            params![
+                workspace_name.as_str(),
+                &job.owner_source_name,
+                &job.source_name,
+                &job.source_scope_id,
+                job.surface_kind.as_str(),
+                &job.surface_name,
+                &value.column_name,
+                &value.value_key,
+                &value.display_value,
+                &value.search_text,
+                generation.source_generation,
+                generation.workspace_generation,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
 }
 
 fn refresh_observed_fts_row(
     transaction: &Transaction<'_>,
+    canonical_rowid: i64,
     workspace_name: &WorkspaceName,
     job: &ObservedQueueJobRow,
     value: &ObservedValueCandidate,
 ) -> Result<(), SqliteSearchError> {
-    delete_fts_row(transaction, workspace_name, job, value)?;
+    delete_observed_fts_rows_for_projection_key(transaction, workspace_name, job, value)?;
     transaction.execute(
         "
         INSERT INTO observed_values_fts (
+            rowid,
             workspace,
             owner_source_name,
             source_name,
@@ -736,9 +1890,10 @@ fn refresh_observed_fts_row(
             display_value,
             search_text
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         ",
         params![
+            canonical_rowid,
             workspace_name.as_str(),
             &job.owner_source_name,
             &job.source_name,
@@ -754,7 +1909,7 @@ fn refresh_observed_fts_row(
     Ok(())
 }
 
-fn delete_fts_row(
+fn delete_observed_fts_rows_for_projection_key(
     transaction: &Transaction<'_>,
     workspace_name: &WorkspaceName,
     job: &ObservedQueueJobRow,
@@ -764,13 +1919,13 @@ fn delete_fts_row(
         "
         DELETE FROM observed_values_fts
         WHERE workspace = ?1
-            AND owner_source_name = ?2
-            AND source_name = ?3
-            AND source_scope_id = ?4
-            AND surface_kind = ?5
-            AND surface_name = ?6
-            AND column_name = ?7
-            AND value_key = ?8
+          AND owner_source_name = ?2
+          AND source_name = ?3
+          AND source_scope_id = ?4
+          AND surface_kind = ?5
+          AND surface_name = ?6
+          AND column_name = ?7
+          AND value_key = ?8
         ",
         params![
             workspace_name.as_str(),
@@ -1094,19 +2249,19 @@ fn prepare_failed_source_table(
     Ok(())
 }
 
-fn purge_stale_observed_values(
+fn observed_stale_purge_is_safe_at_cutoff(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    policy: &ObservedValuesRetrievalPolicy,
-) -> Result<(), SqliteSearchError> {
-    let retention_modifier = sqlite_retention_modifier(policy);
+    retention_cutoff: &str,
+) -> Result<bool, SqliteSearchError> {
     let purgeable_count = purgeable_observed_value_count(connection, workspace_name)?;
     if purgeable_count == 0 {
-        return Ok(());
+        return Ok(true);
     }
-    let stale_count = stale_observed_value_count(connection, workspace_name, &retention_modifier)?;
+    let stale_count =
+        stale_observed_value_count_at_cutoff(connection, workspace_name, retention_cutoff)?;
     if stale_count == 0 {
-        return Ok(());
+        return Ok(true);
     }
     if stale_count.saturating_mul(100) > purgeable_count.saturating_mul(90) {
         tracing::warn!(
@@ -1115,50 +2270,9 @@ fn purge_stale_observed_values(
             purgeable_count,
             "skipping observed-value stale purge because too many canonical rows look stale"
         );
-        return Ok(());
+        return Ok(false);
     }
-    connection.execute(
-        "
-        DELETE FROM observed_values
-        WHERE workspace = ?1
-            AND last_observed_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2)
-            AND NOT EXISTS (
-                SELECT 1
-                FROM observed_policy_failed_sources failed
-                WHERE failed.owner_source_name = observed_values.owner_source_name
-            )
-        ",
-        params![workspace_name.as_str(), retention_modifier],
-    )?;
-    Ok(())
-}
-
-fn purge_non_live_observed_values(
-    connection: &Connection,
-    workspace_name: &WorkspaceName,
-) -> Result<(), SqliteSearchError> {
-    connection.execute(
-        "
-        DELETE FROM observed_values
-        WHERE workspace = ?1
-            AND NOT EXISTS (
-                SELECT 1
-                FROM observed_policy_failed_sources failed
-                WHERE failed.owner_source_name = observed_values.owner_source_name
-            )
-            AND NOT EXISTS (
-                SELECT 1
-                FROM observed_live_source_scopes live
-                WHERE live.owner_source_name = observed_values.owner_source_name
-                    AND live.source_name = observed_values.source_name
-                    AND live.source_scope_id = observed_values.source_scope_id
-                    AND live.surface_kind = observed_values.surface_kind
-                    AND live.surface_name = observed_values.surface_name
-            )
-        ",
-        params![workspace_name.as_str()],
-    )?;
-    Ok(())
+    Ok(true)
 }
 
 fn purgeable_observed_value_count(
@@ -1182,24 +2296,24 @@ fn purgeable_observed_value_count(
     Ok(count)
 }
 
-fn stale_observed_value_count(
+fn stale_observed_value_count_at_cutoff(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    retention_modifier: &str,
+    retention_cutoff: &str,
 ) -> Result<i64, SqliteSearchError> {
     let count = connection.query_row(
         "
         SELECT COUNT(*)
         FROM observed_values v
         WHERE v.workspace = ?1
-            AND v.last_observed_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2)
+            AND v.last_observed_at < ?2
             AND NOT EXISTS (
                 SELECT 1
                 FROM observed_policy_failed_sources failed
                 WHERE failed.owner_source_name = v.owner_source_name
             )
         ",
-        params![workspace_name.as_str(), retention_modifier],
+        params![workspace_name.as_str(), retention_cutoff],
         |row| row.get(0),
     )?;
     Ok(count)
@@ -1224,6 +2338,30 @@ fn eligible_observed_value_count(
             AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
         ",
         params![workspace_name.as_str(), sqlite_retention_modifier(policy)],
+        |row| row.get(0),
+    )?;
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+fn eligible_observed_value_count_at_cutoff(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    retention_cutoff: &str,
+) -> Result<u32, SqliteSearchError> {
+    let count: i64 = connection.query_row(
+        "
+        SELECT COUNT(*)
+        FROM observed_values v
+        JOIN observed_live_source_scopes s
+            ON s.owner_source_name = v.owner_source_name
+            AND s.source_name = v.source_name
+            AND s.source_scope_id = v.source_scope_id
+            AND s.surface_kind = v.surface_kind
+            AND s.surface_name = v.surface_name
+        WHERE v.workspace = ?1
+            AND v.last_observed_at >= ?2
+        ",
+        params![workspace_name.as_str(), retention_cutoff],
         |row| row.get(0),
     )?;
     Ok(u32::try_from(count).unwrap_or(u32::MAX))

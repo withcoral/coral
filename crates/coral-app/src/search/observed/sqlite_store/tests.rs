@@ -1,15 +1,19 @@
+use std::cell::Cell;
 use std::fs;
 use std::path::Path;
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Duration;
 
+use rusqlite::types::Value;
 use rusqlite::{Connection, TransactionBehavior, params};
 
 use super::super::governance::{
     ObservedValuesStoragePolicy, observed_fts_mergeable_segments_exist,
 };
-use super::super::sqlite_projection::{MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedValuesDrainBudget};
+use super::super::sqlite_projection::{
+    MAX_OBSERVED_QUEUE_JOB_ATTEMPTS, ObservedFtsRebuildPhase, ObservedValuesDrainBudget,
+};
 use super::super::{
     ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
 };
@@ -1411,6 +1415,561 @@ fn drain_queue_deletes_stale_generation_jobs() {
 }
 
 #[test]
+fn projection_realigns_a_legacy_same_key_fts_row_without_leaving_a_duplicate() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope", "issues", "Legacy value", "stable-key"),
+            generation,
+        )
+        .expect("enqueue legacy value");
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("project legacy value");
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    let canonical_rowid: i64 = connection
+        .query_row(
+            "SELECT rowid FROM observed_values WHERE workspace = ?1 AND value_key = 'stable-key'",
+            params![workspace.as_str()],
+            |row| row.get(0),
+        )
+        .expect("canonical rowid");
+    let legacy_rowid = canonical_rowid.saturating_add(100);
+    connection
+        .execute(
+            "DELETE FROM observed_values_fts WHERE rowid = ?1",
+            params![canonical_rowid],
+        )
+        .expect("remove aligned row");
+    connection
+        .execute(
+            "
+            INSERT INTO observed_values_fts (
+                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                surface_kind, surface_name, column_name, value_key, display_value, search_text
+            )
+            SELECT ?2, workspace, owner_source_name, source_name, source_scope_id,
+                   surface_kind, surface_name, column_name, value_key, display_value, search_text
+            FROM observed_values
+            WHERE rowid = ?1
+            ",
+            params![canonical_rowid, legacy_rowid],
+        )
+        .expect("move FTS row to a legacy rowid");
+    drop(connection);
+
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope", "issues", "Fresh value", "stable-key"),
+            generation,
+        )
+        .expect("enqueue refreshed value");
+    let drained = store
+        .drain_queue(&workspace, drain_budget())
+        .expect("project refreshed value");
+    assert_eq!(drained.failed_jobs, 0);
+
+    let connection = backing.connect_for_test().expect("connection");
+    let rows: (i64, i64, String) = connection
+        .query_row(
+            "
+            SELECT COUNT(*), MIN(f.rowid), MIN(f.display_value)
+            FROM observed_values_fts f
+            WHERE f.workspace = ?1 AND f.value_key = 'stable-key'
+            ",
+            params![workspace.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("aligned FTS row");
+    assert_eq!(rows, (1, canonical_rowid, "Fresh value".to_string()));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the collision test verifies projection rollback, failed-owner preservation, recovery, and retry as one state transition"
+)]
+fn projection_and_rebuild_preserve_an_unrelated_failed_owner_rowid_collision() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope", "issues", "Original value", "stable-key"),
+            generation,
+        )
+        .expect("enqueue original value");
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("project original value");
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    let canonical_rowid: i64 = connection
+        .query_row(
+            "SELECT rowid FROM observed_values WHERE workspace = ?1 AND value_key = 'stable-key'",
+            params![workspace.as_str()],
+            |row| row.get(0),
+        )
+        .expect("canonical rowid");
+    connection
+        .execute(
+            "DELETE FROM observed_values_fts WHERE rowid = ?1",
+            params![canonical_rowid],
+        )
+        .expect("remove aligned row");
+    connection
+        .execute(
+            "
+            INSERT INTO observed_values_fts (
+                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                surface_kind, surface_name, column_name, value_key, display_value, search_text
+            ) VALUES (
+                ?1, ?2, 'jira', 'jira', 'failed-scope', 'table', 'issues', 'title',
+                'failed-key', 'Failed owner value', 'failed owner value'
+            )
+            ",
+            params![canonical_rowid, workspace.as_str()],
+        )
+        .expect("occupy the canonical rowid with a failed-owner row");
+    drop(connection);
+
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope", "issues", "Fresh value", "stable-key"),
+            generation,
+        )
+        .expect("enqueue refreshed value");
+    let failed_projection = store
+        .drain_queue(&workspace, drain_budget())
+        .expect("drain collision");
+    assert_eq!(failed_projection.failed_jobs, 1);
+
+    let connection = backing.connect_for_test().expect("connection");
+    let state: (String, String, String) = connection
+        .query_row(
+            "
+            SELECT v.display_value, f.owner_source_name, f.display_value
+            FROM observed_values v
+            JOIN observed_values_fts f ON f.rowid = v.rowid
+            WHERE v.rowid = ?1
+            ",
+            params![canonical_rowid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("collision state");
+    assert_eq!(
+        state,
+        (
+            "Original value".to_string(),
+            "jira".to_string(),
+            "Failed owner value".to_string(),
+        ),
+        "the failed projection transaction must preserve both canonical and unrelated FTS content"
+    );
+    drop(connection);
+
+    let failed_policy = test_policy_with_failed_sources(&[("scope", "issues")], &["jira"]);
+    let blocked = store
+        .rebuild_fts(&workspace, &failed_policy)
+        .expect("rebuild while Jira is failed");
+    assert_eq!(blocked.fts_rows_rebuilt, 0);
+    let connection = backing.connect_for_test().expect("connection");
+    let owner_while_failed: String = connection
+        .query_row(
+            "SELECT owner_source_name FROM observed_values_fts WHERE rowid = ?1",
+            params![canonical_rowid],
+            |row| row.get(0),
+        )
+        .expect("failed-owner occupant");
+    assert_eq!(owner_while_failed, "jira");
+    drop(connection);
+
+    let recovered = store
+        .rebuild_fts(&workspace, &test_policy(&[("scope", "issues")]))
+        .expect("rebuild after Jira recovers");
+    assert_eq!(recovered.fts_rows_rebuilt, 1);
+    let retried = store
+        .drain_queue(&workspace, drain_budget())
+        .expect("retry projection after collision recovery");
+    assert_eq!(retried.failed_jobs, 0);
+    assert_eq!(retried.queue_jobs_processed, 1);
+
+    let connection = backing.connect_for_test().expect("connection");
+    let recovered_state: (i64, String, String) = connection
+        .query_row(
+            "
+            SELECT COUNT(*), MIN(owner_source_name), MIN(display_value)
+            FROM observed_values_fts
+            WHERE rowid = ?1
+            ",
+            params![canonical_rowid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("recovered aligned row");
+    assert_eq!(
+        recovered_state,
+        (1, "github".to_string(), "Fresh value".to_string())
+    );
+}
+
+#[test]
+fn rebuild_snapshot_read_does_not_reserve_the_workspace_writer() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope-old", "issues", "Old row", "old-key"),
+            generation,
+        )
+        .expect("enqueue initial row");
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("project initial row");
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope-new", "issues", "New row", "new-key"),
+            generation,
+        )
+        .expect("enqueue concurrent row");
+
+    let snapshot_hook_ran = Cell::new(false);
+    let policy = test_policy(&[("scope-old", "issues"), ("scope-new", "issues")]);
+    let result = store
+        .rebuild_fts_with_limits_guard_and_hook(
+            &workspace,
+            &policy,
+            1,
+            usize::MAX,
+            |_| Ok(false),
+            |phase| {
+                if phase == ObservedFtsRebuildPhase::SnapshotRead
+                    && !snapshot_hook_ran.replace(true)
+                {
+                    let drained = store.drain_queue(&workspace, drain_budget())?;
+                    assert_eq!(drained.queue_jobs_processed, 1);
+                }
+                Ok(())
+            },
+        )
+        .expect("rebuild while a second connection commits");
+
+    assert!(snapshot_hook_ran.get());
+    assert_eq!(
+        result.canonical_rows_scanned, 1,
+        "all snapshot reads must retain the pre-writer view"
+    );
+    assert_eq!(result.fts_rows_rebuilt, 0);
+    assert_eq!(canonical_value_count_for_test(&layout, &workspace), 2);
+    assert_eq!(fts_value_count_for_test(&layout, &workspace), 2);
+}
+
+#[test]
+fn rebuild_rechecks_canonical_and_fts_rows_after_the_bounded_scan() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope", "issues", "Old value", "stable-key"),
+            generation,
+        )
+        .expect("enqueue old value");
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("project old value");
+    clear_observed_fts_for_test(&layout, &workspace);
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with_stable_key("scope", "issues", "Fresh value", "stable-key"),
+            generation,
+        )
+        .expect("enqueue concurrent refresh");
+
+    let hook_ran = Cell::new(false);
+    let result = store
+        .rebuild_fts_with_limits_guard_and_hook(
+            &workspace,
+            &test_policy(&[("scope", "issues")]),
+            1,
+            usize::MAX,
+            |_| Ok(false),
+            |phase| {
+                if phase == ObservedFtsRebuildPhase::CanonicalReconciliation
+                    && !hook_ran.replace(true)
+                {
+                    let drained = store.drain_queue(&workspace, drain_budget())?;
+                    assert_eq!(drained.queue_jobs_processed, 1);
+                }
+                Ok(())
+            },
+        )
+        .expect("rebuild around concurrent projection");
+
+    assert!(hook_ran.get());
+    assert_eq!(result.fts_rows_rebuilt, 0);
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    let aligned: (i64, String, String) = connection
+        .query_row(
+            "
+            SELECT COUNT(*), MIN(v.display_value), MIN(f.display_value)
+            FROM observed_values v
+            JOIN observed_values_fts f ON f.rowid = v.rowid
+            WHERE v.workspace = ?1 AND v.value_key = 'stable-key'
+            ",
+            params![workspace.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("concurrently refreshed aligned row");
+    assert_eq!(
+        aligned,
+        (1, "Fresh value".to_string(), "Fresh value".to_string())
+    );
+}
+
+#[test]
+fn rebuild_converges_a_healthy_legacy_rowid_collision_without_duplicates_or_loss() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    for (scope, display_value, value_key) in [
+        ("scope-a", "Value A", "key-a"),
+        ("scope-c", "Value C", "key-c"),
+    ] {
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_stable_key(scope, "issues", display_value, value_key),
+                generation,
+            )
+            .expect("enqueue value");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("project value");
+    }
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    let rowid_a: i64 = connection
+        .query_row(
+            "SELECT rowid FROM observed_values WHERE value_key = 'key-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("A rowid");
+    let rowid_c: i64 = connection
+        .query_row(
+            "SELECT rowid FROM observed_values WHERE value_key = 'key-c'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("C rowid");
+    assert!(
+        rowid_a < rowid_c,
+        "A must reconcile before its legacy target"
+    );
+    connection
+        .execute(
+            "DELETE FROM observed_values_fts WHERE rowid IN (?1, ?2)",
+            params![rowid_a, rowid_c],
+        )
+        .expect("remove aligned rows");
+    connection
+        .execute(
+            "
+            INSERT INTO observed_values_fts (
+                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                surface_kind, surface_name, column_name, value_key, display_value, search_text
+            )
+            SELECT ?2, workspace, owner_source_name, source_name, source_scope_id,
+                   surface_kind, surface_name, column_name, value_key, display_value, search_text
+            FROM observed_values
+            WHERE rowid = ?1
+            ",
+            params![rowid_a, rowid_c],
+        )
+        .expect("place the only A FTS row at C's canonical rowid");
+    drop(connection);
+
+    let policy = test_policy(&[("scope-a", "issues"), ("scope-c", "issues")]);
+    let result = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |_| Ok(false))
+        .expect("resolve healthy rowid collision");
+    assert_eq!(result.fts_rows_rebuilt, 2);
+
+    let connection = backing.connect_for_test().expect("connection");
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT f.value_key, f.rowid, COUNT(*)
+            FROM observed_values_fts f
+            WHERE f.workspace = ?1 AND f.value_key IN ('key-a', 'key-c')
+            GROUP BY f.value_key, f.rowid
+            ORDER BY f.value_key
+            ",
+        )
+        .expect("prepare collision result");
+    let rows = statement
+        .query_map(params![workspace.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .expect("query collision result")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect collision result");
+    assert_eq!(
+        rows,
+        [
+            ("key-a".to_string(), rowid_a, 1),
+            ("key-c".to_string(), rowid_c, 1),
+        ]
+    );
+}
+
+#[test]
+fn rebuild_breaks_a_healthy_two_row_legacy_collision_cycle() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    for (scope, display_value, value_key) in [
+        ("scope-a", "Value A", "key-a"),
+        ("scope-b", "Value B", "key-b"),
+    ] {
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with_stable_key(scope, "issues", display_value, value_key),
+                generation,
+            )
+            .expect("enqueue value");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("project value");
+    }
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    let rowid_a: i64 = connection
+        .query_row(
+            "SELECT rowid FROM observed_values WHERE value_key = 'key-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("A rowid");
+    let rowid_b: i64 = connection
+        .query_row(
+            "SELECT rowid FROM observed_values WHERE value_key = 'key-b'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("B rowid");
+    connection
+        .execute(
+            "DELETE FROM observed_values_fts WHERE rowid IN (?1, ?2)",
+            params![rowid_a, rowid_b],
+        )
+        .expect("remove aligned rows");
+    connection
+        .execute(
+            "
+            INSERT INTO observed_values_fts (
+                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                surface_kind, surface_name, column_name, value_key, display_value, search_text
+            )
+            SELECT
+                CASE value_key WHEN 'key-a' THEN ?2 ELSE ?1 END,
+                workspace, owner_source_name, source_name, source_scope_id,
+                surface_kind, surface_name, column_name, value_key, display_value, search_text
+            FROM observed_values
+            WHERE rowid IN (?1, ?2)
+            ",
+            params![rowid_a, rowid_b],
+        )
+        .expect("swap the two legacy FTS rowids");
+    let extra_legacy_rowid = rowid_b.saturating_add(100);
+    connection
+        .execute(
+            "
+            INSERT INTO observed_values_fts (
+                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                surface_kind, surface_name, column_name, value_key, display_value, search_text
+            )
+            SELECT ?2, workspace, owner_source_name, source_name, source_scope_id,
+                   surface_kind, surface_name, column_name, value_key, display_value, search_text
+            FROM observed_values
+            WHERE rowid = ?1
+            ",
+            params![rowid_a, extra_legacy_rowid],
+        )
+        .expect("add a second unaligned A row outside the collision cycle");
+    drop(connection);
+
+    let policy = test_policy(&[("scope-a", "issues"), ("scope-b", "issues")]);
+    let result = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |_| Ok(false))
+        .expect("break the rowid cycle and remove its deferred duplicate");
+    assert_eq!(result.fts_rows_rebuilt, 2);
+
+    let connection = backing.connect_for_test().expect("connection");
+    let counts: (i64, i64) = connection
+        .query_row(
+            "
+            SELECT
+                COUNT(*),
+                SUM(CASE WHEN f.rowid = v.rowid AND f.value_key = v.value_key THEN 1 ELSE 0 END)
+            FROM observed_values_fts f
+            JOIN observed_values v ON v.value_key = f.value_key
+            WHERE f.workspace = ?1 AND f.value_key IN ('key-a', 'key-b')
+            ",
+            params![workspace.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("cycle repair counts");
+    assert_eq!(counts, (2, 2));
+}
+
+#[test]
 fn rebuild_fts_recreates_observed_search_index_from_canonical_rows() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1465,6 +2024,607 @@ fn rebuild_fts_recreates_observed_search_index_from_canonical_rows() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the corruption matrix is clearer when its setup and final exact-row assertion remain together"
+)]
+fn rebuild_fts_reconciles_corrupt_rows_in_bounded_commits() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    for (scope, value) in [
+        ("scope-missing", "Invoice missing"),
+        ("scope-duplicate", "Invoice duplicate"),
+        ("scope-stale", "Invoice current"),
+        ("scope-removed", "Invoice removed"),
+    ] {
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with(scope, "issues", value),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+    }
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    connection
+        .execute(
+            "DELETE FROM observed_values_fts WHERE workspace = ?1 AND value_key = 'invoice-missing'",
+            params![workspace.as_str()],
+        )
+        .expect("remove one FTS row");
+    connection
+        .execute(
+            "
+            INSERT INTO observed_values_fts (
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                column_name,
+                value_key,
+                display_value,
+                search_text
+            )
+            SELECT
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                column_name,
+                value_key,
+                display_value,
+                search_text
+            FROM observed_values_fts
+            WHERE workspace = ?1 AND value_key = 'invoice-duplicate'
+            ",
+            params![workspace.as_str()],
+        )
+        .expect("duplicate one FTS row");
+    connection
+        .execute(
+            "
+            UPDATE observed_values_fts
+            SET display_value = 'Invoice obsolete',
+                search_text = 'invoice obsolete'
+            WHERE workspace = ?1 AND value_key = 'invoice-current'
+            ",
+            params![workspace.as_str()],
+        )
+        .expect("make one FTS row stale");
+    connection
+        .execute(
+            "
+            INSERT INTO observed_values_fts (
+                workspace,
+                owner_source_name,
+                source_name,
+                source_scope_id,
+                surface_kind,
+                surface_name,
+                column_name,
+                value_key,
+                display_value,
+                search_text
+            ) VALUES (?1, 'github', 'github', 'scope-orphan', 'table', 'issues', 'title',
+                'invoice-orphan', 'Invoice orphan', 'invoice orphan')
+            ",
+            params![workspace.as_str()],
+        )
+        .expect("insert orphan FTS row");
+    drop(connection);
+
+    let commit_count = Cell::new(0_u32);
+    let policy = test_policy(&[
+        ("scope-missing", "issues"),
+        ("scope-duplicate", "issues"),
+        ("scope-stale", "issues"),
+    ]);
+    let result = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 2, usize::MAX, |_| {
+            commit_count.set(commit_count.get().saturating_add(1));
+            Ok(false)
+        })
+        .expect("reconcile FTS");
+
+    assert_eq!(result.canonical_rows_scanned, 3);
+    assert_eq!(result.fts_rows_rebuilt, 2);
+    assert_eq!(canonical_value_count_for_test(&layout, &workspace), 3);
+    assert_eq!(fts_value_count_for_test(&layout, &workspace), 3);
+
+    let connection = backing.connect_for_test().expect("connection");
+    let reconciled = observed_fts_rows_for_test(&connection, &workspace);
+    assert_eq!(
+        reconciled,
+        [
+            (
+                "invoice-current".to_string(),
+                "Invoice current".to_string(),
+                "invoice current".to_string(),
+            ),
+            (
+                "invoice-duplicate".to_string(),
+                "Invoice duplicate".to_string(),
+                "invoice duplicate".to_string(),
+            ),
+            (
+                "invoice-missing".to_string(),
+                "Invoice missing".to_string(),
+                "invoice missing".to_string(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn rebuild_fts_bounds_each_commit_by_payload_bytes() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    let scopes = ["scope-0", "scope-1", "scope-2"];
+    for (index, scope) in scopes.iter().enumerate() {
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with(scope, "issues", &format!("Payload value {index}")),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+    }
+    clear_observed_fts_for_test(&layout, &workspace);
+
+    let commit_count = Cell::new(0_u32);
+    let policy = test_policy(&scopes.map(|scope| (scope, "issues")));
+    let result = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 10, 100, |_| {
+            commit_count.set(commit_count.get().saturating_add(1));
+            Ok(false)
+        })
+        .expect("rebuild payload-bounded FTS batches");
+
+    assert_eq!(result.fts_rows_rebuilt, 3);
+    assert_eq!(
+        commit_count.get(),
+        3,
+        "two canonical payloads exceed the 100-byte transaction budget"
+    );
+}
+
+#[test]
+fn rebuild_fts_rolls_back_guarded_batch_and_resumes_on_rerun() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    for (scope, value) in [
+        ("scope-one", "Payment old one"),
+        ("scope-two", "Payment old two"),
+    ] {
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with(scope, "issues", value),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+    }
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    connection
+        .execute(
+            "
+            UPDATE observed_values
+            SET display_value = REPLACE(display_value, 'old', 'fresh'),
+                search_text = REPLACE(search_text, 'old', 'fresh')
+            WHERE workspace = ?1
+            ",
+            params![workspace.as_str()],
+        )
+        .expect("change canonical payloads without refreshing FTS");
+    drop(connection);
+
+    let policy = test_policy(&[("scope-one", "issues"), ("scope-two", "issues")]);
+    let guard_calls = Cell::new(0_u32);
+    let error = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |connection| {
+            guard_calls.set(guard_calls.get().saturating_add(1));
+            let fresh_rows: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM observed_values_fts WHERE workspace = ?1 AND search_text LIKE '%fresh%'",
+                params![workspace.as_str()],
+                |row| row.get(0),
+            )?;
+            assert_eq!(fresh_rows, 1, "guard runs after the first batch is staged");
+            Ok(true)
+        })
+        .expect_err("storage guard should abort the first batch");
+
+    assert!(error.is_storage_exhaustion());
+    assert_eq!(guard_calls.get(), 1);
+    let old_hits = store
+        .search(&workspace, &[String::from("old")], 10, &policy)
+        .expect("search prior FTS projection after rollback");
+    assert_eq!(
+        old_hits.hits.len(),
+        2,
+        "rolled-back and untouched keys remain searchable"
+    );
+    assert!(
+        store
+            .search(&workspace, &[String::from("fresh")], 10, &policy)
+            .expect("search rolled-back payload")
+            .hits
+            .is_empty()
+    );
+
+    let resumed_commits = Cell::new(0_u32);
+    let resumed = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |_| {
+            resumed_commits.set(resumed_commits.get().saturating_add(1));
+            Ok(false)
+        })
+        .expect("resume rebuild");
+    assert_eq!(resumed.fts_rows_rebuilt, 2);
+    assert_eq!(resumed_commits.get(), 2);
+    assert_eq!(
+        store
+            .search(&workspace, &[String::from("fresh")], 10, &policy)
+            .expect("search rebuilt payloads")
+            .hits
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn rebuild_fts_stops_before_wal_batches_accumulate_behind_a_reader() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    let scopes = ["scope-one", "scope-two", "scope-three"];
+    for (index, scope) in scopes.iter().enumerate() {
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with(scope, "issues", &format!("Pinned WAL {index}")),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+    }
+    clear_observed_fts_for_test(&layout, &workspace);
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let reader = backing.connect_for_test().expect("reader");
+    let reader_started = Cell::new(false);
+    let policy = test_policy(&scopes.map(|scope| (scope, "issues")));
+    let error = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |_| {
+            if !reader_started.replace(true) {
+                reader.execute_batch("BEGIN").expect("begin reader");
+                let _: i64 = reader
+                    .query_row("SELECT COUNT(*) FROM observed_values_fts", [], |row| {
+                        row.get(0)
+                    })
+                    .expect("pin reader snapshot");
+            }
+            Ok(false)
+        })
+        .expect_err("the second WAL batch must wait for the pinned reader");
+
+    assert!(error.is_storage_exhaustion());
+    assert!(
+        error
+            .to_string()
+            .contains("cannot reclaim the prior WAL batch")
+    );
+    assert_eq!(fts_value_count_for_test(&layout, &workspace), 1);
+    reader.execute_batch("ROLLBACK").expect("release reader");
+
+    let resumed = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |_| Ok(false))
+        .expect("resume after releasing reader");
+    assert_eq!(resumed.fts_rows_rebuilt, 2);
+    assert_eq!(fts_value_count_for_test(&layout, &workspace), 3);
+}
+
+#[test]
+fn rebuild_fts_repairs_non_text_derived_keys_by_rowid() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with("scope", "issues", "Typed value"),
+            generation,
+        )
+        .expect("enqueue");
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("drain queue");
+
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    connection
+        .execute(
+            "DELETE FROM observed_values_fts WHERE workspace = ?1",
+            params![workspace.as_str()],
+        )
+        .expect("remove valid FTS row");
+    connection
+        .execute_batch(&format!(
+            "
+            INSERT INTO observed_values_fts VALUES (
+                '{}', 'github', NULL, 'scope-null', 'table', 'issues', 'title',
+                'null-key', 'Null key', 'null key'
+            );
+            INSERT INTO observed_values_fts VALUES (
+                '{}', 'github', X'676974687562', 'scope-blob', 'table', 'issues', 'title',
+                'blob-key', 'Blob key', 'blob key'
+            );
+            INSERT INTO observed_values_fts VALUES (
+                '{}', 'github', 7, 'scope-integer', 'table', 'issues', 'title',
+                'integer-key', 'Integer key', 'integer key'
+            );
+            ",
+            workspace.as_str(),
+            workspace.as_str(),
+            workspace.as_str(),
+        ))
+        .expect("insert malformed derived rows");
+    drop(connection);
+
+    let result = store
+        .rebuild_fts(&workspace, &test_policy(&[("scope", "issues")]))
+        .expect("repair malformed FTS rows");
+
+    assert_eq!(result.fts_rows_rebuilt, 1);
+    assert_eq!(fts_value_count_for_test(&layout, &workspace), 1);
+    let connection = backing.connect_for_test().expect("connection");
+    let non_text_keys: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM observed_values_fts WHERE typeof(source_name) <> 'text'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("non-text key count");
+    assert_eq!(non_text_keys, 0);
+}
+
+#[test]
+fn rebuild_fts_keyset_covers_the_entire_sqlite_rowid_domain() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    let rows = [
+        (i64::MIN, "scope-min", "key-min", "Minimum rowid"),
+        (-1, "scope-negative", "key-negative", "Negative rowid"),
+        (0, "scope-zero", "key-zero", "Zero rowid"),
+        (i64::MAX, "scope-max", "key-max", "Maximum rowid"),
+    ];
+    let malformed_source_names = [
+        Value::Null,
+        Value::Blob(b"github".to_vec()),
+        Value::Integer(7),
+        Value::Real(7.0),
+    ];
+    for ((rowid, scope, value_key, display_value), malformed_source_name) in
+        rows.iter().zip(&malformed_source_names)
+    {
+        connection
+            .execute(
+                "
+                INSERT INTO observed_values (
+                    rowid, workspace, owner_source_name, source_name, source_scope_id,
+                    surface_kind, surface_name, column_name, value_key, display_value,
+                    search_text, first_observed_at, last_observed_at, observation_count,
+                    source_generation, workspace_generation
+                ) VALUES (
+                    ?1, ?2, 'github', 'github', ?3, 'table', 'issues', 'title', ?4, ?5,
+                    ?6, '2020-01-01T00:00:00.000Z', '9999-01-01T00:00:00.000Z', 1, 0, 0
+                )
+                ",
+                params![
+                    rowid,
+                    workspace.as_str(),
+                    scope,
+                    value_key,
+                    display_value,
+                    display_value.to_ascii_lowercase(),
+                ],
+            )
+            .expect("insert canonical extreme-rowid row");
+        connection
+            .execute(
+                "
+                INSERT INTO observed_values_fts (
+                    rowid, workspace, owner_source_name, source_name, source_scope_id,
+                    surface_kind, surface_name, column_name, value_key, display_value, search_text
+                ) VALUES (
+                    ?1, ?2, 'github', ?3, ?4, 'table', 'issues', 'title', ?5, ?6, ?7
+                )
+                ",
+                params![
+                    rowid,
+                    workspace.as_str(),
+                    malformed_source_name,
+                    scope,
+                    value_key,
+                    display_value,
+                    display_value.to_ascii_lowercase(),
+                ],
+            )
+            .expect("insert malformed extreme-rowid FTS row");
+    }
+    drop(connection);
+
+    let policy = ObservedValuesRetrievalPolicy::new(
+        rows.iter()
+            .map(|(_, scope, _, _)| test_live_scope_for_owner("github", scope, "issues"))
+            .collect(),
+        365,
+    );
+    let result = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |_| Ok(false))
+        .expect("rebuild every SQLite rowid range");
+    assert_eq!(result.fts_rows_rebuilt, 4);
+
+    let connection = backing.connect_for_test().expect("connection");
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT f.rowid
+            FROM observed_values_fts f
+            JOIN observed_values v ON v.rowid = f.rowid
+            WHERE f.workspace = ?1
+              AND f.source_name = v.source_name
+              AND f.value_key = v.value_key
+              AND f.display_value = v.display_value
+            ORDER BY f.rowid
+            ",
+        )
+        .expect("prepare aligned rowid query");
+    let aligned_rowids = statement
+        .query_map(params![workspace.as_str()], |row| row.get(0))
+        .expect("query aligned rowids")
+        .collect::<Result<Vec<i64>, _>>()
+        .expect("collect aligned rowids");
+    assert_eq!(aligned_rowids, [i64::MIN, -1, 0, i64::MAX]);
+}
+
+#[test]
+fn rebuild_fts_allows_non_growing_cleanup_above_the_storage_limit() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    store
+        .enqueue_if_current(
+            &workspace,
+            &test_job_with("removed-scope", "issues", "Cleanup value"),
+            generation,
+        )
+        .expect("enqueue");
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("drain queue");
+    clear_observed_fts_for_test(&layout, &workspace);
+
+    let guard_calls = Cell::new(0_u32);
+    let result = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &test_policy(&[]), 1, usize::MAX, |_| {
+            guard_calls.set(guard_calls.get().saturating_add(1));
+            Ok(true)
+        })
+        .expect("non-growing cleanup should proceed above the threshold");
+
+    assert_eq!(result.fts_rows_rebuilt, 0);
+    assert_eq!(guard_calls.get(), 0);
+    assert_eq!(canonical_value_count_for_test(&layout, &workspace), 0);
+}
+
+#[test]
+fn rebuild_fts_reuses_one_retention_cutoff_across_batches() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout.clone());
+    let generation = store
+        .capture_epoch(&workspace, "github")
+        .expect("generation");
+    let scopes = ["scope-one", "scope-two"];
+    for (index, scope) in scopes.iter().enumerate() {
+        store
+            .enqueue_if_current(
+                &workspace,
+                &test_job_with(scope, "issues", &format!("Boundary {index}")),
+                generation,
+            )
+            .expect("enqueue");
+        store
+            .drain_queue(&workspace, drain_budget())
+            .expect("drain queue");
+    }
+    let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+    let connection = backing.connect_for_test().expect("connection");
+    connection
+        .execute(
+            "
+            UPDATE observed_values
+            SET last_observed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day', '+0.5 seconds')
+            WHERE workspace = ?1
+            ",
+            params![workspace.as_str()],
+        )
+        .expect("place rows just inside the retention boundary");
+    drop(connection);
+    clear_observed_fts_for_test(&layout, &workspace);
+
+    let policy = ObservedValuesRetrievalPolicy::new(
+        scopes
+            .iter()
+            .map(|scope| test_live_scope_for_owner("github", scope, "issues"))
+            .collect(),
+        1,
+    );
+    let guard_calls = Cell::new(0_u32);
+    let result = store
+        .rebuild_fts_with_limits_and_guard(&workspace, &policy, 1, usize::MAX, |_| {
+            if guard_calls.replace(guard_calls.get().saturating_add(1)) == 0 {
+                thread::sleep(Duration::from_millis(750));
+            }
+            Ok(false)
+        })
+        .expect("rebuild with one retained cutoff");
+
+    assert_eq!(result.fts_rows_rebuilt, 2);
+    assert_eq!(canonical_value_count_for_test(&layout, &workspace), 2);
+    assert_eq!(fts_value_count_for_test(&layout, &workspace), 2);
+}
+
+#[test]
 fn rebuild_fts_purges_non_live_canonical_rows() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1494,7 +2654,7 @@ fn rebuild_fts_purges_non_live_canonical_rows() {
         .expect("rebuild fts");
 
     assert_eq!(result.canonical_rows_scanned, 1);
-    assert_eq!(result.fts_rows_rebuilt, 1);
+    assert_eq!(result.fts_rows_rebuilt, 0);
     assert_eq!(canonical_value_count_for_test(&layout, &workspace), 1);
     let hits = store
         .search(
@@ -1560,7 +2720,7 @@ fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
         .expect("rebuild fts");
 
     assert_eq!(result.canonical_rows_scanned, 1);
-    assert_eq!(result.fts_rows_rebuilt, 1);
+    assert_eq!(result.fts_rows_rebuilt, 0);
     assert_eq!(canonical_value_count_for_test(&layout, &workspace), 2);
     assert_eq!(fts_value_count_for_test(&layout, &workspace), 2);
 
@@ -1688,6 +2848,20 @@ fn test_job_with(
     display_value: &str,
 ) -> ObservedValuesQueueJob {
     test_job_for_owner("github", source_scope_id, surface_name, display_value)
+}
+
+fn test_job_with_stable_key(
+    source_scope_id: &str,
+    surface_name: &str,
+    display_value: &str,
+    value_key: &str,
+) -> ObservedValuesQueueJob {
+    let mut job = test_job_with(source_scope_id, surface_name, display_value);
+    job.payload_json = format!(
+        r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"{}","value_key":"{value_key}"}}]}}"#,
+        display_value.to_ascii_lowercase()
+    );
+    job
 }
 
 fn test_job_for_owner(
@@ -2163,4 +3337,27 @@ fn fts_value_count_for_test(layout: &AppStateLayout, workspace: &WorkspaceName) 
             |row| row.get(0),
         )
         .expect("FTS count")
+}
+
+fn observed_fts_rows_for_test(
+    connection: &rusqlite::Connection,
+    workspace: &WorkspaceName,
+) -> Vec<(String, String, String)> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT value_key, display_value, search_text
+            FROM observed_values_fts
+            WHERE workspace = ?1
+            ORDER BY value_key
+            ",
+        )
+        .expect("prepare FTS row query");
+    statement
+        .query_map(params![workspace.as_str()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .expect("query FTS rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect FTS rows")
 }

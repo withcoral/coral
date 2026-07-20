@@ -186,10 +186,13 @@ impl SearchManager {
         &self,
         request: &ClearSearchDataRequest,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
-        if request.scope == SearchDataScope::All
-            && let SearchClearTarget::Source(owner_source_name) = &request.target
-        {
-            return self.clear_source_all(&request.workspace_name, owner_source_name);
+        if request.scope == SearchDataScope::All {
+            return match &request.target {
+                SearchClearTarget::Workspace => self.clear_workspace_all(&request.workspace_name),
+                SearchClearTarget::Source(owner_source_name) => {
+                    self.clear_source_all(&request.workspace_name, owner_source_name)
+                }
+            };
         }
         let provider_outcomes = match request.scope {
             SearchDataScope::ObservedValues => {
@@ -242,12 +245,31 @@ impl SearchManager {
     fn clear_source_all(
         &self,
         workspace_name: &WorkspaceName,
-        owner_source_name: &str,
+        owner_source_name: &crate::sources::SourceName,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
             .map_err(|error| search_clear_sqlite_app_error(&error))?;
         let (catalog, observed) = store
-            .clear_source_all(owner_source_name)
+            .clear_source_all(owner_source_name.as_str())
+            .map_err(|error| search_clear_sqlite_app_error(&error))?;
+        let compaction = store.compact_after_clear();
+        Ok(ClearSearchDataResponse {
+            results: vec![
+                catalog_clear_provider_result(catalog.deleted_document_count),
+                observed_clear_provider_result(observed),
+            ],
+            storage_cleanup: search_storage_cleanup_result(&compaction),
+        })
+    }
+
+    fn clear_workspace_all(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<ClearSearchDataResponse, SearchManagerError> {
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
+            .map_err(|error| search_clear_sqlite_app_error(&error))?;
+        let (catalog, observed) = store
+            .clear_workspace_all()
             .map_err(|error| search_clear_sqlite_app_error(&error))?;
         let compaction = store.compact_after_clear();
         Ok(ClearSearchDataResponse {
@@ -345,10 +367,10 @@ impl SearchManager {
         workspace_name: &WorkspaceName,
         budget_ms: u32,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        let budget_ms = manual_drain_budget_ms(budget_ms)?;
         if !self.observed_values_search_enabled {
             return Ok(observed_values_search_disabled_maintenance_result());
         }
-        let budget_ms = manual_drain_budget_ms(budget_ms)?;
         self.observed.drain_queue(
             workspace_name,
             ObservedValuesDrainBudget::new(
@@ -422,7 +444,7 @@ fn observed_rebuild_error_provider_result(error: &SearchManagerError) -> SearchM
 fn observed_values_search_disabled_maintenance_result() -> SearchMaintenanceResult {
     SearchMaintenanceResult {
         provider: SearchProviderKind::ObservedValues,
-        state: SearchMaintenanceState::Noop,
+        state: SearchMaintenanceState::Skipped,
         note: OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE.to_string(),
         detail: None,
     }

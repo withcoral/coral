@@ -33,16 +33,17 @@ use coral_api::v1::{
     GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
     ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest,
     ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest,
-    ListWorkspacesResponse, ObservedDrainResult, PaginationRequest, PaginationResponse, QueryPlan,
-    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
-    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
-    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
-    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableFunction,
-    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response, search_maintenance_result,
-    search_result, source_input_spec::Input as ProtoSourceInput,
+    ListWorkspacesResponse, ObservedDrainResult, ObservedRebuildResult, PaginationRequest,
+    PaginationResponse, QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
+    SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult,
+    SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
+    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchStorageCleanupResult, SearchSurfaceKind, SearchTableColumnPreview,
+    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, Table, TableFunction, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    import_source_response, search_maintenance_result, search_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -457,19 +458,45 @@ fn mock_search_response() -> SearchResponse {
 
 fn mock_rebuild_search_index_response() -> RebuildSearchIndexResponse {
     RebuildSearchIndexResponse {
-        results: vec![SearchMaintenanceResult {
-            provider: SearchProvider::CatalogMetadata as i32,
-            state: SearchMaintenanceState::Completed as i32,
-            note: "force rebuilt catalog search projection".to_string(),
-            detail: Some(search_maintenance_result::Detail::CatalogRebuild(
-                CatalogRebuildResult {
-                    old_document_count: 2,
-                    new_document_count: 3,
-                    projection_changed: false,
-                    rebuild_performed: true,
-                },
-            )),
-        }],
+        results: vec![
+            SearchMaintenanceResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                state: SearchMaintenanceState::Completed as i32,
+                note: "force rebuilt catalog search projection".to_string(),
+                detail: Some(search_maintenance_result::Detail::CatalogRebuild(
+                    CatalogRebuildResult {
+                        old_document_count: 2,
+                        new_document_count: 3,
+                        projection_changed: false,
+                        rebuild_performed: true,
+                    },
+                )),
+            },
+            SearchMaintenanceResult {
+                provider: SearchProvider::ObservedValues as i32,
+                state: SearchMaintenanceState::Partial as i32,
+                note: "attempted 3 observed-value queue job(s), then rebuilt observed-value FTS projection from 4 row(s); 1 failed job(s) left for retry".to_string(),
+                detail: Some(search_maintenance_result::Detail::ObservedRebuild(
+                    ObservedRebuildResult {
+                        canonical_rows_scanned: 4,
+                        fts_rows_rebuilt: 3,
+                        drain: Some(ObservedDrainResult {
+                            queue_jobs_processed: 2,
+                            stale_jobs_skipped: 0,
+                            failed_jobs: 1,
+                            canonical_rows_upserted: 2,
+                            fts_rows_written: 2,
+                            remaining_queue_depth: 1,
+                            budget_exhausted: false,
+                            stale_rows_purged: 0,
+                            evicted_rows: 0,
+                            storage_limit_reached: false,
+                            storage_jobs_dropped: 0,
+                        }),
+                    },
+                )),
+            },
+        ],
     }
 }
 
@@ -477,8 +504,8 @@ fn mock_drain_search_queue_response() -> DrainSearchQueueResponse {
     DrainSearchQueueResponse {
         results: vec![SearchMaintenanceResult {
             provider: SearchProvider::ObservedValues as i32,
-            state: SearchMaintenanceState::Completed as i32,
-            note: "drained 2 observed-value queue job(s)".to_string(),
+            state: SearchMaintenanceState::Partial as i32,
+            note: "drained 2 observed-value queue job(s); 1 queued observation job(s) omitted to preserve storage headroom".to_string(),
             detail: Some(search_maintenance_result::Detail::ObservedDrain(
                 ObservedDrainResult {
                     queue_jobs_processed: 2,
@@ -491,6 +518,7 @@ fn mock_drain_search_queue_response() -> DrainSearchQueueResponse {
                     stale_rows_purged: 0,
                     evicted_rows: 0,
                     storage_limit_reached: false,
+                    storage_jobs_dropped: 1,
                 },
             )),
         }],

@@ -192,6 +192,8 @@ message ObservedDrainResult {
   uint32 evicted_rows = 9;
   // Whether observed-value storage remains above its configured ceiling.
   bool storage_limit_reached = 10;
+  // Queue jobs omitted because projecting them would exceed the storage ceiling.
+  uint32 storage_jobs_dropped = 11;
 }
 
 // Observed-value FTS rebuild detail.
@@ -200,6 +202,8 @@ message ObservedRebuildResult {
   uint32 canonical_rows_scanned = 1;
   // FTS rows rebuilt.
   uint32 fts_rows_rebuilt = 2;
+  // Queue drainage and storage-governance work completed before the rebuild.
+  ObservedDrainResult drain = 3;
 }
 
 // Observed-value clear detail.

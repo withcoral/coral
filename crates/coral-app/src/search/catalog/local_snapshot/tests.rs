@@ -183,13 +183,21 @@ tables:
         manifest_yaml,
     );
 
-    let catalog = CatalogSnapshotLoader::with_diagnostic_reporter(
+    let snapshot = CatalogSnapshotLoader::with_diagnostic_reporter(
         config_store,
         layout,
         SourceDiagnosticReporter::default(),
     )
-    .load_catalog(&workspace_name)
-    .expect("catalog");
+    .load_snapshot(&workspace_name)
+    .expect("catalog snapshot");
+    assert_eq!(
+        snapshot
+            .runtime_schema_owners
+            .get("demo")
+            .map(String::as_str),
+        Some("demo")
+    );
+    let catalog = snapshot.catalog;
 
     assert!(
         catalog
