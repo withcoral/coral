@@ -111,7 +111,6 @@ pub(crate) fn resolve_auth_headers(
     request: reqwest::RequestBuilder,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     resolved_inputs: &BTreeMap<String, String>,
-    require_credential_safe_transport: bool,
 ) -> Result<reqwest::Request> {
     let mut built = request.build().map_err(|error| {
         DataFusionError::Execution(format!("failed to build HTTP request: {error}"))
@@ -126,21 +125,20 @@ pub(crate) fn resolve_auth_headers(
                 .map_err(|error| authenticator_error(&spec.authenticator, &error))
         }
     }?;
-    if require_credential_safe_transport && !headers.is_empty() {
-        ensure_auth_uses_credential_safe_transport(built.url())?;
-    }
     for (name, value) in headers {
         built.headers_mut().insert(name, value);
     }
     Ok(built)
 }
 
-pub(super) fn ensure_auth_uses_credential_safe_transport(url: &reqwest::Url) -> Result<()> {
+pub(super) fn ensure_identity_headers_use_credential_safe_transport(
+    url: &reqwest::Url,
+) -> Result<()> {
     if is_credential_safe_auth_transport(url) {
         return Ok(());
     }
     Err(DataFusionError::Execution(format!(
-        "HTTP source auth headers require https or loopback http, got '{}'",
+        "request identity HTTP headers require https or loopback http, got '{}'",
         auth_transport_url_label(url)
     )))
 }
@@ -200,39 +198,22 @@ mod tests {
         })
     }
 
-    fn resolve_bearer_auth_for_url(
-        url: &str,
-        require_credential_safe_transport: bool,
-    ) -> Result<reqwest::Request> {
+    fn resolve_bearer_auth_for_url(url: &str) -> Result<reqwest::Request> {
         let http = reqwest::Client::new();
         let request = http.get(url);
         let resolved_inputs = BTreeMap::from([("API_TOKEN".to_string(), "secret".to_string())]);
-        resolve_auth_headers(
-            &bearer_auth(),
-            request,
-            &HashMap::new(),
-            &resolved_inputs,
-            require_credential_safe_transport,
-        )
+        resolve_auth_headers(&bearer_auth(), request, &HashMap::new(), &resolved_inputs)
     }
 
     #[test]
-    fn v4_auth_rejects_non_https_non_loopback_provider_urls() {
-        for url in [
-            "http://api.example.test/items",
-            "http://[::2]:8080/items",
-            "http://[2001:db8::1]/items",
-        ] {
-            let error = resolve_bearer_auth_for_url(url, true)
-                .expect_err("non-https non-loopback auth request should fail");
+    fn legacy_auth_headers_keep_existing_transport_behavior() {
+        let built = resolve_bearer_auth_for_url("http://api.example.test/items")
+            .expect("legacy source auth behavior should remain unchanged");
 
-            let error = error.to_string();
-            assert!(error.contains("require https"), "{error}");
-            assert!(
-                error.contains(url.split("/items").next().expect("authority")),
-                "{error}"
-            );
-        }
+        assert_eq!(
+            built.headers().get(reqwest::header::AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer secret"))
+        );
     }
 
     #[test]
@@ -243,35 +224,5 @@ mod tests {
         .expect("test URL");
 
         assert_eq!(auth_transport_url_label(&url), "http://api.example.test");
-    }
-
-    #[test]
-    fn v4_auth_allows_loopback_http_provider_urls() {
-        for url in [
-            "http://127.0.0.1:8080/items",
-            "http://localhost:8080/items",
-            "http://[::1]/items",
-            "http://[::1]:8080/items",
-        ] {
-            let built = resolve_bearer_auth_for_url(url, true)
-                .expect("loopback http auth should be allowed");
-
-            assert_eq!(
-                built.headers().get(reqwest::header::AUTHORIZATION),
-                Some(&HeaderValue::from_static("Bearer secret")),
-                "{url}"
-            );
-        }
-    }
-
-    #[test]
-    fn v3_auth_can_skip_transport_guard_for_legacy_sources() {
-        let built = resolve_bearer_auth_for_url("http://api.example.test/items", false)
-            .expect("legacy source auth policy should allow existing http behavior");
-
-        assert_eq!(
-            built.headers().get(reqwest::header::AUTHORIZATION),
-            Some(&HeaderValue::from_static("Bearer secret"))
-        );
     }
 }

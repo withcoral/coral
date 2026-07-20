@@ -152,8 +152,6 @@ pub(super) async fn fetch_rows(
                 auth: &client.auth,
                 request_headers: &client.request_headers,
                 request_authenticators: &client.request_authenticators,
-                require_credential_safe_auth_transport: client
-                    .require_credential_safe_auth_transport,
                 request_identity_http_authenticator: client
                     .request_identity_http_authenticator
                     .as_ref(),

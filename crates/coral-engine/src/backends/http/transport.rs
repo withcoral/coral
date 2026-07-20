@@ -15,7 +15,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::{
-    ensure_auth_uses_credential_safe_transport, resolve_auth_headers,
+    ensure_identity_headers_use_credential_safe_transport, resolve_auth_headers,
 };
 use crate::backends::http::error::provider_error;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
@@ -40,7 +40,6 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) auth: &'a AuthSpec,
     pub(super) request_headers: &'a [HeaderSpec],
     pub(super) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
-    pub(super) require_credential_safe_auth_transport: bool,
     pub(super) request_identity_http_authenticator:
         Option<&'a BoundRequestIdentityHttpAuthenticator>,
     pub(super) trace_context: Option<&'a OtelContext>,
@@ -82,7 +81,6 @@ pub(super) async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
-        require_credential_safe_auth_transport,
         request_identity_http_authenticator,
         trace_context,
         table_headers,
@@ -205,7 +203,6 @@ pub(super) async fn execute_request(
             request,
             request_authenticators,
             render_context.resolved_inputs,
-            require_credential_safe_auth_transport,
         ) {
             Ok(request) => request,
             Err(error) => {
@@ -224,9 +221,9 @@ pub(super) async fn execute_request(
                     return Err(error);
                 }
             };
-            if require_credential_safe_auth_transport
-                && !identity_headers.is_empty()
-                && let Err(error) = ensure_auth_uses_credential_safe_transport(built.url())
+            if !identity_headers.is_empty()
+                && let Err(error) =
+                    ensure_identity_headers_use_credential_safe_transport(built.url())
             {
                 record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
                 return Err(error);
@@ -597,7 +594,6 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
-                require_credential_safe_auth_transport: false,
                 request_identity_http_authenticator: None,
                 trace_context: None,
                 table_headers: &[],
@@ -687,7 +683,6 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &request_headers,
                 request_authenticators: &HashMap::new(),
-                require_credential_safe_auth_transport: true,
                 request_identity_http_authenticator: Some(&identity_authenticator),
                 trace_context: None,
                 table_headers: &[],
@@ -722,6 +717,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_identity_headers_require_safe_transport() {
+        let request_timeout = Duration::from_secs(1);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let base_url = "http://api.example.test";
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let identity_authenticator: BoundRequestIdentityHttpAuthenticator =
+            Arc::new(|_request, _resolved_inputs| {
+                Box::pin(async {
+                    Ok::<Vec<_>, RequestIdentityHttpAuthenticatorError>(vec![(
+                        AUTHORIZATION,
+                        HeaderValue::from_static("identity-token"),
+                    )])
+                })
+            });
+
+        let error = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: Some(&identity_authenticator),
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect_err("identity headers must not use unsafe transport");
+
+        let error = error.to_string();
+        assert!(error.contains("request identity HTTP headers require https"));
+        assert!(error.contains(base_url));
+        assert!(!error.contains("identity-token"));
+    }
+
+    #[tokio::test]
     async fn request_identity_headers_are_injected() {
         let (base_url, task) = spawn_header_recorder(r#"{"ok":true}"#).await;
         let request_timeout = Duration::from_secs(1);
@@ -752,7 +803,6 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
-                require_credential_safe_auth_transport: true,
                 request_identity_http_authenticator: Some(&identity_authenticator),
                 trace_context: None,
                 table_headers: &[],

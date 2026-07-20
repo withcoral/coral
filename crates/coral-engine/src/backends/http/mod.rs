@@ -23,8 +23,8 @@ use crate::{
     BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
     SourceInputResolver,
 };
+use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
-use coral_spec::{AuthSpec, SourceBackend};
 pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
@@ -106,14 +106,11 @@ impl CompiledBackendSource for HttpCompiledSource {
         _ctx: &SessionContext,
         registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
-        let auth_emits_headers = match &self.manifest.auth {
-            AuthSpec::HeaderAuth(auth) => !auth.headers.is_empty(),
-            AuthSpec::BasicAuth(_) | AuthSpec::CustomAuth(_) => true,
-        };
-        let credential_safe = self.manifest.common.dsl_version == 4
-            && (auth_emits_headers || self.request_identity_http_authenticator.is_some());
-        let http =
-            client::default_http_client(registration, &self.manifest.common.name, credential_safe)?;
+        let http = client::default_http_client(
+            registration,
+            &self.manifest.common.name,
+            self.request_identity_http_authenticator.is_some(),
+        )?;
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),

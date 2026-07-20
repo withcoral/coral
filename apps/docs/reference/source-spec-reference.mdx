@@ -808,14 +808,6 @@ The top-level `auth` block declares how Coral authenticates outgoing requests. I
 | `BasicAuth` | HTTP Basic. Coral base64-encodes `username:password` into `Authorization: Basic ...`. |
 | `CustomAuth` | Use a named authenticator for auth schemes that need request signing, such as AWS SigV4. |
 
-<Warning>
-  DSL v4 surfaces must not use `CustomAuth`; use identity requirements instead.
-  Coral attaches top-level auth and identity-produced headers only over HTTPS or
-  loopback HTTP (`localhost`, `127.0.0.1`, or `[::1]`); other plaintext targets
-  fail closed. Do not move credentials into ordinary request headers, query
-  parameters, or bodies to bypass this rule.
-</Warning>
-
 #### `HeaderAuth`
 
 ```yaml

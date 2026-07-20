@@ -436,6 +436,12 @@ pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
 }
 
 /// Bound request-time HTTP authenticator for one selected identity.
+///
+/// The engine invokes this after applying authored request headers and source
+/// auth. Returned headers must not overwrite an existing header. Non-empty
+/// identity headers are accepted only for HTTPS or loopback HTTP requests, and
+/// the corresponding HTTP client permits redirects only within the same safe
+/// origin.
 pub type BoundRequestIdentityHttpAuthenticator = Arc<
     dyn for<'a> Fn(
             &'a reqwest::Request,
