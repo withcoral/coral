@@ -11,6 +11,7 @@ use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::model::CatalogResolution;
 use crate::query::QueryAttribution;
 use crate::query::manager::QueryManagerError;
+use crate::search::capabilities::SearchCapabilities;
 use crate::search::catalog::provider::{CatalogMetadataProvider, catalog_clear_provider_result};
 use crate::search::engine::UniversalSearchEngine;
 use crate::search::maintenance::{
@@ -30,7 +31,8 @@ use crate::search::provider::{
     LocalSearchWriteCoordinator, SearchExecutionContext, SearchProviderRegistry,
 };
 use crate::search::result::{
-    SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse,
+    NativeSearchDiagnosticReason, NativeSearchDiagnosticState, SearchManagerError,
+    SearchProviderKind, SearchProviderState, SearchRequest, SearchResponse,
 };
 use crate::search::sqlite_store::{
     SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
@@ -140,6 +142,10 @@ impl SearchManager {
         }
     }
 
+    pub(crate) const fn provider_fanout_enabled(&self) -> bool {
+        self.native_fanout_present
+    }
+
     pub(crate) async fn search(
         &self,
         request: &SearchRequest,
@@ -189,9 +195,103 @@ impl SearchManager {
                 resolution,
                 observed_values_policy,
             );
-            return Ok(self.engine.search(context).await);
+            let response = self.engine.search(context).await;
+            Self::record_native_fanout_metrics(request_started_at.elapsed(), &response);
+            return Ok(response);
         }
         Err(workspace_changed_error("searching"))
+    }
+
+    /// Reports the effective provider-fanout state and a bounded, passive
+    /// inventory of eligible routes for one visible workspace.
+    pub(crate) async fn capabilities(
+        &self,
+        workspace_name: &WorkspaceName,
+        attribution: &QueryAttribution,
+    ) -> Result<SearchCapabilities, SearchManagerError> {
+        self.workspaces.require_workspace(workspace_name).await?;
+
+        // The disabled path must not prepare the runtime catalog. Besides
+        // keeping feature-off startup/search behavior inert, this guarantees
+        // an authored source policy cannot activate provider calls by itself.
+        if !self.native_fanout_present {
+            return Ok(SearchCapabilities::disabled());
+        }
+
+        for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
+            let CatalogPreload::Ready {
+                revision,
+                resolution,
+            } = self.preload_catalog(workspace_name, attribution).await?
+            else {
+                continue;
+            };
+            let Some(_lifecycle_lease) = self
+                .lifecycle_lock
+                .read_lease_if_unchanged(revision, workspace_name)
+                .await
+            else {
+                continue;
+            };
+            return Ok(SearchCapabilities::enabled(
+                resolution
+                    .map_err(catalog_resolution_error)?
+                    .universal_search_resolutions,
+            ));
+        }
+        Err(workspace_changed_error("loading search capabilities"))
+    }
+
+    fn record_native_fanout_metrics(duration: Duration, response: &SearchResponse) {
+        let Some(status) = response
+            .provider_statuses
+            .iter()
+            .find(|status| status.provider == SearchProviderKind::NativeFanout)
+        else {
+            return;
+        };
+        let disposition = match status.state {
+            SearchProviderState::NotEnabled => "disabled",
+            SearchProviderState::Skipped => "skipped",
+            SearchProviderState::ResultsFound
+            | SearchProviderState::Empty
+            | SearchProviderState::Partial
+            | SearchProviderState::Error => "enabled",
+        };
+        let selected_calls = status.coverage.as_ref().map_or(0, |coverage| {
+            coverage.eligible_units.min(
+                u32::try_from(crate::search::native::MAX_SELECTED_FUNCTIONS).unwrap_or(u32::MAX),
+            )
+        });
+        let started_calls = status
+            .coverage
+            .as_ref()
+            .map_or(0, |coverage| coverage.searched_units);
+        let returned_rows = status
+            .coverage
+            .as_ref()
+            .map_or(0, |coverage| coverage.returned_count);
+        let mut diagnostics = status
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                (
+                    native_diagnostic_state_metric(diagnostic.state),
+                    native_diagnostic_reason_metric(diagnostic.reason),
+                )
+            })
+            .collect::<Vec<_>>();
+        if status.state == SearchProviderState::Error && diagnostics.is_empty() {
+            diagnostics.push(("error", "internal_error"));
+        }
+        crate::telemetry::metrics::metrics().record_search_native_fanout(
+            disposition,
+            duration,
+            u64::from(selected_calls),
+            u64::from(started_calls),
+            u64::from(returned_rows),
+            &diagnostics,
+        );
     }
 
     pub(crate) async fn rebuild_index(
@@ -575,6 +675,43 @@ fn workspace_changed_error(operation: &str) -> SearchManagerError {
         "workspace changed repeatedly while {operation}; retry the request"
     ))
     .into()
+}
+
+const fn native_diagnostic_state_metric(state: NativeSearchDiagnosticState) -> &'static str {
+    match state {
+        NativeSearchDiagnosticState::ResultsFound => "results_found",
+        NativeSearchDiagnosticState::Empty => "empty",
+        NativeSearchDiagnosticState::Skipped => "skipped",
+        NativeSearchDiagnosticState::TimedOut => "timed_out",
+        NativeSearchDiagnosticState::Cancelled => "cancelled",
+        NativeSearchDiagnosticState::Error => "error",
+    }
+}
+
+const fn native_diagnostic_reason_metric(reason: NativeSearchDiagnosticReason) -> &'static str {
+    match reason {
+        NativeSearchDiagnosticReason::Unspecified => "unspecified",
+        NativeSearchDiagnosticReason::NotAuthorized => "not_authorized",
+        NativeSearchDiagnosticReason::AmbiguousRoute => "ambiguous_route",
+        NativeSearchDiagnosticReason::InvalidSearchLimits => "invalid_search_limits",
+        NativeSearchDiagnosticReason::QueryInputUnmappable => "query_input_unmappable",
+        NativeSearchDiagnosticReason::MissingArgumentDefault => "missing_argument_default",
+        NativeSearchDiagnosticReason::RouteStale => "route_stale",
+        NativeSearchDiagnosticReason::UnsafeOperation => "unsafe_operation",
+        NativeSearchDiagnosticReason::NoSafeDisplayFields => "no_safe_display_fields",
+        NativeSearchDiagnosticReason::FanoutLimitReached => "fanout_limit_reached",
+        NativeSearchDiagnosticReason::InsufficientBudget => "insufficient_budget",
+        NativeSearchDiagnosticReason::GlobalBudgetExhausted => "global_budget_exhausted",
+        NativeSearchDiagnosticReason::CallTimeout => "call_timeout",
+        NativeSearchDiagnosticReason::Cancelled => "cancelled",
+        NativeSearchDiagnosticReason::RateLimited => "rate_limited",
+        NativeSearchDiagnosticReason::AuthOrPermissionFailed => "auth_or_permission_failed",
+        NativeSearchDiagnosticReason::UpstreamUnavailable => "upstream_unavailable",
+        NativeSearchDiagnosticReason::InvalidResponse => "invalid_response",
+        NativeSearchDiagnosticReason::ExecutionFailed => "execution_failed",
+        NativeSearchDiagnosticReason::UnsupportedCancellation => "unsupported_cancellation",
+        NativeSearchDiagnosticReason::InternalError => "internal_error",
+    }
 }
 
 async fn run_blocking_search_operation<T, F>(operation: F) -> Result<T, SearchManagerError>

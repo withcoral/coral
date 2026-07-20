@@ -18,6 +18,9 @@ pub enum Feature {
     /// Enable observed-value collection, storage, retrieval, and maintenance
     /// for Universal Search.
     ObservedValuesSearch,
+    /// Permit Universal Search to call source-authorised provider search
+    /// functions under the bounded native fanout policy.
+    SearchProviderFanout,
 }
 
 impl Feature {
@@ -84,6 +87,14 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         description: "Enables collecting, indexing, retrieving, and maintaining values observed during earlier queries. Off by default.",
         enable_flag: "enable-observed-values-search",
         disable_flag: "disable-observed-values-search",
+    },
+    FeatureSpec {
+        feature: Feature::SearchProviderFanout,
+        key: "search_provider_fanout",
+        default_enabled: false,
+        description: "Enables bounded, read-only Universal Search calls to source-authorised provider search functions. Off by default.",
+        enable_flag: "enable-search-provider-fanout",
+        disable_flag: "disable-search-provider-fanout",
     },
 ];
 
@@ -365,6 +376,45 @@ mod tests {
     }
 
     #[test]
+    fn search_provider_fanout_has_stable_default_off_surface() {
+        let feature = Feature::SearchProviderFanout;
+        let features = Features::default();
+
+        assert!(!features.enabled(feature));
+        assert_eq!(feature.key(), "search_provider_fanout");
+        assert_eq!(feature.enable_flag(), "enable-search-provider-fanout");
+        assert_eq!(feature.disable_flag(), "disable-search-provider-fanout");
+    }
+
+    #[test]
+    fn feature_store_applies_search_provider_fanout_config_and_process_overrides() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+[features]
+search_provider_fanout = true
+",
+        )
+        .expect("write config");
+        let store = FeatureStore::discover(Some(config_dir)).expect("feature store");
+
+        let configured = store
+            .load_with_overrides(&FeatureOverrides::default())
+            .expect("load configured features");
+        assert!(configured.enabled(Feature::SearchProviderFanout));
+
+        let mut process_overrides = FeatureOverrides::default();
+        process_overrides.set(Feature::SearchProviderFanout, false);
+        let overridden = store
+            .load_with_overrides(&process_overrides)
+            .expect("load process-overridden features");
+        assert!(!overridden.enabled(Feature::SearchProviderFanout));
+    }
+
+    #[test]
     fn feature_store_applies_observed_values_config_and_process_overrides() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
@@ -470,6 +520,7 @@ observed_values_search = true
         assert!(error.to_string().contains("unknown feature 'nope'"));
         assert!(error.to_string().contains("feedback"));
         assert!(error.to_string().contains("observed_values_search"));
+        assert!(error.to_string().contains("search_provider_fanout"));
     }
 
     #[test]
@@ -482,9 +533,17 @@ observed_values_search = true
         let keys = Feature::all().map(Feature::key).collect::<Vec<_>>();
         let error = unknown_feature_error("tasks");
 
-        assert_eq!(keys, vec!["feedback", "observed_values_search"]);
+        assert_eq!(
+            keys,
+            vec![
+                "feedback",
+                "observed_values_search",
+                "search_provider_fanout"
+            ]
+        );
         assert!(!features.enabled(Feature::Feedback));
         assert!(!features.enabled(Feature::ObservedValuesSearch));
+        assert!(!features.enabled(Feature::SearchProviderFanout));
         assert!(error.to_string().contains("unknown feature 'tasks'"));
         assert!(!error.to_string().contains("enable-tasks"));
         assert!(store.enable("tasks").is_err());

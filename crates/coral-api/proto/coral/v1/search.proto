@@ -29,6 +29,37 @@ message SearchResponse {
   SearchResultTruncation truncation = 3;
 }
 
+// Request for effective Universal Search capabilities in one workspace.
+message GetSearchCapabilitiesRequest {
+  // Workspace whose visible, source-authorised search routes should be inspected.
+  Workspace workspace = 1;
+}
+
+// Effective Universal Search behavior and a bounded passive route inventory.
+message GetSearchCapabilitiesResponse {
+  // Whether the process-local provider-fanout feature is effective. Source
+  // routes remain inert when this is false.
+  bool provider_fanout_enabled = 1;
+  // Sorted eligible provider routes that Search may call. At most 16 are returned.
+  repeated SearchRouteIdentity eligible_routes = 2;
+  // Whether eligible routes were omitted after the response cap.
+  bool truncated = 3;
+  // Number of eligible routes omitted after the response cap.
+  uint32 omitted_route_count = 4;
+}
+
+// Safe identity of one resolved, source-authorised Universal Search route.
+message SearchRouteIdentity {
+  // Installed source that owns the route.
+  string installed_source_name = 1;
+  // Query-visible schema that owns the resolved function.
+  string schema_name = 2;
+  // Query-visible function authorised for Universal Search.
+  string function_name = 3;
+  // Authored route identifier when the source declared an explicit route.
+  optional string authored_route_id = 4;
+}
+
 // Request to rebuild one or all app-owned local search indexes.
 message RebuildSearchIndexRequest {
   // Workspace whose local search data should be rebuilt.
@@ -546,6 +577,8 @@ message ObservedValue {
 service SearchService {
   // Routes a clue to typed Coral search hints.
   rpc Search(SearchRequest) returns (SearchResponse);
+  // Returns effective feature state and a bounded passive route inventory.
+  rpc GetSearchCapabilities(GetSearchCapabilitiesRequest) returns (GetSearchCapabilitiesResponse);
   // Rebuilds app-owned local search index projections.
   rpc RebuildSearchIndex(RebuildSearchIndexRequest) returns (RebuildSearchIndexResponse);
   // Drains app-owned local search queues into queryable projections.

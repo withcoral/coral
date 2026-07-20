@@ -10,6 +10,7 @@ mod function;
 mod resources;
 mod schema;
 mod search;
+mod search_behavior;
 mod source_names;
 mod sql;
 mod task;
@@ -33,6 +34,9 @@ pub(crate) use resources::{
     tables_resource_content,
 };
 pub(crate) use search::search_arguments;
+pub(crate) use search_behavior::{
+    SearchBehavior, SearchProviderFanoutState, SearchProviderRouteIdentity,
+};
 pub(crate) use sql::{
     SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, sql_arguments,
 };

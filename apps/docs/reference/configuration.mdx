@@ -124,6 +124,25 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 | ------- | ------- | ----------- |
 | `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
 | `observed_values_search` | `false` | Experimental. Collects, indexes, retrieves, and maintains values observed during earlier queries. |
+| `search_provider_fanout` | `false` | Experimental. Allows Search to make bounded, read-only calls to eligible connected-source search routes. |
+
+Provider fanout requires two independent gates: the effective
+`search_provider_fanout` feature must be enabled, and the source must authorize
+an eligible `kind: search` route. Enabling the feature does not authorize a
+source by itself.
+
+```shellscript
+coral features enable search_provider_fanout
+coral features disable search_provider_fanout
+```
+
+The effective feature state is fixed for the lifetime of a Coral process, so
+restart long-running processes after changing the stored value. You can also
+override it for one process with `--enable-search-provider-fanout` or
+`--disable-search-provider-fanout`; the disable override wins over stored
+enablement. Disabling fanout stops request-triggered provider calls without a
+database migration, observed-value purge, or source reinstall. Local catalog
+and observed-value search remain available.
 
 ## OpenTelemetry
 

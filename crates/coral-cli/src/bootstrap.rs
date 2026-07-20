@@ -12,6 +12,12 @@ use coral_mcp::McpOptions;
 
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
+    /// Whether provider fanout may be enabled in the app process.
+    ///
+    /// Local bootstrap records the exact process-fixed state. An externally
+    /// supplied endpoint remains conservatively unknown until its capability
+    /// RPC answers, so MCP must use the may-call fallback on RPC failure.
+    pub(crate) search_provider_fanout_may_be_enabled: bool,
     server: Option<AppRunningServer>,
 }
 
@@ -43,6 +49,7 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
     if let Some(endpoint) = bootstrap_endpoint() {
         return Ok(Bootstrap {
             app: AppClient::connect(&endpoint).await?,
+            search_provider_fanout_may_be_enabled: true,
             server: None,
         });
     }
@@ -50,9 +57,11 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
     let server = configure_server_builder(ServerBuilder::new(), options)
         .start()
         .await?;
+    let search_provider_fanout_may_be_enabled = server.search_provider_fanout_enabled();
     let app = AppClient::connect(server.endpoint_uri()).await?;
     Ok(Bootstrap {
         app,
+        search_provider_fanout_may_be_enabled,
         server: Some(server),
     })
 }

@@ -32,6 +32,10 @@ clients can route source-specific requests to Coral during discovery.
 Secret values are not returned through `coral.inputs`; secret rows show only
 whether a value is configured.
 
+Search reads local catalog metadata by default. Its experimental provider
+fanout is disabled by default and can make upstream calls only when both the
+runtime feature and source-authored route policy allow them.
+
 ## What Coral protects against
 
 Coral's current protections are aimed at accidental exposure within that local
@@ -55,6 +59,29 @@ trust boundary:
   paths.
 - MCP clients can query installed sources, but they do not receive raw stored
   secret values through the discovery tables or resources.
+
+## Provider fanout boundaries
+
+When `search_provider_fanout` is enabled, one Search request can start at most
+four authorized, retrieval-only and idempotent source functions in one wave.
+Coral requests at most five rows per function, applies a 750 ms fanout cutoff
+and a 600 ms per-call timeout, and does not retry or paginate. A source policy
+is a separate gate: enabling the runtime feature does not authorize a route,
+and invalid or ambiguous routes fail closed.
+
+Search returns only bounded, sanitized display fields from connected-source
+results, not raw rows or provider response bodies. It removes credential-like
+fields, secret-shaped values, unsafe URL parameters, and unsafe control
+characters, and reports failures through bounded reason categories rather than
+raw provider errors. Local catalog and observed-value results remain available
+when upstream work fails or times out.
+
+If `observed_values_search` is also enabled, successfully decoded source
+batches can enter Coral's existing best-effort local observation pipeline
+before Search normalizes the preview. Those observations remain subject to the
+same source scope, `do_not_index`, secret suppression, retention, and storage
+limits as SQL query observations. They can affect only later searches. Coral
+does not add a fanout cache or background crawl.
 
 ## Secret storage configuration
 

@@ -6,8 +6,19 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
-use coral_api::v1::{ImportSourceRequest, Workspace, import_source_response};
+use coral_api::v1::{
+    ClearSearchDataRequest, ClearSearchDataResponse, DeleteSourceRequest, DrainSearchQueueRequest,
+    DrainSearchQueueResponse, GetSearchCapabilitiesRequest, GetSearchCapabilitiesResponse,
+    ImportSourceRequest, RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchRequest,
+    SearchResponse, Workspace, import_source_response,
+    search_service_server::{SearchService, SearchServiceServer},
+};
+use coral_app::features::{Feature, FeatureOverrides};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -22,12 +33,18 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
-use tonic::Request;
+use tonic::{
+    Request, Response, Status,
+    transport::{Server, server::TcpIncoming},
+};
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt as _;
 
-use crate::{CoralMcpServerFactory, McpOptions};
+use crate::{
+    CoralMcpServerFactory, McpOptions,
+    server::{CoralMcpServer, RpcSearchCapabilityLoader, SearchCapabilityLoader},
+};
 
 type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
 
@@ -198,6 +215,48 @@ fn raw_json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
 
+fn eligible_provider_manifest_yaml() -> String {
+    r"
+name: searchable
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: http://127.0.0.1:1
+functions:
+  - name: search_messages
+    kind: search
+    description: Search messages
+    universal_search:
+      id: message_search
+      execute: true
+      query_arg: query
+      result:
+        title: title
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /messages
+      query:
+        - name: q
+          from: arg
+          key: query
+    response:
+      rows_path: [items]
+    columns:
+      - name: title
+        type: Utf8
+    search_limits:
+      default_top_k: 5
+      max_top_k: 20
+      max_calls_per_query: 2
+"
+    .to_string()
+}
+
 async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
     let result = client
         .call_tool(
@@ -266,9 +325,28 @@ async fn start_session(temp: &TempDir) -> TestSession {
 }
 
 async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> TestSession {
+    start_session_with_options_and_feature_overrides(temp, options, FeatureOverrides::default())
+        .await
+}
+
+async fn start_session_with_options_and_feature_overrides(
+    temp: &TempDir,
+    options: McpOptions,
+    feature_overrides: FeatureOverrides,
+) -> TestSession {
+    start_session_with_runtime(temp, options, feature_overrides, None).await
+}
+
+async fn start_session_with_runtime(
+    temp: &TempDir,
+    options: McpOptions,
+    feature_overrides: FeatureOverrides,
+    search_capabilities: Option<Arc<dyn SearchCapabilityLoader>>,
+) -> TestSession {
     let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .with_noop_feedback_uploads()
+        .with_feature_overrides(feature_overrides)
         .start()
         .await
         .expect("start server");
@@ -276,9 +354,14 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         .await
         .expect("connect client");
     let source_client = app.source_client();
-    let factory = CoralMcpServerFactory::new(app, options);
-    let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
-
+    let (client, mcp_server_task) = if let Some(search_capabilities) = search_capabilities {
+        let handler =
+            CoralMcpServer::new_with_search_capability_loader(&app, options, search_capabilities);
+        start_mcp_session(handler).await
+    } else {
+        let factory = CoralMcpServerFactory::new(app, options);
+        start_mcp_session(factory.create()).await
+    };
     TestSession {
         source_client,
         client,
@@ -305,6 +388,252 @@ async fn shutdown_mcp_session(client: RunningService<RoleClient, ()>, task: McpS
     task.await
         .expect("join mcp task")
         .expect("mcp server result");
+}
+
+#[derive(Clone)]
+struct FailingSearchCapabilityService {
+    call_count: Arc<AtomicUsize>,
+}
+
+#[tonic::async_trait]
+impl SearchService for FailingSearchCapabilityService {
+    async fn search(
+        &self,
+        _request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        Err(Status::unimplemented("Search is not used by this mock"))
+    }
+
+    async fn get_search_capabilities(
+        &self,
+        _request: Request<GetSearchCapabilitiesRequest>,
+    ) -> Result<Response<GetSearchCapabilitiesResponse>, Status> {
+        self.call_count.fetch_add(1, Ordering::SeqCst);
+        Err(Status::unavailable("Search capability RPC unavailable"))
+    }
+
+    async fn rebuild_search_index(
+        &self,
+        _request: Request<RebuildSearchIndexRequest>,
+    ) -> Result<Response<RebuildSearchIndexResponse>, Status> {
+        Err(Status::unimplemented("rebuild is not used by this mock"))
+    }
+
+    async fn drain_search_queue(
+        &self,
+        _request: Request<DrainSearchQueueRequest>,
+    ) -> Result<Response<DrainSearchQueueResponse>, Status> {
+        Err(Status::unimplemented("drain is not used by this mock"))
+    }
+
+    async fn clear_search_data(
+        &self,
+        _request: Request<ClearSearchDataRequest>,
+    ) -> Result<Response<ClearSearchDataResponse>, Status> {
+        Err(Status::unimplemented("clear is not used by this mock"))
+    }
+}
+
+struct FailingCapabilityRpcServer {
+    loader: Arc<dyn SearchCapabilityLoader>,
+    call_count: Arc<AtomicUsize>,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+}
+
+impl FailingCapabilityRpcServer {
+    async fn start() -> Self {
+        let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address"))
+            .expect("bind capability mock");
+        let endpoint_uri = format!(
+            "http://{}",
+            incoming.local_addr().expect("capability mock address")
+        );
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(
+            Server::builder()
+                .add_service(SearchServiceServer::new(FailingSearchCapabilityService {
+                    call_count: Arc::clone(&call_count),
+                }))
+                .serve_with_incoming_shutdown(incoming, async {
+                    drop(shutdown_rx.await);
+                }),
+        );
+        let app = AppClient::connect(&endpoint_uri)
+            .await
+            .expect("connect capability RPC client");
+        let loader = Arc::new(RpcSearchCapabilityLoader::new(app.search_client()));
+        Self {
+            loader,
+            call_count,
+            shutdown_tx: Some(shutdown_tx),
+            task,
+        }
+    }
+
+    async fn shutdown(mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            shutdown_tx
+                .send(())
+                .expect("signal capability mock shutdown");
+        }
+        self.task
+            .await
+            .expect("join capability mock")
+            .expect("shutdown capability mock");
+    }
+}
+
+#[tokio::test]
+async fn capability_rpc_failure_uses_truthful_hint_specific_surfaces() {
+    for fanout_may_be_enabled in [false, true] {
+        let temp = TempDir::new().expect("temp dir");
+        let capability_rpc = FailingCapabilityRpcServer::start().await;
+        let call_count = Arc::clone(&capability_rpc.call_count);
+        let session = start_session_with_runtime(
+            &temp,
+            McpOptions {
+                search_provider_fanout_enabled: fanout_may_be_enabled,
+                ..McpOptions::default()
+            },
+            FeatureOverrides::default(),
+            Some(Arc::clone(&capability_rpc.loader)),
+        )
+        .await;
+
+        let peer_info = session.client.peer_info().expect("initialize result");
+        let instructions = peer_info
+            .instructions
+            .as_deref()
+            .expect("initialize instructions");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        let tools = session.client.list_all_tools().await.expect("tools");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        let search = tool_by_name(&tools, "search");
+        let description = search.description.as_deref().expect("search description");
+        let annotations = search.annotations.as_ref().expect("search annotations");
+
+        let guide = session
+            .client
+            .read_resource(ReadResourceRequestParams::new("coral://guide"))
+            .await
+            .expect("guide");
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
+        let guide = text_content(&guide);
+
+        if fanout_may_be_enabled {
+            assert!(instructions.contains("capability is currently unknown"));
+            assert!(instructions.contains("may make bounded read-only calls"));
+            assert!(description.contains("capability is currently unknown"));
+            assert!(guide.contains("capability is currently unknown"));
+            assert_eq!(annotations.read_only_hint, Some(false));
+            assert_eq!(annotations.idempotent_hint, Some(false));
+            assert_eq!(annotations.open_world_hint, Some(true));
+        } else {
+            assert!(instructions.contains("does not call source-authored search functions"));
+            assert!(description.contains("does not call source-authored search functions"));
+            assert!(guide.contains("does not call source-authored search functions"));
+            assert_eq!(annotations.read_only_hint, Some(true));
+            assert_eq!(annotations.idempotent_hint, Some(true));
+            assert_eq!(annotations.open_world_hint, Some(false));
+        }
+
+        session.shutdown().await;
+        capability_rpc.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn provider_capabilities_refresh_after_install_remove_and_reimport() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest = eligible_provider_manifest_yaml();
+    let mut feature_overrides = FeatureOverrides::default();
+    feature_overrides.set(Feature::SearchProviderFanout, true);
+    let mut session = start_session_with_options_and_feature_overrides(
+        &temp,
+        McpOptions {
+            search_provider_fanout_enabled: true,
+            ..McpOptions::default()
+        },
+        feature_overrides,
+    )
+    .await;
+
+    let peer_info = session.client.peer_info().expect("initialize result");
+    let initial_instructions = peer_info
+        .instructions
+        .as_deref()
+        .expect("initialize instructions");
+    assert!(initial_instructions.contains("does not call source-authored search functions"));
+    let initial_tools = session
+        .client
+        .list_all_tools()
+        .await
+        .expect("initial tools");
+    let initial_search = tool_by_name(&initial_tools, "search");
+    assert!(
+        initial_search
+            .description
+            .as_deref()
+            .expect("search description")
+            .contains("does not call source-authored search functions")
+    );
+    let initial_annotations = initial_search
+        .annotations
+        .as_ref()
+        .expect("search annotations");
+    assert_eq!(initial_annotations.read_only_hint, Some(true));
+    assert_eq!(initial_annotations.idempotent_hint, Some(true));
+    assert_eq!(initial_annotations.open_world_hint, Some(true));
+
+    add_demo_source(&mut session.source_client, manifest.clone()).await;
+    let installed_tools = session
+        .client
+        .list_all_tools()
+        .await
+        .expect("installed tools");
+    let installed_description = tool_by_name(&installed_tools, "search")
+        .description
+        .as_deref()
+        .expect("installed search description");
+    assert!(installed_description.contains("function=\"searchable.search_messages\""));
+    assert!(installed_description.contains("route=\"message_search\""));
+
+    session
+        .source_client
+        .delete_source(Request::new(DeleteSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "searchable".to_string(),
+        }))
+        .await
+        .expect("delete source");
+    let removed_guide = session
+        .client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect("guide after source removal");
+    assert!(
+        text_content(&removed_guide).contains("does not call source-authored search functions")
+    );
+    assert!(!text_content(&removed_guide).contains("searchable.search_messages"));
+
+    add_demo_source(&mut session.source_client, manifest).await;
+    let reimported_resources = session
+        .client
+        .list_all_resources()
+        .await
+        .expect("resources after source reimport");
+    assert!(
+        reimported_resources[0]
+            .description
+            .as_deref()
+            .expect("guide description")
+            .contains("function=\"searchable.search_messages\"")
+    );
+
+    session.shutdown().await;
 }
 
 #[tokio::test]

@@ -658,9 +658,19 @@ pub async fn run_from_env() -> Result<(), CliError> {
             })
             .await
             .map_err(anyhow::Error::from)?;
+            let search_provider_fanout_may_be_enabled =
+                bootstrap.search_provider_fanout_may_be_enabled;
             let app = bootstrap.app.clone();
             let result = if is_mcp_stdio {
-                run_app_command(app, command, Some(&ctx), &feature_overrides, &workspace).await
+                run_app_command(
+                    app,
+                    command,
+                    Some(&ctx),
+                    &feature_overrides,
+                    search_provider_fanout_may_be_enabled,
+                    &workspace,
+                )
+                .await
             } else {
                 coral_app::run_with_context(
                     &ctx,
@@ -669,6 +679,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
                         command,
                         None,
                         &feature_overrides,
+                        search_provider_fanout_may_be_enabled,
                         &workspace,
                     )),
                 )
@@ -857,6 +868,7 @@ async fn run_app_command(
     command: Command,
     ctx: Option<&coral_app::RunContext>,
     feature_overrides: &coral_app::features::FeatureOverrides,
+    search_provider_fanout_may_be_enabled: bool,
     workspace: &Workspace,
 ) -> Result<(), CliError> {
     match command {
@@ -934,6 +946,7 @@ async fn run_app_command(
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     observed_values_search_enabled: features
                         .enabled(coral_app::features::Feature::ObservedValuesSearch),
+                    search_provider_fanout_enabled: search_provider_fanout_may_be_enabled,
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
                     query_examples,
@@ -2048,6 +2061,18 @@ mod tests {
     }
 
     #[test]
+    fn search_provider_fanout_overrides_parse_before_subcommand() {
+        for flag in [
+            "--enable-search-provider-fanout",
+            "--disable-search-provider-fanout",
+        ] {
+            let cli = Cli::try_parse_from(["coral", flag, "mcp-stdio"])
+                .expect("provider fanout override should parse before subcommand");
+            assert!(matches!(cli.command, super::Command::McpStdio(_)));
+        }
+    }
+
+    #[test]
     fn global_feature_overrides_are_hidden_from_help() {
         let mut help = Vec::new();
         Cli::command()
@@ -2086,6 +2111,19 @@ mod tests {
 
             assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
+    }
+
+    #[test]
+    fn conflicting_search_provider_fanout_overrides_are_rejected() {
+        let error = Cli::try_parse_from([
+            "coral",
+            "--enable-search-provider-fanout",
+            "--disable-search-provider-fanout",
+            "mcp-stdio",
+        ])
+        .expect_err("conflicting provider fanout overrides should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

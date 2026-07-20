@@ -669,6 +669,13 @@ Universal Search fan-out is available only for DSL v4 sources. DSL v3 sources
 cannot author `functions[].universal_search` and do not participate in native
 fan-out. To make a provider available, define a DSL v4 imported-surface source.
 
+Authorization only makes a route eligible. Coral executes eligible routes from
+Search only when the experimental `search_provider_fanout` [runtime
+feature](/reference/configuration#runtime-features) is enabled; it is disabled
+by default. Disabling the feature stops provider fanout without changing
+ordinary SQL execution, catalog search, observed-value search, or the installed
+source.
+
 DSL v4 table functions are generated from one imported surface. Author routes
 at the top level and bind them to the original imported operation identity:
 

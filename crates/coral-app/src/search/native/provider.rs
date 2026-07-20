@@ -34,13 +34,12 @@ use super::diagnostics::{
     provider_state, resolution_failure, skipped_route, successful_call,
 };
 use super::normalize::normalize_batches;
-use super::{MAX_RESULTS_PER_FUNCTION, NativeCandidate};
+use super::{MAX_RESULTS_PER_FUNCTION, MAX_SELECTED_FUNCTIONS, NativeCandidate};
 
 const GLOBAL_FANOUT_BUDGET: Duration = Duration::from_millis(750);
 const PER_CALL_BUDGET: Duration = Duration::from_millis(600);
 const MINIMUM_START_BUDGET: Duration = Duration::from_millis(100);
 const CANCELLATION_CLEANUP_GRACE: Duration = Duration::from_millis(25);
-const MAX_SELECTED_FUNCTIONS: usize = 4;
 
 type SelectedFunctionFuture = Pin<
     Box<
@@ -96,10 +95,6 @@ impl Default for NativeFanoutLimits {
 }
 
 impl NativeFanoutProvider {
-    #[expect(
-        dead_code,
-        reason = "the follow-up feature gate installs this registration in production"
-    )]
     pub(crate) fn registration(executor: QueryManager) -> NativeFanoutRegistration {
         let provider: Arc<dyn SearchProvider> = Arc::new(Self {
             executor: Arc::new(executor),
@@ -252,7 +247,11 @@ impl NativeFanoutProvider {
                 TimeoutScope::Call
             });
             let task_deadline_state = deadline_state.clone();
+            let task_context = Arc::clone(&context);
             let task = tokio::spawn(async move {
+                // Keep the workspace lifecycle lease alive until this child task
+                // actually exits, including after its parent aborts the join handle.
+                let _task_context = task_context;
                 run_selected_call(
                     executor,
                     command,

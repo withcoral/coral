@@ -13,6 +13,8 @@ coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
 coral --enable-feedback mcp-stdio
 coral --disable-feedback mcp-stdio
+coral --enable-search-provider-fanout search github issues
+coral --disable-search-provider-fanout mcp-stdio
 ```
 
 These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
@@ -80,6 +82,15 @@ is enabled, search also reads observed-value memory; those results identify the
 value and the surface and column where Coral saw it. Use those clues with
 `coral sql` to fetch current rows.
 
+Experimental connected-source fanout is disabled by default. When
+`search_provider_fanout` is enabled and a source authorizes an eligible
+`kind: search` route, Search may make bounded, read-only upstream calls. It
+starts at most four functions in one wave, requests at most five rows from
+each, applies a 750 ms fanout cutoff and 600 ms per-call timeout, and does not
+retry or paginate. Local matches survive native failures, and status fields
+report partial, skipped, timed-out, or failed work without returning raw
+provider errors.
+
 Observed-value collection, retrieval, and maintenance are disabled by default.
 Enable them persistently using Coral [runtime features](/reference/configuration#runtime-features).
 
@@ -104,11 +115,15 @@ field path, observation count, and when it was last observed. `schema_name` is
 the runtime, query-visible SQL schema to use in a query; it can differ from the
 installed source name when one source exposes multiple runtime components.
 
-The `catalog_metadata` and `observed_values` provider statuses report whether
-each local search found matches, completed with no matches, returned partial
-coverage, or failed. An empty observed-value result only describes Coral's
-local observations; it does not prove that the value is absent from a connected
-source. `truncation` reports when more matches were available than returned.
+The `catalog_metadata`, `observed_values`, and optional `native_fanout`
+provider statuses report whether each provider found matches, completed with no
+matches, returned partial coverage, was skipped, or failed. Native results
+contain compact, sanitized display fields rather than raw source rows, plus
+bounded per-route diagnostics that distinguish timeouts and other safe failure
+categories. An empty observed-value result only
+describes Coral's local observations; it does not prove that the value is absent
+from a connected source. `truncation` reports when more matches were available
+than returned.
 
 ## `coral search-index`
 

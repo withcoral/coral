@@ -11,6 +11,8 @@ use coral_api::v1::{
     ClearSearchDataResponse as ProtoClearSearchDataResponse, ColumnHint,
     DrainSearchQueueRequest as ProtoDrainSearchQueueRequest,
     DrainSearchQueueResponse as ProtoDrainSearchQueueResponse,
+    GetSearchCapabilitiesRequest as ProtoGetSearchCapabilitiesRequest,
+    GetSearchCapabilitiesResponse as ProtoGetSearchCapabilitiesResponse,
     NativeSearchAttribute as ProtoNativeSearchAttribute,
     NativeSearchDiagnostic as ProtoNativeSearchDiagnostic,
     NativeSearchDiagnosticReason as ProtoNativeSearchDiagnosticReason,
@@ -27,6 +29,7 @@ use coral_api::v1::{
     SearchProviderCoverage, SearchProviderState, SearchProviderStatus,
     SearchRequest as ProtoSearchRequest, SearchResponse as ProtoSearchResponse,
     SearchResult as ProtoSearchResult, SearchResultTruncation,
+    SearchRouteIdentity as ProtoSearchRouteIdentity,
     SearchStorageCleanupResult as ProtoSearchStorageCleanupResult,
     SearchSurfaceKind as ProtoSearchSurfaceKind, SearchTableColumnPreview,
     SearchTableColumnPreviewColumn,
@@ -35,6 +38,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
 use crate::query::QueryAttribution;
+use crate::search::capabilities::SearchCapabilities;
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult,
     ClearSearchDataRequest as DomainClearSearchDataRequest,
@@ -107,6 +111,25 @@ impl SearchServiceApi for SearchService {
         .await
     }
 
+    async fn get_search_capabilities(
+        &self,
+        request: Request<ProtoGetSearchCapabilitiesRequest>,
+    ) -> Result<Response<ProtoGetSearchCapabilitiesResponse>, Status> {
+        let span = grpc_span(&request);
+        let search = self.search.clone();
+        Box::pin(instrument_grpc(span, async move {
+            let attribution = QueryAttribution::from_extensions(request.extensions());
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let capabilities = search
+                .capabilities(&workspace_name, &attribution)
+                .await
+                .map_err(search_status)?;
+            Ok(Response::new(search_capabilities_to_proto(capabilities)))
+        }))
+        .await
+    }
+
     async fn rebuild_search_index(
         &self,
         request: Request<ProtoRebuildSearchIndexRequest>,
@@ -167,6 +190,26 @@ impl SearchServiceApi for SearchService {
             Ok(Response::new(clear_response_to_proto(response)))
         })
         .await
+    }
+}
+
+fn search_capabilities_to_proto(
+    capabilities: SearchCapabilities,
+) -> ProtoGetSearchCapabilitiesResponse {
+    ProtoGetSearchCapabilitiesResponse {
+        provider_fanout_enabled: capabilities.provider_fanout_enabled,
+        eligible_routes: capabilities
+            .eligible_routes
+            .into_iter()
+            .map(|route| ProtoSearchRouteIdentity {
+                installed_source_name: route.installed_source_name,
+                schema_name: route.schema_name,
+                function_name: route.function_name,
+                authored_route_id: route.authored_route_id,
+            })
+            .collect(),
+        truncated: capabilities.truncated,
+        omitted_route_count: capabilities.omitted_route_count,
     }
 }
 
