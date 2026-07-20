@@ -889,13 +889,7 @@ async fn run_app_command(
             .await
             .map_err(anyhow::Error::from)?;
         }
-        Command::Completion(_) => {
-            unreachable!("no-runtime commands are routed without an app client")
-        }
-        Command::Features(_) => {
-            unreachable!("no-runtime commands are routed without an app client")
-        }
-        Command::Server => {
+        Command::Completion(_) | Command::Features(_) | Command::Server => {
             unreachable!("no-runtime commands are routed without an app client")
         }
         #[cfg(feature = "embedded-ui")]
