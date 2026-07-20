@@ -84,14 +84,14 @@ pub enum AppError {
         /// Specific override mismatch or malformed-artifact detail.
         detail: String,
     },
-    /// A user-maintained DSL v4 parameter metadata override is malformed or stale.
+    /// A user-maintained DSL v4 operation metadata override is malformed or stale.
     #[error(
-        "failed precondition: source '{source_name}' has invalid DSL v4 parameter metadata override '{override_path}': {detail}. Edit or remove the override file."
+        "failed precondition: source '{source_name}' has invalid DSL v4 operation metadata override '{override_path}': {detail}. Edit or remove the override file."
     )]
-    InvalidV4ParameterMetadataOverride {
+    InvalidV4OperationMetadataOverride {
         /// Source name whose override failed validation.
         source_name: String,
-        /// Parameter metadata override path that failed validation.
+        /// Operation metadata override path that failed validation.
         override_path: String,
         /// Specific override mismatch or malformed-file detail.
         detail: String,
@@ -302,7 +302,7 @@ fn app_code(error: &AppError) -> Code {
         | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::IncompatibleInstalledV4Manifest { .. }
         | AppError::InvalidV4ProjectionOverride { .. }
-        | AppError::InvalidV4ParameterMetadataOverride { .. }
+        | AppError::InvalidV4OperationMetadataOverride { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {

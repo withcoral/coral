@@ -35,6 +35,10 @@ discovery, and normalized source-definition models.
   `surface:`. The source `name` is the SQL namespace; v4 surfaces and generated
   projections must not introduce surface IDs, namespace suffixes, or redundant
   projection namespaces.
-- Keep the DSL v4 materialized model singular too: one semantic IR and one
-  fingerprint surface, with source-wide projection names. Runtime structural
-  validation must accept a valid source with zero projections.
+- Keep the DSL v4 materialized model singular too: one semantic IR, one
+  complete operation-metadata catalog, and one fingerprint surface, with
+  source-wide projection names. Semantic IR contains imported provider facts;
+  inferred pagination and lookup-key policy belongs only in operation
+  metadata. Consumers must pair both through `ValidatedSurfacePlan`, and
+  runtime structural validation must accept a valid source with zero
+  operations and zero projections.

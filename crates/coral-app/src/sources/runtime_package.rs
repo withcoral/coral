@@ -30,7 +30,7 @@ use crate::sources::model::InstalledSource;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
-const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 1;
+const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 2;
 
 /// Versioned, non-secret identity for the installed runtime contract used by
 /// query execution and derived local state.
@@ -59,20 +59,10 @@ struct RuntimeContractFingerprintInput<'a> {
     version: u32,
     manifest_sha256: String,
     variables: &'a BTreeMap<String, String>,
-    v4_runtime: Option<V4RuntimeFingerprintInput<'a>>,
-}
-
-#[derive(Serialize)]
-struct V4RuntimeFingerprintInput<'a> {
-    fingerprint: Option<&'a coral_spec::v4::Fingerprint>,
-    surface: V4SurfaceFingerprintInput<'a>,
-    projections: &'a coral_spec::v4::ProjectionCatalog,
-}
-
-#[derive(Serialize)]
-struct V4SurfaceFingerprintInput<'a> {
-    semantic_ir: &'a coral_spec::v4::SemanticIr,
-    source_document_sha256: Option<&'a str>,
+    /// Stable within this explicitly versioned fingerprint format. Using the
+    /// compiled component keeps artifact provenance and diagnostics out while
+    /// covering every backend-ready runtime field.
+    v4_runtime_debug: Option<String>,
 }
 
 /// Fingerprints authored manifest content, deterministic non-secret variable
@@ -81,20 +71,24 @@ struct V4SurfaceFingerprintInput<'a> {
 pub(crate) fn runtime_contract_fingerprint(
     manifest_yaml: &str,
     variables: &BTreeMap<String, String>,
-    v4_materialized: Option<&V4MaterializedSource>,
+    v4_component: Option<&RuntimeSourceComponent>,
 ) -> Result<RuntimeContractFingerprint, AppError> {
+    let v4_runtime_debug = match v4_component {
+        Some(component @ (RuntimeSourceComponent::Http(_) | RuntimeSourceComponent::Mcp(_))) => {
+            Some(format!("{component:#?}"))
+        }
+        Some(RuntimeSourceComponent::File(_)) => {
+            return Err(AppError::Internal(
+                "DSL v4 runtime fingerprint received a file component".to_string(),
+            ));
+        }
+        None => None,
+    };
     let input = RuntimeContractFingerprintInput {
         version: RUNTIME_CONTRACT_FINGERPRINT_VERSION,
         manifest_sha256: sha256_hex(manifest_yaml.as_bytes()),
         variables,
-        v4_runtime: v4_materialized.map(|materialized| V4RuntimeFingerprintInput {
-            fingerprint: materialized.fingerprint.as_ref(),
-            surface: V4SurfaceFingerprintInput {
-                semantic_ir: &materialized.surface.semantic_ir,
-                source_document_sha256: materialized.surface.source_document_sha256.as_deref(),
-            },
-            projections: &materialized.projections,
-        }),
+        v4_runtime_debug,
     };
     let bytes = serde_json::to_vec(&input).map_err(|error| {
         AppError::FailedPrecondition(format!(
@@ -120,7 +114,7 @@ pub(crate) fn query_source_from_installed_manifest(
     resolved_secrets: BTreeMap<String, String>,
 ) -> Result<LoadedRuntimeSource, AppError> {
     let source_spec = &installed.source_spec;
-    let (query_source, v4_materialized) = if let Some(v4) = source_spec.as_v4() {
+    let (query_source, runtime_contract_fingerprint) = if let Some(v4) = source_spec.as_v4() {
         let materialized = load_v4_materialization_with_reporter(
             layout,
             workspace_name,
@@ -137,6 +131,11 @@ pub(crate) fn query_source_from_installed_manifest(
                     format!("failed to assemble runtime package: {error}"),
                 ),
             })?;
+        let runtime_contract_fingerprint = runtime_contract_fingerprint(
+            &installed.manifest_yaml,
+            &source.variables,
+            component.as_ref(),
+        )?;
         let query_source = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
                 source_name: source_spec.schema_name().to_string(),
@@ -150,18 +149,14 @@ pub(crate) fn query_source_from_installed_manifest(
             resolved_secrets,
         )
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-        (query_source, Some(materialized))
+        (query_source, runtime_contract_fingerprint)
     } else {
-        (
-            QuerySource::from_manifest(source_spec, source.variables.clone(), resolved_secrets),
-            None,
-        )
+        let runtime_contract_fingerprint =
+            runtime_contract_fingerprint(&installed.manifest_yaml, &source.variables, None)?;
+        let query_source =
+            QuerySource::from_manifest(source_spec, source.variables.clone(), resolved_secrets);
+        (query_source, runtime_contract_fingerprint)
     };
-    let runtime_contract_fingerprint = runtime_contract_fingerprint(
-        &installed.manifest_yaml,
-        &source.variables,
-        v4_materialized.as_ref(),
-    )?;
     Ok(LoadedRuntimeSource {
         query_source,
         runtime_contract_fingerprint,
@@ -209,7 +204,8 @@ fn http_manifest_for_surface(
     })?;
     let materialized_surface = &materialized.surface;
     let operations = materialized_surface
-        .semantic_ir
+        .plan
+        .semantic_ir()
         .operations
         .iter()
         .map(|operation| (operation.id.as_str(), operation))
@@ -231,6 +227,7 @@ fn http_manifest_for_surface(
                 ))
             })?;
         let rest = rest_execution_for_operation(operation)?;
+        let pagination = materialized_surface.plan.rest_pagination(&operation.id);
         let request = request_spec_for_projection(projection, operation)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let columns = projection_column_specs(projection);
@@ -250,7 +247,7 @@ fn http_manifest_for_surface(
                     request,
                     requests: Vec::new(),
                     response: rest.response.response.clone(),
-                    pagination: rest.pagination.clone(),
+                    pagination: pagination.clone(),
                 });
             }
             ProjectionKind::TableFunction { function_kind } => {
@@ -264,7 +261,7 @@ fn http_manifest_for_surface(
                     args: projection_arg_specs(projection),
                     request,
                     response: rest.response.response.clone(),
-                    pagination: rest.pagination.clone(),
+                    pagination: pagination.clone(),
                     columns,
                 });
             }
@@ -310,7 +307,8 @@ fn mcp_manifest_for_surface(
     })?;
     let materialized_surface = &materialized.surface;
     let operations = materialized_surface
-        .semantic_ir
+        .plan
+        .semantic_ir()
         .operations
         .iter()
         .map(|operation| (operation.id.as_str(), operation))
@@ -337,9 +335,17 @@ fn mcp_manifest_for_surface(
                 projection.name
             )));
         };
+        let (cursor_pagination, offset_pagination) =
+            materialized_surface.plan.mcp_pagination(&operation.id);
         match &projection.kind {
             ProjectionKind::Table => {
-                tables.push(mcp_table_spec(projection, mcp, operation));
+                tables.push(mcp_table_spec(
+                    projection,
+                    mcp,
+                    operation,
+                    cursor_pagination.cloned(),
+                    offset_pagination.cloned(),
+                ));
             }
             ProjectionKind::TableFunction { function_kind } => {
                 functions.push(mcp_table_function_spec(
@@ -347,6 +353,8 @@ fn mcp_manifest_for_surface(
                     *function_kind,
                     mcp,
                     operation,
+                    cursor_pagination.cloned(),
+                    offset_pagination.cloned(),
                 ));
             }
         }
@@ -370,6 +378,8 @@ fn mcp_table_spec(
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
     operation: &coral_spec::v4::IrOperation,
+    pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
+    offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableSpec {
     McpTableSpec {
         common: TableCommon {
@@ -386,8 +396,8 @@ fn mcp_table_spec(
         tool_args: BTreeMap::new(),
         filter_bindings: mcp_filter_bindings(projection),
         limit_binding: None,
-        pagination: mcp.pagination.clone(),
-        offset_pagination: mcp.offset_pagination.clone(),
+        pagination,
+        offset_pagination,
         response: mcp_response_for_operation(operation),
     }
 }
@@ -397,11 +407,13 @@ fn mcp_table_function_spec(
     function_kind: SourceTableFunctionKind,
     mcp: &coral_spec::v4::McpExecutionAttachment,
     operation: &coral_spec::v4::IrOperation,
+    pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
+    offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableFunctionSpec {
     McpTableFunctionSpec {
         tool: mcp.tool_name.clone(),
-        pagination: mcp.pagination.clone(),
-        offset_pagination: mcp.offset_pagination.clone(),
+        pagination,
+        offset_pagination,
         common: SourceTableFunctionSpec {
             name: projection.name.clone(),
             kind: function_kind,
@@ -502,13 +514,16 @@ mod tests {
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
         AcceptedIdentityRequirement, Fingerprint, FingerprintSurface, HttpMethod,
-        IdentityRequirements, IrExecutionAttachment, IrOperation, IrOperationOutput,
-        MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig,
-        OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection,
-        ProjectionCatalog, ProjectionKind, ProjectionVisibility, RestExecutionAttachment,
+        IdentityRequirements, IrExecutionAttachment, IrInputLocation, IrOperation,
+        IrOperationInput, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
+        MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpOperationPagination,
+        McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
+        OpenApiRuntimeConfig, OperationMetadata, OperationMetadataCatalog,
+        PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionKind,
+        ProjectionVisibility, RestExecutionAttachment, RestParameterBinding,
         RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor,
         SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
-        V4SourceCommon, V4SourceManifest, V4Surface,
+        V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
     };
     use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
 
@@ -543,43 +558,84 @@ mod tests {
         operation_id: &str,
         pagination: PaginationSpec,
     ) -> MaterializedSurface {
-        MaterializedSurface {
-            semantic_ir: SemanticIr {
-                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-                source_name: "github_v4".to_string(),
-                surface_type: SurfaceType::OpenApi,
-                importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
-                operations: vec![IrOperation {
-                    id: operation_id.to_string(),
-                    method_name: operation_id.to_string(),
-                    description: String::new(),
-                    deprecated: false,
-                    read_only: true,
-                    naming: None,
-                    inputs: Vec::new(),
-                    output: IrOperationOutput {
-                        cardinality: coral_spec::v4::OutputCardinality::List,
-                        type_ref: "item".to_string(),
-                        row_path: Vec::new(),
+        let mut pagination_inputs = Vec::new();
+        for name in [
+            pagination.page_param.as_deref(),
+            pagination.offset_param.as_deref(),
+            pagination
+                .page_size
+                .as_ref()
+                .and_then(|page_size| page_size.query_param.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if pagination_inputs
+                .iter()
+                .any(|input: &IrOperationInput| input.name == name)
+            {
+                continue;
+            }
+            pagination_inputs.push(test_input(name, IrInputLocation::Query));
+        }
+        let semantic_ir = SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            surface_type: SurfaceType::OpenApi,
+            importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+            operations: vec![IrOperation {
+                id: operation_id.to_string(),
+                method_name: operation_id.to_string(),
+                description: String::new(),
+                deprecated: false,
+                read_only: true,
+                naming: None,
+                inputs: pagination_inputs.clone(),
+                output: IrOperationOutput {
+                    cardinality: coral_spec::v4::OutputCardinality::List,
+                    type_ref: "item".to_string(),
+                    row_path: Vec::new(),
+                },
+                entity: None,
+                execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
+                    method: HttpMethod::Get,
+                    path_template: "/items".to_string(),
+                    parameters: pagination_inputs
+                        .iter()
+                        .map(|input| RestParameterBinding {
+                            input_name: input.name.clone(),
+                            location: input.location,
+                            wire_name: input.name.clone(),
+                            required: input.required,
+                            data_type: input.data_type,
+                        })
+                        .collect(),
+                    request_body: None,
+                    response: RestResponseAttachment {
+                        status_code: 200,
+                        media_type: "application/json".to_string(),
+                        response: ResponseSpec::default(),
                     },
-                    entity: None,
-                    execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
-                        method: HttpMethod::Get,
-                        path_template: "/items".to_string(),
-                        parameters: Vec::new(),
-                        request_body: None,
-                        response: RestResponseAttachment {
-                            status_code: 200,
-                            media_type: "application/json".to_string(),
-                            response: ResponseSpec::default(),
-                        },
-                        pagination,
-                    })),
-                    diagnostics: Vec::new(),
-                }],
-                types: Vec::new(),
+                })),
                 diagnostics: Vec::new(),
-            },
+            }],
+            types: vec![test_object_type("item")],
+            diagnostics: Vec::new(),
+        };
+        let operation_metadata = OperationMetadataCatalog {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+            operations: BTreeMap::from([(
+                operation_id.to_string(),
+                OperationMetadata::Rest {
+                    pagination,
+                    lookup_keys: Vec::new(),
+                },
+            )]),
+        };
+        MaterializedSurface {
+            plan: ValidatedSurfacePlan::new(semantic_ir, operation_metadata).expect("plan"),
             source_document_sha256: None,
             normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
             raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
@@ -602,15 +658,24 @@ mod tests {
 
     fn materialized_surface(raw_source_document_path: PathBuf) -> MaterializedSurface {
         MaterializedSurface {
-            semantic_ir: SemanticIr {
-                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-                source_name: "demo".to_string(),
-                surface_type: SurfaceType::OpenApi,
-                importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
-                operations: Vec::new(),
-                types: Vec::new(),
-                diagnostics: Vec::new(),
-            },
+            plan: ValidatedSurfacePlan::new(
+                SemanticIr {
+                    artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                    source_name: "demo".to_string(),
+                    surface_type: SurfaceType::OpenApi,
+                    importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+                    operations: Vec::new(),
+                    types: Vec::new(),
+                    diagnostics: Vec::new(),
+                },
+                OperationMetadataCatalog {
+                    artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                    source_name: "demo".to_string(),
+                    generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+                    operations: BTreeMap::new(),
+                },
+            )
+            .expect("plan"),
             source_document_sha256: None,
             normalized_source_document_path: raw_source_document_path.clone(),
             raw_source_document_path,
@@ -645,39 +710,82 @@ mod tests {
         pagination: Option<McpPaginationSpec>,
         offset_pagination: Option<McpOffsetPaginationSpec>,
     ) -> MaterializedSurface {
-        MaterializedSurface {
-            semantic_ir: SemanticIr {
-                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-                source_name: "github_v4".to_string(),
-                surface_type: SurfaceType::Mcp,
-                importer_version: MCP_IMPORTER_VERSION.to_string(),
-                operations: vec![IrOperation {
-                    id: operation_id.to_string(),
-                    method_name: operation_id.to_string(),
-                    description: String::new(),
-                    deprecated: false,
-                    read_only: true,
-                    naming: None,
-                    inputs: Vec::new(),
-                    output: IrOperationOutput {
-                        cardinality: coral_spec::v4::OutputCardinality::List,
-                        type_ref: "tool_result".to_string(),
-                        row_path: Vec::new(),
-                    },
-                    entity: None,
-                    execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
-                        tool_name: operation_id.to_string(),
-                        pagination,
-                        offset_pagination,
-                    }),
-                    diagnostics: Vec::new(),
-                }],
-                types: Vec::new(),
+        let mut inputs = Vec::new();
+        if let Some(cursor) = pagination.as_ref() {
+            let mut input = test_input(&cursor.cursor_arg, IrInputLocation::ToolArg);
+            input.data_type = IrScalarType::String;
+            inputs.push(input);
+        }
+        if let Some(offset) = offset_pagination.as_ref() {
+            inputs.push(test_input(&offset.limit_arg, IrInputLocation::ToolArg));
+            inputs.push(test_input(&offset.offset_arg, IrInputLocation::ToolArg));
+        }
+        let semantic_ir = SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            surface_type: SurfaceType::Mcp,
+            importer_version: MCP_IMPORTER_VERSION.to_string(),
+            operations: vec![IrOperation {
+                id: operation_id.to_string(),
+                method_name: operation_id.to_string(),
+                description: String::new(),
+                deprecated: false,
+                read_only: true,
+                naming: None,
+                inputs,
+                output: IrOperationOutput {
+                    cardinality: coral_spec::v4::OutputCardinality::List,
+                    type_ref: "tool_result".to_string(),
+                    row_path: Vec::new(),
+                },
+                entity: None,
+                execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
+                    tool_name: operation_id.to_string(),
+                }),
                 diagnostics: Vec::new(),
-            },
+            }],
+            types: vec![test_object_type("tool_result")],
+            diagnostics: Vec::new(),
+        };
+        let operation_metadata = OperationMetadataCatalog {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+            operations: BTreeMap::from([(
+                operation_id.to_string(),
+                OperationMetadata::Mcp {
+                    pagination: McpOperationPagination {
+                        cursor: pagination,
+                        offset: offset_pagination,
+                    },
+                },
+            )]),
+        };
+        MaterializedSurface {
+            plan: ValidatedSurfacePlan::new(semantic_ir, operation_metadata).expect("plan"),
             source_document_sha256: None,
             normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
             raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
+        }
+    }
+
+    fn test_input(name: &str, location: IrInputLocation) -> IrOperationInput {
+        IrOperationInput {
+            name: name.to_string(),
+            location,
+            required: false,
+            data_type: IrScalarType::Integer,
+            default_value: None,
+            description: String::new(),
+        }
+    }
+
+    fn test_object_type(id: &str) -> IrType {
+        IrType {
+            id: id.to_string(),
+            shape: IrTypeShape::Object { fields: Vec::new() },
+            nullable: false,
+            description: String::new(),
         }
     }
 
@@ -710,6 +818,7 @@ mod tests {
                 input_declarations_sha256: String::new(),
             },
             importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+            operation_metadata_generator_version: OPERATION_METADATA_GENERATOR_VERSION.to_string(),
             projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
         }
     }
@@ -735,50 +844,130 @@ mod tests {
         )
         .expect("variable fingerprint");
 
-        assert!(first.as_str().starts_with("v1:"));
+        assert!(first.as_str().starts_with("v2:"));
         assert_ne!(first, different_literal);
         assert_ne!(first, different_variable);
     }
 
     #[test]
     fn runtime_contract_fingerprint_tracks_v4_runtime_but_not_artifact_paths() {
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            declared_inputs: Vec::new(),
+            surface: openapi_surface(),
+        };
         let mut materialized = V4MaterializedSource {
-            fingerprint: Some(fingerprint(SurfaceType::OpenApi, "demo")),
-            surface: materialized_surface(PathBuf::from("/first/raw.json")),
+            fingerprint: Some(fingerprint(SurfaceType::OpenApi, "github_v4")),
+            surface: rest_materialized_surface_with_pagination(
+                "items_list",
+                PaginationSpec::default(),
+            ),
             projections: ProjectionCatalog {
                 artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-                source_name: "demo".to_string(),
+                source_name: "github_v4".to_string(),
                 generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
-                projections: Vec::new(),
+                projections: vec![published_projection("items_list")],
                 diagnostics: Vec::new(),
             },
             diagnostics: Vec::new(),
         };
         materialized.surface.source_document_sha256 = Some("document-one".to_string());
-        let first =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
-                .expect("first fingerprint");
+        let component = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect("component")
+            .expect("published component");
+        let first = runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&component))
+            .expect("first fingerprint");
 
         materialized.surface.raw_source_document_path = PathBuf::from("/second/raw.json");
         materialized.surface.normalized_source_document_path =
             PathBuf::from("/second/normalized.json");
+        let moved_component = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect("component")
+            .expect("published component");
         let moved =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
+            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&moved_component))
                 .expect("moved fingerprint");
         assert_eq!(first, moved);
 
         materialized.surface.source_document_sha256 = Some("document-two".to_string());
+        let changed_component = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect("component")
+            .expect("published component");
         let changed =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
+            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&changed_component))
                 .expect("changed fingerprint");
-        assert_ne!(first, changed);
+        assert_eq!(first, changed);
 
         materialized.fingerprint = None;
         materialized.surface.source_document_sha256 = None;
-        let without_optional_provenance =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
-                .expect("fingerprint without optional provenance");
-        assert!(without_optional_provenance.as_str().starts_with("v1:"));
+        let without_provenance_component =
+            runtime_component_for_v4_source(&manifest, &materialized)
+                .expect("component")
+                .expect("published component");
+        let without_optional_provenance = runtime_contract_fingerprint(
+            "name: demo",
+            &BTreeMap::new(),
+            Some(&without_provenance_component),
+        )
+        .expect("fingerprint without optional provenance");
+        assert_eq!(first, without_optional_provenance);
+        assert!(without_optional_provenance.as_str().starts_with("v2:"));
+    }
+
+    #[test]
+    fn runtime_contract_fingerprint_tracks_effective_operation_metadata() {
+        let materialized = |page_start| V4MaterializedSource {
+            fingerprint: None,
+            surface: rest_materialized_surface_with_pagination(
+                "items_list",
+                PaginationSpec {
+                    mode: PaginationMode::Page,
+                    page_param: Some("page".to_string()),
+                    page_start,
+                    ..PaginationSpec::default()
+                },
+            ),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: None,
+                projections: vec![published_projection("items_list")],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            declared_inputs: Vec::new(),
+            surface: openapi_surface(),
+        };
+        let first_materialized = materialized(1);
+        let first_component = runtime_component_for_v4_source(&manifest, &first_materialized)
+            .expect("component")
+            .expect("published component");
+        let second_materialized = materialized(2);
+        let second_component = runtime_component_for_v4_source(&manifest, &second_materialized)
+            .expect("component")
+            .expect("published component");
+        let first =
+            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&first_component))
+                .expect("first fingerprint");
+        let second =
+            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&second_component))
+                .expect("second fingerprint");
+
+        assert_ne!(first, second);
     }
 
     #[test]

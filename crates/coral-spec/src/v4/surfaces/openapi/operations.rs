@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
+use crate::v4::OperationMetadata;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
     IrOperationNaming, IrScalarType, OutputCardinality, RestExecutionAttachment,
     RestParameterBinding, RestRequestBody,
 };
-use crate::v4::lookup_keys::infer_rest_lookup_key_exclusions;
+use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
@@ -26,7 +27,7 @@ impl OpenApiImporter<'_> {
         path_item: &Map<String, Value>,
         method_name: &str,
         operation: &Value,
-    ) -> Result<IrOperation> {
+    ) -> Result<(IrOperation, OperationMetadata)> {
         let op_obj = operation.as_object().ok_or_else(|| {
             ManifestError::validation(format!(
                 "OpenAPI operation {method_name} {path} must be a mapping"
@@ -40,15 +41,12 @@ impl OpenApiImporter<'_> {
         let naming = openapi_operation_naming(op_obj, raw_operation_id, &operation_id);
         let method = parse_http_method(method_name);
         let mut diagnostics = Vec::new();
-        let mut parameters =
-            self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
+        let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
         let pagination = detect_pagination(&parameters, &pagination_context);
-        // All REST inputs must be present before lookup-key exclusion inference:
-        // the same vector becomes both operation inputs and parameter bindings.
-        infer_rest_lookup_key_exclusions(&mut parameters, &pagination);
+        let lookup_keys = infer_rest_lookup_keys(&parameters, &pagination);
         let rest_parameters = parameters
             .iter()
             .map(|input| RestParameterBinding {
@@ -59,7 +57,7 @@ impl OpenApiImporter<'_> {
                 data_type: input.data_type,
             })
             .collect();
-        Ok(IrOperation {
+        let operation = IrOperation {
             id: operation_id.clone(),
             method_name: op_obj
                 .get("operationId")
@@ -87,10 +85,16 @@ impl OpenApiImporter<'_> {
                 parameters: rest_parameters,
                 request_body,
                 response,
-                pagination,
             })),
             diagnostics,
-        })
+        };
+        Ok((
+            operation,
+            OperationMetadata::Rest {
+                pagination,
+                lookup_keys,
+            },
+        ))
     }
 
     fn import_parameters(
@@ -171,7 +175,6 @@ impl OpenApiImporter<'_> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    exclude_from_lookup_keys: false,
                 })
             })
             .collect()

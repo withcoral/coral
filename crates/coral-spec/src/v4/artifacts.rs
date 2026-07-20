@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
-use crate::v4::ir::SemanticIr;
 use crate::v4::manifest::{SurfaceType, V4SourceManifest};
 use crate::v4::projections::ProjectionCatalog;
 use crate::v4::{
-    PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION,
+    OPERATION_METADATA_GENERATOR_VERSION, PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION,
+    V4_ARTIFACT_SCHEMA_VERSION, ValidatedSurfacePlan,
 };
 use crate::{ManifestError, Result};
 
@@ -23,7 +23,7 @@ pub struct V4MaterializedSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaterializedSurface {
-    pub semantic_ir: SemanticIr,
+    pub plan: ValidatedSurfacePlan,
     pub source_document_sha256: Option<String>,
     pub normalized_source_document_path: PathBuf,
     pub raw_source_document_path: PathBuf,
@@ -36,6 +36,7 @@ pub struct Fingerprint {
     pub manifest_sha256: String,
     pub surface: FingerprintSurface,
     pub importer_version: String,
+    pub operation_metadata_generator_version: String,
     pub projection_generator_version: String,
 }
 
@@ -68,6 +69,7 @@ pub fn validate_materialized_source(
         )));
     }
     if fingerprint.importer_version != SURFACE_IMPORTER_VERSION
+        || fingerprint.operation_metadata_generator_version != OPERATION_METADATA_GENERATOR_VERSION
         || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
         return Err(ManifestError::validation(
@@ -87,7 +89,7 @@ pub fn validate_materialized_source_structure(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
 ) -> Result<()> {
-    if materialized.surface.semantic_ir.surface_type != manifest.surface.surface_type {
+    if materialized.surface.plan.semantic_ir().surface_type != manifest.surface.surface_type {
         return Err(ManifestError::validation(
             "DSL v4 materialized surface type does not match the manifest",
         ));
@@ -114,8 +116,9 @@ mod tests {
         Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility,
     };
     use crate::v4::{
-        MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-        SURFACE_IMPORTER_VERSION, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceManifest,
+        MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
+        OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION,
+        SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceManifest, ValidatedSurfacePlan,
     };
 
     use super::{
@@ -153,18 +156,12 @@ surface:
                     input_declarations_sha256: "inputs-sha".to_string(),
                 },
                 importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                operation_metadata_generator_version: OPERATION_METADATA_GENERATOR_VERSION
+                    .to_string(),
                 projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
             }),
             surface: MaterializedSurface {
-                semantic_ir: SemanticIr {
-                    artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-                    source_name: "demo".to_string(),
-                    surface_type: SurfaceType::OpenApi,
-                    importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
-                    operations: Vec::new(),
-                    types: Vec::new(),
-                    diagnostics: Vec::new(),
-                },
+                plan: empty_plan(SurfaceType::OpenApi),
                 source_document_sha256: Some("surface-sha".to_string()),
                 normalized_source_document_path: PathBuf::from("source-document.yaml"),
                 raw_source_document_path: PathBuf::from("source-document.raw"),
@@ -178,6 +175,31 @@ surface:
             },
             diagnostics: Vec::new(),
         }
+    }
+
+    fn empty_plan(surface_type: SurfaceType) -> ValidatedSurfacePlan {
+        ValidatedSurfacePlan::new(
+            SemanticIr {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                surface_type,
+                importer_version: match surface_type {
+                    SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
+                    SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+                }
+                .to_string(),
+                operations: Vec::new(),
+                types: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            OperationMetadataCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+                operations: std::collections::BTreeMap::default(),
+            },
+        )
+        .expect("empty plan")
     }
 
     fn projection(name: &str) -> Projection {
@@ -220,7 +242,7 @@ surface:
     fn rejects_materialized_surface_type_mismatch() {
         let manifest = manifest();
         let mut materialized = materialized_source();
-        materialized.surface.semantic_ir.surface_type = SurfaceType::Mcp;
+        materialized.surface.plan = empty_plan(SurfaceType::Mcp);
 
         let error = validate_materialized_source_structure(&manifest, &materialized)
             .expect_err("materialized surface type should match the manifest");

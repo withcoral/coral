@@ -7,11 +7,8 @@ use crate::v4::ir::{
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};
-use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-use crate::{
-    ManifestDataType, ManifestError, PaginationSpec, Result, SearchLimitsSpec,
-    SourceTableFunctionKind,
-};
+use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION, ValidatedSurfacePlan};
+use crate::{ManifestDataType, ManifestError, Result, SearchLimitsSpec, SourceTableFunctionKind};
 
 use super::model::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
@@ -21,14 +18,13 @@ use super::names::{
     is_search_operation, projection_guide, projection_name, projection_name_from_operation_naming,
     resolve_projection_name_collisions,
 };
-use super::pagination::pagination_query_param_names;
-
 type TypeIndex<'a> = HashMap<&'a str, &'a IrType>;
 
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
-    surface: &SemanticIr,
+    plan: &ValidatedSurfacePlan,
 ) -> Result<ProjectionCatalog> {
+    let surface = plan.semantic_ir();
     let mut projections = Vec::new();
     let mut diagnostics = Vec::new();
     if surface.source_name != manifest.common.name {
@@ -39,7 +35,7 @@ pub fn generate_projection_catalog(
     }
     let type_by_id = type_index(surface);
     for operation in &surface.operations {
-        let projection = generate_projection(&type_by_id, operation, &mut diagnostics);
+        let projection = generate_projection(plan, &type_by_id, operation, &mut diagnostics);
         projections.push(projection);
     }
     diagnostics.extend(surface.diagnostics.clone());
@@ -58,6 +54,7 @@ pub fn generate_projection_catalog(
 }
 
 fn generate_projection(
+    plan: &ValidatedSurfacePlan,
     type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
@@ -66,9 +63,7 @@ fn generate_projection(
     let rest = rest_execution(operation);
     let mut visibility = initial_projection_visibility(operation, rest);
     let mut projection_diagnostics = operation.diagnostics.clone();
-    let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
-    let pagination_query_params = pagination_query_param_names(&pagination);
-    let kind = projection_kind(operation, is_search, &pagination_query_params);
+    let kind = projection_kind(plan, operation, is_search);
     let sql_exposure = if matches!(kind, ProjectionKind::Table) {
         SqlInputExposure::Filter
     } else {
@@ -81,10 +76,14 @@ fn generate_projection(
         .iter()
         .map(|input| {
             let (exposure, pagination_owned_input) = match &operation.execution {
-                IrExecutionAttachment::Rest(_) => {
-                    rest_input_exposure(input, sql_exposure, &pagination_query_params)
-                }
-                IrExecutionAttachment::Mcp(mcp) if mcp_pagination_owns_input(mcp, input) => {
+                IrExecutionAttachment::Rest(_) => rest_input_exposure(
+                    input,
+                    sql_exposure,
+                    plan.pagination_owns_input(operation, &input.name),
+                ),
+                IrExecutionAttachment::Mcp(_)
+                    if plan.pagination_owns_input(operation, &input.name) =>
+                {
                     (SqlInputExposure::Internal, true)
                 }
                 IrExecutionAttachment::Mcp(_) => (sql_exposure, false),
@@ -113,7 +112,7 @@ fn generate_projection(
                 data_type: input.data_type.lower(),
                 default_value: input.default_value.clone(),
                 description: input.description.clone(),
-                lookup_key: rest_filter_is_lookup_key(rest, input, exposure),
+                lookup_key: rest_filter_is_lookup_key(plan, operation, input, exposure),
             }
         })
         .collect::<Vec<_>>();
@@ -171,20 +170,18 @@ fn initial_projection_visibility(
 }
 
 fn projection_kind(
+    plan: &ValidatedSurfacePlan,
     operation: &IrOperation,
     is_search: bool,
-    pagination_query_params: &HashSet<&str>,
 ) -> ProjectionKind {
     let function_kind = match &operation.execution {
         IrExecutionAttachment::Rest(_) | IrExecutionAttachment::Mcp(_) if is_search => {
             Some(SourceTableFunctionKind::Search)
         }
-        IrExecutionAttachment::Rest(_)
-            if has_required_public_rest_input(operation, pagination_query_params) =>
-        {
+        IrExecutionAttachment::Rest(_) if has_required_public_rest_input(plan, operation) => {
             Some(SourceTableFunctionKind::Table)
         }
-        IrExecutionAttachment::Mcp(mcp) if !has_public_mcp_inputs(operation, mcp) => None,
+        IrExecutionAttachment::Mcp(_) if !has_public_mcp_inputs(plan, operation) => None,
         IrExecutionAttachment::Mcp(_) => Some(SourceTableFunctionKind::Table),
         IrExecutionAttachment::Rest(_) => None,
     };
@@ -193,22 +190,23 @@ fn projection_kind(
     })
 }
 
-fn has_required_public_rest_input(
-    operation: &IrOperation,
-    pagination_query_params: &HashSet<&str>,
-) -> bool {
+fn has_required_public_rest_input(plan: &ValidatedSurfacePlan, operation: &IrOperation) -> bool {
     operation.inputs.iter().any(|input| {
         input.required
-            && rest_input_exposure(input, SqlInputExposure::Filter, pagination_query_params).0
-                == SqlInputExposure::Filter
+            && rest_input_exposure(
+                input,
+                SqlInputExposure::Filter,
+                plan.pagination_owns_input(operation, &input.name),
+            )
+            .0 == SqlInputExposure::Filter
     })
 }
 
-fn has_public_mcp_inputs(operation: &IrOperation, mcp: &crate::v4::McpExecutionAttachment) -> bool {
+fn has_public_mcp_inputs(plan: &ValidatedSurfacePlan, operation: &IrOperation) -> bool {
     operation
         .inputs
         .iter()
-        .any(|input| !mcp_pagination_owns_input(mcp, input))
+        .any(|input| !plan.pagination_owns_input(operation, &input.name))
 }
 
 fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String {
@@ -231,10 +229,8 @@ fn projection_input_required(input: &IrOperationInput) -> bool {
 fn rest_input_exposure(
     input: &IrOperationInput,
     default_exposure: SqlInputExposure,
-    pagination_query_params: &HashSet<&str>,
+    pagination_owned_query_input: bool,
 ) -> (SqlInputExposure, bool) {
-    let pagination_owned_query_input = input.location == IrInputLocation::Query
-        && pagination_query_params.contains(input.name.as_str());
     let exposure = match input.location {
         IrInputLocation::Query if pagination_owned_query_input => SqlInputExposure::Internal,
         IrInputLocation::Path | IrInputLocation::Query | IrInputLocation::ToolArg => {
@@ -247,31 +243,17 @@ fn rest_input_exposure(
     (exposure, pagination_owned_query_input)
 }
 
-/// A REST filter input is a lookup key (dependent joins may bind to it) when
-/// the surface metadata does not exclude it. Lookup key exclusion never
-/// changes SQL exposure: an excluded input stays a pushdown filter, it just
-/// cannot anchor a join.
+/// A REST filter input is a lookup key (dependent joins may bind to it) only
+/// when operation metadata explicitly includes it in the positive allowlist.
 fn rest_filter_is_lookup_key(
-    rest: Option<&RestExecutionAttachment>,
+    plan: &ValidatedSurfacePlan,
+    operation: &IrOperation,
     input: &IrOperationInput,
     exposure: SqlInputExposure,
 ) -> bool {
-    rest.is_some() && exposure == SqlInputExposure::Filter && !input.exclude_from_lookup_keys
-}
-
-fn mcp_pagination_owns_input(
-    mcp: &crate::v4::McpExecutionAttachment,
-    input: &IrOperationInput,
-) -> bool {
-    if input.location != IrInputLocation::ToolArg {
-        return false;
-    }
-    mcp.pagination
-        .as_ref()
-        .is_some_and(|pagination| input.name == pagination.cursor_arg)
-        || mcp.offset_pagination.as_ref().is_some_and(|pagination| {
-            input.name == pagination.limit_arg || input.name == pagination.offset_arg
-        })
+    matches!(operation.execution, IrExecutionAttachment::Rest(_))
+        && exposure == SqlInputExposure::Filter
+        && plan.input_is_lookup_key(&operation.id, &input.name)
 }
 
 fn projection_input_name(

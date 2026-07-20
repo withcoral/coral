@@ -28,7 +28,8 @@ surface:
     let v4 = manifest.as_v4().expect("v4");
     let surface = &v4.surface;
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let published = catalog
         .projections
         .iter()
@@ -73,14 +74,17 @@ paths:
 ";
     let mut ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
     if let Some((enabled, exclude)) = lookup_keys {
-        for operation in &mut ir.operations {
-            for input in &mut operation.inputs {
-                input.exclude_from_lookup_keys =
-                    !enabled || exclude.iter().any(|excluded| *excluded == input.name);
+        for metadata in ir.operation_metadata.operations.values_mut() {
+            if let OperationMetadata::Rest { lookup_keys, .. } = metadata {
+                if enabled {
+                    lookup_keys.retain(|key| !exclude.iter().any(|excluded| *excluded == key));
+                } else {
+                    lookup_keys.clear();
+                }
             }
         }
     }
-    generate_projection_catalog(v4, &ir).expect("catalog")
+    generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog")
 }
 
 fn exposure(catalog: &ProjectionCatalog, operation_id: &str, input_name: &str) -> SqlInputExposure {
@@ -97,7 +101,7 @@ fn exposure(catalog: &ProjectionCatalog, operation_id: &str, input_name: &str) -
 }
 
 #[test]
-fn lookup_key_exclusions_control_joinability_not_exposure() {
+fn lookup_key_allowlist_controls_joinability_not_exposure() {
     let filter_lookup_key = |catalog: &ProjectionCatalog, filter_name: &str| {
         let list_items = catalog
             .projections
@@ -113,8 +117,8 @@ fn lookup_key_exclusions_control_joinability_not_exposure() {
 
     let catalog = items_api_catalog(Some((true, &["order_by", "project_id"])));
 
-    // An excluded parameter keeps its exposure and pushdown; it only loses
-    // the dependent-join completeness flag.
+    // A parameter omitted from the allowlist keeps its exposure and pushdown;
+    // it only loses the dependent-join completeness flag.
     assert_eq!(
         exposure(&catalog, "list_items", "order_by"),
         SqlInputExposure::Filter
@@ -126,7 +130,7 @@ fn lookup_key_exclusions_control_joinability_not_exposure() {
     );
     assert!(filter_lookup_key(&catalog, "state"));
 
-    // Function arguments never carry the flag, excluded or not.
+    // Function arguments never carry the flag, allowlisted or not.
     let project_items = catalog
         .projections
         .iter()
@@ -149,7 +153,7 @@ fn lookup_key_exclusions_control_joinability_not_exposure() {
     assert!(!filter_lookup_key(&catalog, "order_by"));
 
     // Generated metadata is present immediately after OpenAPI import, before
-    // app materialization writes the semantic IR artifact.
+    // app materialization writes the operation-metadata artifact.
     let catalog = items_api_catalog(None);
     assert_eq!(
         exposure(&catalog, "list_items", "state"),
@@ -204,7 +208,8 @@ paths:
     )
     .expect("import");
 
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let column_types = catalog
         .projections
         .iter()
@@ -379,7 +384,8 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let names = catalog
         .projections
         .iter()
@@ -428,7 +434,8 @@ surface:
     let v4 = manifest.as_v4().expect("v4");
     let surface = &v4.surface;
     let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -440,13 +447,12 @@ surface:
         .find(|operation| operation.id == projection.operation_id)
         .expect("repo issues operation");
 
-    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
-        panic!("expected REST execution");
-    };
-    assert_eq!(rest.pagination.mode, PaginationMode::Page);
-    assert_eq!(rest.pagination.page_param.as_deref(), Some("page"));
+    let plan = ir.validated_plan().expect("plan");
+    let pagination = plan.rest_pagination(&operation.id);
+    assert_eq!(pagination.mode, PaginationMode::Page);
+    assert_eq!(pagination.page_param.as_deref(), Some("page"));
     assert_eq!(
-        rest.pagination
+        pagination
             .page_size
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
@@ -556,7 +562,8 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -568,13 +575,12 @@ paths:
         .find(|operation| operation.id == projection.operation_id)
         .expect("items operation");
 
-    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
-        panic!("expected REST execution");
-    };
-    assert_eq!(rest.pagination.mode, PaginationMode::LinkHeader);
-    assert_eq!(rest.pagination.page_param.as_deref(), Some("page"));
+    let plan = ir.validated_plan().expect("plan");
+    let pagination = plan.rest_pagination(&operation.id);
+    assert_eq!(pagination.mode, PaginationMode::LinkHeader);
+    assert_eq!(pagination.page_param.as_deref(), Some("page"));
     assert_eq!(
-        rest.pagination
+        pagination
             .page_size
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
@@ -644,7 +650,8 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -656,13 +663,12 @@ paths:
         .find(|operation| operation.id == projection.operation_id)
         .expect("items operation");
 
-    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
-        panic!("expected REST execution");
-    };
-    assert_eq!(rest.pagination.mode, PaginationMode::LinkHeader);
-    assert_eq!(rest.pagination.page_param, None);
+    let plan = ir.validated_plan().expect("plan");
+    let pagination = plan.rest_pagination(&operation.id);
+    assert_eq!(pagination.mode, PaginationMode::LinkHeader);
+    assert_eq!(pagination.page_param, None);
     assert_eq!(
-        rest.pagination
+        pagination
             .page_size
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
@@ -731,7 +737,8 @@ paths:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -845,7 +852,8 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let list_projection = catalog
         .projections
         .iter()
@@ -1015,7 +1023,8 @@ components:
         .as_bytes(),
     )
     .expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let names_by_operation = catalog
         .projections
         .iter()
@@ -1175,7 +1184,8 @@ paths:
     let v4 = manifest.as_v4().expect("v4");
     let surface = &v4.surface;
     let ir = import_openapi_surface(v4, surface, openapi.as_bytes()).expect("import");
-    let catalog = generate_projection_catalog(v4, &ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let sql_name_by_wire = projection
         .inputs
@@ -1195,7 +1205,8 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
     let mcp_ir =
         import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
 
-    let catalog = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &mcp_ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -1269,7 +1280,8 @@ fn generated_mcp_projection_keeps_pagination_cursor_internal() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
+    let projections =
+        generate_projection_catalog(v4, &mcp_ir.validated_plan().expect("plan")).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1330,7 +1342,8 @@ fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
+    let projections =
+        generate_projection_catalog(v4, &mcp_ir.validated_plan().expect("plan")).expect("catalog");
     let projection = projections
         .projections
         .iter()
@@ -1381,7 +1394,8 @@ fn generated_mcp_projection_snake_cases_camel_input_names() {
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
 
-    let projections = generate_projection_catalog(v4, &mcp_ir).expect("catalog");
+    let projections =
+        generate_projection_catalog(v4, &mcp_ir.validated_plan().expect("plan")).expect("catalog");
     let projection = projections
         .projections
         .iter()

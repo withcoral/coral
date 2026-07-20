@@ -3,11 +3,12 @@
     reason = "DSL v4 contracts are field-heavy artifact models documented in the PRD."
 )]
 
-pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 4;
-pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v2";
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v6";
-pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v2";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v9";
+pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 5;
+pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v3";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v7";
+pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v3";
+pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v1";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v10";
 
 mod artifacts;
 mod diagnostics;
@@ -15,7 +16,7 @@ mod ir;
 mod lookup_keys;
 mod manifest;
 mod naming;
-mod parameter_metadata;
+mod operation_metadata;
 mod projections;
 mod schema;
 mod surfaces;
@@ -46,10 +47,10 @@ pub use manifest::{
     V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
-pub use parameter_metadata::{
-    LookupKeysMetadata, ParameterMetadataOverrides, ProjectionPaginationInputSyncMode,
-    apply_parameter_metadata_overrides, parse_parameter_metadata_overrides_yaml,
-    sync_projection_pagination_inputs, validate_lookup_keys_for_surface,
+pub use operation_metadata::{
+    ImportedSurface, McpOperationPagination, OperationMetadata, OperationMetadataCatalog,
+    ProjectionInputSyncMode, ValidatedSurfacePlan, sync_projection_inputs,
+    validate_operation_metadata_structure, validate_semantic_ir_structure,
 };
 pub use projections::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,

@@ -61,10 +61,14 @@ root.
   isolate source-local compatibility failures while preserving fail-closed
   behavior for operational errors. RDBMS migration machinery must not turn
   load-time compatibility into silent regeneration.
-- Store DSL v4 source documents, semantic IR, fingerprint, diagnostics, and the
-  generated projection catalog directly under the materialization root. Store
-  source-wide parameter metadata and projection overrides directly under the
-  override root; do not restore per-surface directories or fallback paths.
+- Store DSL v4 source documents, semantic IR, generated operation metadata,
+  fingerprint, diagnostics, and the generated projection catalog directly
+  under the materialization root. Store full `operation-metadata.yaml` and
+  projection overrides directly under the override root; do not restore
+  per-surface directories or fallback paths. A present operation-metadata
+  override completely replaces generated metadata. Legacy
+  `parameter_metadata.yaml` files are inert and must not be migrated, deleted,
+  or interpreted at load time.
 - A valid DSL v4 source with no published projections still has a loadable
   semantic IR. Runtime package assembly returns no component for that source;
   it must not treat the empty projection catalog as a corrupt materialization.

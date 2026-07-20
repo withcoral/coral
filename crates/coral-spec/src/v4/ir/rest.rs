@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ResponseSpec;
 use crate::v4::ir::{HttpMethod, IrInputLocation, IrScalarType};
-use crate::{PaginationSpec, ResponseSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestExecutionAttachment {
@@ -10,7 +10,6 @@ pub struct RestExecutionAttachment {
     pub parameters: Vec<RestParameterBinding>,
     pub request_body: Option<RestRequestBody>,
     pub response: RestResponseAttachment,
-    pub pagination: PaginationSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -48,8 +48,6 @@ pub struct IrOperationInput {
     pub data_type: IrScalarType,
     pub default_value: Option<String>,
     pub description: String,
-    #[serde(default)]
-    pub exclude_from_lookup_keys: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,7 +171,6 @@ mod tests {
         IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
         SemanticIr,
     };
-    use crate::PaginationSpec;
     use crate::v4::diagnostics::Diagnostic;
     use crate::v4::ir::mcp::McpExecutionAttachment;
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
@@ -214,7 +211,6 @@ mod tests {
                         media_type: "application/json".to_string(),
                         response: crate::ResponseSpec::default(),
                     },
-                    pagination: PaginationSpec::default(),
                 })),
                 diagnostics: Vec::new(),
             }],
@@ -268,7 +264,6 @@ mod tests {
                     data_type: IrScalarType::String,
                     default_value: None,
                     description: String::new(),
-                    exclude_from_lookup_keys: false,
                 }],
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
@@ -278,8 +273,6 @@ mod tests {
                 entity: None,
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                     tool_name: "list_items".to_string(),
-                    pagination: None,
-                    offset_pagination: None,
                 }),
                 diagnostics: Vec::new(),
             }],
@@ -374,7 +367,6 @@ future_generator_metadata:
             data_type: IrScalarType::String,
             default_value: None,
             description: String::new(),
-            exclude_from_lookup_keys: false,
         };
 
         let yaml = serde_yaml::to_string(&input).expect("serialize input");

@@ -1136,8 +1136,8 @@ fn app_error_type(error: &AppError) -> &'static str {
         }
         AppError::IncompatibleInstalledV4Manifest { .. } => "INCOMPATIBLE_INSTALLED_V4_MANIFEST",
         AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
-        AppError::InvalidV4ParameterMetadataOverride { .. } => {
-            "INVALID_V4_PARAMETER_METADATA_OVERRIDE"
+        AppError::InvalidV4OperationMetadataOverride { .. } => {
+            "INVALID_V4_OPERATION_METADATA_OVERRIDE"
         }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
@@ -2024,7 +2024,7 @@ surface:
     }
 
     #[tokio::test]
-    async fn installed_v4_source_uses_parameter_metadata_pagination_override() {
+    async fn installed_v4_source_uses_operation_metadata_pagination_override() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/widgets"))
@@ -2081,7 +2081,7 @@ surface:
             .expect("import v4 source");
 
         let source_name = SourceName::parse("github_v4_pagination_override").expect("source name");
-        write_widgets_parameter_metadata_override(
+        write_widgets_operation_metadata_override(
             &fixture.manager.layout,
             &workspace_name,
             &source_name,
@@ -2146,31 +2146,48 @@ paths:
         )
     }
 
-    fn write_widgets_parameter_metadata_override(
+    fn write_widgets_operation_metadata_override(
         layout: &AppStateLayout,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) {
-        let override_path = layout.v4_parameter_metadata_override_file(workspace_name, source_name);
+        let generated_path = layout
+            .v4_materialized_dir(workspace_name, source_name)
+            .join(crate::sources::materialization::OPERATION_METADATA_FILENAME);
+        let mut metadata: coral_spec::v4::OperationMetadataCatalog = serde_yaml::from_slice(
+            &std::fs::read(&generated_path).expect("read generated operation metadata"),
+        )
+        .expect("parse generated operation metadata");
+        let operation = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata");
+        let coral_spec::v4::OperationMetadata::Rest { pagination, .. } = operation else {
+            panic!("expected REST operation metadata");
+        };
+        *pagination = coral_spec::PaginationSpec {
+            mode: coral_spec::PaginationMode::Page,
+            page_param: Some("page".to_string()),
+            page_start: 1,
+            page_size: Some(coral_spec::PageSizeSpec {
+                default: 2,
+                max: 2,
+                query_param: Some("per_page".to_string()),
+                body_path: Vec::new(),
+            }),
+            ..coral_spec::PaginationSpec::default()
+        };
+        let override_path = layout
+            .v4_override_dir(workspace_name, source_name)
+            .join(crate::sources::materialization::OPERATION_METADATA_FILENAME);
         std::fs::create_dir_all(override_path.parent().expect("override parent"))
             .expect("create override dir");
         std::fs::write(
             &override_path,
-            r"
-pagination:
-  - name: widgets_page
-    match:
-      operation_ids: [widgets/list]
-    mode: page
-    page_param: page
-    page_start: 1
-    page_size:
-      default: 2
-      max: 2
-      query_param: per_page
-",
+            serde_yaml::to_string(&metadata).expect("encode operation metadata override"),
         )
-        .expect("write parameter metadata override");
+        .expect("write operation metadata override");
     }
 
     fn request_query_values(requests: &[wiremock::Request], query_key: &str) -> Vec<String> {

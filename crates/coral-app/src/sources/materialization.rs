@@ -8,14 +8,14 @@ use std::time::Duration;
 
 use coral_spec::v4::{
     Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
-    MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, ProjectionPaginationInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr,
-    SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
-    apply_parameter_metadata_overrides, generate_projection_catalog, import_mcp_surface,
-    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
-    openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
-    sync_projection_pagination_inputs, validate_materialized_source,
-    validate_materialized_source_structure, validate_openapi_base_url_template,
+    MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION,
+    OPERATION_METADATA_GENERATOR_VERSION, OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION,
+    ProjectionCatalog, ProjectionInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
+    V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest, ValidatedSurfacePlan,
+    generate_projection_catalog, import_mcp_surface, import_openapi_surface,
+    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
+    sync_projection_inputs, validate_materialized_source, validate_materialized_source_structure,
+    validate_openapi_base_url_template, validate_semantic_ir_structure,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -28,7 +28,10 @@ use uuid::Uuid;
 use crate::bootstrap::AppError;
 use crate::hash::sha256_hex;
 use crate::sources::SourceName;
-use crate::state::{AppStateLayout, V4ProjectionCatalogFile, V4ProjectionCatalogOrigin};
+use crate::state::{
+    AppStateLayout, V4OperationMetadataFile, V4OperationMetadataOrigin, V4ProjectionCatalogFile,
+    V4ProjectionCatalogOrigin,
+};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 
@@ -38,7 +41,7 @@ const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
 pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
-pub(crate) const PARAMETER_METADATA_OVERRIDE_FILENAME: &str = "parameter_metadata.yaml";
+pub(crate) const OPERATION_METADATA_FILENAME: &str = "operation-metadata.yaml";
 
 type ReportedDiagnosticKey = (String, String);
 type ReportedDiagnosticStateKey = (String, String, String);
@@ -371,6 +374,7 @@ pub(crate) fn load_v4_materialization_with_reporter(
 ) -> Result<V4MaterializedSource, AppError> {
     let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
     let projections_file = layout.v4_projection_catalog_file(workspace_name, source_name);
+    let operation_metadata_file = layout.v4_operation_metadata_file(workspace_name, source_name)?;
     let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
     if !projections_file.path.exists() {
         return Err(incompatible_materialization_error(
@@ -399,24 +403,28 @@ pub(crate) fn load_v4_materialization_with_reporter(
     let raw_source_document_path = materialized_dir.join("source-document.raw");
     let normalized_source_document_path = materialized_dir.join("source-document.yaml");
     let semantic_ir_path = materialized_dir.join("semantic-ir.yaml");
-    let mut semantic_ir = read_semantic_ir_with_reporter(
+    let semantic_ir = read_validated_semantic_ir_with_reporter(
+        manifest,
         workspace_name,
         source_name,
         &semantic_ir_path,
         &mut load_diagnostics,
         diagnostic_reporter,
     )?;
-    if let Err(error) = validate_semantic_ir(manifest, &semantic_ir) {
-        load_diagnostics.push(materialization_warning(
-            "V4_SEMANTIC_IR_PROVENANCE_MISMATCH",
-            error,
-        ));
-    }
-    apply_parameter_metadata_override_with_reporter(
-        layout,
+    let operation_metadata = read_operation_metadata_with_reporter(
         workspace_name,
         source_name,
-        &mut semantic_ir,
+        manifest,
+        &operation_metadata_file,
+        &mut load_diagnostics,
+        diagnostic_reporter,
+    )?;
+    let plan = build_validated_plan_with_reporter(
+        semantic_ir,
+        operation_metadata,
+        &operation_metadata_file,
+        workspace_name,
+        source_name,
         &mut load_diagnostics,
         diagnostic_reporter,
     )?;
@@ -431,14 +439,10 @@ pub(crate) fn load_v4_materialization_with_reporter(
         load_diagnostics.push(diagnostic);
     }
     let projection_sync_mode = match projections_file.origin {
-        V4ProjectionCatalogOrigin::Materialized => {
-            ProjectionPaginationInputSyncMode::RecomputeRestInputExposure
-        }
-        V4ProjectionCatalogOrigin::Override => {
-            ProjectionPaginationInputSyncMode::PreserveExistingExposure
-        }
+        V4ProjectionCatalogOrigin::Materialized => ProjectionInputSyncMode::RecomputeInputExposure,
+        V4ProjectionCatalogOrigin::Override => ProjectionInputSyncMode::PreserveExistingExposure,
     };
-    sync_projection_pagination_inputs(&semantic_ir, &mut projections, projection_sync_mode);
+    sync_projection_inputs(&plan, &mut projections, projection_sync_mode);
     diagnostic_reporter.report_source_diagnostics(
         workspace_name,
         source_name,
@@ -447,7 +451,7 @@ pub(crate) fn load_v4_materialization_with_reporter(
     );
     diagnostics.append(&mut load_diagnostics);
     let surface = MaterializedSurface {
-        semantic_ir,
+        plan,
         source_document_sha256: fingerprint
             .as_ref()
             .map(|fingerprint| fingerprint.surface.descriptor_sha256.clone()),
@@ -481,6 +485,94 @@ fn report_materialization_failure(
     );
 }
 
+fn validate_semantic_ir_structure_with_reporter(
+    semantic_ir: &SemanticIr,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    load_diagnostics: &mut Vec<Diagnostic>,
+    diagnostic_reporter: &SourceDiagnosticReporter,
+) -> Result<(), AppError> {
+    validate_semantic_ir_structure(semantic_ir).map_err(|error| {
+        let error = incompatible_materialization_error(source_name, error.to_string());
+        report_materialization_failure(
+            diagnostic_reporter,
+            workspace_name,
+            source_name,
+            load_diagnostics,
+            "V4_SEMANTIC_IR_UNAVAILABLE",
+            &error,
+        );
+        error
+    })
+}
+
+fn read_validated_semantic_ir_with_reporter(
+    manifest: &V4SourceManifest,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    path: &Path,
+    load_diagnostics: &mut Vec<Diagnostic>,
+    diagnostic_reporter: &SourceDiagnosticReporter,
+) -> Result<SemanticIr, AppError> {
+    let semantic_ir = read_semantic_ir_with_reporter(
+        workspace_name,
+        source_name,
+        path,
+        load_diagnostics,
+        diagnostic_reporter,
+    )?;
+    if let Err(error) = validate_semantic_ir(manifest, &semantic_ir) {
+        load_diagnostics.push(materialization_warning(
+            "V4_SEMANTIC_IR_PROVENANCE_MISMATCH",
+            error,
+        ));
+    }
+    validate_semantic_ir_structure_with_reporter(
+        &semantic_ir,
+        workspace_name,
+        source_name,
+        load_diagnostics,
+        diagnostic_reporter,
+    )?;
+    Ok(semantic_ir)
+}
+
+fn build_validated_plan_with_reporter(
+    semantic_ir: SemanticIr,
+    operation_metadata: OperationMetadataCatalog,
+    metadata_file: &V4OperationMetadataFile,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    load_diagnostics: &mut Vec<Diagnostic>,
+    diagnostic_reporter: &SourceDiagnosticReporter,
+) -> Result<ValidatedSurfacePlan, AppError> {
+    ValidatedSurfacePlan::new(semantic_ir, operation_metadata).map_err(|error| {
+        let (error, code) = match metadata_file.origin {
+            V4OperationMetadataOrigin::Materialized => (
+                incompatible_materialization_error(source_name, error.to_string()),
+                "V4_OPERATION_METADATA_UNAVAILABLE",
+            ),
+            V4OperationMetadataOrigin::Override => (
+                invalid_operation_metadata_override_error(
+                    source_name,
+                    &metadata_file.path,
+                    error.to_string(),
+                ),
+                "V4_OPERATION_METADATA_OVERRIDE_FAILED",
+            ),
+        };
+        report_materialization_failure(
+            diagnostic_reporter,
+            workspace_name,
+            source_name,
+            load_diagnostics,
+            code,
+            &error,
+        );
+        error
+    })
+}
+
 fn read_semantic_ir_with_reporter(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
@@ -500,25 +592,29 @@ fn read_semantic_ir_with_reporter(
     })
 }
 
-fn apply_parameter_metadata_override_with_reporter(
-    layout: &AppStateLayout,
+fn read_operation_metadata_with_reporter(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
-    semantic_ir: &mut SemanticIr,
+    manifest: &V4SourceManifest,
+    metadata_file: &V4OperationMetadataFile,
     load_diagnostics: &mut Vec<Diagnostic>,
     diagnostic_reporter: &SourceDiagnosticReporter,
-) -> Result<(), AppError> {
-    apply_parameter_metadata_override_file(layout, workspace_name, source_name, semantic_ir)
-        .inspect_err(|error| {
+) -> Result<OperationMetadataCatalog, AppError> {
+    load_operation_metadata(manifest, source_name, metadata_file, load_diagnostics).inspect_err(
+        |error| {
             report_materialization_failure(
                 diagnostic_reporter,
                 workspace_name,
                 source_name,
                 load_diagnostics,
-                "V4_PARAMETER_METADATA_OVERRIDE_FAILED",
+                match metadata_file.origin {
+                    V4OperationMetadataOrigin::Materialized => "V4_OPERATION_METADATA_UNAVAILABLE",
+                    V4OperationMetadataOrigin::Override => "V4_OPERATION_METADATA_OVERRIDE_FAILED",
+                },
                 error,
             );
-        })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -590,6 +686,7 @@ fn validate_fingerprint_header(
         return Err("fingerprint source name does not match installed manifest".to_string());
     }
     if fingerprint.importer_version != SURFACE_IMPORTER_VERSION
+        || fingerprint.operation_metadata_generator_version != OPERATION_METADATA_GENERATOR_VERSION
         || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
         return Err("fingerprint importer or generator version mismatch".to_string());
@@ -698,38 +795,70 @@ fn validate_projection_catalog_header(
     Ok(())
 }
 
-fn apply_parameter_metadata_override_file(
-    layout: &AppStateLayout,
-    workspace_name: &WorkspaceName,
+fn load_operation_metadata(
+    manifest: &V4SourceManifest,
     source_name: &SourceName,
-    semantic_ir: &mut SemanticIr,
-) -> Result<(), AppError> {
-    let path = layout.v4_parameter_metadata_override_file(workspace_name, source_name);
-    if !path.exists() {
-        return Ok(());
+    metadata_file: &V4OperationMetadataFile,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<OperationMetadataCatalog, AppError> {
+    let metadata = match read_yaml(&metadata_file.path) {
+        Ok(metadata) => metadata,
+        Err(AppError::Io(error)) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(AppError::Io(error));
+        }
+        Err(error) => {
+            return Err(match metadata_file.origin {
+                V4OperationMetadataOrigin::Materialized => incompatible_materialization_error(
+                    source_name,
+                    format!(
+                        "failed to read operation metadata artifact '{}': {error}",
+                        metadata_file.path.display()
+                    ),
+                ),
+                V4OperationMetadataOrigin::Override => invalid_operation_metadata_override_error(
+                    source_name,
+                    &metadata_file.path,
+                    format!("failed to read override artifact: {error}"),
+                ),
+            });
+        }
+    };
+    if let Err(error) = validate_operation_metadata_header(manifest, &metadata, metadata_file) {
+        diagnostics.push(materialization_warning(
+            "V4_OPERATION_METADATA_PROVENANCE_MISMATCH",
+            error,
+        ));
     }
+    Ok(metadata)
+}
 
-    let raw = std::fs::read_to_string(&path).map_err(|error| {
-        invalid_parameter_metadata_override_error(
-            source_name,
-            &path,
-            format!("failed to read override: {error}"),
-        )
-    })?;
-    let overrides = parse_parameter_metadata_overrides_yaml(&raw).map_err(|error| {
-        invalid_parameter_metadata_override_error(
-            source_name,
-            &path,
-            format!("failed to parse override: {error}"),
-        )
-    })?;
-    apply_parameter_metadata_overrides(semantic_ir, &overrides).map_err(|error| {
-        invalid_parameter_metadata_override_error(
-            source_name,
-            &path,
-            format!("failed to apply override: {error}"),
-        )
-    })?;
+fn validate_operation_metadata_header(
+    manifest: &V4SourceManifest,
+    metadata: &OperationMetadataCatalog,
+    metadata_file: &V4OperationMetadataFile,
+) -> Result<(), String> {
+    if metadata.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
+        return Err("operation metadata artifact schema version mismatch".to_string());
+    }
+    if metadata.source_name != manifest.common.name {
+        return Err("operation metadata source name does not match installed manifest".to_string());
+    }
+    match metadata_file.origin {
+        V4OperationMetadataOrigin::Materialized => {
+            if metadata.generator_version.as_deref() != Some(OPERATION_METADATA_GENERATOR_VERSION) {
+                return Err("operation metadata generator version mismatch".to_string());
+            }
+        }
+        V4OperationMetadataOrigin::Override => {
+            if let Some(generator_version) = metadata.generator_version.as_deref()
+                && generator_version != OPERATION_METADATA_GENERATOR_VERSION
+            {
+                return Err(format!(
+                    "operation metadata override was copied from generator version '{generator_version}', but this Coral build expects '{OPERATION_METADATA_GENERATOR_VERSION}'"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -753,7 +882,8 @@ fn validate_loaded_materialization(
     })?;
     let operations = materialized
         .surface
-        .semantic_ir
+        .plan
+        .semantic_ir()
         .operations
         .iter()
         .map(|operation| operation.id.as_str())
@@ -836,14 +966,15 @@ fn write_materialization(
         ))
     })?;
     write_surface_artifacts(temp_dir, &materialized_surface)?;
-    let projections = generate_projection_catalog(manifest, &materialized_surface.semantic_ir)
+    let projections = generate_projection_catalog(manifest, &materialized_surface.plan)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     let mut diagnostics = Vec::new();
     diagnostics.extend(projections.diagnostics.clone());
-    diagnostics.extend(materialized_surface.semantic_ir.diagnostics.clone());
+    diagnostics.extend(materialized_surface.plan.semantic_ir().diagnostics.clone());
     diagnostics.extend(
         materialized_surface
-            .semantic_ir
+            .plan
+            .semantic_ir()
             .operations
             .iter()
             .flat_map(|operation| operation.diagnostics.clone()),
@@ -860,12 +991,13 @@ fn write_materialization(
             input_declarations_sha256: stable_input_declarations_sha256(&manifest.declared_inputs)?,
         },
         importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+        operation_metadata_generator_version: OPERATION_METADATA_GENERATOR_VERSION.to_string(),
         projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
     };
     let materialized = V4MaterializedSource {
         fingerprint: Some(fingerprint.clone()),
         surface: MaterializedSurface {
-            semantic_ir: materialized_surface.semantic_ir,
+            plan: materialized_surface.plan,
             source_document_sha256: Some(materialized_surface.observed_sha256),
             normalized_source_document_path: temp_dir.join("source-document.yaml"),
             raw_source_document_path: temp_dir.join("source-document.raw"),
@@ -885,7 +1017,7 @@ struct MaterializedSurfaceBuild {
     raw_document: Vec<u8>,
     normalized_document: Vec<u8>,
     observed_sha256: String,
-    semantic_ir: SemanticIr,
+    plan: ValidatedSurfacePlan,
 }
 
 /// Writes the materialized surface documents and semantic IR.
@@ -904,7 +1036,11 @@ fn write_surface_artifacts(
     )?;
     write_yaml(
         &materialized_dir.join("semantic-ir.yaml"),
-        &materialized_surface.semantic_ir,
+        materialized_surface.plan.semantic_ir(),
+    )?;
+    write_yaml(
+        &materialized_dir.join(OPERATION_METADATA_FILENAME),
+        materialized_surface.plan.operation_metadata(),
     )?;
     Ok(())
 }
@@ -927,7 +1063,7 @@ fn materialize_openapi_surface(
     let bytes = read_descriptor(surface)?;
     validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let observed_sha256 = sha256_hex(&bytes);
-    let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
+    let imported = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to import source '{}' surface: {error}",
             manifest.common.name
@@ -935,11 +1071,14 @@ fn materialize_openapi_surface(
     })?;
     let normalized_document = normalize_source_document(&bytes)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let plan = imported
+        .validated_plan()
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     Ok(MaterializedSurfaceBuild {
         raw_document: bytes,
         normalized_document: normalized_document.into_bytes(),
         observed_sha256,
-        semantic_ir,
+        plan,
     })
 }
 
@@ -952,17 +1091,20 @@ fn materialize_mcp_surface(
     let normalized_document = normalize_mcp_tool_catalog(&catalog)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     let observed_sha256 = sha256_hex(&normalized_document);
-    let semantic_ir = import_mcp_surface(manifest, surface, &catalog).map_err(|error| {
+    let imported = import_mcp_surface(manifest, surface, &catalog).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to import source '{}' surface: {error}",
             manifest.common.name
         ))
     })?;
+    let plan = imported
+        .validated_plan()
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     Ok(MaterializedSurfaceBuild {
         raw_document: normalized_document.clone(),
         normalized_document,
         observed_sha256,
-        semantic_ir,
+        plan,
     })
 }
 
@@ -1346,12 +1488,12 @@ fn invalid_projection_override_error(
     }
 }
 
-fn invalid_parameter_metadata_override_error(
+fn invalid_operation_metadata_override_error(
     source_name: &SourceName,
     path: &Path,
     detail: impl AsRef<str>,
 ) -> AppError {
-    AppError::InvalidV4ParameterMetadataOverride {
+    AppError::InvalidV4OperationMetadataOverride {
         source_name: source_name.to_string(),
         override_path: path.display().to_string(),
         detail: detail.as_ref().to_string(),
@@ -1576,6 +1718,7 @@ surface:
             "source-document.raw",
             "source-document.yaml",
             "semantic-ir.yaml",
+            OPERATION_METADATA_FILENAME,
             FINGERPRINT_FILENAME,
             PROJECTIONS_FILENAME,
             DIAGNOSTICS_FILENAME,
@@ -1677,30 +1820,22 @@ surface:
     }
 
     #[test]
-    fn build_v4_materialization_persists_lookup_key_flags_in_semantic_ir() {
+    fn build_v4_materialization_persists_lookup_keys_in_operation_metadata() {
         let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
         let surface_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());
-        assert!(
-            !surface_dir
-                .join(PARAMETER_METADATA_OVERRIDE_FILENAME)
-                .exists(),
-            "generated lookup key metadata should live in semantic-ir.yaml"
-        );
-
-        let semantic_ir: SemanticIr =
-            read_yaml(&surface_dir.join("semantic-ir.yaml")).expect("read semantic IR");
-        let operation = semantic_ir.operations.first().expect("operation");
-        let input_excluded = |name: &str| {
-            operation
-                .inputs
-                .iter()
-                .find(|input| input.name == name)
-                .expect("input")
-                .exclude_from_lookup_keys
+        let metadata: OperationMetadataCatalog =
+            read_yaml(&surface_dir.join(OPERATION_METADATA_FILENAME))
+                .expect("read operation metadata");
+        let lookup_keys = match metadata
+            .operations
+            .values()
+            .next()
+            .expect("operation metadata")
+        {
+            coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } => lookup_keys,
+            coral_spec::v4::OperationMetadata::Mcp { .. } => panic!("expected REST metadata"),
         };
-        assert!(input_excluded("order_by"));
-        assert!(input_excluded("q"));
-        assert!(!input_excluded("state"));
+        assert_eq!(lookup_keys, &["state"]);
     }
 
     #[tokio::test]
@@ -1740,13 +1875,20 @@ surface:
         )
         .expect("build MCP materialization");
 
-        let semantic_ir: SemanticIr =
-            read_yaml(&build.temp_dir.join("semantic-ir.yaml")).expect("read semantic IR");
-        let operation = semantic_ir.operations.first().expect("operation");
-        let coral_spec::v4::IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
-            panic!("expected MCP execution");
+        let metadata: OperationMetadataCatalog =
+            read_yaml(&build.temp_dir.join(OPERATION_METADATA_FILENAME))
+                .expect("read operation metadata");
+        let pagination = match metadata
+            .operations
+            .values()
+            .next()
+            .expect("operation metadata")
+        {
+            coral_spec::v4::OperationMetadata::Mcp { pagination } => {
+                pagination.cursor.as_ref().expect("pagination")
+            }
+            coral_spec::v4::OperationMetadata::Rest { .. } => panic!("expected MCP metadata"),
         };
-        let pagination = mcp.pagination.as_ref().expect("pagination");
         assert_eq!(pagination.cursor_arg, "cursor");
         assert_eq!(
             pagination.response_cursor_path,
@@ -2134,31 +2276,28 @@ surface:
     }
 
     #[test]
-    fn load_v4_materialization_applies_parameter_metadata_override_without_rewriting_artifact() {
+    fn load_v4_materialization_applies_operation_metadata_override_without_rewriting_artifact() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let override_path =
-            layout.v4_parameter_metadata_override_file(&workspace_name(), &source_name());
+        let generated_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
+        let mut override_metadata: OperationMetadataCatalog =
+            read_yaml(&generated_path).expect("generated operation metadata");
+        let operation_metadata = override_metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata");
+        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = operation_metadata else {
+            panic!("expected REST metadata");
+        };
+        *lookup_keys = vec!["q".to_string()];
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
         std::fs::create_dir_all(override_path.parent().expect("override parent"))
             .expect("create override dir");
-        std::fs::write(
-            &override_path,
-            r"
-lookup_keys:
-  enabled: true
-  exclude: [state]
-operation_overrides:
-  issues/list:
-    pagination:
-      mode: page
-      page_param: page_number
-      page_start: 1
-      page_size:
-        default: 50
-        max: 100
-        query_param: per_page
-",
-        )
-        .expect("write parameter metadata override");
+        write_yaml(&override_path, &override_metadata).expect("write operation metadata override");
 
         let materialized = load_v4_materialization(
             &layout,
@@ -2168,63 +2307,171 @@ operation_overrides:
             &manifest,
         )
         .expect("load materialization with override");
-        let operation = materialized
+        let operation_id = materialized
             .surface
-            .semantic_ir
+            .plan
+            .semantic_ir()
             .operations
             .first()
-            .expect("operation");
-        let coral_spec::v4::IrExecutionAttachment::Rest(rest) = &operation.execution else {
-            panic!("expected REST operation");
-        };
-        assert_eq!(rest.pagination.mode, coral_spec::PaginationMode::Page);
-        assert_eq!(rest.pagination.page_param.as_deref(), Some("page_number"));
-        let loaded_input_excluded = |name: &str| {
-            operation
-                .inputs
-                .iter()
-                .find(|input| input.name == name)
-                .expect("input")
-                .exclude_from_lookup_keys
-        };
-        assert!(!loaded_input_excluded("order_by"));
-        assert!(!loaded_input_excluded("q"));
-        assert!(loaded_input_excluded("state"));
-
-        let semantic_ir_path = layout
-            .v4_materialized_dir(&workspace_name(), &source_name())
-            .join("semantic-ir.yaml");
-        let artifact_ir: SemanticIr =
-            read_yaml(&semantic_ir_path).expect("read persisted semantic IR");
-        let artifact_operation = artifact_ir.operations.first().expect("artifact operation");
-        let coral_spec::v4::IrExecutionAttachment::Rest(artifact_rest) =
-            &artifact_operation.execution
-        else {
-            panic!("expected REST operation");
-        };
-        assert_eq!(
-            artifact_rest.pagination.mode,
-            coral_spec::PaginationMode::None
+            .expect("operation")
+            .id
+            .clone();
+        assert!(
+            materialized
+                .surface
+                .plan
+                .input_is_lookup_key(&operation_id, "q")
         );
-        let artifact_input_excluded = |name: &str| {
-            artifact_operation
-                .inputs
-                .iter()
-                .find(|input| input.name == name)
-                .expect("input")
-                .exclude_from_lookup_keys
+        assert!(
+            !materialized
+                .surface
+                .plan
+                .input_is_lookup_key(&operation_id, "state")
+        );
+
+        let artifact_metadata: OperationMetadataCatalog =
+            read_yaml(&generated_path).expect("read persisted operation metadata");
+        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = artifact_metadata
+            .operations
+            .get(&operation_id)
+            .expect("artifact operation metadata")
+        else {
+            panic!("expected REST metadata");
         };
-        assert!(artifact_input_excluded("order_by"));
-        assert!(artifact_input_excluded("q"));
-        assert!(!artifact_input_excluded("state"));
+        assert_eq!(lookup_keys, &["state"]);
     }
 
     #[test]
-    fn load_v4_materialization_rejects_invalid_parameter_metadata_override_with_override_guidance()
+    fn full_operation_metadata_override_rescues_missing_generated_artifact() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let generated_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
+        let generated = std::fs::read(&generated_path).expect("generated operation metadata");
+        std::fs::remove_file(&generated_path).expect("remove generated metadata");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("old materialization must require re-add");
+        assert!(matches!(
+            error,
+            AppError::MissingOrIncompatibleV4Materialization { .. }
+        ));
+
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(override_path, generated).expect("write full override");
+
+        load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("full valid override should rescue old materialization");
+    }
+
+    #[test]
+    fn valid_metadata_override_does_not_misattribute_corrupt_semantic_ir() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let materialized_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());
+        let generated_metadata = materialized_dir.join(OPERATION_METADATA_FILENAME);
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::copy(generated_metadata, override_path).expect("copy valid metadata override");
+
+        let semantic_ir_path = materialized_dir.join("semantic-ir.yaml");
+        let mut semantic_ir: SemanticIr = read_yaml(&semantic_ir_path).expect("read semantic IR");
+        semantic_ir
+            .operations
+            .first_mut()
+            .expect("operation")
+            .output
+            .type_ref = "missing_type".to_string();
+        write_yaml(&semantic_ir_path, &semantic_ir).expect("write corrupt semantic IR");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("corrupt semantic IR should fail independently of the override");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(error.to_string().contains("Re-add the source"));
+    }
+
+    #[test]
+    fn legacy_parameter_metadata_override_is_silently_ignored() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let legacy_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join("parameter_metadata.yaml");
+        std::fs::create_dir_all(legacy_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(&legacy_path, b": deliberately invalid legacy yaml")
+            .expect("write legacy override");
+
+        load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("legacy parameter metadata must be inert");
+        assert!(legacy_path.exists(), "legacy file must remain untouched");
+    }
+
+    #[test]
+    fn operation_metadata_operational_io_errors_propagate() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
+        std::fs::create_dir_all(&override_path).expect("create directory at override path");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("directory read should be an operational error");
+        assert!(
+            matches!(error, AppError::Io(_)),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_invalid_operation_metadata_override_with_override_guidance()
     {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let override_path =
-            layout.v4_parameter_metadata_override_file(&workspace_name(), &source_name());
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
         std::fs::create_dir_all(override_path.parent().expect("override parent"))
             .expect("create override dir");
         std::fs::write(&override_path, b": not yaml").expect("write corrupt override");
@@ -2236,15 +2483,15 @@ operation_overrides:
             &manifest_yaml,
             &manifest,
         )
-        .expect_err("corrupt parameter metadata override should fail");
+        .expect_err("corrupt operation metadata override should fail");
         let message = error.to_string();
 
         assert!(
-            matches!(error, AppError::InvalidV4ParameterMetadataOverride { .. }),
+            matches!(error, AppError::InvalidV4OperationMetadataOverride { .. }),
             "unexpected error: {error:#}"
         );
         assert!(
-            message.contains("failed to parse override"),
+            message.contains("failed to read override artifact"),
             "unexpected error: {message}"
         );
         assert!(
@@ -2258,8 +2505,9 @@ operation_overrides:
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
         std::fs::write(fingerprint_path, b": not yaml").expect("corrupt fingerprint");
-        let override_path =
-            layout.v4_parameter_metadata_override_file(&workspace_name(), &source_name());
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
         std::fs::create_dir_all(override_path.parent().expect("override parent"))
             .expect("create override dir");
         std::fs::write(override_path, b": not yaml").expect("write corrupt override");
@@ -2285,7 +2533,7 @@ operation_overrides:
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_PARAMETER_METADATA_OVERRIDE_FAILED",
+            "V4_OPERATION_METADATA_OVERRIDE_FAILED",
         ));
     }
 

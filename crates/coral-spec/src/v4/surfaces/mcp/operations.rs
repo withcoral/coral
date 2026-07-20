@@ -1,6 +1,7 @@
 use crate::v4::ir::{
     IrEntityCandidate, IrExecutionAttachment, IrOperation, McpExecutionAttachment,
 };
+use crate::v4::{McpOperationPagination, OperationMetadata};
 
 use super::import::McpImporter;
 use super::model::McpToolDescriptor;
@@ -11,7 +12,7 @@ impl McpImporter<'_> {
         &mut self,
         tool: &McpToolDescriptor,
         operation_id: &str,
-    ) -> Option<IrOperation> {
+    ) -> Option<(IrOperation, OperationMetadata)> {
         let mut diagnostics = Vec::new();
         let imported_inputs = self.import_inputs(tool, operation_id, &mut diagnostics);
         let input_schema_complete = imported_inputs.schema_complete;
@@ -28,7 +29,7 @@ impl McpImporter<'_> {
             tool.output_schema.as_ref(),
             &tool.input_schema,
         );
-        Some(IrOperation {
+        let operation = IrOperation {
             id: operation_id.to_string(),
             method_name: "tools/call".to_string(),
             description: tool
@@ -48,10 +49,17 @@ impl McpImporter<'_> {
             }),
             execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                 tool_name: tool.name.clone(),
-                pagination,
-                offset_pagination,
             }),
             diagnostics,
-        })
+        };
+        Some((
+            operation,
+            OperationMetadata::Mcp {
+                pagination: McpOperationPagination {
+                    cursor: pagination,
+                    offset: offset_pagination,
+                },
+            },
+        ))
     }
 }

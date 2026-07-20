@@ -4,6 +4,7 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrScalarType, IrType, IrTypeShape, SemanticIr};
 use crate::v4::manifest::{SurfaceType, V4SourceManifest, V4Surface};
 use crate::v4::naming::normalize_identifier;
+use crate::v4::{ImportedSurface, OPERATION_METADATA_GENERATOR_VERSION, OperationMetadataCatalog};
 use crate::v4::{MCP_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{ManifestError, Result};
 
@@ -23,7 +24,7 @@ pub fn import_mcp_surface(
     manifest: &V4SourceManifest,
     surface: &V4Surface,
     catalog: &McpToolCatalog,
-) -> Result<SemanticIr> {
+) -> Result<ImportedSurface> {
     if surface.surface_type != SurfaceType::Mcp {
         return Err(ManifestError::validation("surface is not an MCP surface"));
     }
@@ -48,11 +49,12 @@ impl<'a> McpImporter<'a> {
         }
     }
 
-    fn import(&mut self, catalog: &McpToolCatalog) -> Result<SemanticIr> {
+    fn import(&mut self, catalog: &McpToolCatalog) -> Result<ImportedSurface> {
         let mut operation_ids = BTreeMap::new();
         let mut tools = catalog.tools.iter().collect::<Vec<_>>();
         tools.sort_by(|left, right| left.name.cmp(&right.name));
         let mut operations = Vec::with_capacity(tools.len());
+        let mut operation_metadata = BTreeMap::new();
         for tool in tools {
             let operation_id = normalize_identifier(&tool.name, "tool");
             if let Some(existing_tool_name) = operation_ids.get(&operation_id) {
@@ -62,11 +64,12 @@ impl<'a> McpImporter<'a> {
                 )));
             }
             operation_ids.insert(operation_id.clone(), tool.name.as_str());
-            if let Some(operation) = self.import_tool(tool, &operation_id) {
+            if let Some((operation, metadata)) = self.import_tool(tool, &operation_id) {
+                operation_metadata.insert(operation_id, metadata);
                 operations.push(operation);
             }
         }
-        Ok(SemanticIr {
+        let semantic_ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: self.manifest.common.name.clone(),
             surface_type: self.surface.surface_type,
@@ -74,6 +77,16 @@ impl<'a> McpImporter<'a> {
             operations,
             types: self.types.values().cloned().collect(),
             diagnostics: self.diagnostics.clone(),
+        };
+        let operation_metadata = OperationMetadataCatalog {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: self.manifest.common.name.clone(),
+            generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+            operations: operation_metadata,
+        };
+        Ok(ImportedSurface {
+            semantic_ir,
+            operation_metadata,
         })
     }
 
@@ -104,10 +117,10 @@ mod tests {
 
     use super::super::model::McpToolDescriptor;
     use super::*;
-    use crate::v4::ir::{
-        IrExecutionAttachment, IrField, IrOperation, IrScalarType, IrTypeShape, OutputCardinality,
+    use crate::v4::ir::{IrField, IrOperation, IrScalarType, IrTypeShape, OutputCardinality};
+    use crate::v4::{
+        OperationMetadata, ProjectionVisibility, SqlInputExposure, generate_projection_catalog,
     };
-    use crate::v4::{ProjectionVisibility, SqlInputExposure, generate_projection_catalog};
     use crate::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
     fn manifest() -> ValidatedSourceManifest {
@@ -155,7 +168,7 @@ surface:
         }
     }
 
-    fn import_catalog(catalog: &McpToolCatalog) -> SemanticIr {
+    fn import_catalog(catalog: &McpToolCatalog) -> ImportedSurface {
         let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
         let surface = &v4.surface;
@@ -196,11 +209,8 @@ surface:
         };
 
         let ir = import_catalog(&catalog);
-        let operation = operation(&ir, "list_catalog");
-        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
-            panic!("expected MCP execution");
-        };
-        assert!(mcp.offset_pagination.is_none());
+        let plan = ir.validated_plan().expect("plan");
+        assert!(plan.mcp_pagination("list_catalog").1.is_none());
     }
 
     fn row_fields<'a>(ir: &'a SemanticIr, type_id: &str) -> &'a [IrField] {
@@ -245,13 +255,10 @@ surface:
 
         let ir = import_catalog(&catalog);
         let operation = operation(&ir, "search_items");
-        assert!(
-            operation
-                .inputs
-                .iter()
-                .all(|input| !input.exclude_from_lookup_keys),
-            "MCP inputs never participate in REST lookup-key exclusions"
-        );
+        assert!(matches!(
+            ir.operation_metadata.operations.get("search_items"),
+            Some(OperationMetadata::Mcp { .. })
+        ));
         let query = operation
             .inputs
             .iter()
@@ -516,8 +523,11 @@ surface:
                 .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_NOT_FOUND")
         );
 
-        let projections =
-            generate_projection_catalog(manifest().as_v4().expect("v4"), &ir).expect("projections");
+        let projections = generate_projection_catalog(
+            manifest().as_v4().expect("v4"),
+            &ir.validated_plan().expect("plan"),
+        )
+        .expect("projections");
         assert_eq!(projections.projections.len(), 0);
     }
 
@@ -846,8 +856,11 @@ surface:
                 .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED")
         );
 
-        let projections =
-            generate_projection_catalog(manifest().as_v4().expect("v4"), &ir).expect("projections");
+        let projections = generate_projection_catalog(
+            manifest().as_v4().expect("v4"),
+            &ir.validated_plan().expect("plan"),
+        )
+        .expect("projections");
         assert_eq!(projections.projections.len(), 0);
     }
 
@@ -977,10 +990,8 @@ surface:
         let operation = operation(&ir, "list_items");
         assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
         assert_eq!(operation.output.row_path, vec!["items".to_string()]);
-        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
-            panic!("expected MCP execution");
-        };
-        let pagination = mcp.pagination.as_ref().expect("pagination");
+        let plan = ir.validated_plan().expect("plan");
+        let pagination = plan.mcp_pagination("list_items").0.expect("pagination");
         assert_eq!(pagination.cursor_arg, "cursor");
         assert_eq!(pagination.response_cursor_path, ["meta", "nextCursor"]);
         assert_eq!(pagination.max_pages, None);
@@ -1034,19 +1045,18 @@ surface:
         let v4 = manifest.as_v4().expect("v4");
         let surface = &v4.surface;
         let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
-        let operation = operation(&ir, "list_catalog");
-        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
-            panic!("expected MCP execution");
-        };
-        assert!(mcp.pagination.is_none());
-        let pagination = mcp.offset_pagination.as_ref().expect("offset pagination");
+        let plan = ir.validated_plan().expect("plan");
+        let (cursor, offset) = plan.mcp_pagination("list_catalog");
+        assert!(cursor.is_none());
+        let pagination = offset.expect("offset pagination");
         assert_eq!(pagination.limit_arg, "limit");
         assert_eq!(pagination.default_limit, 50);
         assert_eq!(pagination.max_limit, 200);
         assert_eq!(pagination.offset_arg, "offset");
         assert_eq!(pagination.offset_start, 0);
 
-        let projections = generate_projection_catalog(v4, &ir).expect("projection catalog");
+        let projections = generate_projection_catalog(v4, &ir.validated_plan().expect("plan"))
+            .expect("projection catalog");
         let projection = projections
             .projections
             .iter()
@@ -1161,7 +1171,8 @@ surface:
         let operation = ir.operations.first().expect("operation");
         assert!(!operation.read_only);
 
-        let projections = generate_projection_catalog(v4, &ir).expect("projections");
+        let projections = generate_projection_catalog(v4, &ir.validated_plan().expect("plan"))
+            .expect("projections");
         let projection = projections.projections.first().expect("projection");
         assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
     }
