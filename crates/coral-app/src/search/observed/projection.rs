@@ -26,6 +26,15 @@ impl ObservedValuesProjection {
         budget: ObservedValuesDrainBudget,
     ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
         let result = self.store.drain_queue(workspace_name, budget)?;
+        if result.storage_jobs_dropped > 0 {
+            tracing::debug!(
+                workspace = %workspace_name,
+                storage_jobs_dropped = result.storage_jobs_dropped,
+                remaining_queue_depth = result.remaining_queue_depth,
+                storage_limit_reached = result.storage_limit_reached,
+                "dropped best-effort observed-value jobs to preserve storage headroom"
+            );
+        }
         if result.budget_exhausted {
             tracing::debug!(
                 workspace = %workspace_name,
