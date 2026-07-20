@@ -180,13 +180,6 @@ pub(crate) enum SearchPayload {
     CatalogMetadata(CatalogMetadataResult),
     ColumnHint(ColumnHintResult),
     ObservedValue(ObservedValueResult),
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the additive native result contract is populated by the follow-up fanout implementation"
-        )
-    )]
     NativeResult(NativeSearchResult),
 }
 
@@ -224,13 +217,6 @@ pub(crate) struct NativeSearchDiagnostic {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native diagnostics are populated by the follow-up fanout implementation"
-    )
-)]
 pub(crate) enum NativeSearchDiagnosticState {
     ResultsFound,
     Empty,
@@ -241,14 +227,8 @@ pub(crate) enum NativeSearchDiagnosticState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native diagnostics are populated by the follow-up fanout implementation"
-    )
-)]
 pub(crate) enum NativeSearchDiagnosticReason {
+    Unspecified,
     NotAuthorized,
     AmbiguousRoute,
     InvalidSearchLimits,

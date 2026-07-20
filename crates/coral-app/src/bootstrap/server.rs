@@ -431,6 +431,7 @@ impl ServerBuilder {
             diagnostic_reporter,
             CatalogDiscovery::new(query_manager.clone()),
             workspace_lifecycle_lock,
+            None,
         );
         let trace_components = trace_components_for_store(active_trace_store);
         start_server(
@@ -1115,6 +1116,7 @@ enabled = false
             true,
             CatalogDiscovery::new(query_manager),
             lifecycle_lock,
+            None,
         );
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
@@ -1687,6 +1689,7 @@ backend = "unsupported"
             true,
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
+            None,
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
@@ -2139,6 +2142,7 @@ tables:
             true,
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
+            None,
         );
         let running = start_server(
             ServerDependencies {
@@ -2266,6 +2270,7 @@ tables:
             true,
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
+            None,
         );
         let running = start_server(
             ServerDependencies {
@@ -2393,6 +2398,7 @@ tables:
             true,
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
+            None,
         );
         let running = start_server(
             ServerDependencies {

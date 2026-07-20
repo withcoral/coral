@@ -14,7 +14,7 @@ use crate::sources::universal_search::{
 };
 use crate::workspaces::WorkspaceName;
 
-use super::identity::identity_for_row;
+use super::identity::{identity_for_row, sort_key_for_row};
 use super::rank::NativeRankInput;
 use super::redaction::{
     ATTRIBUTE_VALUE_BYTES, OverflowPolicy, PROVIDER_ID_BYTES, SNIPPET_BYTES, Sanitized,
@@ -129,9 +129,11 @@ fn normalize_row(
     }
     enforce_result_budget(&mut result)?;
 
+    let sort_key = sort_key_for_row(workspace, route, row_ordinal, identity);
     has_row_display_content(&result).then_some(NativeCandidate {
         result,
         identity,
+        sort_key,
         rank_input: NativeRankInput::from_provider_ordinal(row_ordinal),
     })
 }

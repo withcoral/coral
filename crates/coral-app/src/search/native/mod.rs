@@ -1,15 +1,9 @@
 //! Pure native-row security, identity, deduplication, and rank-input boundary.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the follow-up fanout provider wires these reviewed pure helpers into Search"
-    )
-)]
-
 mod dedupe;
+mod diagnostics;
 mod identity;
 mod normalize;
+pub(crate) mod provider;
 mod rank;
 mod redaction;
 
@@ -27,6 +21,7 @@ pub(super) const MAX_ATTRIBUTES: usize = 8;
 pub(super) struct NativeCandidate {
     pub(super) result: NativeSearchResult,
     pub(super) identity: Option<identity::NativeIdentity>,
+    pub(super) sort_key: identity::NativeSortKey,
     pub(super) rank_input: rank::NativeRankInput,
 }
 

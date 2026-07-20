@@ -27,6 +27,7 @@ const TAG_ABSENT: u8 = 0x0a;
 const TAG_IDENTITY_FIELDS: u8 = 0x0b;
 const TAG_PROVIDER_ID: u8 = 0x0c;
 const TAG_URL: u8 = 0x0d;
+const TAG_ROW_ORDINAL: u8 = 0x0e;
 
 const TAG_TEXT: u8 = 0x20;
 const TAG_BOOL: u8 = 0x21;
@@ -49,6 +50,66 @@ impl NativeIdentity {
     pub(in crate::search) fn as_bytes(self) -> [u8; 32] {
         self.0
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::search) struct NativeSortKey([u8; 32]);
+
+impl NativeSortKey {
+    pub(in crate::search) fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+/// Returns an internal ordering key without making content-only rows eligible
+/// for deduplication.
+pub(super) fn sort_key_for_row(
+    workspace: &WorkspaceName,
+    route: &ResolvedUniversalSearchRoute,
+    row_ordinal: u32,
+    identity: Option<NativeIdentity>,
+) -> NativeSortKey {
+    if let Some(identity) = identity {
+        return NativeSortKey(identity.as_bytes());
+    }
+    let mut hasher = Sha256::new();
+    append_component(&mut hasher, TAG_VERSION, b"native-route-row/v1")
+        .expect("fixed version length fits u64");
+    append_component(&mut hasher, TAG_WORKSPACE, workspace.as_str().as_bytes())
+        .expect("workspace length fits u64");
+    append_component(
+        &mut hasher,
+        TAG_SOURCE_NAME,
+        route.owner_source_name.as_bytes(),
+    )
+    .expect("source name length fits u64");
+    append_component(
+        &mut hasher,
+        TAG_INSTALLATION_REVISION,
+        route.installation_revision.as_bytes(),
+    )
+    .expect("installation revision length fits u64");
+    match route.authored_route_id.as_deref() {
+        Some(route_id) => append_component(&mut hasher, TAG_AUTHORED_ROUTE, route_id.as_bytes())
+            .expect("route id length fits u64"),
+        None => match &route.target {
+            ResolvedUniversalSearchTarget::V3 { function_name } => {
+                append_component(&mut hasher, TAG_INFERRED_V3_ROUTE, function_name.as_bytes())
+                    .expect("function name length fits u64");
+            }
+            ResolvedUniversalSearchTarget::V4 { operation_id } => {
+                append_component(
+                    &mut hasher,
+                    TAG_INFERRED_V4_OPERATION,
+                    operation_id.as_bytes(),
+                )
+                .expect("operation id length fits u64");
+            }
+        },
+    }
+    append_component(&mut hasher, TAG_ROW_ORDINAL, &row_ordinal.to_be_bytes())
+        .expect("fixed row ordinal length fits u64");
+    NativeSortKey(hasher.finalize().into())
 }
 
 pub(super) fn identity_for_row(

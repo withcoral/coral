@@ -1,8 +1,10 @@
 //! App-level Universal Search manager.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use chrono::Utc;
 use tokio::task;
+use tokio::time::Instant;
 
 use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogDiscovery;
@@ -18,6 +20,7 @@ use crate::search::maintenance::{
     SearchMaintenanceState, SearchProviderClearRequest, SearchProviderRebuildRequest,
     SearchStorageCleanupResult,
 };
+use crate::search::native::provider::NativeFanoutRegistration;
 use crate::search::observed::provider::{ObservedValuesProvider, observed_clear_provider_result};
 use crate::search::observed::{
     ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad, ObservedValuesLiveScopeLoader,
@@ -45,6 +48,7 @@ pub(crate) struct SearchManager {
     observed: ObservedValuesProvider,
     observed_scope_loader: ObservedValuesLiveScopeLoader,
     observed_values_search_enabled: bool,
+    native_fanout_present: bool,
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
     lifecycle_lock: WorkspaceLifecycleLock,
@@ -76,6 +80,7 @@ impl SearchManager {
         observed_values_search_enabled: bool,
         catalog_discovery: CatalogDiscovery,
         lifecycle_lock: WorkspaceLifecycleLock,
+        native_fanout: Option<NativeFanoutRegistration>,
     ) -> Self {
         Self::with_diagnostic_reporter(
             layout,
@@ -85,6 +90,7 @@ impl SearchManager {
             SourceDiagnosticReporter::default(),
             catalog_discovery,
             lifecycle_lock,
+            native_fanout,
         )
     }
 
@@ -96,6 +102,7 @@ impl SearchManager {
         diagnostic_reporter: SourceDiagnosticReporter,
         catalog_discovery: CatalogDiscovery,
         lifecycle_lock: WorkspaceLifecycleLock,
+        native_fanout: Option<NativeFanoutRegistration>,
     ) -> Self {
         let write_coordinator = LocalSearchWriteCoordinator::default();
         let catalog = CatalogMetadataProvider::with_write_coordinator(
@@ -104,6 +111,8 @@ impl SearchManager {
         );
         let observed =
             ObservedValuesProvider::with_write_coordinator(layout.clone(), write_coordinator);
+        let native_fanout_present = native_fanout.is_some();
+        let native_provider = native_fanout.map(|registration| registration.provider);
         let observed_scope_loader = ObservedValuesLiveScopeLoader::new(
             layout.clone(),
             config_store.clone(),
@@ -115,9 +124,11 @@ impl SearchManager {
             observed: observed.clone(),
             observed_scope_loader,
             observed_values_search_enabled,
+            native_fanout_present,
             engine: UniversalSearchEngine::new(SearchProviderRegistry::local(
                 catalog,
                 observed_values_search_enabled.then(|| observed.clone()),
+                native_provider,
             )),
             workspaces: workspace_manager,
             lifecycle_lock,
@@ -131,6 +142,10 @@ impl SearchManager {
         attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
         let request_started_at = Instant::now();
+        let observed_values_cutoff = self
+            .native_fanout_present
+            .then(|| Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+        let search_origin = uuid::Uuid::new_v4();
         for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
             let CatalogPreload::Ready {
                 revision,
@@ -164,6 +179,8 @@ impl SearchManager {
             let context = SearchExecutionContext::new(
                 request_started_at,
                 lifecycle_lease,
+                observed_values_cutoff.clone(),
+                search_origin,
                 request.clone(),
                 resolution,
                 observed_values_policy,

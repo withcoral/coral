@@ -697,6 +697,12 @@ fn candidate(
             content_truncated: false,
         },
         identity: None,
+        sort_key: super::identity::sort_key_for_row(
+            &workspace(),
+            &route(ResolvedUniversalSearchResultMapping::default()),
+            row_ordinal,
+            None,
+        ),
         rank_input: NativeRankInput::from_provider_ordinal(row_ordinal),
     }
 }

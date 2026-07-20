@@ -5,6 +5,7 @@ use std::thread::JoinHandle;
 
 use serde::Serialize;
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TrySendError};
+use uuid::Uuid;
 
 use crate::search::observed::sqlite_queue::{
     ObservedValueCandidate, ObservedValuesEnqueueResult, ObservedValuesEpoch,
@@ -182,18 +183,29 @@ fn run_observed_values_writer(
 
 #[derive(Serialize)]
 struct ObservedValuesQueuePayloadRef<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_origin: Option<Uuid>,
     values: &'a [ObservedValueCandidate],
 }
 
+#[cfg(test)]
 pub(super) fn payload_json_with_budget(
     payload: ObservedValuesQueuePayload,
     max_job_bytes: usize,
+) -> Result<Option<String>, String> {
+    payload_json_with_budget_and_origin(payload, max_job_bytes, None)
+}
+
+pub(super) fn payload_json_with_budget_and_origin(
+    payload: ObservedValuesQueuePayload,
+    max_job_bytes: usize,
+    search_origin: Option<Uuid>,
 ) -> Result<Option<String>, String> {
     if payload.is_empty() {
         return Ok(None);
     }
     let values = payload.values;
-    let payload_json = payload_json_for_values(&values)?;
+    let payload_json = payload_json_for_values(&values, search_origin)?;
     if payload_json.len() <= max_job_bytes {
         return Ok(Some(payload_json));
     }
@@ -206,7 +218,7 @@ pub(super) fn payload_json_with_budget(
         let candidate_values = values
             .get(..candidate_len)
             .expect("binary-search prefix length stays within observed-values payload bounds");
-        let candidate_json = payload_json_for_values(candidate_values)?;
+        let candidate_json = payload_json_for_values(candidate_values, search_origin)?;
         if candidate_json.len() <= max_job_bytes {
             best = Some(candidate_json);
             low = candidate_len;
@@ -217,20 +229,31 @@ pub(super) fn payload_json_with_budget(
     Ok(best)
 }
 
-fn payload_json_for_values(values: &[ObservedValueCandidate]) -> Result<String, String> {
-    serde_json::to_string(&ObservedValuesQueuePayloadRef { values })
-        .map_err(|error| error.to_string())
+fn payload_json_for_values(
+    values: &[ObservedValueCandidate],
+    search_origin: Option<Uuid>,
+) -> Result<String, String> {
+    serde_json::to_string(&ObservedValuesQueuePayloadRef {
+        search_origin,
+        values,
+    })
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use uuid::Uuid;
+
     use super::{
         ObservedValuesTryReserveError, ObservedValuesWrite, ObservedValuesWriter,
-        ObservedValuesWriterShared,
+        ObservedValuesWriterShared, payload_json_with_budget, payload_json_with_budget_and_origin,
     };
-    use crate::search::observed::sqlite_queue::{ObservedValuesEpoch, ObservedValuesSurfaceKind};
+    use crate::search::observed::sqlite_queue::{
+        ObservedValueCandidate, ObservedValuesEpoch, ObservedValuesQueueEnvelope,
+        ObservedValuesQueuePayload, ObservedValuesSurfaceKind,
+    };
     use crate::workspaces::WorkspaceName;
 
     #[test]
@@ -258,6 +281,47 @@ mod tests {
         writer
             .try_reserve()
             .expect("capacity should return after dequeue");
+    }
+
+    #[test]
+    fn ordinary_queue_payload_omits_origin_and_legacy_json_defaults_to_none() {
+        let payload_json = payload_json_with_budget(test_payload(), usize::MAX)
+            .expect("serialize payload")
+            .expect("non-empty payload");
+
+        assert_eq!(
+            payload_json,
+            r#"{"values":[{"column_name":"title","display_value":"Payment outage","search_text":"payment outage","value_key":"payment-outage"}]}"#
+        );
+        let envelope = serde_json::from_str::<ObservedValuesQueueEnvelope>(&payload_json)
+            .expect("deserialize legacy-compatible envelope");
+        assert_eq!(envelope.search_origin, None);
+        assert_eq!(envelope.payload.values.len(), 1);
+    }
+
+    #[test]
+    fn selected_queue_payload_serializes_search_origin() {
+        let search_origin = Uuid::from_u128(42);
+        let payload_json =
+            payload_json_with_budget_and_origin(test_payload(), usize::MAX, Some(search_origin))
+                .expect("serialize payload")
+                .expect("non-empty payload");
+
+        let envelope = serde_json::from_str::<ObservedValuesQueueEnvelope>(&payload_json)
+            .expect("deserialize origin envelope");
+        assert_eq!(envelope.search_origin, Some(search_origin));
+        assert_eq!(envelope.payload.values.len(), 1);
+    }
+
+    fn test_payload() -> ObservedValuesQueuePayload {
+        ObservedValuesQueuePayload {
+            values: vec![ObservedValueCandidate {
+                column_name: "title".to_string(),
+                display_value: "Payment outage".to_string(),
+                search_text: "payment outage".to_string(),
+                value_key: "payment-outage".to_string(),
+            }],
+        }
     }
 
     fn test_write() -> ObservedValuesWrite {

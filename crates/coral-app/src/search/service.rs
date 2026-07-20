@@ -554,6 +554,7 @@ fn native_diagnostic_reason_to_proto(
     reason: NativeSearchDiagnosticReason,
 ) -> ProtoNativeSearchDiagnosticReason {
     match reason {
+        NativeSearchDiagnosticReason::Unspecified => ProtoNativeSearchDiagnosticReason::Unspecified,
         NativeSearchDiagnosticReason::NotAuthorized => {
             ProtoNativeSearchDiagnosticReason::NotAuthorized
         }

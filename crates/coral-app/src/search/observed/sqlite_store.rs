@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
+use uuid::Uuid;
 
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::governance::{
@@ -139,6 +140,25 @@ impl SqliteObservedValuesStore {
         workspace_name: &WorkspaceName,
         budget: ObservedValuesDrainBudget,
     ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
+        self.drain_queue_with_origin(workspace_name, budget, None, false)
+    }
+
+    pub(crate) fn drain_queue_before_search(
+        &self,
+        workspace_name: &WorkspaceName,
+        budget: ObservedValuesDrainBudget,
+        search_origin: Option<Uuid>,
+    ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
+        self.drain_queue_with_origin(workspace_name, budget, search_origin, true)
+    }
+
+    fn drain_queue_with_origin(
+        &self,
+        workspace_name: &WorkspaceName,
+        budget: ObservedValuesDrainBudget,
+        search_origin: Option<Uuid>,
+        before_search: bool,
+    ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         configure_drain_busy_timeout(&connection, budget)?;
@@ -164,27 +184,37 @@ impl SqliteObservedValuesStore {
             .policy
             .maintenance_batch_rows
             .saturating_sub(pre_projection_evicted_rows);
-        let mut result = sqlite_projection::drain_observed_queue(
-            &mut connection,
-            workspace_name,
-            projection_budget,
-            |connection| storage_limit_reached(connection, self.policy),
-            |connection, time_budget| {
-                let max_rows =
-                    remaining_projection_eviction_rows.min(PROJECTION_RECLAMATION_BATCH_ROWS);
-                let reclamation = evict_oldest_observed_values_for_projection(
-                    connection,
-                    workspace_name,
-                    max_rows,
-                    time_budget,
-                )?;
-                remaining_projection_eviction_rows = remaining_projection_eviction_rows
-                    .saturating_sub(
-                        usize::try_from(reclamation.evicted_rows).unwrap_or(usize::MAX),
-                    );
-                Ok(reclamation)
-            },
-        )?;
+        let mut reclaim_storage = |connection: &mut Connection, time_budget: Duration| {
+            let max_rows =
+                remaining_projection_eviction_rows.min(PROJECTION_RECLAMATION_BATCH_ROWS);
+            let reclamation = evict_oldest_observed_values_for_projection(
+                connection,
+                workspace_name,
+                max_rows,
+                time_budget,
+            )?;
+            remaining_projection_eviction_rows = remaining_projection_eviction_rows
+                .saturating_sub(usize::try_from(reclamation.evicted_rows).unwrap_or(usize::MAX));
+            Ok(reclamation)
+        };
+        let mut result = if before_search {
+            sqlite_projection::drain_observed_queue_before_search(
+                &mut connection,
+                workspace_name,
+                projection_budget,
+                search_origin,
+                |connection| storage_limit_reached(connection, self.policy),
+                &mut reclaim_storage,
+            )?
+        } else {
+            sqlite_projection::drain_observed_queue(
+                &mut connection,
+                workspace_name,
+                projection_budget,
+                |connection| storage_limit_reached(connection, self.policy),
+                &mut reclaim_storage,
+            )?
+        };
         let governance = if let Some(governance) = pre_projection_governance {
             governance
         } else {
@@ -267,6 +297,7 @@ impl SqliteObservedValuesStore {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn search(
         &self,
         workspace_name: &WorkspaceName,
@@ -274,9 +305,27 @@ impl SqliteObservedValuesStore {
         limit: usize,
         policy: &ObservedValuesRetrievalPolicy,
     ) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
+        self.search_before(workspace_name, terms, limit, policy, None)
+    }
+
+    pub(crate) fn search_before(
+        &self,
+        workspace_name: &WorkspaceName,
+        terms: &[String],
+        limit: usize,
+        policy: &ObservedValuesRetrievalPolicy,
+        observed_values_cutoff: Option<&str>,
+    ) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
-        sqlite_projection::search_observed_values(&connection, workspace_name, terms, limit, policy)
+        sqlite_projection::search_observed_values_before(
+            &connection,
+            workspace_name,
+            terms,
+            limit,
+            policy,
+            observed_values_cutoff,
+        )
     }
 
     pub(crate) fn compact_after_clear(
@@ -287,6 +336,7 @@ impl SqliteObservedValuesStore {
         Ok(store.compact_after_clear())
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_queue_job_count(
         &self,
         workspace_name: &WorkspaceName,
@@ -294,6 +344,18 @@ impl SqliteObservedValuesStore {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
         let count = pending_queue_job_count(&connection, workspace_name)?;
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
+    }
+
+    pub(crate) fn pending_queue_job_count_before_search(
+        &self,
+        workspace_name: &WorkspaceName,
+        search_origin: Option<Uuid>,
+    ) -> Result<usize, SqliteSearchError> {
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
+        let connection = store.connect()?;
+        let count =
+            pending_queue_job_count_before_search(&connection, workspace_name, search_origin)?;
         Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
@@ -518,6 +580,38 @@ fn pending_queue_job_count(
         .query_row(
             "SELECT COUNT(*) FROM observed_queue_jobs WHERE workspace = ?1 AND attempts < ?2",
             params![workspace_name.as_str(), MAX_OBSERVED_QUEUE_JOB_ATTEMPTS],
+            |row| row.get(0),
+        )
+        .map_err(SqliteSearchError::from)
+}
+
+fn pending_queue_job_count_before_search(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    search_origin: Option<Uuid>,
+) -> Result<i64, SqliteSearchError> {
+    let excluded_search_origin = search_origin.map(|origin| origin.to_string());
+    connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM observed_queue_jobs
+            WHERE workspace = ?1
+              AND attempts < ?2
+              AND CASE
+                  WHEN ?3 IS NULL THEN 1
+                  WHEN json_valid(payload_json) = 0 THEN 1
+                  ELSE COALESCE(
+                      json_extract(payload_json, '$.search_origin') <> ?3,
+                      1
+                  )
+              END
+            ",
+            params![
+                workspace_name.as_str(),
+                MAX_OBSERVED_QUEUE_JOB_ATTEMPTS,
+                excluded_search_origin.as_deref(),
+            ],
             |row| row.get(0),
         )
         .map_err(SqliteSearchError::from)

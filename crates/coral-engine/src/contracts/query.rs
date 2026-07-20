@@ -271,7 +271,13 @@ impl QueryExecutionControls {
         self.signals.explicit_continuation.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn mark_upstream_started(&self) {
+    /// Records that this execution crossed an upstream transport boundary.
+    ///
+    /// Backend and orchestration adapters use this shared signal for exact
+    /// fanout coverage accounting, including when the execution future
+    /// subsequently panics or is aborted.
+    #[doc(hidden)]
+    pub fn mark_upstream_started(&self) {
         self.signals.upstream_started.store(true, Ordering::SeqCst);
     }
 

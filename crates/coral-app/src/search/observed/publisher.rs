@@ -18,7 +18,7 @@ use crate::search::observed::sqlite_queue::{ObservedValuesEpoch, ObservedValuesS
 use crate::search::observed::sqlite_store::SqliteObservedValuesStore;
 use crate::search::observed::writer::{
     ObservedValuesTryReserveError, ObservedValuesWrite, ObservedValuesWriter,
-    payload_json_with_budget,
+    payload_json_with_budget_and_origin,
 };
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::state::AppStateLayout;
@@ -72,6 +72,7 @@ impl SearchObservationHandle {
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[SearchObservationSource<'_>],
+        search_origin: Option<Uuid>,
     ) -> EngineExtensions {
         let epochs = match self.store.capture_epochs_for_sources(
             workspace_name,
@@ -113,6 +114,7 @@ impl SearchObservationHandle {
                 writer: self.writer.clone(),
                 collector: self.collector.clone(),
                 scopes,
+                search_origin,
             },
         ));
         extensions
@@ -163,6 +165,7 @@ struct SourceScanObservedValuesPublisher {
     writer: ObservedValuesWriter,
     collector: ObservedValuesCollector,
     scopes: HashMap<SurfaceKey, RegisteredSurface>,
+    search_origin: Option<Uuid>,
 }
 
 struct RegisteredSurface {
@@ -223,9 +226,10 @@ impl SourceScanObservedValuesPublisher {
         if payload.is_empty() {
             return;
         }
-        let payload_json = match payload_json_with_budget(
+        let payload_json = match payload_json_with_budget_and_origin(
             payload,
             self.collector.budget().job_bytes_limit,
+            self.search_origin,
         ) {
             Ok(Some(payload_json)) => payload_json,
             Ok(None) => {
@@ -351,8 +355,11 @@ mod tests {
         let workspace = WorkspaceName::default();
         let handle = SearchObservationHandle::new(layout.clone());
         let source = secret_input_query_source();
-        let extensions =
-            handle.extensions_for(&workspace, &[SearchObservationSource::for_test(&source)]);
+        let extensions = handle.extensions_for(
+            &workspace,
+            &[SearchObservationSource::for_test(&source)],
+            None,
+        );
         let publisher = extensions
             .source_observation_publishers
             .first()
@@ -399,8 +406,11 @@ mod tests {
         let workspace = WorkspaceName::default();
         let handle = SearchObservationHandle::new(layout.clone());
         let source = secret_input_query_source();
-        let extensions =
-            handle.extensions_for(&workspace, &[SearchObservationSource::for_test(&source)]);
+        let extensions = handle.extensions_for(
+            &workspace,
+            &[SearchObservationSource::for_test(&source)],
+            None,
+        );
         let publisher = extensions
             .source_observation_publishers
             .first()
@@ -442,8 +452,11 @@ mod tests {
         let workspace = WorkspaceName::default();
         let handle = SearchObservationHandle::new(layout.clone());
         let source = multi_surface_v4_query_source();
-        let extensions =
-            handle.extensions_for(&workspace, &[SearchObservationSource::for_test(&source)]);
+        let extensions = handle.extensions_for(
+            &workspace,
+            &[SearchObservationSource::for_test(&source)],
+            None,
+        );
         let publisher = extensions
             .source_observation_publishers
             .first()
@@ -504,8 +517,11 @@ mod tests {
         let workspace = WorkspaceName::default();
         let handle = SearchObservationHandle::new(layout.clone());
         let source = secret_input_query_source();
-        let extensions =
-            handle.extensions_for(&workspace, &[SearchObservationSource::for_test(&source)]);
+        let extensions = handle.extensions_for(
+            &workspace,
+            &[SearchObservationSource::for_test(&source)],
+            None,
+        );
         let publisher = extensions
             .source_observation_publishers
             .first()

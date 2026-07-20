@@ -6,14 +6,15 @@ use std::time::{Duration, Instant};
 
 use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
+use uuid::Uuid;
 
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::governance::{
     ObservedValuesProjectionReclamation, observed_fts_mergeable_segments_exist,
 };
 use crate::search::observed::sqlite_queue::{
-    ObservedValueCandidate, ObservedValuesEpoch, ObservedValuesQueuePayload,
-    ObservedValuesSurfaceKind,
+    ObservedValueCandidate, ObservedValuesEpoch, ObservedValuesQueueEnvelope,
+    ObservedValuesQueuePayload, ObservedValuesSurfaceKind,
 };
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::workspaces::WorkspaceName;
@@ -281,9 +282,59 @@ pub(crate) fn drain_observed_queue(
     )
         -> Result<ObservedValuesProjectionReclamation, SqliteSearchError>,
 ) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
+    drain_observed_queue_excluding_origin(
+        connection,
+        workspace_name,
+        budget,
+        None,
+        storage_limit_reached,
+        &mut reclaim_storage,
+    )
+}
+
+pub(crate) fn drain_observed_queue_before_search(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    budget: ObservedValuesDrainBudget,
+    search_origin: Option<Uuid>,
+    storage_limit_reached: impl Fn(&Connection) -> Result<bool, SqliteSearchError>,
+    mut reclaim_storage: impl FnMut(
+        &mut Connection,
+        Duration,
+    )
+        -> Result<ObservedValuesProjectionReclamation, SqliteSearchError>,
+) -> Result<ObservedValuesDrainResult, SqliteSearchError> {
+    drain_observed_queue_excluding_origin(
+        connection,
+        workspace_name,
+        budget,
+        search_origin,
+        storage_limit_reached,
+        &mut reclaim_storage,
+    )
+}
+
+fn drain_observed_queue_excluding_origin<F, R>(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    budget: ObservedValuesDrainBudget,
+    search_origin: Option<Uuid>,
+    storage_limit_reached: F,
+    reclaim_storage: &mut R,
+) -> Result<ObservedValuesDrainResult, SqliteSearchError>
+where
+    F: Fn(&Connection) -> Result<bool, SqliteSearchError>,
+    R: FnMut(
+        &mut Connection,
+        Duration,
+    ) -> Result<ObservedValuesProjectionReclamation, SqliteSearchError>,
+{
+    let excluded_search_origin = search_origin.map(|origin| origin.to_string());
+    let excluded_search_origin = excluded_search_origin.as_deref();
     let mut result = ObservedValuesDrainResult::default();
     let Some(deadline) = deadline_for(budget.time_budget) else {
-        result.remaining_queue_depth = pending_queue_job_count(connection, workspace_name)?;
+        result.remaining_queue_depth =
+            pending_queue_job_count(connection, workspace_name, excluded_search_origin)?;
         result.budget_exhausted = result.remaining_queue_depth > 0;
         return Ok(result);
     };
@@ -310,6 +361,7 @@ pub(crate) fn drain_observed_queue(
             connection,
             workspace_name,
             last_seen_job_id,
+            excluded_search_origin,
             &storage_limit_reached,
         )? {
             DrainOneResult::Empty => break,
@@ -357,7 +409,8 @@ pub(crate) fn drain_observed_queue(
         }
     }
 
-    result.remaining_queue_depth = pending_queue_job_count(connection, workspace_name)?;
+    result.remaining_queue_depth =
+        pending_queue_job_count(connection, workspace_name, excluded_search_origin)?;
     let max_jobs_reached = drain_steps >= max_drain_steps;
     if result.remaining_queue_depth > 0 && (max_jobs_reached || storage_reclamation_stalled) {
         result.budget_exhausted = true;
@@ -1481,6 +1534,7 @@ fn observed_fts_rebuild_no_progress_error() -> SqliteSearchError {
     io::Error::other("observed-value FTS rebuild batch made no keyset progress").into()
 }
 
+#[cfg(test)]
 pub(crate) fn search_observed_values(
     connection: &Connection,
     workspace_name: &WorkspaceName,
@@ -1488,8 +1542,20 @@ pub(crate) fn search_observed_values(
     limit: usize,
     policy: &ObservedValuesRetrievalPolicy,
 ) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
+    search_observed_values_before(connection, workspace_name, terms, limit, policy, None)
+}
+
+pub(crate) fn search_observed_values_before(
+    connection: &Connection,
+    workspace_name: &WorkspaceName,
+    terms: &[String],
+    limit: usize,
+    policy: &ObservedValuesRetrievalPolicy,
+    observed_values_cutoff: Option<&str>,
+) -> Result<ObservedValuesSearchHits, SqliteSearchError> {
     prepare_live_scope_table(connection, policy)?;
-    let value_count = eligible_observed_value_count(connection, workspace_name, policy)?;
+    let value_count =
+        eligible_observed_value_count(connection, workspace_name, policy, observed_values_cutoff)?;
     if terms.is_empty() || limit == 0 {
         return Ok(ObservedValuesSearchHits {
             hits: Vec::new(),
@@ -1511,6 +1577,7 @@ pub(crate) fn search_observed_values(
             &fts_terms,
             probe_limit(limit),
             policy,
+            observed_values_cutoff,
         )?;
         retrieval_limited |= truncate_probe_hits(&mut fts_hits, limit);
         hits.extend(fts_hits);
@@ -1527,6 +1594,7 @@ pub(crate) fn search_observed_values(
             &short_terms,
             probe_limit(limit),
             policy,
+            observed_values_cutoff,
         )?;
         retrieval_limited |= truncate_probe_hits(&mut short_hits, limit);
         hits.extend(short_hits);
@@ -1547,6 +1615,7 @@ fn search_observed_values_fts(
     terms: &[String],
     limit: usize,
     policy: &ObservedValuesRetrievalPolicy,
+    observed_values_cutoff: Option<&str>,
 ) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
     let match_query = fts_match_query(terms);
     let mut statement = connection.prepare(
@@ -1580,6 +1649,7 @@ fn search_observed_values_fts(
         WHERE f.workspace = ?
             AND observed_values_fts MATCH ?
             AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+            AND (? IS NULL OR v.last_observed_at < ?)
         ORDER BY bm25(observed_values_fts, 1.0, 1.0) ASC,
             v.last_observed_at DESC,
             v.source_name ASC,
@@ -1594,6 +1664,8 @@ fn search_observed_values_fts(
             workspace_name.as_str(),
             match_query,
             sqlite_retention_modifier(policy),
+            observed_values_cutoff,
+            observed_values_cutoff,
             i64::try_from(limit).unwrap_or(i64::MAX),
         ],
         observed_search_hit_from_row,
@@ -1608,6 +1680,7 @@ fn search_observed_values_short_terms(
     terms: &[&str],
     limit: usize,
     policy: &ObservedValuesRetrievalPolicy,
+    observed_values_cutoff: Option<&str>,
 ) -> Result<Vec<ObservedValuesSearchHit>, SqliteSearchError> {
     let mut hits = Vec::new();
     let retention_modifier = sqlite_retention_modifier(policy);
@@ -1633,6 +1706,7 @@ fn search_observed_values_short_terms(
             AND s.surface_name = v.surface_name
         WHERE v.workspace = ?
             AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+            AND (? IS NULL OR v.last_observed_at < ?)
             AND (
                 v.search_text = ?
                 OR v.value_key = ?
@@ -1657,6 +1731,8 @@ fn search_observed_values_short_terms(
             params![
                 workspace_name.as_str(),
                 &retention_modifier,
+                observed_values_cutoff,
+                observed_values_cutoff,
                 term,
                 term,
                 term,
@@ -1678,13 +1754,20 @@ fn drain_one_observed_job<F>(
     connection: &mut Connection,
     workspace_name: &WorkspaceName,
     after_job_id: i64,
+    excluded_search_origin: Option<&str>,
     storage_limit_reached: &F,
 ) -> Result<DrainOneResult, SqliteSearchError>
 where
     F: Fn(&Connection) -> Result<bool, SqliteSearchError>,
 {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let Some(raw_job) = next_queue_job(&transaction, workspace_name, after_job_id)? else {
+    let Some(raw_job) = next_queue_job(
+        &transaction,
+        workspace_name,
+        after_job_id,
+        excluded_search_origin,
+    )?
+    else {
         transaction.commit()?;
         return Ok(DrainOneResult::Empty);
     };
@@ -1710,8 +1793,8 @@ where
         return Ok(DrainOneResult::Stale { job_id });
     }
 
-    let payload = match serde_json::from_str::<ObservedValuesQueuePayload>(&job.payload_json) {
-        Ok(payload) => payload,
+    let payload = match serde_json::from_str::<ObservedValuesQueueEnvelope>(&job.payload_json) {
+        Ok(envelope) => envelope.payload,
         Err(error) => {
             mark_queue_job_failed(&transaction, job.id, &error.to_string())?;
             let job_id = job.id;
@@ -1945,6 +2028,7 @@ fn next_queue_job(
     transaction: &Transaction<'_>,
     workspace_name: &WorkspaceName,
     after_job_id: i64,
+    excluded_search_origin: Option<&str>,
 ) -> Result<Option<RawObservedQueueJobRow>, SqliteSearchError> {
     transaction
         .query_row(
@@ -1963,13 +2047,22 @@ fn next_queue_job(
             WHERE workspace = ?1
                 AND id > ?2
                 AND attempts < ?3
+                AND CASE
+                    WHEN ?4 IS NULL THEN 1
+                    WHEN json_valid(payload_json) = 0 THEN 1
+                    ELSE COALESCE(
+                        json_extract(payload_json, '$.search_origin') <> ?4,
+                        1
+                    )
+                END
             ORDER BY id
             LIMIT 1
             ",
             params![
                 workspace_name.as_str(),
                 after_job_id,
-                MAX_OBSERVED_QUEUE_JOB_ATTEMPTS
+                MAX_OBSERVED_QUEUE_JOB_ATTEMPTS,
+                excluded_search_origin,
             ],
             observed_queue_job_from_row,
         )
@@ -2157,10 +2250,28 @@ fn mark_queue_job_failed_on_connection(
 fn pending_queue_job_count(
     connection: &Connection,
     workspace_name: &WorkspaceName,
+    excluded_search_origin: Option<&str>,
 ) -> Result<u32, SqliteSearchError> {
     let count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM observed_queue_jobs WHERE workspace = ?1 AND attempts < ?2",
-        params![workspace_name.as_str(), MAX_OBSERVED_QUEUE_JOB_ATTEMPTS],
+        "
+        SELECT COUNT(*)
+        FROM observed_queue_jobs
+        WHERE workspace = ?1
+            AND attempts < ?2
+            AND CASE
+                WHEN ?3 IS NULL THEN 1
+                WHEN json_valid(payload_json) = 0 THEN 1
+                ELSE COALESCE(
+                    json_extract(payload_json, '$.search_origin') <> ?3,
+                    1
+                )
+            END
+        ",
+        params![
+            workspace_name.as_str(),
+            MAX_OBSERVED_QUEUE_JOB_ATTEMPTS,
+            excluded_search_origin,
+        ],
         |row| row.get(0),
     )?;
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
@@ -2323,6 +2434,7 @@ fn eligible_observed_value_count(
     connection: &Connection,
     workspace_name: &WorkspaceName,
     policy: &ObservedValuesRetrievalPolicy,
+    observed_values_cutoff: Option<&str>,
 ) -> Result<u32, SqliteSearchError> {
     let count: i64 = connection.query_row(
         "
@@ -2336,8 +2448,14 @@ fn eligible_observed_value_count(
             AND s.surface_name = v.surface_name
         WHERE v.workspace = ?
             AND v.last_observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+            AND (? IS NULL OR v.last_observed_at < ?)
         ",
-        params![workspace_name.as_str(), sqlite_retention_modifier(policy)],
+        params![
+            workspace_name.as_str(),
+            sqlite_retention_modifier(policy),
+            observed_values_cutoff,
+            observed_values_cutoff,
+        ],
         |row| row.get(0),
     )?;
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
@@ -2451,10 +2569,11 @@ mod tests {
 
     use rusqlite::params;
     use tempfile::tempdir;
+    use uuid::Uuid;
 
     use super::{
-        ObservedValuesDrainBudget, drain_observed_queue, search_observed_values,
-        sqlite_retention_modifier,
+        ObservedValuesDrainBudget, drain_observed_queue, drain_observed_queue_before_search,
+        search_observed_values, search_observed_values_before, sqlite_retention_modifier,
     };
     use crate::search::observed::governance::ObservedValuesProjectionReclamation;
     use crate::search::observed::sqlite_queue::{
@@ -2927,6 +3046,98 @@ mod tests {
     }
 
     #[test]
+    fn before_search_excludes_current_origin_and_cutoff_hides_later_projection() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        let generation = store
+            .capture_epoch(&workspace, "github")
+            .expect("generation");
+        let current_origin = Uuid::from_u128(2);
+        let mut previous_job =
+            test_job_with_identity("github", "github", "previous", "Previous payment");
+        previous_job.payload_json =
+            payload_json_with_origin("Previous payment", "previous-payment", Uuid::from_u128(1));
+        let mut current_job =
+            test_job_with_identity("github", "github", "current", "Current payment");
+        current_job.payload_json =
+            payload_json_with_origin("Current payment", "current-payment", current_origin);
+        store
+            .enqueue_if_current(&workspace, &previous_job, generation)
+            .expect("enqueue previous job");
+        store
+            .enqueue_if_current(&workspace, &current_job, generation)
+            .expect("enqueue current job");
+        let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
+        let mut connection = backing.connect_for_test().expect("connection");
+
+        let result = drain_observed_queue_before_search(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            Some(current_origin),
+            |_| Ok(false),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
+        )
+        .expect("drain before search");
+
+        assert_eq!(result.queue_jobs_processed, 1);
+        assert_eq!(result.remaining_queue_depth, 0);
+        let physical_queue_depth: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM observed_queue_jobs WHERE workspace = ?1",
+                params![workspace.as_str()],
+                |row| row.get(0),
+            )
+            .expect("physical queue depth");
+        assert_eq!(physical_queue_depth, 1);
+
+        drain_observed_queue(
+            &mut connection,
+            &workspace,
+            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
+            |_| Ok(false),
+            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
+        )
+        .expect("later drain");
+        let policy = ObservedValuesRetrievalPolicy::new(
+            ["previous", "current"]
+                .into_iter()
+                .map(|source_scope_id| ObservedValuesLiveScope {
+                    owner_source_name: "github".to_string(),
+                    source_name: "github".to_string(),
+                    source_scope_id: source_scope_id.to_string(),
+                    surface_kind: ObservedValuesSurfaceKind::Table,
+                    surface_name: "issues".to_string(),
+                })
+                .collect(),
+            30,
+        );
+        let current_request_hits = search_observed_values_before(
+            &connection,
+            &workspace,
+            &[String::from("payment")],
+            10,
+            &policy,
+            Some("1970-01-01T00:00:00.000Z"),
+        )
+        .expect("search at request cutoff");
+        assert!(current_request_hits.hits.is_empty());
+        let next_request_hits = search_observed_values_before(
+            &connection,
+            &workspace,
+            &[String::from("payment")],
+            10,
+            &policy,
+            Some("9999-12-31T23:59:59.999Z"),
+        )
+        .expect("search after request cutoff");
+        assert_eq!(next_request_hits.hits.len(), 2);
+    }
+
+    #[test]
     fn retention_modifier_formats_sqlite_datetime_modifier() {
         let policy = ObservedValuesRetrievalPolicy::new(
             vec![ObservedValuesLiveScope {
@@ -2963,6 +3174,23 @@ mod tests {
                 r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"payment outage","value_key":"{value_key}"}}]}}"#,
             ),
         }
+    }
+
+    fn payload_json_with_origin(
+        display_value: &str,
+        value_key: &str,
+        search_origin: Uuid,
+    ) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "search_origin": search_origin,
+            "values": [{
+                "column_name": "title",
+                "display_value": display_value,
+                "search_text": display_value.to_ascii_lowercase(),
+                "value_key": value_key,
+            }],
+        }))
+        .expect("serialize origin-aware payload")
     }
 
     fn enqueue_multi_surface_identity_fixture(
