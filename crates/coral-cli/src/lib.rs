@@ -787,7 +787,20 @@ async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
+    let mut ctrl_break = tokio::signal::windows::ctrl_break()?;
+    let mut ctrl_close = tokio::signal::windows::ctrl_close()?;
+    let mut ctrl_shutdown = tokio::signal::windows::ctrl_shutdown()?;
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => signal,
+        _ = ctrl_break.recv() => Ok(()),
+        _ = ctrl_close.recv() => Ok(()),
+        _ = ctrl_shutdown.recv() => Ok(()),
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
 async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
     tokio::signal::ctrl_c().await
 }
