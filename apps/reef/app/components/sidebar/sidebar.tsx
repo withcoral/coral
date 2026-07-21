@@ -1,6 +1,6 @@
 import classNames from 'classnames'
 import { useEffect, useRef, useState } from 'react'
-import { Link, NavLink, useLocation, useParams } from 'react-router'
+import { Form, Link, NavLink, useLocation, useParams } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { IconButton } from '@/wax/components/button'
@@ -12,6 +12,7 @@ import type { IconName } from '@/wax/components/icon'
 import * as Menu from '@/wax/components/menu'
 import { getAvatarColorFromSeed } from '@/wax/components/avatar/utils/get-avatar-color'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
+import type { BrowserAuth } from '@/auth/types'
 import { WorkspaceCreationDialog } from '@/components/workspaces'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { workspacePathForCurrentSection } from '@/lib/workspace-routing'
@@ -21,11 +22,16 @@ import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
 
 interface SidebarProps {
+  auth?: BrowserAuth
   initialIsMinimized: boolean
   workspaces: ReadonlyArray<Pick<Workspace, 'name'>>
 }
 
-export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
+export function Sidebar({
+  auth = { mode: 'disabled' },
+  initialIsMinimized,
+  workspaces,
+}: SidebarProps) {
   const location = useLocation()
   const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
@@ -218,6 +224,22 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
       </div>
 
       <div className={styles.footer}>
+        {auth.mode === 'required' && (
+          <Form action="/logout" method="post">
+            <input name="csrf" type="hidden" value={auth.csrfToken} />
+            {isMinimized ? (
+              <Tooltip content="Sign out" side="right">
+                <SidebarButton aria-label="Sign out" icon="LogOut" isMinimized type="submit">
+                  Sign out
+                </SidebarButton>
+              </Tooltip>
+            ) : (
+              <SidebarButton aria-label="Sign out" icon="LogOut" type="submit">
+                Sign out
+              </SidebarButton>
+            )}
+          </Form>
+        )}
         {isDesktopApp &&
           // Collapsed sidebar hides the label, so surface it on hover instead.
           (isMinimized ? (

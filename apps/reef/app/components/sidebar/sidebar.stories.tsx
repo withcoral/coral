@@ -59,3 +59,11 @@ export const Minimized: Story = {
     workspaces: [{ name: 'default' }, { name: 'analytics' }],
   },
 }
+
+export const Hosted: Story = {
+  args: {
+    auth: { csrfToken: 'storybook-csrf-token', mode: 'required' },
+    initialIsMinimized: false,
+    workspaces: [{ name: 'default' }, { name: 'analytics' }],
+  },
+}

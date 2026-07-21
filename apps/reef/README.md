@@ -27,6 +27,10 @@ session values documented in `.env.example`. A non-desktop production server
 without an explicit mode fails closed rather than accidentally publishing an
 unauthenticated app.
 
+Hosted sessions can be cleared from the Sidebar's CSRF-protected **Sign out**
+action. Logout currently clears Reef's local session; Coral Cloud does not yet
+advertise a provider-neutral browser logout or token-revocation endpoint.
+
 Run checks:
 
 ```bash

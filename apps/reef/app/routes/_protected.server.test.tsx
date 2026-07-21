@@ -5,11 +5,13 @@ import type { RequiredAuthConfig } from '@/auth/types'
 
 const authMocks = vi.hoisted(() => ({
   clearReefSession: vi.fn(async () => 'reef_session=; Max-Age=0; Path=/; HttpOnly'),
+  csrfTokenForRequest: vi.fn(),
   readReefSession: vi.fn(),
   reefAuthConfig: vi.fn(),
 }))
 
 vi.mock('@/auth/config.server', () => ({ reefAuthConfig: authMocks.reefAuthConfig }))
+vi.mock('@/auth/csrf.server', () => ({ csrfTokenForRequest: authMocks.csrfTokenForRequest }))
 vi.mock('@/auth/session.server', () => ({
   clearReefSession: authMocks.clearReefSession,
   readReefSession: authMocks.readReefSession,
@@ -90,6 +92,8 @@ const handlerBuild = {
 describe('optional auth boundary', () => {
   beforeEach(() => {
     authMocks.clearReefSession.mockClear()
+    authMocks.csrfTokenForRequest.mockReset()
+    authMocks.csrfTokenForRequest.mockResolvedValue({ setCookie: null, token: 'csrf-token' })
     authMocks.readReefSession.mockReset()
     authMocks.reefAuthConfig.mockReset()
     descendantAction.mockClear()
@@ -108,6 +112,7 @@ describe('optional auth boundary', () => {
     expect(next).toHaveBeenCalledOnce()
     expect(authMocks.readReefSession).not.toHaveBeenCalled()
     expect(authMocks.clearReefSession).not.toHaveBeenCalled()
+    expect(authMocks.csrfTokenForRequest).not.toHaveBeenCalled()
     expect(context.get(requestAuthContext)).toEqual({ accessToken: null, mode: 'disabled' })
     expect(response.headers.has('Cache-Control')).toBe(false)
   })
@@ -196,9 +201,32 @@ describe('optional auth boundary', () => {
 
     expect(context.get(requestAuthContext)).toEqual({
       accessToken: 'server-only-token',
+      csrfToken: 'csrf-token',
       mode: 'required',
       session,
     })
+  })
+
+  it('commits a fresh CSRF cookie on the protected response', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(session)
+    authMocks.csrfTokenForRequest.mockResolvedValue({
+      setCookie: 'reef_csrf=signed; Path=/; HttpOnly; SameSite=Lax',
+      token: 'fresh-csrf-token',
+    })
+
+    const response = await runMiddleware(
+      new Request('https://reef.example.test/'),
+      async () => new Response('ok'),
+    )
+
+    expect(response.headers.get('Set-Cookie')).toContain('reef_csrf=signed')
+
+    const childError = new Response('failed', { status: 500 })
+    const thrown = await runMiddleware(new Request('https://reef.example.test/'), async () => {
+      throw childError
+    }).catch((error: unknown) => error)
+    expect((thrown as Response).headers.get('Set-Cookie')).toContain('reef_csrf=signed')
   })
 
   it('marks normal and thrown hosted responses private and non-cacheable', async () => {

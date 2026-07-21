@@ -24,6 +24,8 @@ export interface AuthSession {
   tokenType: string
 }
 
+export type BrowserAuth = { mode: 'disabled' } | { csrfToken: string; mode: 'required' }
+
 export type RequestAuth =
   | { accessToken: null; mode: 'disabled' }
-  | { accessToken: string; mode: 'required'; session: AuthSession }
+  | { accessToken: string; csrfToken: string; mode: 'required'; session: AuthSession }

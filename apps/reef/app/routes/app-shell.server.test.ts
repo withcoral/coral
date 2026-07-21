@@ -20,12 +20,13 @@ describe('app shell loader', () => {
     vi.restoreAllMocks()
   })
 
-  it('loads the local workspace list once for the sidebar', async () => {
+  it('loads the hosted workspace list and browser-safe auth state for the sidebar', async () => {
     const request = new Request('http://reef.test/workspaces/default/sources')
     const workspaces = [{ name: 'default' }, { name: 'analytics' }]
     listWorkspacesForRequest.mockResolvedValue(workspaces)
 
     await expect(loader(authRouteTestArgs(request, {}, 'coral-access-token'))).resolves.toEqual({
+      auth: { csrfToken: 'test-csrf-token', mode: 'required' },
       workspaces,
     })
     expect(listWorkspacesForRequest).toHaveBeenCalledOnce()
@@ -35,7 +36,10 @@ describe('app shell loader', () => {
   it('leaves workspace lookup to the index redirect loader', async () => {
     await expect(
       loader(authRouteTestArgs(new Request(`http://reef.test${routePath('home')}`), {})),
-    ).resolves.toEqual({ workspaces: [] })
+    ).resolves.toEqual({
+      auth: { csrfToken: 'test-csrf-token', mode: 'required' },
+      workspaces: [],
+    })
     expect(listWorkspacesForRequest).not.toHaveBeenCalled()
   })
 
@@ -46,7 +50,21 @@ describe('app shell loader', () => {
 
     await expect(
       loader(authRouteTestArgs(new Request('http://reef.test/workspaces/default/sources'), {})),
-    ).resolves.toEqual({ workspaces: [] })
+    ).resolves.toEqual({
+      auth: { csrfToken: 'test-csrf-token', mode: 'required' },
+      workspaces: [],
+    })
     expect(consoleError).toHaveBeenCalledWith('Failed to load sidebar workspaces:', error)
+  })
+
+  it('keeps local sidebar auth disabled', async () => {
+    const request = new Request('http://reef.test/workspaces/default/sources')
+    listWorkspacesForRequest.mockResolvedValue([{ name: 'default' }])
+
+    await expect(loader(authRouteTestArgs(request, {}, null))).resolves.toEqual({
+      auth: { mode: 'disabled' },
+      workspaces: [{ name: 'default' }],
+    })
+    expect(listWorkspacesForRequest).toHaveBeenCalledWith(request, null)
   })
 })

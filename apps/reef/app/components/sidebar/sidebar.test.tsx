@@ -7,6 +7,7 @@ import { Sidebar } from './sidebar'
 import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
 import { validateWorkspaceName } from '@/lib/workspace-name'
 import { routePath, routePattern } from '@/routing/routemap'
+import type { BrowserAuth } from '@/auth/types'
 
 const WORKSPACES = [{ name: 'default' }, { name: 'analytics' }]
 
@@ -14,6 +15,7 @@ async function renderSidebar(
   initialIsMinimized: boolean,
   initialEntry = routePath('home'),
   workspaces: Array<{ name: string }> = [],
+  auth: BrowserAuth = { mode: 'disabled' },
 ) {
   const router = createMemoryRouter(
     [
@@ -31,31 +33,45 @@ async function renderSidebar(
         path: routePattern('workspaces'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: (
+          <Sidebar auth={auth} initialIsMinimized={initialIsMinimized} workspaces={workspaces} />
+        ),
         path: routePattern('workspaceSource'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: (
+          <Sidebar auth={auth} initialIsMinimized={initialIsMinimized} workspaces={workspaces} />
+        ),
         path: routePattern('workspaceSources'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: (
+          <Sidebar auth={auth} initialIsMinimized={initialIsMinimized} workspaces={workspaces} />
+        ),
         path: routePattern('workspaceSchemaTable'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: (
+          <Sidebar auth={auth} initialIsMinimized={initialIsMinimized} workspaces={workspaces} />
+        ),
         path: routePattern('workspaceSchema'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: (
+          <Sidebar auth={auth} initialIsMinimized={initialIsMinimized} workspaces={workspaces} />
+        ),
         path: routePattern('workspaceTrace'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: (
+          <Sidebar auth={auth} initialIsMinimized={initialIsMinimized} workspaces={workspaces} />
+        ),
         path: routePattern('workspaceTraces'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: (
+          <Sidebar auth={auth} initialIsMinimized={initialIsMinimized} workspaces={workspaces} />
+        ),
         path: '*',
       },
     ],
@@ -293,5 +309,24 @@ describe('Sidebar', () => {
     await expect
       .poll(() => document.querySelector('[data-base-ui-portal]')?.textContent)
       .toContain('Sources')
+  })
+
+  it('shows logout only for hosted auth and submits its CSRF token', async () => {
+    const local = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+    await expect.element(local.getByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+
+    const hosted = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES, {
+      csrfToken: 'hosted-csrf-token',
+      mode: 'required',
+    })
+    const signOut = hosted.getByRole('button', { name: 'Sign out' })
+    const form = signOut.element().closest('form')
+
+    await expect.element(signOut).toBeVisible()
+    expect(form?.getAttribute('action')).toBe('/logout')
+    expect(form?.getAttribute('method')).toBe('post')
+    expect(form?.querySelector<HTMLInputElement>('input[name="csrf"]')?.value).toBe(
+      'hosted-csrf-token',
+    )
   })
 })

@@ -350,6 +350,7 @@ describe('Architectural Tests', () => {
 
       expect(routeConfig).toContain("route('login', 'routes/login.tsx')")
       expect(routeConfig).toContain("route('auth/callback', 'routes/auth.callback.tsx')")
+      expect(routeConfig).toContain("route('logout', 'routes/logout.tsx')")
       expect(routeConfig).toContain("layout('routes/_protected.tsx', [")
       expect(routeConfig).toContain(
         "route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts')",
@@ -376,9 +377,10 @@ describe('Architectural Tests', () => {
 
       // Structural check: the same-origin resource route and onboarding stay
       // outside the app shell while sharing its request authentication boundary.
-      // Reef login and callback stay public so they can establish that session.
+      // Reef login, callback, and logout stay public so they can establish or
+      // clear the hosted session.
       expect(routeConfig).toMatch(
-        /export default \[\s*route\('login', 'routes\/login\.tsx'\),\s*route\('auth\/callback', 'routes\/auth\.callback\.tsx'\),\s*layout\(\s*'routes\/_protected\.tsx',\s*\[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*route\('onboarding', 'routes\/onboarding\.tsx'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\]\s*\),?\s*\] satisfies RouteConfig/,
+        /export default \[\s*route\('login', 'routes\/login\.tsx'\),\s*route\('auth\/callback', 'routes\/auth\.callback\.tsx'\),\s*route\('logout', 'routes\/logout\.tsx'\),\s*layout\(\s*'routes\/_protected\.tsx',\s*\[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*route\('onboarding', 'routes\/onboarding\.tsx'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\]\s*\),?\s*\] satisfies RouteConfig/,
       )
     })
 
