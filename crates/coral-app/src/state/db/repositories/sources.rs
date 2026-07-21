@@ -146,6 +146,7 @@ where
                 .as_deref()
                 .map(parse_credential_storage)
                 .transpose()?,
+            credential_revision: uuid::Uuid::nil(),
             origin: parse_source_origin(&row.origin_kind)?,
         })
     }
@@ -660,6 +661,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             secrets: secrets.into_iter().map(str::to_string).collect(),
             credential_storage,
+            credential_revision: uuid::Uuid::nil(),
             origin,
         }
     }
