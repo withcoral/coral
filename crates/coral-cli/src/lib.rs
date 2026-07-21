@@ -19,6 +19,8 @@ mod source_ops;
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::future::Future;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -732,26 +734,48 @@ async fn run_ui(
     }
     println!("Press Ctrl-C to stop the UI.");
 
-    let signal = tokio::signal::ctrl_c().await;
-    let shutdown = server.shutdown().await;
-    signal?;
-    shutdown?;
-    Ok(())
+    run_until_server_stops(server, tokio::signal::ctrl_c()).await
 }
 
 async fn run_server() -> Result<(), anyhow::Error> {
     let server = bootstrap::start_standalone_server().await?;
     let endpoint = server.endpoint_uri().to_string();
 
+    if !server_endpoint_is_loopback(&endpoint) {
+        eprintln!(
+            "Warning: the native gRPC server at {endpoint} does not authenticate clients; \
+             any client that can reach the server can access Coral and its configured sources. \
+             Protect it with a trusted network boundary or authenticating proxy."
+        );
+    }
     println!("Coral gRPC server listening on {endpoint}");
     println!("Connect clients with CORAL_ENDPOINT={endpoint}");
     println!("Press Ctrl-C to stop the server.");
 
-    let signal = wait_for_server_shutdown_signal().await;
+    run_until_server_stops(server, wait_for_server_shutdown_signal()).await
+}
+
+async fn run_until_server_stops(
+    server: coral_app::RunningServer,
+    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
+) -> Result<(), anyhow::Error> {
+    let signal = tokio::select! {
+        result = shutdown_signal => Some(result),
+        () = server.wait_for_exit() => None,
+    };
     let shutdown = server.shutdown().await;
-    signal?;
+    if let Some(signal) = signal {
+        signal?;
+    }
     shutdown?;
     Ok(())
+}
+
+fn server_endpoint_is_loopback(endpoint: &str) -> bool {
+    endpoint
+        .strip_prefix("http://")
+        .and_then(|authority| authority.parse::<SocketAddr>().ok())
+        .is_some_and(|address| address.ip().is_loopback())
 }
 
 #[cfg(unix)]
@@ -1662,7 +1686,7 @@ mod tests {
 
     use super::{
         Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary,
-        function_status_summary,
+        function_status_summary, server_endpoint_is_loopback,
     };
 
     #[test]
@@ -1680,6 +1704,26 @@ mod tests {
             ["coral", "server", "--port", "14555"],
         ] {
             Cli::try_parse_from(args).expect_err("server bind overrides should be rejected");
+        }
+    }
+
+    #[test]
+    fn server_security_warning_targets_non_loopback_endpoints() {
+        for endpoint in ["http://127.0.0.1:14555", "http://[::1]:14555"] {
+            assert!(
+                server_endpoint_is_loopback(endpoint),
+                "endpoint: {endpoint}"
+            );
+        }
+        for endpoint in [
+            "http://0.0.0.0:14555",
+            "http://[::]:14555",
+            "http://192.168.1.10:14555",
+        ] {
+            assert!(
+                !server_endpoint_is_loopback(endpoint),
+                "endpoint: {endpoint}"
+            );
         }
     }
 

@@ -28,7 +28,7 @@ use coral_api::{
     TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::{self, JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codegen::http::header::CONTENT_TYPE;
@@ -485,6 +485,7 @@ pub struct RunningServer {
     search: SearchManager,
     search_observations: Mutex<Option<SearchObservationHandle>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    task_finished: watch::Receiver<bool>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
 
@@ -504,6 +505,17 @@ impl RunningServer {
     /// trace history is enabled for this process.
     pub fn local_trace_store_dir(&self) -> Option<&std::path::Path> {
         self.local_trace_store_dir.as_deref()
+    }
+
+    /// Waits until the background server task exits.
+    ///
+    /// This method is cancellation-safe and does not initiate shutdown,
+    /// consume the task result, or release server resources. Call
+    /// [`RunningServer::shutdown`] afterward to join the task, surface errors,
+    /// and complete cleanup.
+    pub async fn wait_for_exit(&self) {
+        let mut task_finished = self.task_finished.clone();
+        let _finished = task_finished.wait_for(|finished| *finished).await;
     }
 
     /// Shuts the server down and waits for the background task to finish.
@@ -667,13 +679,14 @@ async fn start_server(
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (task_finished_tx, task_finished) = watch::channel(false);
 
     let task = match mode {
         ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => {
-            start_grpc_server(listener, shutdown_rx, routes)
+            start_grpc_server(listener, shutdown_rx, routes, task_finished_tx)
         }
         ServerMode::EmbeddedUi { assets, .. } => {
-            start_grpc_web_server(listener, shutdown_rx, routes, assets)
+            start_grpc_web_server(listener, shutdown_rx, routes, assets, task_finished_tx)
         }
     };
 
@@ -683,6 +696,7 @@ async fn start_server(
         search,
         search_observations: Mutex::new(search_observations),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
+        task_finished,
         task: Mutex::new(Some(task)),
     })
 }
@@ -691,15 +705,18 @@ fn start_grpc_server(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
+    task_finished: watch::Sender<bool>,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     tokio::spawn(async move {
-        Server::builder()
+        let result = Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(routes)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await
+            .await;
+        task_finished.send_replace(true);
+        result
     })
 }
 
@@ -708,6 +725,7 @@ fn start_grpc_web_server(
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
     static_assets: Arc<dyn StaticAssetsProvider>,
+    task_finished: watch::Sender<bool>,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     let grpc = routes
         .into_axum_router()
@@ -721,14 +739,16 @@ fn start_grpc_web_server(
     let combined: Routes = app.into();
 
     tokio::spawn(async move {
-        Server::builder()
+        let result = Server::builder()
             .accept_http1(true)
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(combined)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await
+            .await;
+        task_finished.send_replace(true);
+        result
     })
 }
 
@@ -890,9 +910,11 @@ mod tests {
     )]
 
     use std::borrow::Cow;
+    use std::future::Future as _;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use std::task::Poll;
     use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
@@ -907,6 +929,7 @@ mod tests {
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
+    use tokio::sync::{oneshot, watch};
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
 
@@ -1015,7 +1038,7 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn shutdown_attempts_observed_values_shutdown_after_server_task_error() {
+    async fn wait_for_exit_preserves_task_error_and_shutdown_cleanup() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1069,9 +1092,13 @@ enabled = false
             )
             .expect("enqueue observed value");
         let search_observations = SearchObservationHandle::new(layout);
-        let task = tokio::spawn(async {
+        let (task_gate_tx, task_gate_rx) = oneshot::channel();
+        let (task_finished_tx, task_finished) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            drop(task_gate_rx.await);
             let should_panic = true;
             assert!(!should_panic, "server task panicked");
+            task_finished_tx.send_replace(true);
             Ok::<(), tonic::transport::Error>(())
         });
         let server = RunningServer {
@@ -1080,12 +1107,30 @@ enabled = false
             search,
             search_observations: Mutex::new(Some(search_observations)),
             shutdown_tx: Mutex::new(None),
+            task_finished,
             task: Mutex::new(Some(task)),
         };
 
+        let mut canceled_wait = Box::pin(server.wait_for_exit());
+        std::future::poll_fn(|cx| {
+            assert!(canceled_wait.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(canceled_wait);
+        task_gate_tx.send(()).expect("release server task");
+
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), server.wait_for_exit())
+                .await
+                .expect("server task completion should wake waiters");
+        }
         let result = server.shutdown_inner().await;
 
-        assert!(matches!(result, Err(AppError::TaskJoin(_))));
+        assert!(matches!(
+            result,
+            Err(AppError::TaskJoin(error)) if error.is_panic()
+        ));
         assert!(
             server
                 .search_observations
