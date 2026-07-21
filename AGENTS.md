@@ -51,9 +51,10 @@
   latency. CI installs the bundled `github` source with fake credentials and
   fails when release `coral sql "select * from coral.tables"` has a hyperfine
   mean above 750 ms.
-- Pull requests do not automatically build macOS Desktop packages. Use manual
-  dispatch for an unsigned packaging preflight when a distribution-sensitive
-  change warrants one. Validation artifacts stay unsigned and must not be
+- Pull requests do not automatically build macOS Desktop packages. A scheduled
+  workflow builds and verifies the unsigned universal package from `main`
+  nightly; use manual dispatch for a preflight when a distribution-sensitive
+  pull request warrants one. Validation artifacts stay unsigned and must not be
   reused for a release; Desktop release publishing must rebuild from a clean
   checkout with signing and notarization.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
