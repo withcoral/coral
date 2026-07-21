@@ -372,6 +372,7 @@ impl CoralMcpServer {
 
     async fn load_catalog(
         &self,
+        catalog_name: Option<&str>,
         schema_name: Option<&str>,
         kind: ProtoCatalogItemKind,
         pagination: PaginationRequest,
@@ -380,6 +381,7 @@ impl CoralMcpServer {
         Ok(catalog_client
             .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: catalog_name.unwrap_or_default().to_string(),
                 schema_name: schema_name.unwrap_or_default().to_string(),
                 kind: kind as i32,
                 pagination: Some(pagination),
@@ -390,6 +392,7 @@ impl CoralMcpServer {
 
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         self.load_catalog(
+            None,
             None,
             CATALOG_KIND_TABLE,
             PaginationRequest {
@@ -415,6 +418,7 @@ impl CoralMcpServer {
     ) -> Result<(Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
         self.load_catalog(
             None,
+            None,
             CATALOG_KIND_ALL,
             PaginationRequest {
                 limit: LIST_CATALOG_UNBOUNDED_LIMIT,
@@ -427,6 +431,7 @@ impl CoralMcpServer {
 
     async fn load_table_description(
         &self,
+        catalog_name: Option<&str>,
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableResponse, tonic::Status> {
@@ -434,6 +439,7 @@ impl CoralMcpServer {
         Ok(catalog_client
             .describe_table(Request::new(DescribeTableRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: catalog_name.unwrap_or_default().to_string(),
                 schema_name: schema_name.to_string(),
                 table_name: table_name.to_string(),
             }))
@@ -445,6 +451,7 @@ impl CoralMcpServer {
         // One item is enough: the app returns per-kind counts before pagination.
         let response = self
             .load_catalog(
+                None,
                 None,
                 CATALOG_KIND_ALL,
                 PaginationRequest {
@@ -709,6 +716,7 @@ impl CoralMcpServer {
         let result = catalog_client
             .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: arguments.catalog.unwrap_or_default(),
                 schema_name: arguments.schema.unwrap_or_default(),
                 kind: catalog_item_kind_from_tool(arguments.kind) as i32,
                 pagination: Some(PaginationRequest {
@@ -730,10 +738,15 @@ impl CoralMcpServer {
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = describe_table_arguments(request_arguments)?;
         match self
-            .load_table_description(&arguments.schema, &arguments.table)
+            .load_table_description(
+                arguments.catalog.as_deref(),
+                &arguments.schema,
+                &arguments.table,
+            )
             .await
         {
             Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
+                arguments.catalog.as_deref(),
                 &arguments.schema,
                 &arguments.table,
                 &response,
@@ -845,6 +858,7 @@ impl CoralMcpServer {
         match catalog_client
             .list_columns(Request::new(ListColumnsRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: arguments.catalog.clone().unwrap_or_default(),
                 schema_name: arguments.schema.clone(),
                 table_name: arguments.table.clone(),
                 pattern: arguments.pattern.clone(),
@@ -858,6 +872,7 @@ impl CoralMcpServer {
             .await
         {
             Ok(response) => Ok(ToolCallOutcome::success(list_columns_value(
+                arguments.catalog.as_deref(),
                 &arguments.schema,
                 &arguments.table,
                 &response.into_inner(),
@@ -867,11 +882,16 @@ impl CoralMcpServer {
             }
             Err(status) if status.code() == tonic::Code::NotFound => {
                 match self
-                    .load_table_description(&arguments.schema, &arguments.table)
+                    .load_table_description(
+                        arguments.catalog.as_deref(),
+                        &arguments.schema,
+                        &arguments.table,
+                    )
                     .await
                 {
                     Ok(response) => {
                         Ok(ToolCallOutcome::success(list_columns_table_fallback_value(
+                            arguments.catalog.as_deref(),
                             &arguments.schema,
                             &arguments.table,
                             &response,
