@@ -8,46 +8,65 @@ import type { OnboardingStepState } from './onboarding-steps'
 
 export const CORAL_SKILL_INSTALL_COMMAND = 'npx skills add withcoral/skills --skill coral --global'
 
-export const CORAL_AGENT_SETUP_PROMPT = [
-  'Help me set up Coral and get my first source working with you.',
-  '',
-  'Coral is an open-source data access layer for AI agents: one place to connect sources such as GitHub, Slack, Linear, Datadog, and local files, then query them with SQL.',
-  '',
-  'I have completed Coral onboarding and connected at least one source. Start by identifying how I am running Coral. Talk it through with me, inspect my environment when possible, and recommend a setup path that uses my existing installation:',
-  '',
-  'Coral entrypoints:',
-  '- Desktop app: a native app with a bundled Coral runtime for a regular desktop environment.',
-  '- CLI (`coral`): for a terminal, headless machine, or server environment.',
-  'Both use local Coral state and can expose the same stdio MCP server to a coding agent.',
-  '',
-  'How to think about it:',
-  '- If I am using Coral Desktop, start with its bundled runtime. Do not require a separate CLI installation without explaining why it is needed.',
-  '- If the `coral` CLI is installed, resolve its actual executable path rather than assuming my agent inherits the terminal PATH.',
-  '',
-  'Once you know which form I am using:',
-  '1. Connect to Coral over local stdio MCP. Find the actual Coral executable first, configure it as the command, and pass `mcp-stdio` as a separate argument. Do not point to a missing command or treat `mcp-stdio` as an npm package.',
-  `2. Install only the \`coral\` agent skill globally from https://github.com/withcoral/skills. Use \`${CORAL_SKILL_INSTALL_COMMAND}\` when the official skills installer is available.`,
-  '3. Most MCP clients only load servers at startup, so I may need to restart the client or open a new chat before the Coral tools appear. Tell me if that is needed and wait for me to do it before continuing.',
-  '4. Once the tools are available, list the Coral catalog, find the source I connected during onboarding, and run one small read-only query to verify the setup end to end.',
-  '',
-  'Make the changes yourself when you have terminal access, explain what you changed, and stop with a clear next step if anything requires my input.',
-  '',
-  'Installation and skills: https://withcoral.com/docs/getting-started/installation',
-  'MCP setup: https://withcoral.com/docs/guides/use-coral-over-mcp',
-  'Source (and the place to start if something breaks): https://github.com/withcoral/coral',
-].join('\n')
+export function coralAgentSetupPrompt(runtime: 'desktop' | 'web'): string {
+  const runtimeGuidance =
+    runtime === 'desktop'
+      ? [
+          'I have completed Coral onboarding and connected at least one source. I am running Coral Desktop with its bundled Coral runtime.',
+          '',
+          "Use Coral Desktop's bundled Coral executable for the local stdio MCP server. Resolve its actual path rather than assuming `coral` is on my agent's PATH.",
+          '',
+          'Set it up as follows:',
+        ]
+      : [
+          'I have completed Coral onboarding and connected at least one source. Start by identifying how I am running Coral. Talk it through with me, inspect my environment when possible, and recommend a setup path that uses my existing installation:',
+          '',
+          'Coral entrypoints:',
+          '- Desktop app: a native app with a bundled Coral runtime for a regular desktop environment.',
+          '- CLI (`coral`): for a terminal, headless machine, or server environment.',
+          'Both use local Coral state and can expose the same stdio MCP server to a coding agent.',
+          '',
+          'How to think about it:',
+          '- If I am using Coral Desktop, start with its bundled runtime. Do not require a separate CLI installation without explaining why it is needed.',
+          '- If the `coral` CLI is installed, resolve its actual executable path rather than assuming my agent inherits the terminal PATH.',
+          '',
+          'Once you know which form I am using:',
+        ]
+
+  return [
+    'Help me set up Coral and get my first source working with you.',
+    '',
+    'Coral is an open-source data access layer for AI agents: one place to connect sources such as GitHub, Slack, Linear, Datadog, and local files, then query them with SQL.',
+    '',
+    ...runtimeGuidance,
+    '1. Connect to Coral over local stdio MCP. Find the actual Coral executable first, configure it as the command, and pass `mcp-stdio` as a separate argument. Do not point to a missing command or treat `mcp-stdio` as an npm package.',
+    `2. Install only the \`coral\` agent skill globally from https://github.com/withcoral/skills. Use \`${CORAL_SKILL_INSTALL_COMMAND}\` when the official skills installer is available.`,
+    '3. Most MCP clients only load servers at startup, so I may need to restart the client or open a new chat before the Coral tools appear. Tell me if that is needed and wait for me to do it before continuing.',
+    '4. Once the tools are available, list the Coral catalog, find the source I connected during onboarding, and run one small read-only query to verify the setup end to end.',
+    '',
+    'Make the changes yourself when you have terminal access, explain what you changed, and stop with a clear next step if anything requires my input.',
+    '',
+    'Installation and skills: https://withcoral.com/docs/getting-started/installation',
+    'MCP setup: https://withcoral.com/docs/guides/use-coral-over-mcp',
+    'Source (and the place to start if something breaks): https://github.com/withcoral/coral',
+  ].join('\n')
+}
 
 export interface OnboardingNextStepsPageProps {
   mcpLaunchConfig: McpLaunchConfigState
   onContinue?: () => void
+  runtime: 'desktop' | 'web'
   step: OnboardingStepState
 }
 
 export function OnboardingNextStepsPage({
   mcpLaunchConfig,
   onContinue,
+  runtime,
   step,
 }: OnboardingNextStepsPageProps) {
+  const agentSetupPrompt = coralAgentSetupPrompt(runtime)
+
   return (
     <OnboardingPage
       action={{ label: "Take me to Coral's dashboard", onClick: onContinue }}
@@ -159,12 +178,12 @@ export function OnboardingNextStepsPage({
                 fillContent
                 role="textbox"
               >
-                <pre className={styles.promptText}>{CORAL_AGENT_SETUP_PROMPT}</pre>
+                <pre className={styles.promptText}>{agentSetupPrompt}</pre>
               </ScrollArea.Container>
               <CopyButton
                 ariaLabel="Copy Coral agent setup prompt"
                 className={styles.copyButton}
-                textToCopy={CORAL_AGENT_SETUP_PROMPT}
+                textToCopy={agentSetupPrompt}
                 variant="bare"
               />
             </div>

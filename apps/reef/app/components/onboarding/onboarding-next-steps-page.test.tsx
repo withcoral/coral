@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 
 import {
-  CORAL_AGENT_SETUP_PROMPT,
   CORAL_SKILL_INSTALL_COMMAND,
   OnboardingNextStepsPage,
+  coralAgentSetupPrompt,
 } from './onboarding-next-steps-page'
 import { getOnboardingStepState } from './onboarding-steps'
 
@@ -13,15 +13,15 @@ const nextStepsStep = getOnboardingStepState('next-steps')
 
 describe('OnboardingNextStepsPage', () => {
   it('defaults to AI-assisted setup and offers manual setup', async () => {
-    expect(CORAL_AGENT_SETUP_PROMPT).toContain('--skill coral --global')
-    expect(CORAL_AGENT_SETUP_PROMPT).toContain('`mcp-stdio` as a separate argument')
-    expect(CORAL_AGENT_SETUP_PROMPT).toContain('Coral entrypoints:')
-    expect(CORAL_AGENT_SETUP_PROMPT.indexOf('1. Connect to Coral')).toBeLessThan(
-      CORAL_AGENT_SETUP_PROMPT.indexOf('2. Install only the `coral` agent skill'),
+    const desktopPrompt = coralAgentSetupPrompt('desktop')
+    expect(desktopPrompt).toContain('--skill coral --global')
+    expect(desktopPrompt).toContain('`mcp-stdio` as a separate argument')
+    expect(desktopPrompt).toContain('I am running Coral Desktop')
+    expect(desktopPrompt).not.toContain('Start by identifying how I am running Coral')
+    expect(desktopPrompt.indexOf('1. Connect to Coral')).toBeLessThan(
+      desktopPrompt.indexOf('2. Install only the `coral` agent skill'),
     )
-    expect(CORAL_AGENT_SETUP_PROMPT).toContain(
-      'https://withcoral.com/docs/guides/use-coral-over-mcp',
-    )
+    expect(desktopPrompt).toContain('https://withcoral.com/docs/guides/use-coral-over-mcp')
 
     const Stub = createRoutesStub([
       {
@@ -35,6 +35,7 @@ describe('OnboardingNextStepsPage', () => {
               status: 'success',
             }}
             onContinue={() => undefined}
+            runtime="desktop"
             step={nextStepsStep}
           />
         ),
@@ -65,7 +66,7 @@ describe('OnboardingNextStepsPage', () => {
       name: 'Coral agent setup prompt',
     })
     await expect.element(agentSetupPrompt).toHaveAttribute('aria-readonly', 'true')
-    expect(agentSetupPrompt.element().textContent).toBe(CORAL_AGENT_SETUP_PROMPT)
+    expect(agentSetupPrompt.element().textContent).toBe(desktopPrompt)
     await expect
       .poll(
         () =>
@@ -112,6 +113,7 @@ describe('OnboardingNextStepsPage', () => {
         Component: () => (
           <OnboardingNextStepsPage
             mcpLaunchConfig={{ status: 'unavailable' }}
+            runtime="web"
             step={nextStepsStep}
           />
         ),
@@ -119,6 +121,10 @@ describe('OnboardingNextStepsPage', () => {
       },
     ])
     const screen = await render(<Stub />)
+
+    expect(
+      screen.getByRole('textbox', { name: 'Coral agent setup prompt' }).element().textContent,
+    ).toContain('Start by identifying how I am running Coral')
 
     await screen.getByRole('tab', { name: 'Manual' }).click()
 

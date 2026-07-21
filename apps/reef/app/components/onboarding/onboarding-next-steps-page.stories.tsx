@@ -9,6 +9,7 @@ const meta = {
   args: {
     mcpLaunchConfig: { status: 'unavailable' },
     onContinue: fn(),
+    runtime: 'web',
     step: getOnboardingStepState('next-steps'),
   },
   component: OnboardingNextStepsPage,
@@ -33,5 +34,6 @@ export const Desktop: Story = {
       },
       status: 'success',
     },
+    runtime: 'desktop',
   },
 }

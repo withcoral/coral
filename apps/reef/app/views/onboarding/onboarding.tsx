@@ -24,6 +24,7 @@ export function OnboardingView({
   loaderData: {
     entries: CatalogEntry[]
     loadError: string | null
+    runtime: 'desktop' | 'web'
     sampleQuery: OnboardingSampleQueryResult | Promise<OnboardingSampleQueryResult> | null
     step: OnboardingStepState
     workspaceId: string
@@ -32,77 +33,86 @@ export function OnboardingView({
   const navigate = useNavigate()
   const { step } = loaderData
 
-  if (step.step === 'next-steps') {
-    return (
-      <OnboardingNextStepsStep
-        onContinue={() =>
-          navigate(routePath('workspaceSources', { workspaceId: loaderData.workspaceId }))
-        }
-        step={step}
-      />
-    )
-  }
+  switch (step.step) {
+    case 'sources':
+      return (
+        <SourcesStep
+          actionData={actionData}
+          entries={loaderData.entries}
+          loadError={loaderData.loadError}
+          step={step}
+          workspaceId={loaderData.workspaceId}
+        />
+      )
+    case 'query': {
+      const { nextHref } = step
+      if (!nextHref) {
+        throw new Error('The onboarding query step must have a next step')
+      }
 
-  if (step.step === 'query') {
-    const { nextHref } = step
-    if (!nextHref) {
-      throw new Error('The onboarding query step must have a next step')
+      const sampleQueryProps = {
+        entries: loaderData.entries,
+        loadError: loaderData.loadError,
+        onComplete: () => navigate(nextHref),
+        step,
+      }
+
+      if (!loaderData.sampleQuery) {
+        return <SampleQueryStep {...sampleQueryProps} queryResult={null} />
+      }
+
+      return (
+        <Suspense fallback={<SampleQueryStep {...sampleQueryProps} pending queryResult={null} />}>
+          <Await
+            errorElement={
+              <SampleQueryStep
+                {...sampleQueryProps}
+                queryResult={{
+                  message: "The sample query couldn't be completed. Try again.",
+                  status: 'error',
+                }}
+              />
+            }
+            resolve={loaderData.sampleQuery}
+          >
+            {(queryResult) => <SampleQueryStep {...sampleQueryProps} queryResult={queryResult} />}
+          </Await>
+        </Suspense>
+      )
     }
-
-    const sampleQueryProps = {
-      entries: loaderData.entries,
-      loadError: loaderData.loadError,
-      onComplete: () => navigate(nextHref),
-      step,
-    }
-
-    if (!loaderData.sampleQuery) {
-      return <SampleQueryStep {...sampleQueryProps} queryResult={null} />
-    }
-
-    return (
-      <Suspense fallback={<SampleQueryStep {...sampleQueryProps} pending queryResult={null} />}>
-        <Await
-          errorElement={
-            <SampleQueryStep
-              {...sampleQueryProps}
-              queryResult={{
-                message: "The sample query couldn't be completed. Try again.",
-                status: 'error',
-              }}
-            />
+    case 'next-steps':
+      return (
+        <OnboardingNextStepsStep
+          onContinue={() =>
+            navigate(routePath('workspaceSources', { workspaceId: loaderData.workspaceId }))
           }
-          resolve={loaderData.sampleQuery}
-        >
-          {(queryResult) => <SampleQueryStep {...sampleQueryProps} queryResult={queryResult} />}
-        </Await>
-      </Suspense>
-    )
+          runtime={loaderData.runtime}
+          step={step}
+        />
+      )
+    default: {
+      const exhaustive: never = step.step
+      return exhaustive
+    }
   }
-
-  return (
-    <SourcesStep
-      actionData={actionData}
-      entries={loaderData.entries}
-      loadError={loaderData.loadError}
-      step={step}
-      workspaceId={loaderData.workspaceId}
-    />
-  )
 }
 
 function OnboardingNextStepsStep({
   onContinue,
+  runtime,
   step,
 }: {
   onContinue: () => void
+  runtime: 'desktop' | 'web'
   step: OnboardingStepState
 }) {
-  const [mcpLaunchConfig, setMcpLaunchConfig] = useState<McpLaunchConfigState>({
-    status: 'loading',
-  })
+  const [mcpLaunchConfig, setMcpLaunchConfig] = useState<McpLaunchConfigState>(
+    runtime === 'desktop' ? { status: 'loading' } : { status: 'unavailable' },
+  )
 
   useEffect(() => {
+    if (runtime !== 'desktop') return
+
     const desktop = coralDesktopApi()
     if (!desktop) {
       setMcpLaunchConfig({ status: 'unavailable' })
@@ -124,12 +134,13 @@ function OnboardingNextStepsStep({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [runtime])
 
   return (
     <OnboardingNextStepsPage
       mcpLaunchConfig={mcpLaunchConfig}
       onContinue={onContinue}
+      runtime={runtime}
       step={step}
     />
   )

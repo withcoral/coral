@@ -2,7 +2,7 @@ import { createMemoryRouter, RouterProvider, useActionData, useLoaderData } from
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 
-import { CORAL_AGENT_SETUP_PROMPT } from '@/components/onboarding/onboarding-next-steps-page'
+import { coralAgentSetupPrompt } from '@/components/onboarding/onboarding-next-steps-page'
 import { oauthInstallEventToNdjson } from '@/lib/source-oauth-install-stream'
 import type { CatalogEntry } from '@/lib/sources'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
@@ -390,6 +390,7 @@ describe('onboarding sources step', () => {
       return {
         entries: [installedGithub],
         loadError: null,
+        runtime: 'desktop' as const,
         sampleQuery: step.step === 'query' ? sampleQuery : null,
         step,
         workspaceId: WORKSPACE_ID,
@@ -423,7 +424,7 @@ describe('onboarding sources step', () => {
     expect(
       screen.getByRole('textbox', { exact: true, name: 'Coral agent setup prompt' }).element()
         .textContent,
-    ).toBe(CORAL_AGENT_SETUP_PROMPT)
+    ).toBe(coralAgentSetupPrompt('desktop'))
     await screen.getByRole('tab', { name: 'Manual' }).click()
     await expect
       .element(screen.getByLabelText('Coral MCP server configuration', { exact: true }))
@@ -440,6 +441,7 @@ describe('onboarding sources step', () => {
       loaderData: {
         entries: [installedGithub],
         loadError: null,
+        runtime: 'web' as const,
         sampleQuery: { message: 'Coral is unavailable', status: 'error' as const },
         step: queryStep,
         workspaceId: WORKSPACE_ID,
@@ -465,6 +467,7 @@ describe('onboarding sources step', () => {
       loaderData: {
         entries: [installedGithub],
         loadError: null,
+        runtime: 'web' as const,
         sampleQuery,
         step: queryStep,
         workspaceId: WORKSPACE_ID,
