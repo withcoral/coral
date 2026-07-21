@@ -1,5 +1,7 @@
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -19,10 +21,22 @@ use tower::ServiceExt as _;
 use super::{
     AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime, McpHttpConfig, McpHttpError,
     ReadinessProbe, RunningMcpHttpServer, SESSION_ID_HEADER, SHUTDOWN_GRACE_PERIOD,
+    SessionBindingFingerprint, SessionBindingStatus, SessionBindingStore, SessionBindingStoreError,
     auth_disabled_router, authenticated_router, readiness_status, start_auth_disabled,
 };
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+const PING: &str = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+
+fn authenticated_config() -> AuthenticatedMcpHttpConfig {
+    AuthenticatedMcpHttpConfig::new(
+        "0.0.0.0:0".parse().unwrap(),
+        "https://mcp.example.com/custom%20mcp",
+        "https://login.example.com/",
+        "coral:mcp",
+    )
+    .unwrap()
+}
 
 fn auth_request(authorization: &str, session: Option<&str>, body: &str) -> Request<Body> {
     let mut request = Request::builder()
@@ -335,21 +349,20 @@ async fn dropping_server_cancels_requests_and_releases_state() {
 
 #[tokio::test]
 async fn authenticated_sessions_do_not_leak_after_invalid_or_deleted_requests() {
-    let config = AuthenticatedMcpHttpConfig::new(
-        "0.0.0.0:0".parse().unwrap(),
-        "https://mcp.example.com/custom%20mcp",
-        "https://login.example.com/",
-        "coral:mcp",
-    )
-    .unwrap();
+    let config = authenticated_config();
     let (_temp, app_server, app) = local_app().await;
     let factory = coral_mcp::CoralMcpServerFactory::new(app, McpOptions::default());
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let counted_factory_calls = factory_calls.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
-        move |_| std::future::ready(Ok::<_, ()>(factory.clone())),
+        move |_| {
+            counted_factory_calls.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok::<_, ()>(factory.clone()))
+        },
         || async { Ok::<_, tonic::Code>(()) },
     );
-    let (router, state, bindings) = authenticated_router(config, runtime);
+    let (router, state) = authenticated_router(config, runtime);
     let _invalid = send(&router, auth_request("Bearer token-a", None, "{}")).await;
     let unsupported = INITIALIZE.replace("2025-03-26", "2099-01-01");
     let _unsupported = send(&router, auth_request("Bearer token-a", None, &unsupported)).await;
@@ -363,9 +376,13 @@ async fn authenticated_sessions_do_not_leak_after_invalid_or_deleted_requests() 
         let _rejected = send(&router, invalid).await;
     }
     assert!(state.sessions.sessions.read().await.is_empty());
-    assert!(bindings.lock().await.is_empty());
+    assert_eq!(factory_calls.load(Ordering::Relaxed), 0);
     let response = send(&router, auth_request("Bearer token-a", None, INITIALIZE)).await;
-    let session = response.headers()[SESSION_ID_HEADER].to_str().unwrap();
+    let session = response.headers()[SESSION_ID_HEADER]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(factory_calls.load(Ordering::Relaxed), 1);
     for invalid in [&b"bad id"[..], &b"bad\tid"[..], &b"bad\x80id"[..]] {
         let invalid = axum::http::HeaderValue::from_bytes(invalid).unwrap();
         let mut request = auth_request("Bearer token-a", None, "{}");
@@ -373,10 +390,183 @@ async fn authenticated_sessions_do_not_leak_after_invalid_or_deleted_requests() 
         let status = send(&router, request).await.status();
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
-    let mut delete = auth_request("Bearer token-a", Some(session), "");
+    let mismatched = send(
+        &router,
+        auth_request("Bearer token-b", Some(&session), PING),
+    )
+    .await;
+    assert_eq!(mismatched.status(), StatusCode::FORBIDDEN);
+    let mut ping = auth_request("Bearer token-a", Some(&session), PING);
+    ping.headers_mut()
+        .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
+    assert!(send(&router, ping).await.status().is_success());
+    assert_eq!(factory_calls.load(Ordering::Relaxed), 1);
+    let mut delete = auth_request("Bearer token-a", Some(&session), "");
     *delete.method_mut() = Method::DELETE;
     assert!(send(&router, delete).await.status().is_success());
-    let missing = send(&router, auth_request("Bearer token-a", Some(session), "{}")).await;
+    let missing = send(
+        &router,
+        auth_request("Bearer token-a", Some(&session), "{}"),
+    )
+    .await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    app_server.shutdown().await.unwrap();
+}
+
+struct FailingSessionBindingStore {
+    remove_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl SessionBindingStore for FailingSessionBindingStore {
+    async fn bind(
+        &self,
+        _session_id: &str,
+        _fingerprint: SessionBindingFingerprint,
+    ) -> Result<(), SessionBindingStoreError> {
+        Err(io::Error::other("binding store unavailable").into())
+    }
+
+    async fn authorize_and_touch(
+        &self,
+        _session_id: &str,
+        _fingerprint: &SessionBindingFingerprint,
+    ) -> Result<SessionBindingStatus, SessionBindingStoreError> {
+        Ok(SessionBindingStatus::Missing)
+    }
+
+    async fn remove(&self, _session_id: &str) -> Result<(), SessionBindingStoreError> {
+        self.remove_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn binding_store_failure_closes_new_session() {
+    let (_temp, app_server, app) = local_app().await;
+    let factory = coral_mcp::CoralMcpServerFactory::new(app, McpOptions::default());
+    let remove_calls = Arc::new(AtomicUsize::new(0));
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |_| std::future::ready(Ok::<_, ()>(factory.clone())),
+        || async { Ok::<_, tonic::Code>(()) },
+    )
+    .with_session_binding_store(Arc::new(FailingSessionBindingStore {
+        remove_calls: remove_calls.clone(),
+    }));
+    let (router, state) = authenticated_router(authenticated_config(), runtime);
+
+    let response = send(&router, auth_request("Bearer token-a", None, INITIALIZE)).await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(state.sessions.sessions.read().await.is_empty());
+    assert_eq!(remove_calls.load(Ordering::Relaxed), 1);
+    app_server.shutdown().await.unwrap();
+}
+
+struct MissingSessionBindingStore;
+
+#[async_trait::async_trait]
+impl SessionBindingStore for MissingSessionBindingStore {
+    async fn bind(
+        &self,
+        _session_id: &str,
+        _fingerprint: SessionBindingFingerprint,
+    ) -> Result<(), SessionBindingStoreError> {
+        Ok(())
+    }
+
+    async fn authorize_and_touch(
+        &self,
+        _session_id: &str,
+        _fingerprint: &SessionBindingFingerprint,
+    ) -> Result<SessionBindingStatus, SessionBindingStoreError> {
+        Ok(SessionBindingStatus::Missing)
+    }
+
+    async fn remove(&self, _session_id: &str) -> Result<(), SessionBindingStoreError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn missing_binding_closes_local_session() {
+    let (_temp, app_server, app) = local_app().await;
+    let factory = coral_mcp::CoralMcpServerFactory::new(app, McpOptions::default());
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |_| std::future::ready(Ok::<_, ()>(factory.clone())),
+        || async { Ok::<_, tonic::Code>(()) },
+    )
+    .with_session_binding_store(Arc::new(MissingSessionBindingStore));
+    let (router, state) = authenticated_router(authenticated_config(), runtime);
+    let initialized = send(&router, auth_request("Bearer token-a", None, INITIALIZE)).await;
+    let session = initialized.headers()[SESSION_ID_HEADER]
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let response = send(
+        &router,
+        auth_request("Bearer token-a", Some(&session), PING),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(state.sessions.sessions.read().await.is_empty());
+    app_server.shutdown().await.unwrap();
+}
+
+struct AuthorizedSessionBindingStore {
+    remove_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl SessionBindingStore for AuthorizedSessionBindingStore {
+    async fn bind(
+        &self,
+        _session_id: &str,
+        _fingerprint: SessionBindingFingerprint,
+    ) -> Result<(), SessionBindingStoreError> {
+        Ok(())
+    }
+
+    async fn authorize_and_touch(
+        &self,
+        _session_id: &str,
+        _fingerprint: &SessionBindingFingerprint,
+    ) -> Result<SessionBindingStatus, SessionBindingStoreError> {
+        Ok(SessionBindingStatus::Authorized)
+    }
+
+    async fn remove(&self, _session_id: &str) -> Result<(), SessionBindingStoreError> {
+        self.remove_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn missing_rmcp_session_removes_stale_binding() {
+    let (_temp, app_server, app) = local_app().await;
+    let factory = coral_mcp::CoralMcpServerFactory::new(app, McpOptions::default());
+    let remove_calls = Arc::new(AtomicUsize::new(0));
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |_| std::future::ready(Ok::<_, ()>(factory.clone())),
+        || async { Ok::<_, tonic::Code>(()) },
+    )
+    .with_session_binding_store(Arc::new(AuthorizedSessionBindingStore {
+        remove_calls: remove_calls.clone(),
+    }));
+    let (router, _state) = authenticated_router(authenticated_config(), runtime);
+
+    let response = send(
+        &router,
+        auth_request("Bearer token-a", Some("missing-session"), PING),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(remove_calls.load(Ordering::Relaxed), 1);
     app_server.shutdown().await.unwrap();
 }

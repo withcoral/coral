@@ -10,8 +10,8 @@ publish = false
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
-base64.workspace = true
 rmcp.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

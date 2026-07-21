@@ -1420,8 +1420,8 @@ dependencies = [
 name = "coral-mcp-http"
 version = "0.7.1"
 dependencies = [
+ "async-trait",
  "axum",
- "base64",
  "coral-api",
  "coral-client",
  "coral-mcp",
