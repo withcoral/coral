@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.1](https://github.com/withcoral/coral/compare/v0.7.0...v0.7.1) (2026-07-21)
+
+
+### Features
+
+* **app:** add server bind configuration ([#1623](https://github.com/withcoral/coral/issues/1623)) ([25323a6](https://github.com/withcoral/coral/commit/25323a66ca713cd49c3e51195a14cccbadc68352))
+* **app:** register gRPC health service ([#1620](https://github.com/withcoral/coral/issues/1620)) ([3129edb](https://github.com/withcoral/coral/commit/3129edb3b4cd8063aedcf16411bb5d4e876f7eea))
+* **cli:** add long-running server command ([#1628](https://github.com/withcoral/coral/issues/1628)) ([202d4d5](https://github.com/withcoral/coral/commit/202d4d5595b44aea5c1e1a92d14e83ae1144886b))
+* **client:** support authenticated remote connections ([#1624](https://github.com/withcoral/coral/issues/1624)) ([70e4a07](https://github.com/withcoral/coral/commit/70e4a0745af08c438d0e2a5e129208d13af9d72d))
+* **reef:** move settings into workspace menu ([#1870](https://github.com/withcoral/coral/issues/1870)) ([9d74f0d](https://github.com/withcoral/coral/commit/9d74f0dc0b28447d45d71d68a3b11408a5690848))
+
+
+### Bug Fixes
+
+* **app:** unify Universal Search with runtime catalog ([#1781](https://github.com/withcoral/coral/issues/1781)) ([915c18b](https://github.com/withcoral/coral/commit/915c18bcba3d330d28fb3e5eb8e5223c89edcfb1))
+* **desktop:** package Reef Arrow runtime ([#1881](https://github.com/withcoral/coral/issues/1881)) ([5960819](https://github.com/withcoral/coral/commit/5960819a03ee2c4da9a104bdc2134b65b71d9265))
+
 ## [0.7.0](https://github.com/withcoral/coral/compare/v0.6.0...v0.7.0) (2026-07-20)
 
 
