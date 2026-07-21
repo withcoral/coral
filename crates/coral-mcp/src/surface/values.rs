@@ -24,6 +24,7 @@ pub(crate) fn queryable_table_summary_values(tables: &[TableSummary]) -> Vec<Val
 
 #[derive(Serialize)]
 struct QueryableTableSummaryValue<'a> {
+    catalog_name: &'a str,
     schema_name: &'a str,
     table_name: &'a str,
     name: String,
@@ -36,10 +37,15 @@ struct QueryableTableSummaryValue<'a> {
 impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
     fn from(table: &'a TableSummary) -> Self {
         Self {
+            catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format!("{}.{}", table.schema_name, table.name),
-            sql_reference: format_schema_table_equivalent(&table.schema_name, &table.name),
+            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
+            sql_reference: format_schema_table_equivalent(
+                &table.catalog_name,
+                &table.schema_name,
+                &table.name,
+            ),
             description: &table.description,
             guide: &table.guide,
             required_filters: &table.required_filters,
@@ -50,6 +56,7 @@ impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct MissingTableSummaryValue<'a> {
+    pub(crate) catalog_name: &'a str,
     pub(crate) schema_name: &'a str,
     pub(crate) table_name: &'a str,
     pub(crate) name: String,
@@ -60,11 +67,20 @@ pub(crate) struct MissingTableSummaryValue<'a> {
 impl<'a> From<&'a TableSummary> for MissingTableSummaryValue<'a> {
     fn from(table: &'a TableSummary) -> Self {
         Self {
+            catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format!("{}.{}", table.schema_name, table.name),
+            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             description: &table.description,
             required_filters: &table.required_filters,
         }
+    }
+}
+
+pub(crate) fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str) -> String {
+    if catalog_name.is_empty() {
+        format!("{schema_name}.{table_name}")
+    } else {
+        format!("{catalog_name}.{schema_name}.{table_name}")
     }
 }
