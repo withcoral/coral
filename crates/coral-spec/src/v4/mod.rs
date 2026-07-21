@@ -42,9 +42,9 @@ pub use ir::{
     RestRequestBody, RestResponseAttachment, SemanticIr,
 };
 pub use manifest::{
-    AcceptedIdentityRequirement, IdentityRequirements, McpRuntimeConfig, OpenApiRuntimeConfig,
-    SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4SourceCommon, V4SourceManifest,
-    V4Surface, validate_openapi_base_url_template,
+    AcceptedIdentityRequirement, DatabaseRuntimeConfig, IdentityRequirements, McpRuntimeConfig,
+    OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4SourceCommon,
+    V4SourceManifest, V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
 pub use operation_metadata::{

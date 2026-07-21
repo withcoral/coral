@@ -19,7 +19,10 @@ use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
 
-const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
+// `datafusion` is DataFusion's synthetic default catalog. Keep this aligned
+// with the engine registry's reserved SQL names so manifests fail at parse
+// time instead of later during runtime registration.
+const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "datafusion", "public"];
 
 /// Arrow field metadata key marking a source-authored column as excluded from
 /// observed-value indexing.
@@ -84,6 +87,7 @@ pub enum SourceBackend {
     Http,
     File,
     Mcp,
+    Database,
 }
 
 /// The normalized scalar type vocabulary shared by source specs, the query

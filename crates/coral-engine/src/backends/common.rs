@@ -306,6 +306,7 @@ fn backend_kind_label(kind: SourceBackend) -> &'static str {
         SourceBackend::Http => "http",
         SourceBackend::File => "file",
         SourceBackend::Mcp => "mcp",
+        SourceBackend::Database => "database",
     }
 }
 
