@@ -2,10 +2,6 @@ import { type RouteConfig, index, layout, route } from '@react-router/dev/routes
 
 import { routePattern } from './routing/routemap'
 
-// Settings is a desktop-only surface (it drives the Electron MCP bridge); the
-// web build omits it so browser users don't hit a dead "bridge unavailable" page.
-const isDesktopApp = process.env.CORAL_DESKTOP_APP === '1'
-
 export default [
   // Action-only resource route: OAuth/device-code install streams progress over
   // same-origin fetch. It intentionally sits outside the app shell and does not
@@ -25,6 +21,6 @@ export default [
     route(routePattern('workspaceTraces'), 'routes/traces.tsx', [
       route(':traceId', 'routes/trace-detail.tsx'),
     ]),
-    ...(isDesktopApp ? [route(routePattern('settings'), 'routes/settings.tsx')] : []),
+    route(routePattern('settings'), 'routes/settings.tsx'),
   ]),
 ] satisfies RouteConfig

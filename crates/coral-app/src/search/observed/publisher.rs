@@ -132,10 +132,10 @@ impl SearchObservationHandle {
     pub(crate) fn clear_source(
         &self,
         workspace_name: &WorkspaceName,
-        source_name: &str,
+        owner_source_name: &str,
     ) -> Result<(), AppError> {
         self.store
-            .clear_source_and_advance_epoch(workspace_name, source_name)
+            .clear_source_and_advance_epoch(workspace_name, owner_source_name)
             .map(|_result| ())
             .map_err(|error| observed_values_store_error(&error))
     }

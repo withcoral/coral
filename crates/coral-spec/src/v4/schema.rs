@@ -14,6 +14,9 @@ use crate::{
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopesSpec,
 };
 
+const NON_WHITESPACE_PATTERN: &str = "[^\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]";
+const TRIMMED_IDENTIFIER_PATTERN: &str = "^[\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]*[A-Za-z_][A-Za-z0-9_]*[\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]*$";
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "Coral DSL v4 Source Manifest")]
@@ -31,6 +34,9 @@ struct V4SourceManifestSchema {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(inner(length(min = 1)))]
     test_queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    identity_requirements: Option<IdentityRequirementsSchema>,
     surface: V4SurfaceSchema,
 }
 
@@ -66,6 +72,31 @@ struct V4OpenApiSurfaceSchema {
 #[serde(deny_unknown_fields)]
 struct V4McpSurfaceSchema {
     server: McpServerSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct IdentityRequirementsSchema {
+    #[schemars(length(min = 1))]
+    accepts: Vec<AcceptedIdentityRequirementSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AcceptedIdentityRequirementSchema {
+    #[schemars(length(min = 1), pattern(NON_WHITESPACE_PATTERN))]
+    id: String,
+    #[schemars(
+        length(min = 1),
+        inner(
+            length(min = 1),
+            pattern(TRIMMED_IDENTIFIER_PATTERN)
+        ),
+        extend("uniqueItems" = true)
+    )]
+    identity_specs: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    audience: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -509,6 +540,80 @@ surface:
             "generated schema should accept flattened MCP value sources: {errors:?}"
         );
         parse_source_manifest_yaml(raw).expect("parser accepts flattened MCP value sources");
+    }
+
+    #[test]
+    fn generated_schema_accepts_identity_requirements_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+identity_requirements:
+  accepts:
+    - id: github_rest_read
+      identity_specs: [github_oauth, github_pat]
+      audience: {host: github.com, port: 443}
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+";
+
+        let validator = validator();
+        let errors = validation_errors(&validator, &manifest_json(raw));
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept identity requirements: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts identity requirements");
+    }
+
+    #[test]
+    fn generated_schema_rejects_invalid_identity_requirement_shapes() {
+        let invalid_fields = [
+            "identity_requirements: null\n",
+            "identity_requirements: {accepts: []}\n",
+            "identity_requirements:\n  accepts:\n    - id: \"\"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: \"   \"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: []\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"\"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"   \"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github-oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth, github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth]\n      issuer: github\n",
+        ];
+
+        let validator = validator();
+        for manifest_fields in invalid_fields {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\n{manifest_fields}surface:\n  type: openapi\n  url: https://example.com/openapi.yaml\n"
+            );
+            assert!(
+                !validator.is_valid(&manifest_json(&raw)),
+                "generated schema should reject: {manifest_fields}"
+            );
+            parse_source_manifest_yaml(&raw)
+                .expect_err("parser should reject invalid identity requirements");
+        }
+    }
+
+    #[test]
+    fn generated_schema_rejects_surface_scoped_identity_requirements() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+  identity_requirements:
+    accepts:
+      - {id: github_rest_read, identity_specs: [github_oauth]}
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "generated schema should reject surface-scoped identity requirements"
+        );
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject surface-scoped identity requirements");
     }
 
     #[test]

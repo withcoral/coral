@@ -6,6 +6,7 @@ use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
+use crate::catalog::model::CatalogResolution;
 use crate::query::QueryAttribution;
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
@@ -181,8 +182,7 @@ impl CatalogDiscovery {
         attribution: &QueryAttribution,
     ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
-            .queries
-            .list_catalog(workspace_name, schema_name, attribution)
+            .catalog_info(workspace_name, schema_name, attribution)
             .await?;
         let counts = catalog_counts(&catalog);
         let items = catalog_items(catalog, kind);
@@ -200,10 +200,30 @@ impl CatalogDiscovery {
         attribution: &QueryAttribution,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
-            .queries
-            .list_catalog(workspace_name, schema_name, attribution)
+            .catalog_info(workspace_name, schema_name, attribution)
             .await?;
         Ok(catalog_items(catalog, kind))
+    }
+
+    pub(crate) async fn catalog_info(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_name: Option<&str>,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogInfo, QueryManagerError> {
+        self.queries
+            .list_catalog(workspace_name, schema_name, attribution)
+            .await
+    }
+
+    pub(crate) async fn resolve_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogResolution, QueryManagerError> {
+        self.queries
+            .resolve_catalog(workspace_name, None, attribution)
+            .await
     }
 
     pub(crate) async fn describe_table(

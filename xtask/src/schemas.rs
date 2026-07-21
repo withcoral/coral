@@ -14,17 +14,28 @@ pub(crate) struct Args {
     )]
     v4_schema: PathBuf,
 
+    /// Path to the generated identity manifest schema.
+    #[arg(
+        long,
+        default_value = "crates/coral-spec/src/schema/identity_manifest.schema.json"
+    )]
+    identity_schema: PathBuf,
+
     /// Render in memory and diff against disk instead of writing.
     #[arg(long)]
     check: bool,
 }
 
 pub(crate) fn run(args: &Args) -> Result<bool> {
-    let body = generated_v4_schema_body()?;
+    let v4_body = generated_v4_schema_body()?;
+    let identity_body = generated_identity_schema_body()?;
     if args.check {
-        Ok(check_file(&args.v4_schema, &body))
+        let v4_ok = check_file(&args.v4_schema, &v4_body);
+        let identity_ok = check_file(&args.identity_schema, &identity_body);
+        Ok(v4_ok && identity_ok)
     } else {
-        write_if_changed(&args.v4_schema, &body)?;
+        write_if_changed(&args.v4_schema, &v4_body)?;
+        write_if_changed(&args.identity_schema, &identity_body)?;
         Ok(true)
     }
 }
@@ -33,6 +44,15 @@ fn generated_v4_schema_body() -> Result<String> {
     let schema = coral_spec::v4::generated_v4_source_manifest_schema();
     let mut body =
         serde_json::to_string_pretty(&schema).context("serializing generated DSL v4 schema")?;
+    body.push('\n');
+    Ok(body)
+}
+
+fn generated_identity_schema_body() -> Result<String> {
+    let schema = coral_spec::generated_identity_manifest_schema();
+    // The typed generator is the review surface; keep this large derived artifact compact.
+    let mut body =
+        serde_json::to_string(&schema).context("serializing generated identity schema")?;
     body.push('\n');
     Ok(body)
 }

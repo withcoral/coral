@@ -13,7 +13,10 @@ const meta = {
     (Story, context) => {
       const RoutesStub = createRoutesStub([
         {
-          children: [{ index: true, Component: () => null }],
+          children: [
+            { index: true, Component: () => null },
+            { Component: () => null, path: 'settings' },
+          ],
           Component: () => <Story />,
           path: '/',
         },
@@ -53,9 +56,12 @@ export const Default: Story = {
   },
 }
 
-export const Minimized: Story = {
+export const Settings: Story = {
   args: {
-    initialIsMinimized: true,
+    initialIsMinimized: false,
     workspaces: [{ name: 'default' }, { name: 'analytics' }],
+  },
+  parameters: {
+    initialEntry: '/settings',
   },
 }

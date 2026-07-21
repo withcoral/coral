@@ -1,6 +1,8 @@
 import { Menu as BaseMenu } from '@base-ui/react/menu'
 import classNames from 'classnames'
 
+import { Container as ButtonContainer } from '@/wax/components/button/container'
+
 import * as styles from './menu.css'
 
 export interface TriggerProps {
@@ -10,7 +12,10 @@ export interface TriggerProps {
 }
 
 export function Trigger({ children, className, render }: TriggerProps) {
-  const nativeButton = !render || render.type === 'button'
+  const nativeButton =
+    !render ||
+    render.type === 'button' ||
+    (render.type === ButtonContainer && (!render.props.as || render.props.as === 'button'))
   return (
     <BaseMenu.Trigger
       className={classNames(styles.trigger, className)}

@@ -1,9 +1,13 @@
 import classNames from 'classnames'
 import { useEffect, useRef, useState } from 'react'
-import { Link, NavLink, useLocation, useParams } from 'react-router'
+import { Link, NavLink, useLocation, useMatch, useParams } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
-import { IconButton } from '@/wax/components/button'
+import {
+  Container as ButtonContainer,
+  Icon as ButtonIcon,
+  IconButton,
+} from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import { Tooltip } from '@/wax/components/tooltip'
@@ -25,6 +29,8 @@ interface SidebarProps {
   workspaces: ReadonlyArray<Pick<Workspace, 'name'>>
 }
 
+type NavItem = { icon: IconName; label: string; paths: string[]; to: string }
+
 export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const location = useLocation()
   const { workspaceId } = useParams()
@@ -45,30 +51,37 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const tracesPath = workspaceNavTarget
     ? routePath('workspaceTraces', { workspaceId: workspaceNavTarget.name })
     : routePath('home')
-  const navItems = [
+  const workspaceNavItems = [
     { icon: 'Plug', label: 'Sources', paths: [routePath('home'), sourcesPath], to: sourcesPath },
     { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
     { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
-  ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
-  const isSettingsActive =
-    location.pathname === routePath('settings') ||
-    location.pathname.startsWith(`${routePath('settings')}/`)
-  // Keep the desktop-only settings link stable across SSR and hydration. The
-  // actual bridge can only be detected on the client, but the route is included
-  // at build time for Electron and omitted from the web build.
-  const isDesktopApp = isCoralDesktopBuild()
-
-  const settingsButton = (
-    <SidebarButton
-      aria-label="Settings"
-      as={NavLink}
-      icon="Settings"
-      isActive={isSettingsActive}
-      isMinimized={isMinimized}
-      to={routePath('settings')}
-    >
-      Settings
-    </SidebarButton>
+  ] satisfies NavItem[]
+  const settingsPath = routePath('settings')
+  const isSettingsRoute = Boolean(useMatch({ end: false, path: settingsPath }))
+  const settingsNavItems: NavItem[] = isCoralDesktopBuild()
+    ? [{ icon: 'Settings', label: 'MCP Clients', paths: [settingsPath], to: settingsPath }]
+    : []
+  const navItems = isSettingsRoute ? settingsNavItems : workspaceNavItems
+  const settingsHomeButton = (
+    <ButtonContainer ariaLabel="Home" as={Link} size="22" to={routePath('home')} variant="bare">
+      <ButtonIcon name="ChevronLeft" />
+    </ButtonContainer>
+  )
+  const settingsHeader = (
+    <>
+      {isMinimized ? (
+        <Tooltip content="Home" side="right">
+          {settingsHomeButton}
+        </Tooltip>
+      ) : (
+        settingsHomeButton
+      )}
+      {!isMinimized && (
+        <span className={styles.workspaceSelectorLabel}>
+          <Typography.Body>Settings</Typography.Body>
+        </span>
+      )}
+    </>
   )
 
   const handleToggleSidebar = (event: KeyboardEvent) => {
@@ -112,59 +125,76 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
         )}
 
         <div className={styles.workspaceSelectorRow}>
-          <Menu.Container>
-            <Menu.Trigger
-              className={styles.workspaceSelector}
-              render={<button aria-label="Open workspace menu" type="button" />}
-            >
-              <span className={styles.workspaceSelectorMark({ color: workspaceSelectorMarkColor })}>
-                <Icon color="inherit" name="Coral" size="18" />
-              </span>
-              {!isMinimized && (
-                <>
-                  <Tooltip content={workspaceSelectorLabel} showOnlyWhenTruncated side="bottom">
-                    <span className={styles.workspaceSelectorLabel}>
-                      <Typography.Body>{workspaceSelectorLabel}</Typography.Body>
-                    </span>
-                  </Tooltip>
-                  <span className={styles.workspaceSelectorChevron}>
-                    <Icon color="tertiary" name="ChevronDown" size="16" />
+          {isSettingsRoute ? (
+            settingsHeader
+          ) : (
+            <>
+              <Menu.Container>
+                <Menu.Trigger
+                  className={styles.workspaceSelector}
+                  render={
+                    <ButtonContainer ariaLabel="Open workspace menu" size="32" variant="bare" />
+                  }
+                >
+                  <span
+                    className={styles.workspaceSelectorMark({ color: workspaceSelectorMarkColor })}
+                  >
+                    <Icon color="inherit" name="Coral" size="18" />
                   </span>
-                </>
-              )}
-            </Menu.Trigger>
-            <Menu.Content align="start" side="bottom" sideOffset={6}>
-              <Menu.Group>
-                <Menu.GroupLabel>Workspaces</Menu.GroupLabel>
-                {workspaces.length === 0 ? (
-                  <Menu.Item disabled>No workspaces</Menu.Item>
-                ) : (
-                  <Menu.RadioGroup value={workspaceNavTarget?.name}>
-                    {workspaces.map((workspace) => (
-                      <Menu.RadioItem
-                        as={Link}
-                        key={workspace.name}
-                        to={workspacePathForCurrentSection(workspace.name, location.pathname)}
-                        value={workspace.name}
-                      >
-                        {workspace.name}
-                      </Menu.RadioItem>
-                    ))}
-                  </Menu.RadioGroup>
-                )}
-              </Menu.Group>
-              <Menu.Separator />
-              <Menu.Item icon="Plus" onClick={() => handleCreateWorkspaceDialogOpenChange(true)}>
-                Create workspace
-              </Menu.Item>
-            </Menu.Content>
-          </Menu.Container>
+                  {!isMinimized && (
+                    <>
+                      <Tooltip content={workspaceSelectorLabel} showOnlyWhenTruncated side="bottom">
+                        <span className={styles.workspaceSelectorLabel}>
+                          <Typography.Body>{workspaceSelectorLabel}</Typography.Body>
+                        </span>
+                      </Tooltip>
+                      <span className={styles.workspaceSelectorChevron}>
+                        <Icon color="tertiary" name="ChevronDown" size="16" />
+                      </span>
+                    </>
+                  )}
+                </Menu.Trigger>
+                <Menu.Content align="start" side="bottom" sideOffset={6}>
+                  <Menu.Group>
+                    <Menu.GroupLabel>Workspaces</Menu.GroupLabel>
+                    {workspaces.length === 0 ? (
+                      <Menu.Item disabled>No workspaces</Menu.Item>
+                    ) : (
+                      <Menu.RadioGroup value={workspaceNavTarget?.name}>
+                        {workspaces.map((workspace) => (
+                          <Menu.RadioItem
+                            as={Link}
+                            key={workspace.name}
+                            to={workspacePathForCurrentSection(workspace.name, location.pathname)}
+                            value={workspace.name}
+                          >
+                            {workspace.name}
+                          </Menu.RadioItem>
+                        ))}
+                      </Menu.RadioGroup>
+                    )}
+                  </Menu.Group>
+                  <Menu.Separator />
+                  <Menu.Item
+                    icon="Plus"
+                    onClick={() => handleCreateWorkspaceDialogOpenChange(true)}
+                  >
+                    Create workspace
+                  </Menu.Item>
+                  <Menu.Separator />
+                  <Menu.Item icon="Settings" to={settingsPath}>
+                    Settings
+                  </Menu.Item>
+                </Menu.Content>
+              </Menu.Container>
 
-          <WorkspaceCreationDialog
-            fetcherKey={createWorkspaceFetcherKey}
-            onOpenChange={handleCreateWorkspaceDialogOpenChange}
-            open={createWorkspaceDialogOpen}
-          />
+              <WorkspaceCreationDialog
+                fetcherKey={createWorkspaceFetcherKey}
+                onOpenChange={handleCreateWorkspaceDialogOpenChange}
+                open={createWorkspaceDialogOpen}
+              />
+            </>
+          )}
 
           {!isMinimized && (
             <div className={styles.toggleButton}>
@@ -215,18 +245,6 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
             button
           )
         })}
-      </div>
-
-      <div className={styles.footer}>
-        {isDesktopApp &&
-          // Collapsed sidebar hides the label, so surface it on hover instead.
-          (isMinimized ? (
-            <Tooltip content="Settings" side="right">
-              {settingsButton}
-            </Tooltip>
-          ) : (
-            settingsButton
-          ))}
       </div>
     </nav>
   )

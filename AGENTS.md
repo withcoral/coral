@@ -35,8 +35,8 @@
   you need a stable port. Use `make postgres-start` when you only need the
   server, `make postgres-stop` when finished, and `make postgres-clean` to
   remove the reusable container.
-- Run `make schema-check` before submitting PRs that touch generated source
-  manifest schemas or the Rust helpers that generate them. Use
+- Run `make schema-check` before submitting PRs that touch generated manifest
+  schemas or the Rust helpers that generate them. Use
   `make schema-generate` to refresh generated schema files. The Validate
   workflow enforces this through its `schema-freshness` job when schema inputs
   change.
@@ -51,20 +51,23 @@
   latency. CI installs the bundled `github` source with fake credentials and
   fails when release `coral sql "select * from coral.tables"` has a hyperfine
   mean above 750 ms.
-- Desktop distribution-sensitive PRs must exercise the release-shaped macOS
-  package path, not only the desktop type-check. Validate calls the reusable
-  desktop packaging workflow for desktop, packaging-workflow, release-workflow,
-  Cargo workspace/toolchain, crate-manifest, and build-script changes. Ordinary
-  Rust, Reef, and UI changes use their existing checks. Use manual dispatch as
-  an unsigned packaging preflight for distribution-sensitive changes outside
-  the automatic paths. Validation artifacts stay unsigned and must not be
-  reused for a release; desktop release publishing must rebuild from a clean
+- Pull requests do not automatically build macOS Desktop packages. A scheduled
+  workflow builds and verifies the unsigned universal package from `main`
+  nightly; use manual dispatch for a preflight when a distribution-sensitive
+  pull request warrants one. Validation artifacts stay unsigned and must not be
+  reused for a release; Desktop release publishing must rebuild from a clean
   checkout with signing and notarization.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.
   Keep that draft gate aligned between the initial change detector and final
   aggregate `validate` job.
+- Keep Release Please branch updates coalesced and cheap to supersede. The
+  `release-please` workflow may create multiple local regeneration commits, but
+  must push them together through its final push step. `Validate` intentionally
+  gives `release-please--*` pull requests a 120-second settle period before
+  checkout and change detection so concurrency cancellation stops intermediate
+  branch states before expensive jobs fan out.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`
@@ -82,6 +85,10 @@
   resource routes using `apps/reef/app/lib/coral-request.server.ts`. Do not
   expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
   explicit server route when browser-triggered Coral behavior is needed.
+- The packaged Reef server resolves its external runtime packages from the
+  Electron app. Keep every `apps/reef` production dependency represented in
+  `apps/desktop` production dependencies; the desktop config tests enforce this
+  packaging contract.
 - For DSL v4 materialization, the user owns when a source is generated or
   regenerated. Coral materializes at source add, queries only from the
   installed materialized package, and never silently refreshes descriptors,

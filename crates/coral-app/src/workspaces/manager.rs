@@ -98,6 +98,11 @@ impl WorkspaceManager {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn lifecycle_lock(&self) -> WorkspaceLifecycleLock {
+        self.lifecycle_lock.clone()
+    }
+
     pub(crate) async fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -137,6 +142,15 @@ impl WorkspaceManager {
             ));
         }
 
+        let deletion_marker = self
+            .lifecycle_lock
+            .mark_workspace_deleting(workspace_name)
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "workspace '{workspace_name}' is already being deleted"
+                ))
+            })?;
+
         let (deleted, workspace_dir_backup) = {
             let mut tx = self.db.begin().await?;
             if tx
@@ -175,6 +189,7 @@ impl WorkspaceManager {
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
         };
+        drop(deletion_marker);
 
         let deleted_workspace_name = deleted.workspace.name.clone();
         self.diagnostic_reporter

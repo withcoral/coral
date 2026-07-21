@@ -5,6 +5,7 @@
 //! It is responsible for:
 //!
 //! - parsing raw `YAML` or structured source-spec values
+//! - parsing raw `YAML` or structured identity-spec values
 //! - validating source-spec shape and source-level invariants
 //! - extracting interactive install-time inputs such as variables and secrets
 //! - exposing normalized backend-specific source-spec models to sibling crates
@@ -31,6 +32,8 @@
 //!   for the declared interactive inputs
 //! - [`ManifestInputSpec`] describes one install-time input (variable or secret)
 //!   surfaced via [`ValidatedSourceManifest::declared_inputs`]
+//! - [`parse_identity_manifest_yaml`] parses identity specs that describe how
+//!   an app-owned identity is instantiated and injected into HTTP requests
 //!
 //! # Crate Relationships
 //!
@@ -77,8 +80,10 @@
     reason = "These manifest builders and accessors are internal crate APIs, not end-user APIs."
 )]
 pub mod backends;
+mod bundle;
 mod common;
 mod error;
+mod identities;
 mod inputs;
 mod loader;
 mod parser;
@@ -93,6 +98,7 @@ pub use backends::mcp::{
     McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
     McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
 };
+pub use bundle::{IdentityManifestDocument, ManifestBundle, parse_manifest_bundle_yaml};
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, DetailHintSpec,
     ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType,
@@ -106,6 +112,11 @@ pub(crate) use common::{
     validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
 };
 pub use error::{ManifestError, Result};
+pub use identities::{
+    IDENTITY_SPEC_VERSION, IdentityManifest, IdentityOAuthMethodSpec, IdentityOAuthSpec,
+    IdentitySpecConfig, IdentitySpecType, generated_identity_manifest_schema,
+    parse_identity_manifest_value, parse_identity_manifest_yaml,
+};
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,

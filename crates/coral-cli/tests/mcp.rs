@@ -805,6 +805,71 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_observed_value_flag_controls_discovery_surfaces()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+
+    let disabled_client = start_mcp_client(&server).await?;
+    assert_observed_value_discovery_surface(&disabled_client, false).await?;
+    disabled_client.cancel().await?;
+
+    let enabled_client =
+        start_mcp_client_with_args(&server, &["--enable-observed-values-search"]).await?;
+    assert_observed_value_discovery_surface(&enabled_client, true).await?;
+    enabled_client.cancel().await?;
+
+    server.shutdown().await;
+    Ok(())
+}
+
+async fn assert_observed_value_discovery_surface(
+    client: &RunningService<RoleClient, ()>,
+    enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let instructions = client
+        .peer_info()
+        .expect("initialize result")
+        .instructions
+        .as_deref()
+        .expect("initialize instructions")
+        .to_string();
+    let tools = client.list_all_tools().await?;
+    let search_tool = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "search")
+        .expect("search tool");
+    let search_description = search_tool
+        .description
+        .as_deref()
+        .expect("search description");
+    let query_description = tool_input_properties(search_tool)["query"]["description"]
+        .as_str()
+        .expect("query input description");
+    let guide = client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await?;
+    let guide = text_content(&guide);
+
+    if enabled {
+        assert!(instructions.contains("values Coral observed during earlier queries"));
+        assert!(search_description.contains("locally observed values"));
+        assert!(query_description.contains("values observed during earlier queries"));
+        assert!(guide.contains("Search catalog metadata and local observations"));
+    } else {
+        assert!(instructions.contains("filters in Coral's local catalog"));
+        assert!(!instructions.contains("observed"));
+        assert!(search_description.contains("Coral's local catalog"));
+        assert!(!search_description.contains("observed"));
+        assert!(query_description.contains("Coral catalog entries"));
+        assert!(!query_description.contains("observed"));
+        assert!(guide.contains("Search catalog metadata, inspect tables"));
+        assert!(!guide.contains("observed"));
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_enable_tasks_flag_lists_task_tools() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client_with_args(&server, &["--enable-tasks"]).await?;

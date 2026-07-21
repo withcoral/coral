@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace, TemplatePart};
 
-const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
+pub(crate) const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
 /// The kind of interactive input required by one validated source spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,8 +591,8 @@ pub(crate) fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputS
     Ok(ordered)
 }
 
-fn credential_like_input_key(key: &str) -> bool {
-    const MARKERS: &[&str] = &[
+pub(crate) fn credential_like_input_key_markers() -> &'static [&'static str] {
+    &[
         "API_KEY",
         "APPLICATION_KEY",
         "ACCESS_KEY",
@@ -607,10 +607,12 @@ fn credential_like_input_key(key: &str) -> bool {
         "READ_KEY",
         "SECRET",
         "TOKEN",
-    ];
+    ]
+}
 
+fn credential_like_input_key(key: &str) -> bool {
     let key = key.to_ascii_uppercase();
-    MARKERS.iter().any(|marker| {
+    credential_like_input_key_markers().iter().any(|marker| {
         key == *marker
             || key.contains(&format!("_{marker}_"))
             || key.ends_with(&format!("_{marker}"))
@@ -649,7 +651,7 @@ pub(crate) fn validate_oauth_endpoint_templates_with_scope(
     Ok(())
 }
 
-fn validate_oauth_endpoint_templates_for_method(
+pub(crate) fn validate_oauth_endpoint_templates_for_method(
     input_key: &str,
     oauth: &ManifestOAuthCredentialSpec,
     declared: &BTreeMap<&str, &ManifestInputSpec>,
@@ -898,29 +900,51 @@ fn parse_credential_method(
     }
 }
 
+pub(crate) fn parse_identity_oauth_method(
+    identity_name: &str,
+    value: &Value,
+) -> Result<ManifestOAuthCredentialSpec> {
+    let oauth_path = format!("identity '{identity_name}' oauth.method");
+    parse_oauth_with_options(&oauth_path, value, OAuthClientValidationMode::IdentitySpec)
+}
+
 fn parse_oauth(
     input_key: &str,
     method_index: usize,
     value: &Value,
 ) -> Result<ManifestOAuthCredentialSpec> {
-    let oauth = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' credential.methods[{method_index}].oauth must be a mapping"
-        ))
-    })?;
+    let oauth_path =
+        format!("manifest input '{input_key}' credential.methods[{method_index}].oauth");
+    parse_oauth_with_options(
+        &oauth_path,
+        value,
+        OAuthClientValidationMode::SourceCredential,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OAuthClientValidationMode {
+    SourceCredential,
+    IdentitySpec,
+}
+
+fn parse_oauth_with_options(
+    oauth_path: &str,
+    value: &Value,
+    client_validation: OAuthClientValidationMode,
+) -> Result<ManifestOAuthCredentialSpec> {
+    let oauth = value
+        .as_object()
+        .ok_or_else(|| ManifestError::validation(format!("{oauth_path} must be a mapping")))?;
     let flow = oauth
         .get("flow")
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth credential method is missing flow"
-            ))
-        })
-        .and_then(|flow| parse_oauth_flow(input_key, flow))?;
-    let resource = optional_string(oauth, "resource", input_key, "oauth")?;
-    let redirect_uri = optional_string(oauth, "redirect_uri", input_key, "oauth")?;
+        .ok_or_else(|| ManifestError::validation(format!("{oauth_path} is missing flow")))
+        .and_then(|flow| parse_oauth_flow(oauth_path, flow))?;
+    let resource = optional_string(oauth, "resource", oauth_path)?;
+    let redirect_uri = optional_string(oauth, "redirect_uri", oauth_path)?;
     let redirect_uri_port_mode = oauth
         .get("redirect_uri_port_mode")
-        .map(|value| parse_redirect_uri_port_mode(input_key, value))
+        .map(|value| parse_redirect_uri_port_mode(oauth_path, value))
         .transpose()?
         .unwrap_or_else(|| {
             redirect_uri.as_deref().map_or(
@@ -931,34 +955,22 @@ fn parse_oauth(
     let endpoints = oauth
         .get("endpoints")
         .and_then(Value::as_object)
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth credential method is missing endpoints"
-            ))
-        })?;
-    let authorization_url =
-        optional_string(endpoints, "authorization_url", input_key, "oauth.endpoints")?;
-    let device_authorization_url = optional_string(
-        endpoints,
-        "device_authorization_url",
-        input_key,
-        "oauth.endpoints",
-    )?;
-    let token_url = required_string(endpoints, "token_url", input_key, "oauth.endpoints")?;
+        .ok_or_else(|| ManifestError::validation(format!("{oauth_path} is missing endpoints")))?;
+    let endpoints_path = format!("{oauth_path}.endpoints");
+    let authorization_url = optional_string(endpoints, "authorization_url", &endpoints_path)?;
+    let device_authorization_url =
+        optional_string(endpoints, "device_authorization_url", &endpoints_path)?;
+    let token_url = required_string(endpoints, "token_url", &endpoints_path)?;
     let client = oauth
         .get("client")
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth credential method is missing client"
-            ))
-        })
-        .and_then(|client| parse_oauth_client(input_key, client))?;
+        .ok_or_else(|| ManifestError::validation(format!("{oauth_path} is missing client")))
+        .and_then(|client| parse_oauth_client(oauth_path, client, client_validation))?;
     let scopes = oauth
         .get("scopes")
-        .map(|scopes| parse_oauth_scopes(input_key, scopes))
+        .map(|scopes| parse_oauth_scopes(oauth_path, scopes))
         .transpose()?;
     validate_oauth_flow_fields(
-        input_key,
+        oauth_path,
         &flow,
         redirect_uri.as_deref(),
         oauth.contains_key("redirect_uri_port_mode"),
@@ -967,7 +979,7 @@ fn parse_oauth(
         client.secret.is_some(),
     )?;
     if let Some(redirect_uri) = redirect_uri.as_deref() {
-        validate_loopback_redirect_uri(input_key, redirect_uri, redirect_uri_port_mode)?;
+        validate_loopback_redirect_uri(oauth_path, redirect_uri, redirect_uri_port_mode)?;
     }
     Ok(ManifestOAuthCredentialSpec {
         flow,
@@ -991,38 +1003,36 @@ fn default_redirect_uri_port_mode(raw: &str) -> ManifestOAuthRedirectUriPortMode
 }
 
 fn parse_redirect_uri_port_mode(
-    input_key: &str,
+    oauth_path: &str,
     value: &Value,
 ) -> Result<ManifestOAuthRedirectUriPortMode> {
     match value.as_str() {
         Some("fixed") => Ok(ManifestOAuthRedirectUriPortMode::Fixed),
         Some("random") => Ok(ManifestOAuthRedirectUriPortMode::Random),
         Some(other) => Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.redirect_uri_port_mode has unsupported value '{other}'"
+            "{oauth_path}.redirect_uri_port_mode has unsupported value '{other}'"
         ))),
         None => Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.redirect_uri_port_mode must be a string"
+            "{oauth_path}.redirect_uri_port_mode must be a string"
         ))),
     }
 }
 
-fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowSpec> {
-    let flow = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.flow must be a mapping"
-        ))
-    })?;
+fn parse_oauth_flow(oauth_path: &str, value: &Value) -> Result<ManifestOAuthFlowSpec> {
+    let flow = value
+        .as_object()
+        .ok_or_else(|| ManifestError::validation(format!("{oauth_path}.flow must be a mapping")))?;
     let kind = match flow.get("type").and_then(Value::as_str) {
         Some("authorization_code") => ManifestOAuthFlowKind::AuthorizationCode,
         Some("device_code") => ManifestOAuthFlowKind::DeviceCode,
         Some(other) => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.flow.type has unsupported value '{other}'"
+                "{oauth_path}.flow.type has unsupported value '{other}'"
             )));
         }
         None => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.flow is missing type"
+                "{oauth_path}.flow is missing type"
             )));
         }
     };
@@ -1035,32 +1045,34 @@ fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowS
         }
         (ManifestOAuthFlowKind::DeviceCode, Some("required")) => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.flow.pkce must be disabled for device_code"
+                "{oauth_path}.flow.pkce must be disabled for device_code"
             )));
         }
         (_, Some(other)) => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.flow.pkce has unsupported value '{other}'"
+                "{oauth_path}.flow.pkce has unsupported value '{other}'"
             )));
         }
         (ManifestOAuthFlowKind::AuthorizationCode, None) => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.flow is missing pkce"
+                "{oauth_path}.flow is missing pkce"
             )));
         }
     };
     Ok(ManifestOAuthFlowSpec { kind, pkce })
 }
 
-fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthClientSpec> {
+fn parse_oauth_client(
+    oauth_path: &str,
+    value: &Value,
+    validation: OAuthClientValidationMode,
+) -> Result<ManifestOAuthClientSpec> {
     let client = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client must be a mapping"
-        ))
+        ManifestError::validation(format!("{oauth_path}.client must be a mapping"))
     })?;
     let id = client
         .get("id")
-        .map(|id| parse_oauth_client_id(input_key, id))
+        .map(|id| parse_oauth_client_id(oauth_path, id))
         .transpose()?
         .unwrap_or(ManifestOAuthClientIdSpec {
             default: None,
@@ -1068,20 +1080,23 @@ fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthCli
         });
     let secret = client
         .get("secret")
-        .map(|secret| parse_oauth_client_secret(input_key, secret))
+        .map(|secret| parse_oauth_client_secret(oauth_path, secret))
         .transpose()?;
     let dynamic_registration = client
         .get("dynamic_registration")
-        .map(|registration| parse_oauth_dynamic_client_registration(input_key, registration))
+        .map(|registration| parse_oauth_dynamic_client_registration(oauth_path, registration))
         .transpose()?;
     if !id.is_configured() && dynamic_registration.is_none() {
         return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client must declare id or dynamic_registration"
+            "{oauth_path}.client must declare id or dynamic_registration"
         )));
     }
-    if secret.is_some() && id.input.is_none() {
+    if validation == OAuthClientValidationMode::SourceCredential
+        && secret.is_some()
+        && id.input.is_none()
+    {
         return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' confidential oauth client must declare client.id.input"
+            "{oauth_path}: confidential oauth client must declare client.id.input"
         )));
     }
     Ok(ManifestOAuthClientSpec {
@@ -1091,11 +1106,9 @@ fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthCli
     })
 }
 
-fn parse_oauth_client_id(input_key: &str, value: &Value) -> Result<ManifestOAuthClientIdSpec> {
+fn parse_oauth_client_id(oauth_path: &str, value: &Value) -> Result<ManifestOAuthClientIdSpec> {
     let id = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.id must be a mapping"
-        ))
+        ManifestError::validation(format!("{oauth_path}.client.id must be a mapping"))
     })?;
     let default = id
         .get("default")
@@ -1107,7 +1120,7 @@ fn parse_oauth_client_id(input_key: &str, value: &Value) -> Result<ManifestOAuth
         .map(ToString::to_string);
     if default.is_none() && input.is_none() {
         return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.id must declare default or input"
+            "{oauth_path}.client.id must declare default or input"
         )));
     }
     if let Some(input) = input.as_deref() {
@@ -1117,25 +1130,24 @@ fn parse_oauth_client_id(input_key: &str, value: &Value) -> Result<ManifestOAuth
 }
 
 fn parse_oauth_client_secret(
-    input_key: &str,
+    oauth_path: &str,
     value: &Value,
 ) -> Result<ManifestOAuthClientSecretSpec> {
     let secret = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.secret must be a mapping"
-        ))
+        ManifestError::validation(format!("{oauth_path}.client.secret must be a mapping"))
     })?;
-    let input = required_string(secret, "input", input_key, "oauth.client.secret")?;
+    let secret_path = format!("{oauth_path}.client.secret");
+    let input = required_string(secret, "input", &secret_path)?;
     validate_input_key("oauth client secret input key", &input)?;
     let transport = match secret.get("transport").and_then(Value::as_str) {
         Some(value) => ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
             ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.client.secret.transport has unsupported value '{value}'"
+                "{oauth_path}.client.secret.transport has unsupported value '{value}'"
             ))
         })?,
         None => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.client.secret is missing transport"
+                "{oauth_path}.client.secret is missing transport"
             )));
         }
     };
@@ -1143,29 +1155,20 @@ fn parse_oauth_client_secret(
 }
 
 fn parse_oauth_dynamic_client_registration(
-    input_key: &str,
+    oauth_path: &str,
     value: &Value,
 ) -> Result<ManifestOAuthDynamicClientRegistrationSpec> {
     let registration = value.as_object().ok_or_else(|| {
         ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.dynamic_registration must be a mapping"
+            "{oauth_path}.client.dynamic_registration must be a mapping"
         ))
     })?;
-    let registration_url = required_string(
-        registration,
-        "registration_url",
-        input_key,
-        "oauth.client.dynamic_registration",
-    )?;
-    let client_name = optional_string(
-        registration,
-        "client_name",
-        input_key,
-        "oauth.client.dynamic_registration",
-    )?;
+    let registration_path = format!("{oauth_path}.client.dynamic_registration");
+    let registration_url = required_string(registration, "registration_url", &registration_path)?;
+    let client_name = optional_string(registration, "client_name", &registration_path)?;
     let token_endpoint_auth_method = registration
         .get("token_endpoint_auth_method")
-        .map(|value| parse_dynamic_client_registration_auth_method(input_key, value))
+        .map(|value| parse_dynamic_client_registration_auth_method(oauth_path, value))
         .transpose()?
         .unwrap_or(ManifestOAuthDynamicClientRegistrationAuthMethod::None);
     let request_refresh_token_grant = registration
@@ -1173,7 +1176,7 @@ fn parse_oauth_dynamic_client_registration(
         .map(|value| {
             value.as_bool().ok_or_else(|| {
                 ManifestError::validation(format!(
-                    "manifest input '{input_key}' oauth.client.dynamic_registration.request_refresh_token_grant must be a boolean"
+                    "{oauth_path}.client.dynamic_registration.request_refresh_token_grant must be a boolean"
                 ))
             })
         })
@@ -1188,56 +1191,48 @@ fn parse_oauth_dynamic_client_registration(
 }
 
 fn parse_dynamic_client_registration_auth_method(
-    input_key: &str,
+    oauth_path: &str,
     value: &Value,
 ) -> Result<ManifestOAuthDynamicClientRegistrationAuthMethod> {
     match value.as_str() {
         Some(value) => ManifestOAuthDynamicClientRegistrationAuthMethod::from_label(value)
             .ok_or_else(|| {
                 ManifestError::validation(format!(
-                    "manifest input '{input_key}' oauth.client.dynamic_registration.token_endpoint_auth_method has unsupported value '{value}'"
+                    "{oauth_path}.client.dynamic_registration.token_endpoint_auth_method has unsupported value '{value}'"
                 ))
             }),
         None => Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.dynamic_registration.token_endpoint_auth_method must be a string"
+            "{oauth_path}.client.dynamic_registration.token_endpoint_auth_method must be a string"
         ))),
     }
 }
 
-fn parse_oauth_scopes(input_key: &str, value: &Value) -> Result<ManifestOAuthScopesSpec> {
+fn parse_oauth_scopes(oauth_path: &str, value: &Value) -> Result<ManifestOAuthScopesSpec> {
     let scopes = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.scopes must be a mapping"
-        ))
+        ManifestError::validation(format!("{oauth_path}.scopes must be a mapping"))
     })?;
     let scope = scopes
         .get("scope")
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.scopes is missing scope"
-            ))
-        })
-        .and_then(|scope| parse_oauth_scope(input_key, scope))?;
+        .ok_or_else(|| ManifestError::validation(format!("{oauth_path}.scopes is missing scope")))
+        .and_then(|scope| parse_oauth_scope(oauth_path, scope))?;
     Ok(ManifestOAuthScopesSpec { scope })
 }
 
-fn parse_oauth_scope(input_key: &str, value: &Value) -> Result<ManifestOAuthScopeSpec> {
+fn parse_oauth_scope(oauth_path: &str, value: &Value) -> Result<ManifestOAuthScopeSpec> {
     let scope = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.scopes.scope must be a mapping"
-        ))
+        ManifestError::validation(format!("{oauth_path}.scopes.scope must be a mapping"))
     })?;
     let delimiter = match scope.get("delimiter").and_then(Value::as_str) {
         Some("space") => ManifestOAuthScopeDelimiter::Space,
         Some("comma") => ManifestOAuthScopeDelimiter::Comma,
         Some(other) => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.scopes.scope.delimiter has unsupported value '{other}'"
+                "{oauth_path}.scopes.scope.delimiter has unsupported value '{other}'"
             )));
         }
         None => {
             return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.scopes.scope is missing delimiter"
+                "{oauth_path}.scopes.scope is missing delimiter"
             )));
         }
     };
@@ -1245,48 +1240,36 @@ fn parse_oauth_scope(input_key: &str, value: &Value) -> Result<ManifestOAuthScop
         .get("values")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.scopes.scope.values must be a list"
-            ))
+            ManifestError::validation(format!("{oauth_path}.scopes.scope.values must be a list"))
         })?
         .iter()
         .map(|value| {
             value.as_str().map(ToString::to_string).ok_or_else(|| {
                 ManifestError::validation(format!(
-                    "manifest input '{input_key}' oauth.scopes.scope.values must contain strings"
+                    "{oauth_path}.scopes.scope.values must contain strings"
                 ))
             })
         })
         .collect::<Result<Vec<_>>>()?;
     if values.is_empty() {
         return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.scopes.scope.values must not be empty"
+            "{oauth_path}.scopes.scope.values must not be empty"
         )));
     }
     Ok(ManifestOAuthScopeSpec { delimiter, values })
 }
 
-fn required_string(
-    object: &Map<String, Value>,
-    key: &str,
-    input_key: &str,
-    context: &str,
-) -> Result<String> {
+fn required_string(object: &Map<String, Value>, key: &str, context: &str) -> Result<String> {
     object
         .get(key)
         .and_then(Value::as_str)
         .map(ToString::to_string)
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' {context} is missing {key}"
-            ))
-        })
+        .ok_or_else(|| ManifestError::validation(format!("{context} is missing {key}")))
 }
 
 fn optional_string(
     object: &Map<String, Value>,
     key: &str,
-    input_key: &str,
     context: &str,
 ) -> Result<Option<String>> {
     let Some(value) = object.get(key) else {
@@ -1295,15 +1278,11 @@ fn optional_string(
     value
         .as_str()
         .map(|value| Some(value.to_string()))
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' {context}.{key} must be a string"
-            ))
-        })
+        .ok_or_else(|| ManifestError::validation(format!("{context}.{key} must be a string")))
 }
 
 fn validate_oauth_flow_fields(
-    input_key: &str,
+    oauth_path: &str,
     flow: &ManifestOAuthFlowSpec,
     redirect_uri: Option<&str>,
     has_redirect_uri_port_mode: bool,
@@ -1315,39 +1294,39 @@ fn validate_oauth_flow_fields(
         ManifestOAuthFlowKind::AuthorizationCode => {
             if redirect_uri.is_none() {
                 return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' authorization_code oauth method is missing redirect_uri"
+                    "{oauth_path}: authorization_code oauth method is missing redirect_uri"
                 )));
             }
             if authorization_url.is_none() {
                 return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' authorization_code oauth method is missing endpoints.authorization_url"
+                    "{oauth_path}: authorization_code oauth method is missing endpoints.authorization_url"
                 )));
             }
         }
         ManifestOAuthFlowKind::DeviceCode => {
             if redirect_uri.is_some() {
                 return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare redirect_uri"
+                    "{oauth_path}: device_code oauth method must not declare redirect_uri"
                 )));
             }
             if has_redirect_uri_port_mode {
                 return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare redirect_uri_port_mode"
+                    "{oauth_path}: device_code oauth method must not declare redirect_uri_port_mode"
                 )));
             }
             if authorization_url.is_some() {
                 return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare endpoints.authorization_url"
+                    "{oauth_path}: device_code oauth method must not declare endpoints.authorization_url"
                 )));
             }
             if device_authorization_url.is_none() {
                 return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method is missing endpoints.device_authorization_url"
+                    "{oauth_path}: device_code oauth method is missing endpoints.device_authorization_url"
                 )));
             }
             if has_client_secret {
                 return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare client.secret"
+                    "{oauth_path}: device_code oauth method must not declare client.secret"
                 )));
             }
         }
@@ -1356,11 +1335,11 @@ fn validate_oauth_flow_fields(
 }
 
 fn validate_loopback_redirect_uri(
-    input_key: &str,
+    oauth_path: &str,
     raw: &str,
     port_mode: ManifestOAuthRedirectUriPortMode,
 ) -> Result<()> {
-    let context = format!("manifest input '{input_key}' oauth.redirect_uri");
+    let context = format!("{oauth_path}.redirect_uri");
     redirect_bind_port(raw, port_mode, &context).map(|_| ())
 }
 
@@ -1573,7 +1552,8 @@ mod tests {
         ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationAuthMethod,
         ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
         ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
-        ManifestOAuthScopeDelimiter, collect_source_inputs_value,
+        ManifestOAuthScopeDelimiter, collect_source_inputs_value, parse_identity_oauth_method,
+        parse_oauth,
     };
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
@@ -1767,6 +1747,60 @@ tables: []
         assert_eq!(
             oauth.scopes.as_ref().expect("scopes").scope.delimiter,
             ManifestOAuthScopeDelimiter::Space
+        );
+    }
+
+    #[test]
+    fn identity_oauth_allows_confidential_default_client_without_weakening_sources() {
+        let oauth = serde_json::json!({
+            "flow": {
+                "type": "authorization_code",
+                "pkce": "disabled",
+            },
+            "redirect_uri": "http://127.0.0.1:53682/oauth/callback",
+            "endpoints": {
+                "authorization_url": "https://provider.example.com/oauth/authorize",
+                "token_url": "https://provider.example.com/oauth/token",
+            },
+            "client": {
+                "id": {"default": "default-client"},
+                "secret": {
+                    "input": "CLIENT_SECRET",
+                    "transport": "basic_auth",
+                },
+            },
+        });
+
+        let parsed = parse_identity_oauth_method("demo", &oauth)
+            .expect("identity OAuth may pair a default client ID with a collected secret");
+        assert_eq!(parsed.client.id.default.as_deref(), Some("default-client"));
+        assert!(parsed.client.secret.is_some());
+
+        let error = parse_oauth("API_TOKEN", 0, &oauth)
+            .expect_err("source credentials must retain the client ID input requirement");
+        assert_eq!(
+            error.to_string(),
+            "manifest input 'API_TOKEN' credential.methods[0].oauth: confidential oauth client must declare client.id.input"
+        );
+    }
+
+    #[test]
+    fn oauth_parse_errors_identify_the_authored_source_or_identity_path() {
+        let oauth = serde_json::json!({
+            "flow": {"type": "authorization_code"},
+        });
+
+        let source_error = parse_oauth("API_TOKEN", 2, &oauth).expect_err("missing source PKCE");
+        assert_eq!(
+            source_error.to_string(),
+            "manifest input 'API_TOKEN' credential.methods[2].oauth.flow is missing pkce"
+        );
+
+        let identity_error =
+            parse_identity_oauth_method("demo", &oauth).expect_err("missing identity PKCE");
+        assert_eq!(
+            identity_error.to_string(),
+            "identity 'demo' oauth.method.flow is missing pkce"
         );
     }
 

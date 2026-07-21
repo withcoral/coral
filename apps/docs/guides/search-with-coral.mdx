@@ -1,0 +1,96 @@
+---
+title: "Search with Coral"
+description: "Find the right SQL surface from catalog metadata or values Coral observed during earlier queries."
+---
+
+`coral search` helps you find where to query before you write SQL. Describe a table, table function, column, filter, or value in natural language, and Coral ranks matching locations in your current workspace.
+
+Catalog search prepares the current workspace query runtime and catalog, then searches a local index. Runtime preparation can read stored credentials, initialize source providers, and inspect file metadata in local or object storage, but it does not execute your data query or return source rows. Optional observed-value search can also match samples collected while executing earlier queries; it only reads Coral's local search state.
+
+## Search the catalog
+
+Use natural language to describe the data you need:
+
+```shellscript
+coral search github issues urgent
+```
+
+Among the ranked results, you might see:
+
+```text
+Results
+1. [catalog_metadata] table github.issues
+   SQL: github.issues
+2. [catalog_metadata] table function github.search_issues
+   SQL reference: github.search_issues
+   Call: github.search_issues(q => '<value>')
+```
+
+The `SQL` line gives you the table reference. For a table function, `SQL reference` identifies the function and `Call` shows its required arguments.
+
+Use a catalog result's `SQL` reference or `Call` example in a query with `coral sql` to fetch rows. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
+
+When observed-value search is enabled and Coral has previously seen a matching value, the same ranked list can also include:
+
+```text
+3. [observed_values] observed value github.issues.label_names
+   Value: urgent
+   Field path: label_names
+   Last observed: 2026-07-03T10:00:00Z (2 observation(s))
+```
+
+Here, `github` is the query-visible SQL schema; JSON and MCP results return it as `schema_name`. For a source with multiple runtime components, it can differ from the installed source name because each component can publish its own SQL schema. Use it with the result's table or table function and column when you write SQL.
+
+By default, Coral returns up to 10 results across all search providers. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
+
+## Find values Coral has seen
+
+Sometimes you remember a project name, issue ID, deployment status, or another value, but not where it lives. Observed-value search can match that value against data Coral observed in the past and show the query-visible SQL schema, table or table function, and column where it appeared.
+
+Coral builds this memory from values produced by HTTP- and MCP-backed sources while executing SQL queries. It does not crawl your sources in the background or query them when you search.
+
+<Callout icon="lock" color="#30A46C">
+The observed-values index and its stored values stay in the workspace's local search database. Coral does not upload them to a remote search service. Search matches are still returned to the CLI or MCP client that requested them.
+</Callout>
+
+<Note>
+Observed values are a sample of what Coral has encountered, not a complete index of a connected source. A missing result means Coral found no match in its local observations—not that the value is absent from the source.
+</Note>
+
+### Enable observed-value search
+
+Observed-value collection, search, and maintenance are experimental and disabled by default. Enable the `observed_values_search` [runtime feature](/reference/configuration#runtime-features).
+
+## Use search over MCP
+
+Coral exposes the same search through its read-only `search` MCP tool. Catalog results are always available. When observed-value search is enabled for the MCP server process, the agent also receives typed observed-value matches and can use the matching table and column to write SQL.
+
+Ask for the result you want; you do not need to name the `search` tool:
+
+> "Use Coral to show the open GitHub issues assigned to me."
+
+> "Use Coral to find where `urgent` appeared, then query the matching data."
+
+[Set up Coral over MCP](/guides/use-coral-over-mcp).
+
+## Manage observed-value storage
+
+Observed values stay in the workspace's local search database. Coral skips columns with common credential-like names and values that match common secret formats. Source authors can also set `do_not_index: true` on a column to exclude that field before Coral inspects or persists its values. This suppression is best effort, so treat the search database like other local query data.
+
+Collection is automatic when the feature is enabled and a supported source scan runs. Disabling `observed_values_search` stops collection, retrieval, and maintenance, but does not delete observations already stored locally. `do_not_index` remains the field-level source policy for excluding particular columns.
+
+Coral excludes values last seen more than 365 days ago. It applies a 256 MiB workspace search-storage ceiling, including 32 MiB reserved for write-ahead log growth, and may evict older observations sooner or stop accepting new observations under storage pressure.
+
+To remove observed values for a workspace:
+
+```shellscript
+coral search-index clear --scope observed-values --workspace default --yes
+```
+
+To remove them for one installed source and every runtime schema and surface it owns, pass the canonical installed source name:
+
+```shellscript
+coral search-index clear --scope observed-values --source github --workspace default --yes
+```
+
+Rebuilding or draining the observed-values index only updates Coral's local search state; neither operation fetches new source values. See [`coral search-index`](/reference/cli-reference#coral-search-index) for drain, rebuild, source-scoped clear, and workspace-scoped clear commands.

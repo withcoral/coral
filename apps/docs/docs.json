@@ -78,7 +78,7 @@
         "group": "Guides",
         "pages": [
           "guides/use-coral-over-mcp",
-          "guides/search-the-catalog",
+          "guides/search-with-coral",
           "guides/write-a-custom-source",
           "guides/observe-with-opentelemetry"
         ]
@@ -105,6 +105,13 @@
       }
     ]
   },
+  "redirects": [
+    {
+      "source": "/guides/search-the-catalog",
+      "destination": "/guides/search-with-coral",
+      "permanent": true
+    }
+  ],
   "errors": {
     "404": {
       "title": "Looks like this page got lost at sea",

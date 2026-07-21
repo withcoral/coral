@@ -29,17 +29,34 @@ message SearchResponse {
   SearchResultTruncation truncation = 3;
 }
 
-// Request to rebuild all app-owned local search indexes.
+// Request to rebuild one or all app-owned local search indexes.
 message RebuildSearchIndexRequest {
   // Workspace whose local search data should be rebuilt.
   Workspace workspace = 1;
   // Force a rebuild even when the persisted fingerprint says the projection is current.
   bool force = 2;
+  // Provider to rebuild. Unspecified rebuilds all providers.
+  SearchIndexProvider provider = 3;
 }
 
 // Search index maintenance response.
 message RebuildSearchIndexResponse {
   // Maintenance results for rebuilt providers.
+  repeated SearchMaintenanceResult results = 1;
+}
+
+// Search queue drain request.
+message DrainSearchQueueRequest {
+  // Workspace whose local search queue should be drained.
+  Workspace workspace = 1;
+  // Optional per-request drain budget in milliseconds. Zero applies the server
+  // default; values above 60000 are rejected.
+  uint32 budget_ms = 2;
+}
+
+// Search queue drain response.
+message DrainSearchQueueResponse {
+  // Per-provider maintenance results.
   repeated SearchMaintenanceResult results = 1;
 }
 
@@ -61,10 +78,24 @@ message ClearSearchDataResponse {
   SearchStorageCleanupResult storage_cleanup = 2;
 }
 
+// Search index provider selection for maintenance.
+enum SearchIndexProvider {
+  // Unknown index provider.
+  SEARCH_INDEX_PROVIDER_UNSPECIFIED = 0;
+  // Catalog metadata provider.
+  SEARCH_INDEX_PROVIDER_CATALOG = 1;
+  // Observed-value provider.
+  SEARCH_INDEX_PROVIDER_OBSERVED_VALUES = 2;
+  // All search-index providers.
+  SEARCH_INDEX_PROVIDER_ALL = 3;
+}
+
 // Search data scope for destructive maintenance.
 enum SearchDataScope {
   // Unknown data scope.
   SEARCH_DATA_SCOPE_UNSPECIFIED = 0;
+  // Observed-value search data.
+  SEARCH_DATA_SCOPE_OBSERVED_VALUES = 1;
   // All local search data for the target.
   SEARCH_DATA_SCOPE_ALL = 2;
 }
@@ -75,6 +106,8 @@ message SearchClearTarget {
   oneof target {
     // Clear the selected scope for the whole workspace.
     bool workspace = 1;
+    // Clear the selected local search-data scope for one source.
+    string source_name = 2;
   }
 }
 
@@ -92,6 +125,12 @@ message SearchMaintenanceResult {
     CatalogRebuildResult catalog_rebuild = 10;
     // Catalog clear detail.
     CatalogClearResult catalog_clear = 11;
+    // Observed-value queue drain detail.
+    ObservedDrainResult observed_drain = 12;
+    // Observed-value FTS rebuild detail.
+    ObservedRebuildResult observed_rebuild = 13;
+    // Observed-value clear detail.
+    ObservedClearResult observed_clear = 14;
   }
 }
 
@@ -127,6 +166,54 @@ message CatalogRebuildResult {
 message CatalogClearResult {
   // Catalog document rows deleted from the workspace projection.
   uint32 deleted_document_count = 1;
+}
+
+// Observed-value queue drain detail.
+message ObservedDrainResult {
+  // Queue jobs successfully projected.
+  uint32 queue_jobs_processed = 1;
+  // Queue jobs skipped because a newer workspace or source generation
+  // superseded them.
+  uint32 stale_jobs_skipped = 2;
+  // Queue jobs whose projection failed during this drain pass; they may be
+  // retried or dead-lettered if the retry cap was reached.
+  uint32 failed_jobs = 3;
+  // Canonical observed-value rows inserted or updated.
+  uint32 canonical_rows_upserted = 4;
+  // FTS rows written for observed-value search.
+  uint32 fts_rows_written = 5;
+  // Queue jobs still pending after this drain pass.
+  uint32 remaining_queue_depth = 6;
+  // Whether the drain stopped because its budget expired.
+  bool budget_exhausted = 7;
+  // Canonical observed-value rows removed by ordinary retention maintenance.
+  uint32 stale_rows_purged = 8;
+  // Oldest canonical observed-value rows evicted to enforce the storage ceiling.
+  uint32 evicted_rows = 9;
+  // Whether observed-value storage remains above its configured ceiling.
+  bool storage_limit_reached = 10;
+  // Queue jobs omitted because projecting them would exceed the storage ceiling.
+  uint32 storage_jobs_dropped = 11;
+}
+
+// Observed-value FTS rebuild detail.
+message ObservedRebuildResult {
+  // Canonical observed-value rows scanned.
+  uint32 canonical_rows_scanned = 1;
+  // FTS rows rebuilt.
+  uint32 fts_rows_rebuilt = 2;
+  // Queue drainage and storage-governance work completed before the rebuild.
+  ObservedDrainResult drain = 3;
+}
+
+// Observed-value clear detail.
+message ObservedClearResult {
+  // Canonical observed-value rows deleted.
+  uint32 deleted_value_count = 1;
+  // Observed-value FTS rows deleted.
+  uint32 deleted_fts_count = 2;
+  // Observed-value queue jobs deleted.
+  uint32 deleted_queue_job_count = 3;
 }
 
 // Best-effort local storage cleanup after destructive maintenance.
@@ -333,6 +420,8 @@ service SearchService {
   rpc Search(SearchRequest) returns (SearchResponse);
   // Rebuilds app-owned local search index projections.
   rpc RebuildSearchIndex(RebuildSearchIndexRequest) returns (RebuildSearchIndexResponse);
+  // Drains app-owned local search queues into queryable projections.
+  rpc DrainSearchQueue(DrainSearchQueueRequest) returns (DrainSearchQueueResponse);
   // Clears app-owned local search data for a workspace-scoped target.
   rpc ClearSearchData(ClearSearchDataRequest) returns (ClearSearchDataResponse);
 }
