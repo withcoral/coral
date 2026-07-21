@@ -8,6 +8,7 @@ import { requestAuthContext } from '@/auth/server-context'
 import { listWorkspacesForRequest } from '@/lib/workspaces.server'
 import { routePath } from '@/routing/routemap'
 import { ToastContainer } from '@/wax/components/toast'
+import type { BrowserAuth, RequestAuth } from '@/auth/types'
 
 import * as styles from './app-shell.css'
 
@@ -16,10 +17,12 @@ interface RootLoaderData {
 }
 
 export async function loader({ context, request }: Route.LoaderArgs) {
-  if (isWorkspaceRedirectRoute(request)) return { workspaces: [] }
+  const auth = browserAuth(context.get(requestAuthContext))
+  if (isWorkspaceRedirectRoute(request)) return { auth, workspaces: [] }
 
   try {
     return {
+      auth,
       workspaces: await listWorkspacesForRequest(
         request,
         context.get(requestAuthContext).accessToken,
@@ -27,8 +30,14 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     }
   } catch (error) {
     console.error('Failed to load sidebar workspaces:', error)
-    return { workspaces: [] }
+    return { auth, workspaces: [] }
   }
+}
+
+function browserAuth(auth: RequestAuth): BrowserAuth {
+  return auth.mode === 'required'
+    ? { csrfToken: auth.csrfToken, mode: 'required' }
+    : { mode: 'disabled' }
 }
 
 function isWorkspaceRedirectRoute(request: Request): boolean {
@@ -41,6 +50,7 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
   return (
     <div className={styles.layout}>
       <Sidebar
+        auth={loaderData.auth}
         initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
         workspaces={loaderData.workspaces}
       />

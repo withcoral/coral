@@ -70,6 +70,7 @@ describe('hosted auth architecture', () => {
       "route('.well-known/oauth-client', 'routes/oauth-client-metadata.ts'),",
       "route(routePattern('login'), 'routes/login.tsx'),",
       "route('auth/callback', 'routes/auth.callback.tsx'),",
+      "route('logout', 'routes/logout.tsx'),",
     ]
 
     const entryLines = routeConfig

@@ -14,6 +14,7 @@ export function authTestContext(accessToken: string | null = 'test-coral-token')
 
   context.set(requestAuthContext, {
     accessToken,
+    csrfToken: 'test-csrf-token',
     mode: 'required',
     session: {
       accessToken,

@@ -4,10 +4,11 @@ import { routePattern } from './routing/routemap'
 
 export default [
   // Public auth resources: Coral needs CIMD before authorization, and the
-  // browser needs login/callback before Reef can establish a session.
+  // browser needs login/callback/logout outside the session boundary.
   route('.well-known/oauth-client', 'routes/oauth-client-metadata.ts'),
   route(routePattern('login'), 'routes/login.tsx'),
   route('auth/callback', 'routes/auth.callback.tsx'),
+  route('logout', 'routes/logout.tsx'),
   layout('routes/_protected.tsx', [
     // Action-only resource route: OAuth/device-code install streams progress over
     // same-origin fetch. It and onboarding share the auth boundary but do not
