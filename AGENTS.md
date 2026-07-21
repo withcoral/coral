@@ -82,6 +82,10 @@
   resource routes using `apps/reef/app/lib/coral-request.server.ts`. Do not
   expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
   explicit server route when browser-triggered Coral behavior is needed.
+- The packaged Reef server resolves its external runtime packages from the
+  Electron app. Keep every `apps/reef` production dependency represented in
+  `apps/desktop` production dependencies; the desktop config tests enforce this
+  packaging contract.
 - For DSL v4 materialization, the user owns when a source is generated or
   regenerated. Coral materializes at source add, queries only from the
   installed materialized package, and never silently refreshes descriptors,
