@@ -775,7 +775,7 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         .expect("structured describe");
     assert_eq!(described["found"], true);
     assert_eq!(described["name"], "coral.columns");
-    assert_eq!(described["column_count"], 10);
+    assert_eq!(described["column_count"], 11);
 
     let columns = client
         .call_tool(
@@ -788,7 +788,7 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         .expect("list system columns")
         .structured_content
         .expect("structured columns");
-    assert_eq!(columns["total"], 6);
+    assert_eq!(columns["total"], 7);
     assert_eq!(columns["columns"][0]["column_name"], "schema_name");
 
     session.shutdown().await;

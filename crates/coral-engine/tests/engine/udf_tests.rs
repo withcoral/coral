@@ -996,7 +996,7 @@ async fn published_udf_table_function_is_cataloged() {
     let source = search_source(&server, "catalog_udf_search");
     let runtime = test_runtime().with_udfs(vec![published_review_queue_udf("catalog_udf_search")]);
 
-    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("udfs"))
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None, Some("udfs"))
         .await
         .expect("catalog should include udf function");
 
@@ -1028,7 +1028,7 @@ async fn published_udf_table_function_catalog_uses_normalized_publish_identifier
         "catalog_mixed_case_udf_events",
     )]);
 
-    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("udfs"))
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None, Some("udfs"))
         .await
         .expect("catalog should include normalized udf function");
 

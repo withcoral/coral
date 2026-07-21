@@ -186,7 +186,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                Ok(runtime.list_tables(schema_filter, table_filter))
+                Ok(runtime.list_tables(None, schema_filter, table_filter))
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
             |_, _| {},
@@ -220,7 +220,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                Ok(runtime.list_catalog(schema_filter))
+                Ok(runtime.list_catalog(None, schema_filter))
             },
             |catalog| {
                 Some(
@@ -265,7 +265,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                Ok(runtime.describe_table(schema_name, table_name))
+                Ok(runtime.describe_table(None, schema_name, table_name))
             },
             |_| None,
             |_, _| {},

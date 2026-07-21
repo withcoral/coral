@@ -221,6 +221,7 @@ fn catalog_info_from_components(components: &[RuntimeSourceComponent]) -> Catalo
 
 fn table_info(schema_name: &str, common: &TableCommon) -> TableInfo {
     TableInfo {
+        catalog_name: String::new(),
         schema_name: schema_name.to_string(),
         table_name: common.name.clone(),
         description: common.description.clone(),

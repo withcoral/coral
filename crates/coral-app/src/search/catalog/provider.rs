@@ -872,6 +872,7 @@ mod tests {
     fn column_cap_catalog(column_count: usize) -> CatalogInfo {
         CatalogInfo {
             tables: vec![TableInfo {
+                catalog_name: String::new(),
                 schema_name: "fixture".to_string(),
                 table_name: "payments".to_string(),
                 description: "Payments".to_string(),
