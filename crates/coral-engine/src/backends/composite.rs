@@ -9,9 +9,9 @@ use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
-    CompiledBackendSource, RegisteredInput, RegisteredSource, RegisteredTable,
-    RegisteredTableFunction,
+    BackendCatalogRegistration, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredInput, RegisteredSource,
+    RegisteredTable, RegisteredTableFunction, SourceQualifiedName,
 };
 
 struct CompositeCompiledSource {
@@ -31,7 +31,7 @@ pub(crate) fn compile_source(
 
 #[async_trait]
 impl CompiledBackendSource for CompositeCompiledSource {
-    fn schema_name(&self) -> &str {
+    fn qualified_name(&self) -> &str {
         &self.source_name
     }
 
@@ -52,11 +52,13 @@ impl CompiledBackendSource for CompositeCompiledSource {
         registration_context: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration> {
         let mut schemas: BTreeMap<String, CompositeSchemaRegistration> = BTreeMap::new();
+        let mut catalogs: Vec<BackendCatalogRegistration> = Vec::new();
 
         for component in &self.components {
             let registration = component.register(ctx, registration_context).await?;
+            catalogs.extend(registration.catalogs);
             for schema in registration.schemas {
-                let schema_name = schema.source.schema_name.clone();
+                let schema_name = schema.source.qualified_name.name().to_string();
                 let target = schemas
                     .entry(schema_name.clone())
                     .or_insert_with(|| CompositeSchemaRegistration::new(schema_name.clone()));
@@ -92,6 +94,7 @@ impl CompiledBackendSource for CompositeCompiledSource {
                 .into_values()
                 .map(CompositeSchemaRegistration::into_registration)
                 .collect(),
+            catalogs,
         })
     }
 }
@@ -123,7 +126,7 @@ impl CompositeSchemaRegistration {
         BackendSchemaRegistration {
             tables: self.tables,
             source: RegisteredSource {
-                schema_name: self.schema_name,
+                qualified_name: SourceQualifiedName::Schema(self.schema_name),
                 tables: self.registered_tables,
                 table_functions: self.registered_functions,
                 inputs: self.inputs,

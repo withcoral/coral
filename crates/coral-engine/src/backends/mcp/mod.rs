@@ -32,9 +32,9 @@ use crate::backends::shared::source_observation::{
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
-    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
-    build_registered_table_function, registered_columns_from_specs, required_filter_names,
-    validate_lookup_key_filter_backend_support,
+    SourceFunctionProviderFactory, SourceQualifiedName, build_registered_inputs,
+    build_registered_table, build_registered_table_function, registered_columns_from_specs,
+    required_filter_names, validate_lookup_key_filter_backend_support,
 };
 use crate::runtime::error::datafusion_to_core;
 use crate::{
@@ -178,7 +178,7 @@ fn compile_source_with_caller(
 
 #[async_trait]
 impl CompiledBackendSource for McpCompiledSource {
-    fn schema_name(&self) -> &str {
+    fn qualified_name(&self) -> &str {
         &self.manifest.common.name
     }
 
@@ -252,17 +252,17 @@ impl CompiledBackendSource for McpCompiledSource {
             &secret_keys,
         );
 
-        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
                 tables,
                 source: RegisteredSource {
-                    schema_name,
+                    qualified_name: SourceQualifiedName::Schema(self.manifest.common.name.clone()),
                     tables: table_infos,
                     table_functions: table_function_infos,
                     inputs,
                 },
             }],
+            catalogs: Vec::new(),
         })
     }
 }

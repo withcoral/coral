@@ -285,7 +285,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                Ok(runtime.list_tables(schema_filter, table_filter))
+                Ok(runtime.list_tables(None, schema_filter, table_filter))
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
             |_, _| {},
@@ -336,7 +336,7 @@ impl QueryManager {
                 let runtime_schema_owners =
                     runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
                 Ok(CatalogResolution {
-                    catalog: runtime.list_catalog(schema_filter),
+                    catalog: runtime.list_catalog(None, schema_filter),
                     failed_source_names,
                     runtime_schema_owners,
                 })
@@ -385,7 +385,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                Ok(runtime.describe_table(schema_name, table_name))
+                Ok(runtime.describe_table(None, schema_name, table_name))
             },
             |_| None,
             |_, _| {},

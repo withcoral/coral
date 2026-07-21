@@ -206,7 +206,7 @@ async fn selected_sources_reject_runtime_schema_collisions() {
     )
     .expect("second runtime package");
 
-    let error = CoralQuery::list_catalog(&[first, second], test_runtime(), None)
+    let error = CoralQuery::list_catalog(&[first, second], test_runtime(), None, None)
         .await
         .expect_err("duplicate selected schemas should fail");
 

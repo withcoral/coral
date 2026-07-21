@@ -24,6 +24,8 @@ pub struct ColumnInfo {
 /// Describes one queryable table.
 #[derive(Debug, Clone)]
 pub struct TableInfo {
+    /// `SQL` catalog name. Empty for two-part table references.
+    pub catalog_name: String,
     /// `SQL` schema name.
     pub schema_name: String,
     /// Table name within the schema.

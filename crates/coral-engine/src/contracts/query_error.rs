@@ -411,7 +411,7 @@ fn table_not_found_hint(
     let schema_lower = schema.to_lowercase();
     let tables_in_schema: Vec<&TableInfo> = known_tables
         .iter()
-        .filter(|info| info.schema_name.to_lowercase() == schema_lower)
+        .filter(|info| table_schema_matches(info, &schema_lower))
         .collect();
 
     if tables_in_schema.is_empty() {
@@ -478,35 +478,65 @@ fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
     } else {
         format!("`{reference}` or `{fully_quoted_reference}`")
     };
+    let reference_shape = if info.catalog_name.is_empty() {
+        "schema.table"
+    } else {
+        "catalog.schema.table"
+    };
 
     format!(
         "`\"{missing}\"` is one quoted identifier, so SQL looks for a table literally named \
          `{missing}`. Use {suggestions} in `FROM`/`JOIN` clauses; do not quote the whole \
-         `schema.table` string.",
+         `{reference_shape}` string.",
     )
 }
 
 fn raw_schema_table_name(info: &TableInfo) -> String {
-    format!("{}.{}", info.schema_name, info.table_name)
+    if info.catalog_name.is_empty() {
+        format!("{}.{}", info.schema_name, info.table_name)
+    } else {
+        format!(
+            "{}.{}.{}",
+            info.catalog_name, info.schema_name, info.table_name
+        )
+    }
 }
 
 /// Renders `schema.table` with per-component SQL quoting (dotted source
 /// names stay one quoted identifier; case-preserving names are quoted
 /// only when they would otherwise round-trip wrong).
 fn format_schema_table(info: &TableInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_dotted_identifier(&info.schema_name),
-        quote_identifier(&info.table_name)
-    )
+    if info.catalog_name.is_empty() {
+        format!(
+            "{}.{}",
+            quote_dotted_identifier(&info.schema_name),
+            quote_identifier(&info.table_name)
+        )
+    } else {
+        format!(
+            "{}.{}.{}",
+            quote_dotted_identifier(&info.catalog_name),
+            quote_identifier(&info.schema_name),
+            quote_identifier(&info.table_name)
+        )
+    }
 }
 
 fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_identifier_always(&info.schema_name),
-        quote_identifier_always(&info.table_name)
-    )
+    if info.catalog_name.is_empty() {
+        format!(
+            "{}.{}",
+            quote_identifier_always(&info.schema_name),
+            quote_identifier_always(&info.table_name)
+        )
+    } else {
+        format!(
+            "{}.{}.{}",
+            quote_identifier_always(&info.catalog_name),
+            quote_identifier_always(&info.schema_name),
+            quote_identifier_always(&info.table_name)
+        )
+    }
 }
 
 fn format_schema_function(info: &TableFunctionInfo) -> String {
@@ -586,8 +616,7 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
             }
 
             // Pick the longest contiguous prefix of `body` that matches a
-            // registered schema (case-insensitive). This recovers dotted
-            // source names like `"foo.bar"` from their exploded form.
+            // registered schema or catalog.schema pair (case-insensitive).
             for schema_len in (1..body.len()).rev() {
                 let candidate_schema = join_ref_parts(
                     body.get(..schema_len)
@@ -628,7 +657,15 @@ fn schema_is_registered(candidate: &str, known_tables: &[TableInfo]) -> bool {
     let lowered = candidate.to_lowercase();
     known_tables
         .iter()
-        .any(|info| info.schema_name.to_lowercase() == lowered)
+        .any(|info| table_schema_matches(info, &lowered))
+}
+
+fn table_schema_matches(info: &TableInfo, schema_lower: &str) -> bool {
+    if info.schema_name.to_lowercase() == schema_lower {
+        return true;
+    }
+    !info.catalog_name.is_empty()
+        && format!("{}.{}", info.catalog_name, info.schema_name).to_lowercase() == schema_lower
 }
 
 // ---------------------------------------------------------------------------
@@ -657,6 +694,7 @@ mod tests {
 
     fn table(schema: &str, name: &str) -> TableInfo {
         TableInfo {
+            catalog_name: String::new(),
             schema_name: schema.to_string(),
             table_name: name.to_string(),
             description: String::new(),
@@ -664,6 +702,13 @@ mod tests {
             require_guide_read: false,
             columns: vec![],
             required_filters: vec![],
+        }
+    }
+
+    fn catalog_table(catalog: &str, schema: &str, name: &str) -> TableInfo {
+        TableInfo {
+            catalog_name: catalog.to_string(),
+            ..table(schema, name)
         }
     }
 
@@ -855,6 +900,29 @@ mod tests {
     }
 
     #[test]
+    fn table_not_found_catalog_reference_uses_compound_schema() {
+        let tables = vec![catalog_table("coral_db", "main", "users")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "coral_db", "main", "usrs"]),
+            &tables,
+        );
+
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("coral_db.main")
+        );
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("usrs")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("coral_db.main.users"),
+            "namespaced miss should suggest the queryable table reference, got: {hint}"
+        );
+    }
+
+    #[test]
     fn table_not_found_strips_datafusion_catalog_prefix_from_display() {
         let tables = vec![table("hockey", "Master")];
         let err = StructuredQueryError::table_not_found(
@@ -932,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn table_not_found_quoted_qualified_name_suggests_sql_reference() {
+    fn table_not_found_quoted_qualified_names_suggest_sql_references() {
         // `FROM "github.pulls"` reaches the planner as a single bare
         // identifier under the synthetic `public` schema. When that flat
         // string exactly matches a visible `schema_name.table_name`, point
@@ -963,6 +1031,38 @@ mod tests {
         );
         assert!(
             hint.contains("do not quote the whole `schema.table` string"),
+            "hint should explicitly reject whole-reference quoting, got: {hint}"
+        );
+
+        // `FROM "coral_db.main.users"` is one bare table name under the
+        // synthetic `public` schema. For database surfaces, the flat string
+        // must match catalog.schema.table, not just schema.table.
+        let tables = vec![catalog_table("coral_db", "main", "users")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "public", "coral_db.main.users"]),
+            &tables,
+        );
+
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("coral_db.main.users")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("`\"coral_db.main.users\"` is one quoted identifier"),
+            "hint should explain whole-reference quoting, got: {hint}"
+        );
+        assert!(
+            hint.contains("`coral_db.main.users`"),
+            "hint should suggest the SQL-safe three-part reference, got: {hint}"
+        );
+        assert!(
+            hint.contains("`\"coral_db\".\"main\".\"users\"`"),
+            "hint should show per-identifier quoting as the alternative, got: {hint}"
+        );
+        assert!(
+            hint.contains("do not quote the whole `catalog.schema.table` string"),
             "hint should explicitly reject whole-reference quoting, got: {hint}"
         );
     }
