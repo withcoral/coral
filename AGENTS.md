@@ -51,20 +51,16 @@
   latency. CI installs the bundled `github` source with fake credentials and
   fails when release `coral sql "select * from coral.tables"` has a hyperfine
   mean above 750 ms.
-- Ordinary source-only desktop application and embedded Reef runtime PRs must
-  exercise the native unpacked macOS packaging smoke in addition to their
-  normal checks. Changes that can affect dependency resolution, sidecar
-  staging or architecture, entitlements, electron-builder inputs, bundle
-  layout, artifacts, or workflow behavior must instead exercise the full
-  release-shaped universal DMG/ZIP workflow. The smoke and universal lanes are
-  mutually exclusive; use manual dispatch for an unsigned universal packaging
-  preflight outside the automatic paths. Validation artifacts stay unsigned
+- Package-relevant desktop application and embedded Reef PRs must exercise the
+  native unpacked macOS packaging smoke in addition to their normal checks.
+  Automatic PR validation does not build the release-shaped universal DMG/ZIP;
+  use manual dispatch for an unsigned universal packaging preflight when a
+  packaging-sensitive change warrants one. Validation artifacts stay unsigned
   and must not be reused for a release. Desktop release packaging must reuse
-  the clean, same-run x86_64 and
-  arm64 CLI build artifacts, combine them into its universal sidecar, and then
-  retain the existing signing and notarization flow. PR descriptions for changes
-  to this proportional gate or artifact-reuse rule must call out the resulting
-  contributor or agent behavior change.
+  the clean, same-run x86_64 and arm64 CLI build artifacts, combine them into
+  its universal sidecar, and then retain the existing signing and notarization
+  flow. PR descriptions for changes to this gate or artifact-reuse rule must
+  call out the resulting contributor or agent behavior change.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.

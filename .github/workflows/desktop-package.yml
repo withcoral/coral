@@ -202,9 +202,9 @@ jobs:
         if: ${{ inputs.mode == 'universal' }}
         run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist
 
-      # PR and manual builds are available for inspection for one week.
+      # Manual universal preflights are available for inspection for one week.
       - name: Upload desktop package artifact
-        if: ${{ inputs.mode == 'universal' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ inputs.mode == 'universal' && github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-desktop-macos-unsigned
