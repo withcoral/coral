@@ -1,6 +1,6 @@
 import { constants } from 'node:fs'
-import { access, chmod, copyFile, mkdir, rm, stat } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { access, chmod, copyFile, mkdir, realpath, rm, stat } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export const PREBUILT_CORAL_ENV = 'CORAL_DESKTOP_PREBUILT_CORAL'
 
@@ -43,6 +43,46 @@ function requirePrebuiltOutsideOutputDirectory(sourceBinary, outputDir) {
       `${PREBUILT_CORAL_ENV} must point outside the staging output directory ${outputDir}; that directory is cleared before copying.`,
     )
   }
+}
+
+async function canonicalizePotentialPath(path, realpathFile) {
+  let existingAncestor = resolve(path)
+  const missingSegments = []
+
+  while (true) {
+    try {
+      const canonicalAncestor = await realpathFile(existingAncestor)
+      return join(canonicalAncestor, ...missingSegments.reverse())
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+
+      const parent = dirname(existingAncestor)
+      if (parent === existingAncestor) throw error
+      missingSegments.push(basename(existingAncestor))
+      existingAncestor = parent
+    }
+  }
+}
+
+async function requireCanonicalPrebuiltOutsideOutputDirectory(
+  sourceBinary,
+  outputDir,
+  realpathFile,
+) {
+  let canonicalPaths
+  try {
+    canonicalPaths = await Promise.all([
+      realpathFile(sourceBinary),
+      canonicalizePotentialPath(outputDir, realpathFile),
+    ])
+  } catch (error) {
+    throw new Error(
+      `${PREBUILT_CORAL_ENV} or its staging output directory could not be resolved.`,
+      { cause: error },
+    )
+  }
+
+  requirePrebuiltOutsideOutputDirectory(...canonicalPaths)
 }
 
 export function createStageCoralPlan({
@@ -140,7 +180,7 @@ export function createStageCoralPlan({
 
 export async function validatePrebuiltCoral(
   sourceBinary,
-  { statFile = stat, accessFile = access } = {},
+  { statFile = stat, accessFile = access, realpathFile = realpath, outputDir } = {},
 ) {
   let metadata
   try {
@@ -171,12 +211,20 @@ export async function validatePrebuiltCoral(
       { cause: error },
     )
   }
+
+  if (outputDir) {
+    await requireCanonicalPrebuiltOutsideOutputDirectory(
+      sourceBinary,
+      outputDir,
+      realpathFile,
+    )
+  }
 }
 
 export async function stageCoralBinary(plan) {
   if (plan.mode === 'prebuilt') {
     requirePrebuiltOutsideOutputDirectory(plan.sourceBinary, plan.outputDir)
-    await validatePrebuiltCoral(plan.sourceBinary)
+    await validatePrebuiltCoral(plan.sourceBinary, { outputDir: plan.outputDir })
   }
 
   await rm(plan.outputDir, { recursive: true, force: true })

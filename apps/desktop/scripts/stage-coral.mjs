@@ -40,7 +40,7 @@ if (plan.mode === 'prebuilt') {
   console.log('[stage-coral] prebuilt mode selected')
   console.log(`[stage-coral] prebuilt source: ${plan.sourceBinary}`)
   console.log(`[stage-coral] prebuilt destination: ${plan.destinationBinary}`)
-  await validatePrebuiltCoral(plan.sourceBinary)
+  await validatePrebuiltCoral(plan.sourceBinary, { outputDir: plan.outputDir })
 }
 
 for (const command of plan.commands) {
