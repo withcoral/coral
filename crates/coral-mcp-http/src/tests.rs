@@ -16,8 +16,8 @@ use tokio::net::TcpStream;
 use tower::ServiceExt as _;
 
 use super::{
-    McpHttpConfig, McpHttpError, ReadinessProbe, auth_disabled_router, readiness_status,
-    start_auth_disabled,
+    McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, auth_disabled_router,
+    readiness_status, start_auth_disabled,
 };
 
 async fn local_app() -> (TempDir, coral_client::local::RunningServer, AppClient) {
@@ -32,6 +32,31 @@ async fn local_app() -> (TempDir, coral_client::local::RunningServer, AppClient)
         .await
         .expect("connect app client");
     (temp, server, app)
+}
+
+async fn open_stalled_request(server: &RunningMcpHttpServer) -> TcpStream {
+    let mut stalled = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect stalled request");
+    stalled
+        .write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{{\r\n",
+                server.local_addr()
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write partial request");
+    stalled.flush().await.expect("flush partial request");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while server.state.requests.try_write().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("stalled request was accepted");
+    stalled
 }
 
 #[test]
@@ -128,6 +153,14 @@ async fn readyz_classifies_auth_transport_and_timeout_results() {
             expected
         );
     }
+
+    let pending = ReadinessProbe(Arc::new(|| {
+        Box::pin(std::future::pending::<Result<(), tonic::Code>>())
+    }));
+    assert_eq!(
+        readiness_status(&pending, Duration::from_millis(10)).await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 }
 
 #[tokio::test]
@@ -181,27 +214,7 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
             .try_write()
             .expect("request gate idle"),
     );
-    let mut stalled = TcpStream::connect(server.local_addr())
-        .await
-        .expect("connect stalled request");
-    stalled
-        .write_all(
-            format!(
-                "POST /mcp HTTP/1.1\r\nHost: {}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{{\r\n",
-                server.local_addr()
-            )
-            .as_bytes(),
-        )
-        .await
-        .expect("write partial request");
-    stalled.flush().await.expect("flush partial request");
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while server.state.requests.try_write().is_ok() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("stalled request was accepted");
+    let mut stalled = open_stalled_request(&server).await;
     tokio::time::timeout(Duration::from_secs(3), server.shutdown())
         .await
         .expect("shutdown must be bounded")
@@ -223,4 +236,52 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
     .expect("server-owned state must be released");
 
     let _cancel_result = client.cancel().await;
+}
+
+#[tokio::test]
+async fn dropping_server_cancels_requests_and_releases_state() {
+    let (_temp, app_server, app) = local_app().await;
+    let config =
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+    let server = start_auth_disabled(config, app, McpOptions::default())
+        .await
+        .expect("start MCP HTTP server");
+    let transport =
+        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
+    let client = ().serve(transport).await.expect("initialize MCP client");
+
+    let sessions = Arc::downgrade(&server.state.sessions);
+    let state = Arc::downgrade(&server.state);
+    assert_eq!(
+        sessions
+            .upgrade()
+            .expect("sessions")
+            .sessions
+            .read()
+            .await
+            .len(),
+        1
+    );
+    let mut stalled = open_stalled_request(&server).await;
+
+    drop(server);
+
+    let mut response = Vec::new();
+    let eof_or_reset =
+        tokio::time::timeout(Duration::from_secs(1), stalled.read_to_end(&mut response))
+            .await
+            .expect("stalled connection must close");
+    if eof_or_reset.is_ok() {
+        assert!(response.starts_with(b"HTTP/1.1 503"));
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while sessions.strong_count() != 0 || state.strong_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("server-owned state must be released");
+
+    let _cancel_result = client.cancel().await;
+    app_server.shutdown().await.expect("shutdown app server");
 }

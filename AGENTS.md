@@ -11,7 +11,7 @@
 - `crates/coral-engine`: engine-side backend compilation, runtime registration,
   and query execution.
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
-- `crates/coral-mcp-http`: loopback and remote MCP Streamable HTTP adapter.
+- `crates/coral-mcp-http`: MCP Streamable HTTP transport adapter.
 - `crates/coral-spec`: declarative source-spec parsing, validation,
   input discovery, and normalized source-definition models.
 - `crates/coral-telemetry`: cross-crate telemetry helpers that are independent

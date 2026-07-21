@@ -93,6 +93,9 @@ pub enum McpHttpError {
 }
 
 /// Handle for a running auth-disabled MCP HTTP server.
+///
+/// Call [`RunningMcpHttpServer::shutdown`] for deterministic teardown. Dropping
+/// this handle cancels active HTTP work and closes sessions asynchronously.
 pub struct RunningMcpHttpServer {
     local_addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
@@ -107,6 +110,13 @@ impl RunningMcpHttpServer {
         self.local_addr
     }
 
+    fn begin_shutdown(&mut self) {
+        self.state.config.cancellation_token.cancel();
+        if let Some(shutdown) = self.shutdown.take() {
+            let _send_result = shutdown.send(());
+        }
+    }
+
     /// Stops accepting requests, terminates MCP sessions, and joins the server.
     ///
     /// # Errors
@@ -114,10 +124,7 @@ impl RunningMcpHttpServer {
     /// Returns [`McpHttpError`] if the HTTP task fails or coordinated draining
     /// cannot complete within one second.
     pub async fn shutdown(mut self) -> Result<(), McpHttpError> {
-        self.state.config.cancellation_token.cancel();
-        if let Some(shutdown) = self.shutdown.take() {
-            let _send_result = shutdown.send(());
-        }
+        self.begin_shutdown();
         let state = self.state.clone();
         let drain = async {
             let quiescence = state.requests.write().await;
@@ -129,8 +136,14 @@ impl RunningMcpHttpServer {
             return join_server(result);
         }
         self.task.abort();
-        let _join_result = self.task.await;
+        let _join_result = (&mut self.task).await;
         Err(McpHttpError::ShutdownTimedOut)
+    }
+}
+
+impl Drop for RunningMcpHttpServer {
+    fn drop(&mut self) {
+        self.begin_shutdown();
     }
 }
 
@@ -173,12 +186,15 @@ pub async fn start_auth_disabled(
     let readiness = ReadinessProbe::from_app(app.clone());
     let (router, state) = auth_disabled_router(app, options, readiness, local_addr.ip());
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task_state = state.clone();
     let task = tokio::spawn(async move {
-        axum::serve(listener, router)
+        let result = axum::serve(listener, router)
             .with_graceful_shutdown(async move {
                 let _shutdown_result = shutdown_rx.await;
             })
-            .await
+            .await;
+        close_sessions(task_state.sessions.as_ref()).await;
+        result
     });
     Ok(RunningMcpHttpServer {
         local_addr,
