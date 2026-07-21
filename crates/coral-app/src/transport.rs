@@ -905,6 +905,7 @@ mod tests {
     fn table_to_proto_preserves_table_metadata() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
+            catalog_name: String::new(),
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
@@ -943,6 +944,7 @@ mod tests {
     fn table_summary_to_proto_preserves_table_metadata_without_columns() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
+            catalog_name: String::new(),
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),

@@ -191,19 +191,27 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL schemas published by this selected source.
+    /// Returns the SQL schema names published by this selected source.
     pub fn schema_names(&self) -> Vec<&str> {
-        let mut schemas = Vec::new();
+        let mut names = Vec::new();
         for component in &self.components {
-            let schema = component.source_name();
-            if !schemas.contains(&schema) {
-                schemas.push(schema);
+            let name = component.source_name();
+            if !names.contains(&name) {
+                names.push(name);
             }
         }
-        if schemas.is_empty() {
-            schemas.push(self.source_name());
+        if names.is_empty() {
+            names.push(self.source_name());
         }
-        schemas
+        names
+    }
+
+    #[must_use]
+    /// Returns the SQL catalog names published by this selected source.
+    /// Catalog-backed runtime components are introduced separately from the
+    /// generic qualified-table identity model.
+    pub fn catalog_names(&self) -> Vec<&str> {
+        Vec::new()
     }
 
     #[must_use]
