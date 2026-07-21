@@ -381,6 +381,19 @@ fn validate_ir_operation(
                 operation.id
             )));
         }
+        // Runtime lowering only renders execution-appropriate locations, so an
+        // input elsewhere would surface as a SQL argument that never reaches
+        // the wire.
+        let location_matches_execution = match &operation.execution {
+            IrExecutionAttachment::Rest(_) => input.location != IrInputLocation::ToolArg,
+            IrExecutionAttachment::Mcp(_) => input.location == IrInputLocation::ToolArg,
+        };
+        if !location_matches_execution {
+            return Err(ManifestError::validation(format!(
+                "operation '{}' input '{}' at {:?} does not match its execution type",
+                operation.id, input.name, input.location
+            )));
+        }
         if !inputs.insert((input.location, input.name.as_str())) {
             return Err(ManifestError::validation(format!(
                 "operation '{}' input '{}' at {:?} is repeated",
@@ -825,8 +838,9 @@ fn input_exposure(
 mod tests {
     use crate::parse_source_manifest_yaml;
     use crate::v4::{
+        IrInputLocation, IrOperationInput, IrScalarType, McpToolCatalog, McpToolDescriptor,
         OperationMetadata, ProjectionInputSyncMode, SqlInputExposure, generate_projection_catalog,
-        import_openapi_surface, sync_projection_inputs,
+        import_mcp_surface, import_openapi_surface, sync_projection_inputs,
     };
 
     fn imported() -> (crate::v4::V4SourceManifest, super::ImportedSurface) {
@@ -866,6 +880,93 @@ paths:
         )
         .expect("import");
         (manifest, imported)
+    }
+
+    fn imported_mcp() -> super::ImportedSurface {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surface:
+  type: mcp
+  server:
+    transport: stdio
+    command: demo-mcp-server
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let catalog = McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "search_issues".to_string(),
+                title: None,
+                description: None,
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}}
+                }),
+                output_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}}
+                })),
+                read_only_hint: Some(true),
+            }],
+        };
+        import_mcp_surface(v4, &v4.surface, &catalog).expect("import")
+    }
+
+    #[test]
+    fn plan_rejects_rest_operation_with_tool_arg_input() {
+        let (_manifest, mut imported) = imported();
+        imported
+            .semantic_ir
+            .operations
+            .first_mut()
+            .expect("operation")
+            .inputs
+            .push(IrOperationInput {
+                name: "tool_input".to_string(),
+                location: IrInputLocation::ToolArg,
+                required: false,
+                data_type: IrScalarType::String,
+                default_value: None,
+                description: String::new(),
+            });
+
+        let error = imported
+            .validated_plan()
+            .expect_err("REST operation with tool-arg input must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match its execution type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn plan_rejects_mcp_operation_with_non_tool_arg_input() {
+        let mut imported = imported_mcp();
+        imported
+            .semantic_ir
+            .operations
+            .first_mut()
+            .expect("operation")
+            .inputs
+            .iter_mut()
+            .for_each(|input| input.location = IrInputLocation::Query);
+
+        let error = imported
+            .validated_plan()
+            .expect_err("MCP operation with query input must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match its execution type"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
