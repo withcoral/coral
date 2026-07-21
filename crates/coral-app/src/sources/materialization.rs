@@ -1020,7 +1020,8 @@ struct MaterializedSurfaceBuild {
     plan: ValidatedSurfacePlan,
 }
 
-/// Writes the materialized surface documents and semantic IR.
+/// Writes the materialized surface documents, semantic IR, and operation
+/// metadata.
 fn write_surface_artifacts(
     materialized_dir: &Path,
     materialized_surface: &MaterializedSurfaceBuild,

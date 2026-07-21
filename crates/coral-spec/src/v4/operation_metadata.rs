@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 
 use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
 use crate::v4::ir::{
@@ -11,7 +11,7 @@ use crate::v4::ir::{
 };
 use crate::v4::manifest::SurfaceType;
 use crate::v4::projections::{ProjectionCatalog, ProjectionKind, SqlInputExposure};
-use crate::{ManifestError, PaginationSpec, Result};
+use crate::{ManifestError, PaginationMode, PaginationSpec, Result};
 
 /// Imported facts and the execution-policy opinions inferred from them.
 #[derive(Debug, Clone)]
@@ -48,12 +48,53 @@ pub struct OperationMetadataCatalog {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OperationMetadata {
     Rest {
+        #[serde(serialize_with = "serialize_rest_operation_pagination")]
         pagination: PaginationSpec,
         lookup_keys: Vec<String>,
     },
     Mcp {
         pagination: McpOperationPagination,
     },
+}
+
+fn serialize_rest_operation_pagination<S>(
+    pagination: &PaginationSpec,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if rest_pagination_is_canonical_none(pagination) {
+        #[derive(Serialize)]
+        struct DisabledPagination {
+            mode: PaginationMode,
+        }
+
+        DisabledPagination {
+            mode: PaginationMode::None,
+        }
+        .serialize(serializer)
+    } else {
+        pagination.serialize(serializer)
+    }
+}
+
+fn rest_pagination_is_canonical_none(pagination: &PaginationSpec) -> bool {
+    pagination.mode == PaginationMode::None
+        && pagination.page_size.is_none()
+        && pagination.cursor_param.is_none()
+        && pagination.cursor_body_path.is_empty()
+        && pagination.response_cursor_path.is_empty()
+        && pagination.response_cursor_header.is_none()
+        && pagination.page_param.is_none()
+        && pagination.page_start == 0
+        && pagination.page_step == 1
+        && pagination.offset_param.is_none()
+        && pagination.offset_start == 0
+        && pagination.offset_step.is_none()
+        && !pagination.link_header_require_results
+        && pagination.next_url_header.is_none()
+        && pagination.max_pages.is_none()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -164,20 +205,30 @@ impl ValidatedSurfacePlan {
     }
 
     #[must_use]
-    pub fn pagination_owns_input(&self, operation: &IrOperation, input_name: &str) -> bool {
+    /// Pagination only ever owns query (REST) or tool-arg (MCP) inputs; an
+    /// input in another location that shares a pagination parameter's name is
+    /// not owned.
+    pub fn pagination_owns_input(
+        &self,
+        operation: &IrOperation,
+        input_name: &str,
+        location: IrInputLocation,
+    ) -> bool {
         match self.metadata_for_operation(&operation.id) {
             OperationMetadata::Rest { pagination, .. } => {
-                rest_pagination_owned_inputs(operation, pagination)
-                    .is_ok_and(|owned| owned.contains(input_name))
+                location == IrInputLocation::Query
+                    && rest_pagination_owned_inputs(operation, pagination)
+                        .is_ok_and(|owned| owned.contains(input_name))
             }
             OperationMetadata::Mcp { pagination } => {
-                pagination
-                    .cursor
-                    .as_ref()
-                    .is_some_and(|cursor| cursor.cursor_arg == input_name)
-                    || pagination.offset.as_ref().is_some_and(|offset| {
-                        offset.limit_arg == input_name || offset.offset_arg == input_name
-                    })
+                location == IrInputLocation::ToolArg
+                    && (pagination
+                        .cursor
+                        .as_ref()
+                        .is_some_and(|cursor| cursor.cursor_arg == input_name)
+                        || pagination.offset.as_ref().is_some_and(|offset| {
+                            offset.limit_arg == input_name || offset.offset_arg == input_name
+                        }))
             }
         }
     }
@@ -417,6 +468,14 @@ fn validate_operation_metadata(
                 lookup_keys,
             },
         ) => {
+            if pagination.mode == PaginationMode::None
+                && !rest_pagination_is_canonical_none(pagination)
+            {
+                return Err(ManifestError::validation(format!(
+                    "operation '{}' pagination.mode=none cannot define other pagination settings",
+                    operation.id
+                )));
+            }
             pagination.validated("operation_metadata", &operation.id)?;
             let pagination_inputs = validate_rest_pagination(operation, pagination)?;
             validate_lookup_keys(operation, lookup_keys, &pagination_inputs)
@@ -725,7 +784,8 @@ pub fn sync_projection_inputs(
             ProjectionKind::TableFunction { .. } => SqlInputExposure::FunctionArg,
         };
         for input in &mut projection.inputs {
-            let pagination_owned = plan.pagination_owns_input(operation, &input.wire_name);
+            let pagination_owned =
+                plan.pagination_owns_input(operation, &input.wire_name, input.source_location);
             match mode {
                 ProjectionInputSyncMode::RecomputeInputExposure => {
                     input.sql_exposure =
@@ -827,6 +887,64 @@ paths:
                 if pagination.page_param.as_deref() == Some("page")
                     && lookup_keys == &["state"]
         ));
+    }
+
+    #[test]
+    fn disabled_rest_pagination_serializes_only_its_mode() {
+        let metadata = OperationMetadata::Rest {
+            pagination: crate::PaginationSpec::default(),
+            lookup_keys: Vec::new(),
+        };
+
+        let yaml = serde_yaml::to_string(&metadata).expect("operation metadata YAML");
+        let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("metadata value");
+        let pagination = value
+            .get("pagination")
+            .and_then(serde_yaml::Value::as_mapping)
+            .expect("pagination mapping");
+
+        assert_eq!(pagination.len(), 1, "unexpected pagination fields: {yaml}");
+        assert_eq!(
+            pagination.get("mode"),
+            Some(&serde_yaml::Value::String("none".to_string()))
+        );
+
+        let decoded: OperationMetadata = serde_yaml::from_str(&yaml).expect("round trip");
+        assert!(matches!(
+            decoded,
+            OperationMetadata::Rest { pagination, .. }
+                if pagination.mode == crate::PaginationMode::None
+                    && pagination.page_step == 1
+        ));
+    }
+
+    #[test]
+    fn plan_rejects_settings_for_disabled_rest_pagination() {
+        let (_manifest, mut imported) = imported();
+        let OperationMetadata::Rest { pagination, .. } = imported
+            .operation_metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("metadata")
+        else {
+            panic!("REST metadata")
+        };
+        *pagination = crate::PaginationSpec {
+            page_param: Some("page".to_string()),
+            ..crate::PaginationSpec::default()
+        };
+
+        let error = imported
+            .validated_plan()
+            .expect_err("disabled pagination settings must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pagination.mode=none cannot define other pagination settings"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

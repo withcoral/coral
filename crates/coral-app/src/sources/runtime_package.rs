@@ -859,6 +859,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             declared_inputs: Vec::new(),
+            identity_requirements: None,
             surface: openapi_surface(),
         };
         let mut materialized = V4MaterializedSource {
@@ -950,6 +951,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             declared_inputs: Vec::new(),
+            identity_requirements: None,
             surface: openapi_surface(),
         };
         let first_materialized = materialized(1);

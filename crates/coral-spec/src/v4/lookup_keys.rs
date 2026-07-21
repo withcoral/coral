@@ -63,8 +63,8 @@ pub(in crate::v4) fn infer_rest_lookup_keys(
 /// Exact lexicon match only: token-level matching (e.g. treating
 /// `sort_field` as presentation) also caught identity keys like `order_id`,
 /// and losing joinability on a foreign key costs more than missing a
-/// presentation alias. Unrecognized names stay joinable; the semantic IR is
-/// operation metadata is the audit trail for correcting either direction.
+/// presentation alias. Unrecognized names stay joinable; operation metadata
+/// is the audit trail for correcting either direction.
 fn joinable_param_name(name: &str) -> bool {
     let normalized = normalized_param_name(name);
     !(SEARCH_NAME_LEXICON.contains(&normalized.as_str())

@@ -519,6 +519,68 @@ surface:
 }
 
 #[test]
+fn required_header_sharing_pagination_param_name_stays_unsupported() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: items_api
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let spec = r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: list_items
+      parameters:
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: per_page, in: query, schema: {type: integer}}
+        - {name: page, in: header, required: true, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+";
+    let ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
+    let plan = ir.validated_plan().expect("plan");
+    let operation = plan
+        .semantic_ir()
+        .operations
+        .iter()
+        .find(|operation| operation.id == "list_items")
+        .expect("operation");
+
+    let pagination = plan.rest_pagination(&operation.id);
+    assert_eq!(pagination.mode, PaginationMode::Page);
+    assert_eq!(pagination.page_param.as_deref(), Some("page"));
+    assert!(plan.pagination_owns_input(operation, "page", IrInputLocation::Query));
+    assert!(!plan.pagination_owns_input(operation, "page", IrInputLocation::Header));
+
+    let catalog = generate_projection_catalog(v4, &plan).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("projection");
+    assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
+    assert!(
+        projection
+            .diagnostics
+            .iter()
+            .any(
+                |diagnostic| diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
+                    && diagnostic.message.contains("Header")
+            ),
+        "required header sharing the pagination param name must stay unsupported: {:?}",
+        projection.diagnostics
+    );
+}
+
+#[test]
 fn projection_generation_keeps_link_header_page_inputs_internal() {
     let manifest = parse_source_manifest_yaml(
         r"

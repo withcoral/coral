@@ -79,10 +79,10 @@ fn generate_projection(
                 IrExecutionAttachment::Rest(_) => rest_input_exposure(
                     input,
                     sql_exposure,
-                    plan.pagination_owns_input(operation, &input.name),
+                    plan.pagination_owns_input(operation, &input.name, input.location),
                 ),
                 IrExecutionAttachment::Mcp(_)
-                    if plan.pagination_owns_input(operation, &input.name) =>
+                    if plan.pagination_owns_input(operation, &input.name, input.location) =>
                 {
                     (SqlInputExposure::Internal, true)
                 }
@@ -196,7 +196,7 @@ fn has_required_public_rest_input(plan: &ValidatedSurfacePlan, operation: &IrOpe
             && rest_input_exposure(
                 input,
                 SqlInputExposure::Filter,
-                plan.pagination_owns_input(operation, &input.name),
+                plan.pagination_owns_input(operation, &input.name, input.location),
             )
             .0 == SqlInputExposure::Filter
     })
@@ -206,7 +206,7 @@ fn has_public_mcp_inputs(plan: &ValidatedSurfacePlan, operation: &IrOperation) -
     operation
         .inputs
         .iter()
-        .any(|input| !plan.pagination_owns_input(operation, &input.name))
+        .any(|input| !plan.pagination_owns_input(operation, &input.name, input.location))
 }
 
 fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String {
