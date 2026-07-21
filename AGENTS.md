@@ -115,6 +115,8 @@
 - Acquire the workspace lifecycle write guard before opening a database
   transaction or awaiting a database connection. Keep that order consistent
   across lifecycle mutations so pool contention cannot invert the locks.
+- Store installed function inventory and SQL in CoralDB. `config.toml` and the
+  workspace filesystem are not function state authorities.
 - If a caller needs explicit local server control, prefer `coral-client::local`
   over widening the default client surface.
 - Keep process environment access owned by the right crate. `coral-app` owns

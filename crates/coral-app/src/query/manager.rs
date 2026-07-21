@@ -210,7 +210,7 @@ impl QueryManager {
         diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
         let function_manager =
-            FunctionManager::new(config_store.clone(), &layout, lifecycle_lock.clone());
+            FunctionManager::new(workspace_manager.database(), lifecycle_lock.clone());
         Self {
             config_store,
             workspace_manager: Arc::new(workspace_manager),

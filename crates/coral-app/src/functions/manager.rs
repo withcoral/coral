@@ -1,4 +1,4 @@
-//! Owns user-installed function files and workspace inventory.
+//! Owns workspace-scoped function validation and durable storage.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -13,29 +13,22 @@ use crate::functions::runtime::{
     infer_runtime_function, infer_runtime_functions, infer_runtime_functions_in_prepared_runtime,
     runtime_function_without_signature,
 };
-use crate::functions::store::{FsFunctionArtifactStore, FunctionArtifactStore};
+use crate::functions::store::FunctionStore;
 use crate::functions::validation::{
     SqlPublishTargets, initial_sql_publish_targets, record_sql_publish_target,
     source_sql_publish_targets_for_schemas, unchecked_source_publish_schemas,
 };
-use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct FunctionManager {
-    config_store: ConfigStore,
-    artifacts: Arc<dyn FunctionArtifactStore>,
+    store: Arc<dyn FunctionStore>,
     lifecycle_lock: WorkspaceLifecycleLock,
 }
 
 struct FunctionArtifact {
     name: FunctionName,
-    content: FunctionArtifactContent,
-}
-
-enum FunctionArtifactContent {
-    Sql(String),
-    Unavailable(String),
+    sql: String,
 }
 
 /// One function as listed by the app inventory surface.
@@ -66,18 +59,16 @@ enum FunctionCandidate {
 
 impl FunctionManager {
     #[cfg(test)]
-    pub(crate) fn new_for_tests(config_store: ConfigStore, layout: &AppStateLayout) -> Self {
-        Self::new(config_store, layout, WorkspaceLifecycleLock::default())
+    pub(crate) fn new_for_tests(store: Arc<dyn FunctionStore>) -> Self {
+        Self::new(store, WorkspaceLifecycleLock::default())
     }
 
     pub(crate) fn new(
-        config_store: ConfigStore,
-        layout: &AppStateLayout,
+        store: Arc<dyn FunctionStore>,
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
         Self {
-            config_store,
-            artifacts: Arc::new(FsFunctionArtifactStore::new(layout.clone())),
+            store,
             lifecycle_lock,
         }
     }
@@ -113,7 +104,8 @@ impl FunctionManager {
             workspace_name,
             &function_name,
             raw_sql,
-        )?;
+        )
+        .await?;
         Ok(ValidatedFunctionInstall::Installed)
     }
 
@@ -130,38 +122,21 @@ impl FunctionManager {
             function_name,
             raw_sql,
         )
+        .await
     }
 
-    fn install_user_function_artifact_with_lifecycle_lock(
+    async fn install_user_function_artifact_with_lifecycle_lock(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
     ) -> Result<InstalledFunction, AppError> {
-        let _state_lock = self.config_store.state_lock_exclusive()?;
         let installed = InstalledFunction {
             name: function_name.clone(),
         };
-
-        let previous_artifact =
-            self.artifacts
-                .write_user_function_artifact(workspace_name, function_name, raw_sql)?;
-        if let Err(error) = self
-            .config_store
-            .upsert_function_unlocked(workspace_name, installed.clone())
-        {
-            if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
-                workspace_name,
-                function_name,
-                &previous_artifact,
-            ) {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to install function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
-                )));
-            }
-            return Err(error);
-        }
-
+        self.store
+            .upsert(workspace_name, function_name, raw_sql)
+            .await?;
         Ok(installed)
     }
 
@@ -181,7 +156,8 @@ impl FunctionManager {
             workspace_name,
             &function_name,
             &mut sql_publish_targets,
-        )?;
+        )
+        .await?;
         let runtime_function =
             infer_runtime_function(selected_sources, runtime_config()?, &function).await?;
         record_sql_publish_target(&runtime_function, &mut sql_publish_targets)?;
@@ -235,7 +211,7 @@ impl FunctionManager {
         Infer: FnOnce(Vec<UdfRuntimeDefinition>) -> InferFuture,
         InferFuture: Future<Output = Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError>>,
     {
-        let artifacts = self.load_function_artifacts(workspace_name)?;
+        let artifacts = self.load_function_artifacts(workspace_name).await?;
         if artifacts.is_empty() {
             return Ok(Vec::new());
         }
@@ -310,70 +286,35 @@ impl FunctionManager {
         function_name: &FunctionName,
     ) -> Result<(), AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock(workspace_name).await;
-        let _state_lock = self.config_store.state_lock_exclusive()?;
-        self.config_store
-            .get_function_unlocked(workspace_name, function_name)?;
-        let removed_artifact = self
-            .artifacts
-            .remove_user_function_artifact(workspace_name, function_name)?;
-        if let Err(error) = self
-            .config_store
-            .remove_function_unlocked(workspace_name, function_name)
-        {
-            if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
-                workspace_name,
-                function_name,
-                &removed_artifact,
-            ) {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
-                )));
-            }
-            return Err(error);
+        if !self.store.delete(workspace_name, function_name).await? {
+            return Err(AppError::FunctionNotFound(function_name.to_string()));
         }
         Ok(())
     }
 
-    fn load_function_artifacts(
+    async fn load_function_artifacts(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<FunctionArtifact>, AppError> {
-        let _state_lock = self.config_store.state_lock_shared()?;
-        let mut artifacts = Vec::new();
-        for installed in self
-            .config_store
-            .list_workspace_functions_unlocked(workspace_name)?
-        {
-            let content = match self
-                .artifacts
-                .read_function_sql(workspace_name, &installed.name)
-            {
-                Ok(Some(raw_sql)) => FunctionArtifactContent::Sql(raw_sql),
-                Ok(None) => FunctionArtifactContent::Unavailable(
-                    "installed function file is missing".to_string(),
-                ),
-                Err(error) => FunctionArtifactContent::Unavailable(format!(
-                    "installed function file could not be read: {error}"
-                )),
-            };
-            let function_name = installed.name;
-            artifacts.push(FunctionArtifact {
-                name: function_name,
-                content,
-            });
-        }
-
-        artifacts.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
-        Ok(artifacts)
+        Ok(self
+            .store
+            .list(workspace_name)
+            .await?
+            .into_iter()
+            .map(|stored| FunctionArtifact {
+                name: stored.name,
+                sql: stored.artifact_sql,
+            })
+            .collect())
     }
 
-    fn record_installed_function_sql_publish_targets(
+    async fn record_installed_function_sql_publish_targets(
         &self,
         workspace_name: &WorkspaceName,
         replacing_function: &FunctionName,
         publish_targets: &mut SqlPublishTargets,
     ) -> Result<(), AppError> {
-        for artifact in self.load_function_artifacts(workspace_name)? {
+        for artifact in self.load_function_artifacts(workspace_name).await? {
             if artifact.name == *replacing_function {
                 continue;
             }
@@ -412,16 +353,12 @@ fn validated_function_name(
 }
 
 fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, String> {
-    let raw_sql = match &artifact.content {
-        FunctionArtifactContent::Sql(raw_sql) => raw_sql,
-        FunctionArtifactContent::Unavailable(error) => return Err(error.clone()),
-    };
-    let spec =
-        parse_function_sql(raw_sql).map_err(|error| format!("function is invalid: {error}"))?;
+    let spec = parse_function_sql(&artifact.sql)
+        .map_err(|error| format!("function is invalid: {error}"))?;
     let declared_name = FunctionName::parse(spec.name()).map_err(|error| error.to_string())?;
     if declared_name != artifact.name {
         return Err(format!(
-            "function file declares name '{declared_name}' but its inventory name is '{}'",
+            "stored function SQL declares name '{declared_name}' but its row name is '{}'",
             artifact.name
         ));
     }
@@ -448,18 +385,13 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use tempfile::TempDir;
-
     use super::*;
-    use crate::state::AppStateLayout;
+    use crate::functions::store::tests::InMemoryFunctionStore;
 
-    fn fixture() -> (TempDir, AppStateLayout, ConfigStore, FunctionManager) {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let manager = FunctionManager::new_for_tests(config_store.clone(), &layout);
-        (temp, layout, config_store, manager)
+    fn fixture() -> (Arc<InMemoryFunctionStore>, FunctionManager) {
+        let store = Arc::new(InMemoryFunctionStore::default());
+        let manager = FunctionManager::new_for_tests(store.clone());
+        (store, manager)
     }
 
     fn workspace() -> WorkspaceName {
@@ -503,51 +435,6 @@ select 1 as id
         runtime_function_without_signature(&spec)
     }
 
-    #[derive(Clone)]
-    struct RestoreFailingArtifactStore {
-        inner: FsFunctionArtifactStore,
-    }
-
-    impl FunctionArtifactStore for RestoreFailingArtifactStore {
-        fn read_function_sql(
-            &self,
-            _workspace_name: &WorkspaceName,
-            _function_name: &FunctionName,
-        ) -> Result<Option<String>, AppError> {
-            unreachable!("rollback test does not read function artifacts")
-        }
-
-        fn write_user_function_artifact(
-            &self,
-            workspace_name: &WorkspaceName,
-            function_name: &FunctionName,
-            raw_sql: &str,
-        ) -> Result<crate::functions::store::FunctionArtifactSnapshot, AppError> {
-            self.inner
-                .write_user_function_artifact(workspace_name, function_name, raw_sql)
-        }
-
-        fn remove_user_function_artifact(
-            &self,
-            workspace_name: &WorkspaceName,
-            function_name: &FunctionName,
-        ) -> Result<crate::functions::store::FunctionArtifactSnapshot, AppError> {
-            self.inner
-                .remove_user_function_artifact(workspace_name, function_name)
-        }
-
-        fn restore_user_function_artifact(
-            &self,
-            _workspace_name: &WorkspaceName,
-            _function_name: &FunctionName,
-            _snapshot: &crate::functions::store::FunctionArtifactSnapshot,
-        ) -> Result<(), AppError> {
-            Err(AppError::FailedPrecondition(
-                "injected restore failure".to_string(),
-            ))
-        }
-    }
-
     async fn install_fixture_function(
         manager: &FunctionManager,
         workspace: &WorkspaceName,
@@ -562,19 +449,22 @@ select 1 as id
 
     #[tokio::test]
     async fn list_functions_infers_columns_from_sql_body() {
-        let (_temp, layout, _config_store, manager) = fixture();
+        let (store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql_with_owner_query("review_queue");
         install_fixture_function(&manager, &workspace, &raw_sql).await;
         let function_name = FunctionName::parse("review_queue").expect("function name");
-        std::fs::write(
-            layout.function_file(&workspace, &function_name),
-            raw_sql.replace(
-                "select cast($owner as VARCHAR) as owner",
-                "select cast($owner as VARCHAR) as reviewer",
-            ),
-        )
-        .expect("rewrite function sql");
+        store
+            .upsert(
+                &workspace,
+                &function_name,
+                &raw_sql.replace(
+                    "select cast($owner as VARCHAR) as owner",
+                    "select cast($owner as VARCHAR) as reviewer",
+                ),
+            )
+            .await
+            .expect("rewrite function sql");
 
         let listed = manager
             .list_functions(&workspace, &[], || Ok(QueryRuntimeConfig::default()))
@@ -599,7 +489,7 @@ select 1 as id
 
     #[tokio::test]
     async fn list_functions_builds_one_inference_runtime_for_all_functions() {
-        let (_temp, _layout, _config_store, manager) = fixture();
+        let (_store, manager) = fixture();
         let workspace = workspace();
         install_fixture_function(&manager, &workspace, &function_sql("first")).await;
         install_fixture_function(&manager, &workspace, &function_sql("second")).await;
@@ -619,18 +509,21 @@ select 1 as id
 
     #[tokio::test]
     async fn list_functions_keeps_runtime_invalid_artifacts_visible() {
-        let (_temp, layout, _config_store, manager) = fixture();
+        let (store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql_with_owner_query("review_queue");
         let installed = install_fixture_function(&manager, &workspace, &raw_sql).await;
-        std::fs::write(
-            layout.function_file(&workspace, &installed.name),
-            raw_sql.replace(
-                "select cast($owner as VARCHAR) as owner",
-                "select $owner as owner",
-            ),
-        )
-        .expect("rewrite invalid function sql");
+        store
+            .upsert(
+                &workspace,
+                &installed.name,
+                &raw_sql.replace(
+                    "select cast($owner as VARCHAR) as owner",
+                    "select $owner as owner",
+                ),
+            )
+            .await
+            .expect("rewrite invalid function sql");
 
         let listed = manager
             .list_functions(&workspace, &[], || Ok(QueryRuntimeConfig::default()))
@@ -647,15 +540,18 @@ select 1 as id
 
     #[tokio::test]
     async fn list_functions_rejects_artifact_name_drift_under_inventory_name() {
-        let (_temp, layout, _config_store, manager) = fixture();
+        let (store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
         let installed = install_fixture_function(&manager, &workspace, &raw_sql).await;
-        std::fs::write(
-            layout.function_file(&workspace, &installed.name),
-            raw_sql.replace("name: review_queue", "name: renamed"),
-        )
-        .expect("rewrite function name");
+        store
+            .upsert(
+                &workspace,
+                &installed.name,
+                &raw_sql.replace("name: review_queue", "name: renamed"),
+            )
+            .await
+            .expect("rewrite function name");
 
         let listed = manager
             .list_functions(&workspace, &[], || Ok(QueryRuntimeConfig::default()))
@@ -675,30 +571,8 @@ select 1 as id
     }
 
     #[tokio::test]
-    async fn validate_function_ignores_unrelated_missing_artifact() {
-        let (_temp, layout, _config_store, manager) = fixture();
-        let workspace = workspace();
-        let installed =
-            install_fixture_function(&manager, &workspace, &function_sql("missing_artifact")).await;
-        std::fs::remove_file(layout.function_file(&workspace, &installed.name))
-            .expect("remove existing artifact");
-
-        let validated = manager
-            .validate_user_function_sql(
-                &workspace,
-                &[],
-                || Ok(QueryRuntimeConfig::default()),
-                &function_sql("new_function"),
-            )
-            .await
-            .expect("unrelated broken artifact should not block validation");
-
-        assert_eq!(validated.name, "new_function");
-    }
-
-    #[tokio::test]
     async fn load_runtime_udfs_uses_only_runtime_ready_functions() {
-        let (_temp, _layout, _config_store, manager) = fixture();
+        let (_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
         install_fixture_function(&manager, &workspace, &raw_sql).await;
@@ -718,8 +592,8 @@ select 1 as id
     }
 
     #[tokio::test]
-    async fn remove_user_function_removes_inventory_and_artifacts() {
-        let (_temp, layout, config_store, manager) = fixture();
+    async fn remove_user_function_removes_stored_row() {
+        let (store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
         let installed = install_fixture_function(&manager, &workspace, &raw_sql).await;
@@ -730,20 +604,17 @@ select 1 as id
             .expect("remove function");
 
         assert!(
-            config_store
-                .list_workspace_functions(&workspace)
-                .expect("list function inventory")
+            store
+                .list(&workspace)
+                .await
+                .expect("list functions")
                 .is_empty()
-        );
-        assert!(
-            !layout.function_dir(&workspace, &installed.name).exists(),
-            "function artifact directory should be removed"
         );
     }
 
     #[tokio::test]
     async fn remove_user_function_reports_typed_missing_function() {
-        let (_temp, _layout, _config_store, manager) = fixture();
+        let (_store, manager) = fixture();
         let function_name = FunctionName::parse("missing").expect("function name");
 
         let error = manager
@@ -759,12 +630,11 @@ select 1 as id
 
     #[tokio::test]
     async fn install_user_function_waits_for_workspace_lifecycle_lock() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
         let lifecycle_lock = WorkspaceLifecycleLock::default();
-        let manager = FunctionManager::new(config_store, &layout, lifecycle_lock.clone());
+        let manager = FunctionManager::new(
+            Arc::new(InMemoryFunctionStore::default()),
+            lifecycle_lock.clone(),
+        );
         let workspace = workspace();
         let lifecycle_guard = lifecycle_lock.lock(&workspace).await;
 
@@ -808,52 +678,5 @@ select 1 as id
             .expect("install should succeed");
         assert_eq!(installed, "review_queue");
         handle.join().expect("join install thread");
-    }
-
-    #[tokio::test]
-    async fn install_user_function_reports_inventory_and_restore_failures() {
-        let (_temp, layout, config_store, manager) = fixture();
-        let workspace = workspace();
-        let original_sql = function_sql("review_queue");
-        install_fixture_function(&manager, &workspace, &original_sql).await;
-
-        let function_name = FunctionName::parse("review_queue").expect("function name");
-        let replacement_sql = format!("{original_sql}\n");
-        std::fs::remove_file(layout.config_file()).expect("remove config file");
-        std::fs::create_dir(layout.config_file()).expect("replace config file with directory");
-
-        let manager = FunctionManager {
-            config_store,
-            artifacts: Arc::new(RestoreFailingArtifactStore {
-                inner: FsFunctionArtifactStore::new(layout.clone()),
-            }),
-            lifecycle_lock: WorkspaceLifecycleLock::default(),
-        };
-        let runtime_function = validated_function(&replacement_sql);
-        let error = manager
-            .install_validated_user_function(&workspace, &replacement_sql, &runtime_function)
-            .await
-            .expect_err("inventory and restore failures should be reported together");
-
-        let AppError::FailedPrecondition(message) = error else {
-            panic!("unexpected error: {error}");
-        };
-        assert!(
-            message.contains("failed to install function 'review_queue'"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("failed to restore function artifact"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("injected restore failure"),
-            "unexpected error: {message}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(layout.function_file(&workspace, &function_name))
-                .expect("read unrestored function artifact"),
-            replacement_sql
-        );
     }
 }

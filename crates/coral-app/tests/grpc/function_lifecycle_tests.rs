@@ -74,6 +74,9 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .into_inner()
         .functions;
     assert_eq!(work_functions.len(), 1);
+    let config =
+        std::fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(!config.contains("functions"));
 
     harness
         .function_client()
@@ -94,6 +97,36 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .into_inner()
         .functions;
     assert!(remaining.is_empty());
+}
+
+#[tokio::test]
+async fn installed_function_survives_server_restart() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    harness
+        .function_client()
+        .add_function(Request::new(AddFunctionRequest {
+            workspace: Some(default_workspace()),
+            sql: function_sql("select cast($value as VARCHAR) as value"),
+        }))
+        .await
+        .expect("add function");
+    drop(harness);
+
+    let restarted = GrpcHarness::start_with_config_dir(config_dir).await;
+    let functions = restarted
+        .function_client()
+        .list_functions(Request::new(ListFunctionsRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("list functions after restart")
+        .into_inner()
+        .functions;
+
+    assert_eq!(functions.len(), 1);
+    assert_eq!(functions.first().expect("one function").name, "echo_value");
 }
 
 #[tokio::test]
@@ -120,10 +153,4 @@ async fn untyped_function_is_not_persisted() {
         .into_inner()
         .functions;
     assert!(functions.is_empty());
-    assert!(
-        !harness
-            .config_dir()
-            .join("workspaces/default/functions/echo_value")
-            .exists()
-    );
 }

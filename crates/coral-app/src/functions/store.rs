@@ -1,163 +1,143 @@
-//! Storage seams for workspace function inventory and artifacts.
-
-use std::io::ErrorKind;
+//! Durable storage seam for workspace functions.
 
 use crate::bootstrap::AppError;
 use crate::functions::model::FunctionName;
-use crate::state::AppStateLayout;
-use crate::storage::fs;
+use crate::state::db::{CoralDb, DbRepos};
 use crate::workspaces::WorkspaceName;
 
-pub(crate) trait FunctionArtifactStore: Send + Sync {
-    fn read_function_sql(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-    ) -> Result<Option<String>, AppError>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredFunction {
+    pub(crate) name: FunctionName,
+    pub(crate) artifact_sql: String,
+}
 
-    fn write_user_function_artifact(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-        raw_sql: &str,
-    ) -> Result<FunctionArtifactSnapshot, AppError>;
+#[tonic::async_trait]
+pub(crate) trait FunctionStore: Send + Sync {
+    async fn list(&self, workspace_name: &WorkspaceName) -> Result<Vec<StoredFunction>, AppError>;
 
-    fn remove_user_function_artifact(
+    async fn upsert(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
-    ) -> Result<FunctionArtifactSnapshot, AppError>;
-
-    fn restore_user_function_artifact(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-        snapshot: &FunctionArtifactSnapshot,
+        artifact_sql: &str,
     ) -> Result<(), AppError>;
-}
 
-#[derive(Clone)]
-pub(crate) struct FsFunctionArtifactStore {
-    layout: AppStateLayout,
-}
-
-impl FsFunctionArtifactStore {
-    pub(crate) fn new(layout: AppStateLayout) -> Self {
-        Self { layout }
-    }
-
-    fn snapshot(
+    async fn delete(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
-    ) -> Result<FunctionArtifactSnapshot, AppError> {
-        Ok(FunctionArtifactSnapshot {
-            function_sql: read_optional_bytes(
-                &self.layout.function_file(workspace_name, function_name),
-            )?,
-        })
+    ) -> Result<bool, AppError>;
+}
+
+#[tonic::async_trait]
+impl FunctionStore for CoralDb {
+    async fn list(&self, workspace_name: &WorkspaceName) -> Result<Vec<StoredFunction>, AppError> {
+        let mut session = self;
+        let functions = session
+            .functions()
+            .list(workspace_name.as_str())
+            .await?
+            .into_iter()
+            .map(|record| {
+                Ok(StoredFunction {
+                    name: FunctionName::parse(&record.name)?,
+                    artifact_sql: record.artifact_sql,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        Ok(functions)
     }
 
-    fn write_user_function_artifact_inner(
+    async fn upsert(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
-        raw_sql: &str,
+        artifact_sql: &str,
     ) -> Result<(), AppError> {
-        let function_dir = self.layout.function_dir(workspace_name, function_name);
-        let function_file = self.layout.function_file(workspace_name, function_name);
-
-        fs::ensure_private_dir(&function_dir)?;
-        fs::write_atomic(&function_file, raw_sql.as_bytes())?;
+        let mut session = self;
+        session
+            .functions()
+            .upsert(
+                workspace_name.as_str(),
+                function_name.as_str(),
+                artifact_sql,
+            )
+            .await?;
         Ok(())
     }
+
+    async fn delete(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<bool, AppError> {
+        let mut session = self;
+        Ok(session
+            .functions()
+            .delete(workspace_name.as_str(), function_name.as_str())
+            .await?)
+    }
 }
 
-impl FunctionArtifactStore for FsFunctionArtifactStore {
-    fn read_function_sql(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-    ) -> Result<Option<String>, AppError> {
-        match std::fs::read_to_string(self.layout.function_file(workspace_name, function_name)) {
-            Ok(raw_sql) => Ok(Some(raw_sql)),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::RwLock;
+
+    use super::*;
+
+    #[derive(Default)]
+    pub(crate) struct InMemoryFunctionStore {
+        functions: RwLock<BTreeMap<(WorkspaceName, FunctionName), String>>,
     }
 
-    fn write_user_function_artifact(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-        raw_sql: &str,
-    ) -> Result<FunctionArtifactSnapshot, AppError> {
-        let previous = self.snapshot(workspace_name, function_name)?;
-        if let Err(error) =
-            self.write_user_function_artifact_inner(workspace_name, function_name, raw_sql)
-        {
-            if let Err(restore_error) =
-                self.restore_user_function_artifact(workspace_name, function_name, &previous)
-            {
-                tracing::warn!(
-                    function = %function_name,
-                    detail = %restore_error,
-                    "failed to restore previous function artifact after write failure"
+    #[tonic::async_trait]
+    impl FunctionStore for InMemoryFunctionStore {
+        async fn list(
+            &self,
+            workspace_name: &WorkspaceName,
+        ) -> Result<Vec<StoredFunction>, AppError> {
+            let functions = self
+                .functions
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Ok(functions
+                .iter()
+                .filter(|((workspace, _), _)| workspace == workspace_name)
+                .map(|((_, name), artifact_sql)| StoredFunction {
+                    name: name.clone(),
+                    artifact_sql: artifact_sql.clone(),
+                })
+                .collect())
+        }
+
+        async fn upsert(
+            &self,
+            workspace_name: &WorkspaceName,
+            function_name: &FunctionName,
+            artifact_sql: &str,
+        ) -> Result<(), AppError> {
+            self.functions
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    (workspace_name.clone(), function_name.clone()),
+                    artifact_sql.to_owned(),
                 );
-            }
-            return Err(error);
+            Ok(())
         }
-        Ok(previous)
-    }
 
-    fn remove_user_function_artifact(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-    ) -> Result<FunctionArtifactSnapshot, AppError> {
-        let previous = self.snapshot(workspace_name, function_name)?;
-        let function_dir = self.layout.function_dir(workspace_name, function_name);
-        match std::fs::remove_dir_all(function_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+        async fn delete(
+            &self,
+            workspace_name: &WorkspaceName,
+            function_name: &FunctionName,
+        ) -> Result<bool, AppError> {
+            Ok(self
+                .functions
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&(workspace_name.clone(), function_name.clone()))
+                .is_some())
         }
-        Ok(previous)
-    }
-
-    fn restore_user_function_artifact(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-        snapshot: &FunctionArtifactSnapshot,
-    ) -> Result<(), AppError> {
-        let function_dir = self.layout.function_dir(workspace_name, function_name);
-        let function_file = self.layout.function_file(workspace_name, function_name);
-
-        let Some(raw_sql) = &snapshot.function_sql else {
-            match std::fs::remove_dir_all(function_dir) {
-                Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-            return Ok(());
-        };
-
-        fs::ensure_private_dir(&function_dir)?;
-        fs::write_atomic(&function_file, raw_sql)?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FunctionArtifactSnapshot {
-    function_sql: Option<Vec<u8>>,
-}
-
-fn read_optional_bytes(path: &std::path::Path) -> Result<Option<Vec<u8>>, AppError> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
     }
 }

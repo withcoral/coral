@@ -113,6 +113,10 @@ impl WorkspaceManager {
         self.lifecycle_lock.clone()
     }
 
+    pub(crate) fn database(&self) -> Arc<CoralDb> {
+        Arc::clone(&self.db)
+    }
+
     pub(crate) async fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,

@@ -6,5 +6,3 @@ mod runtime;
 pub(crate) mod service;
 mod store;
 mod validation;
-
-pub(crate) use model::FunctionName;

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 
 use crate::bootstrap::AppError;
-use crate::functions::FunctionName;
 use crate::sources::SourceName;
 use crate::sources::materialization::{
     DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PARAMETER_METADATA_OVERRIDE_FILENAME,
@@ -15,7 +14,6 @@ use crate::storage::fs::ensure_dir;
 use crate::workspaces::{WorkspaceName, WorkspacePaths};
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
-pub(crate) const INSTALLED_FUNCTION_FILE_NAME: &str = "function.sql";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,28 +104,6 @@ impl AppStateLayout {
 
     pub(crate) fn feedback_reports_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.feedback_dir(workspace_name).join("reports.jsonl")
-    }
-
-    pub(crate) fn functions_root(&self, workspace_name: &WorkspaceName) -> PathBuf {
-        self.workspace_dir(workspace_name).join("functions")
-    }
-
-    pub(crate) fn function_dir(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-    ) -> PathBuf {
-        self.functions_root(workspace_name)
-            .join(function_name.as_str())
-    }
-
-    pub(crate) fn function_file(
-        &self,
-        workspace_name: &WorkspaceName,
-        function_name: &FunctionName,
-    ) -> PathBuf {
-        self.function_dir(workspace_name, function_name)
-            .join(INSTALLED_FUNCTION_FILE_NAME)
     }
 
     pub(crate) fn credential_encryption_key_file(&self) -> PathBuf {
@@ -279,7 +255,6 @@ mod tests {
     use std::fs;
 
     use super::AppStateLayout;
-    use crate::functions::FunctionName;
     use crate::sources::SourceName;
     use crate::sources::materialization::PROJECTIONS_FILENAME;
     use crate::workspaces::WorkspaceName;
@@ -292,7 +267,6 @@ mod tests {
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
-        let function_name = FunctionName::parse("review_queue").expect("function");
 
         assert_eq!(layout.config_file(), config_dir.join("config.toml"));
         assert_eq!(layout.database_file(), config_dir.join("coral.db"));
@@ -321,15 +295,6 @@ mod tests {
                 .join("default")
                 .join("feedback")
                 .join("reports.jsonl")
-        );
-        assert_eq!(
-            layout.function_file(&workspace_name, &function_name),
-            config_dir
-                .join("workspaces")
-                .join("default")
-                .join("functions")
-                .join("review_queue")
-                .join("function.sql")
         );
         assert_eq!(
             layout.search_sqlite_file(&workspace_name),

@@ -62,6 +62,32 @@ impl<'a> CoralTx<'a> {
         Ok(())
     }
 
+    pub(super) async fn execute_affected<S>(&mut self, statement: S) -> Result<u64, DbError>
+    where
+        S: SqlxBinder,
+    {
+        match &mut self.backend {
+            CoralTxBackend::Sqlite(tx) => {
+                let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
+                Ok(
+                    sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
+                        .execute(&mut **tx)
+                        .await?
+                        .rows_affected(),
+                )
+            }
+            CoralTxBackend::Postgres(tx) => {
+                let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
+                Ok(
+                    sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
+                        .execute(&mut **tx)
+                        .await?
+                        .rows_affected(),
+                )
+            }
+        }
+    }
+
     pub(super) async fn fetch_optional<T>(
         &mut self,
         statement: SelectStatement,
