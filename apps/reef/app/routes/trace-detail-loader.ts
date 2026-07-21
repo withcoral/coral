@@ -7,6 +7,7 @@ import { GetTraceRequestSchema } from '@/generated/coral/v1/traces_pb'
 import { traceClientForRequest } from '@/lib/coral-request.server'
 import { errorMessage } from '@/lib/utils'
 import { workspaceFromParams } from '@/lib/workspace-routing'
+import { rootSpanIdFromSearch } from '@/views/traces/trace-location'
 import { formatTraceError, type TraceDetailData } from '@/views/traces/trace-utils'
 
 export interface TraceDetailRouteData {
@@ -17,6 +18,7 @@ export interface TraceDetailRouteData {
 export type GetTraceForRequest = (
   request: Request,
   traceId: string,
+  rootSpanId: string,
   workspace: Workspace,
 ) => Promise<TraceDetailData>
 
@@ -33,7 +35,15 @@ export async function loadTraceDetailRouteData(
   if (!traceId) return { detail: null, loadError: 'Missing trace ID' }
 
   try {
-    return { detail: await getTrace(request, traceId, workspace), loadError: null }
+    return {
+      detail: await getTrace(
+        request,
+        traceId,
+        rootSpanIdFromSearch(new URL(request.url).search),
+        workspace,
+      ),
+      loadError: null,
+    }
   } catch (error) {
     return { detail: null, loadError: formatTraceError(errorMessage(error)) }
   }
@@ -42,9 +52,10 @@ export async function loadTraceDetailRouteData(
 async function getTraceForRequest(
   request: Request,
   traceId: string,
+  rootSpanId: string,
   workspace: Workspace,
 ): Promise<TraceDetailData> {
   return traceClientForRequest(request).getTrace(
-    create(GetTraceRequestSchema, { traceId, workspace }),
+    create(GetTraceRequestSchema, { rootSpanId, traceId, workspace }),
   )
 }

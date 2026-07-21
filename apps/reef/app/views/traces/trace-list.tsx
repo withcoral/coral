@@ -1,12 +1,12 @@
 import classNames from 'classnames'
-import { NavLink, useLocation } from 'react-router'
+import { Link, useLocation, useParams } from 'react-router'
 
 import { HighlightedCode } from '@/components/code-block'
-import { routePath } from '@/routing/routemap'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import * as s from './traces.css'
+import { rootSpanIdFromSearch, traceLocation } from './trace-location'
 import {
   durationClass,
   formatDurationFromNanos,
@@ -14,6 +14,8 @@ import {
   startMs,
   statusTone,
   timeAgo,
+  traceEntryKey,
+  traceRowId,
   type TraceSummaryData,
 } from './trace-utils'
 
@@ -21,24 +23,24 @@ function TraceRow({
   active,
   referenceTimeMs,
   search,
+  selected,
   trace,
   workspaceId,
 }: {
   active: boolean
   referenceTimeMs: number
   search: string
+  selected: boolean
   trace: TraceSummaryData
   workspaceId: string
 }) {
   return (
-    <NavLink
+    <Link
+      aria-current={selected ? 'page' : undefined}
       className={s.fullRow}
       data-active={active || undefined}
-      data-trace-row-id={trace.traceId}
-      to={{
-        pathname: routePath('workspaceTrace', { traceId: trace.traceId, workspaceId }),
-        search,
-      }}
+      data-trace-row-id={traceRowId(trace)}
+      to={traceLocation(workspaceId, trace.traceId, search, trace.rootSpanId)}
     >
       <span className={s.statusDot} data-tone={statusTone(trace.status)} />
       <div className={classNames(s.cell, s.cellTimestamp)}>
@@ -64,30 +66,39 @@ function TraceRow({
       >
         <Typography.Body as="span">{formatDurationFromNanos(trace.durationNanos)}</Typography.Body>
       </div>
-    </NavLink>
+    </Link>
   )
 }
 
 export function TraceList({
-  activeTraceId,
+  activeTraceKey,
   referenceTimeMs,
   traces,
   workspaceId,
 }: {
-  activeTraceId?: string | null
+  activeTraceKey?: string | null
   referenceTimeMs: number
   traces: TraceSummaryData[]
   workspaceId: string
 }) {
   const location = useLocation()
+  const { traceId: selectedTraceId } = useParams()
+  const selectedRootSpanId = rootSpanIdFromSearch(location.search)
+  const selectedTrace = traces.find(
+    (trace) =>
+      trace.traceId === selectedTraceId &&
+      (!selectedRootSpanId || trace.rootSpanId === selectedRootSpanId),
+  )
+  const selectedTraceKey = selectedTrace ? traceEntryKey(selectedTrace) : null
   return (
     <div className={s.traceList}>
       {traces.map((trace) => (
         <TraceRow
-          active={trace.traceId === activeTraceId}
-          key={trace.traceId}
+          active={traceEntryKey(trace) === activeTraceKey}
+          key={traceEntryKey(trace)}
           referenceTimeMs={referenceTimeMs}
           search={location.search}
+          selected={traceEntryKey(trace) === selectedTraceKey}
           trace={trace}
           workspaceId={workspaceId}
         />

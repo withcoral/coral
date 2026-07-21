@@ -3,7 +3,7 @@ import { TraceOperationKind, TraceStatus } from '@/generated/coral/v1/traces_pb'
 import { describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 
-import type { TraceSummaryData } from './trace-utils'
+import { traceEntryKey, type TraceSummaryData } from './trace-utils'
 import { TraceList } from './trace-list'
 
 function summary(traceId: string): TraceSummaryData {
@@ -46,7 +46,10 @@ describe('TraceList', () => {
 
     await expect
       .element(screen.getByRole('link', { name: /select 'trace\/with\?reserved'/i }))
-      .toHaveAttribute('href', '/workspaces/analytics/traces/trace%2Fwith%3Freserved?pro')
+      .toHaveAttribute(
+        'href',
+        '/workspaces/analytics/traces/trace%2Fwith%3Freserved?pro&rootSpanId=root-trace%2Fwith%3Freserved',
+      )
   })
 
   it('marks the URL-selected row current independently from keyboard highlighting', async () => {
@@ -56,7 +59,7 @@ describe('TraceList', () => {
           children: [{ element: null, path: ':traceId' }],
           element: (
             <TraceList
-              activeTraceId="keyboard-active"
+              activeTraceKey={traceEntryKey(summary('keyboard-active'))}
               referenceTimeMs={2_000_000}
               traces={[summary('selected'), summary('keyboard-active')]}
               workspaceId="analytics"
@@ -76,5 +79,39 @@ describe('TraceList', () => {
     await expect
       .element(screen.getByRole('link', { name: /select 'keyboard-active'/i }))
       .toHaveAttribute('data-active', 'true')
+  })
+
+  it('selects duplicate trace IDs by root span and gives each row a distinct link', async () => {
+    const first = { ...summary('shared'), query: 'select 1', rootSpanId: 'root-a' }
+    const second = { ...summary('shared'), query: 'select 2', rootSpanId: 'root-b' }
+    const router = createMemoryRouter(
+      [
+        {
+          children: [{ element: null, path: ':traceId' }],
+          element: (
+            <TraceList
+              referenceTimeMs={2_000_000}
+              traces={[first, second]}
+              workspaceId="analytics"
+            />
+          ),
+          path: '/workspaces/:workspaceId/traces',
+        },
+      ],
+      { initialEntries: ['/workspaces/analytics/traces/shared?pro&rootSpanId=root-b'] },
+    )
+
+    const screen = await render(<RouterProvider router={router} />)
+    const firstLink = screen.getByRole('link', { name: /select 1/i })
+    const secondLink = screen.getByRole('link', { name: /select 2/i })
+
+    await expect.element(firstLink).not.toHaveAttribute('aria-current')
+    await expect.element(secondLink).toHaveAttribute('aria-current', 'page')
+    await expect
+      .element(firstLink)
+      .toHaveAttribute('href', '/workspaces/analytics/traces/shared?pro&rootSpanId=root-a')
+    await expect
+      .element(secondLink)
+      .toHaveAttribute('href', '/workspaces/analytics/traces/shared?pro&rootSpanId=root-b')
   })
 })

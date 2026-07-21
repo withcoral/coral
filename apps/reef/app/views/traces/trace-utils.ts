@@ -1,4 +1,9 @@
-import { TraceStatus, type TraceSpan, type TraceSummary } from '@/generated/coral/v1/traces_pb'
+import {
+  TraceOperationKind,
+  TraceStatus,
+  type TraceSpan,
+  type TraceSummary,
+} from '@/generated/coral/v1/traces_pb'
 
 export type JsonObject = Record<string, unknown>
 export type TraceSpanData = Omit<TraceSpan, '$typeName' | '$unknown'>
@@ -210,8 +215,22 @@ export function sortedSpans(spans: TraceSpanData[]): TraceSpanData[] {
   })
 }
 
-export function isQueryTrace(trace: TraceSummaryData): boolean {
-  return trace.name === 'coral.query' || trace.query.trim().length > 0
+export function isLegacyQueryTrace(trace: TraceSummaryData): boolean {
+  return (
+    trace.name === 'coral.query' || trace.name === 'coral.search' || trace.query.trim().length > 0
+  )
+}
+
+export function hasTypedOperation(trace: TraceSummaryData): boolean {
+  return trace.operationKind !== TraceOperationKind.UNSPECIFIED
+}
+
+export function traceEntryKey(trace: Pick<TraceSummaryData, 'rootSpanId' | 'traceId'>): string {
+  return `${trace.traceId}\u0000${trace.rootSpanId}`
+}
+
+export function traceRowId(trace: Pick<TraceSummaryData, 'rootSpanId' | 'traceId'>): string {
+  return `${encodeURIComponent(trace.traceId)}:${encodeURIComponent(trace.rootSpanId)}`
 }
 
 export function sourceNames(spans: TraceSpanData[]): string[] {

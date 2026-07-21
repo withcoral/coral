@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import classNames from 'classnames'
-import { useLocation, useNavigate, useOutletContext } from 'react-router'
+import { Navigate, useLocation, useNavigate, useOutletContext } from 'react-router'
 
 import { Button, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
@@ -12,7 +12,7 @@ import { TraceStatus } from '@/generated/coral/v1/traces_pb'
 
 import * as s from './traces.css'
 import { HttpSpanDetail } from './http-span-detail'
-import { traceLocation } from './trace-location'
+import { listSearch, rootSpanIdFromSearch, traceLocation } from './trace-location'
 import type { TracesOutletContext } from './traces-index'
 import { routePath } from '@/routing/routemap'
 import { useTimelineTree, type TimelineRow } from './use-timeline-tree'
@@ -20,6 +20,7 @@ import {
   formatDuration,
   formatDurationFromNanos,
   formatRows,
+  hasTypedOperation,
   isHttpSpan,
   nanosToMs,
   spanDisplayLabel,
@@ -390,9 +391,15 @@ function TimelineWaterfall({
   const [renderedHttpSpanId, setRenderedHttpSpanId] = useState<string | null>(expandedHttpSpanId)
   const [detailPanelVisible, setDetailPanelVisible] = useState(Boolean(expandedHttpSpanId))
   const [detailPanelSettled, setDetailPanelSettled] = useState(Boolean(expandedHttpSpanId))
-  useEffect(() => onExpandedHttpSpanIdChange(null), [onExpandedHttpSpanIdChange, summary?.traceId])
-  useEffect(() => setHoveredSpanId(null), [summary?.traceId])
-  useEffect(() => setDetailPanelRatio(DETAIL_PANEL_DEFAULT_RATIO), [summary?.traceId])
+  useEffect(
+    () => onExpandedHttpSpanIdChange(null),
+    [onExpandedHttpSpanIdChange, summary?.rootSpanId, summary?.traceId],
+  )
+  useEffect(() => setHoveredSpanId(null), [summary?.rootSpanId, summary?.traceId])
+  useEffect(
+    () => setDetailPanelRatio(DETAIL_PANEL_DEFAULT_RATIO),
+    [summary?.rootSpanId, summary?.traceId],
+  )
   useEffect(() => {
     if (panelAnimationFrame.current !== null) {
       window.cancelAnimationFrame(panelAnimationFrame.current)
@@ -653,24 +660,24 @@ function DetailTabs({
 
 function TraceDetailContent({
   detail,
+  entryKey,
   extraTabs,
   initialSummary,
   loadError,
-  newerTraceId,
-  olderTraceId,
+  newerTrace,
+  olderTrace,
   onClose,
   onSelectTrace,
-  traceId,
 }: {
   detail: TraceDetailData | null
+  entryKey: string
   extraTabs?: (detail: TraceDetailData) => ExtraDetailTab[]
   initialSummary?: TraceSummaryData
   loadError: string | null
-  newerTraceId?: string | null
-  olderTraceId?: string | null
+  newerTrace?: TraceSummaryData | null
+  olderTrace?: TraceSummaryData | null
   onClose: () => void
-  onSelectTrace?: (traceId: string) => void
-  traceId: string
+  onSelectTrace?: (trace: TraceSummaryData) => void
 }) {
   const [activeTab, setActiveTab] = useState<string>('timeline')
   const [expandedHttpSpanId, setExpandedHttpSpanId] = useState<string | null>(null)
@@ -678,7 +685,7 @@ function TraceDetailContent({
   useEffect(() => {
     setActiveTab('timeline')
     setExpandedHttpSpanId(null)
-  }, [traceId])
+  }, [entryKey])
 
   const selectAdjacentSpan = useCallback(
     (direction: -1 | 1) => {
@@ -694,20 +701,20 @@ function TraceDetailContent({
 
   const handleNewerTraceShortcut = useCallback(
     (event: KeyboardEvent) => {
-      if (!newerTraceId) return
+      if (!newerTrace) return
       event.preventDefault()
-      onSelectTrace?.(newerTraceId)
+      onSelectTrace?.(newerTrace)
     },
-    [newerTraceId, onSelectTrace],
+    [newerTrace, onSelectTrace],
   )
 
   const handleOlderTraceShortcut = useCallback(
     (event: KeyboardEvent) => {
-      if (!olderTraceId) return
+      if (!olderTrace) return
       event.preventDefault()
-      onSelectTrace?.(olderTraceId)
+      onSelectTrace?.(olderTrace)
     },
-    [olderTraceId, onSelectTrace],
+    [olderTrace, onSelectTrace],
   )
 
   const handleEscapeShortcut = useCallback(
@@ -809,9 +816,9 @@ function TraceDetailContent({
           >
             <Button.IconButton
               ariaLabel="Newer query"
-              disabled={!newerTraceId}
+              disabled={!newerTrace}
               name="ArrowUp"
-              onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)}
+              onClick={() => newerTrace && onSelectTrace?.(newerTrace)}
               size="32"
               variant="bare"
             />
@@ -824,9 +831,9 @@ function TraceDetailContent({
           >
             <Button.IconButton
               ariaLabel="Older query"
-              disabled={!olderTraceId}
+              disabled={!olderTrace}
               name="ArrowDown"
-              onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)}
+              onClick={() => olderTrace && onSelectTrace?.(olderTrace)}
               size="32"
               variant="bare"
             />
@@ -910,33 +917,60 @@ export function TraceDetail({
   const { traces, workspaceId } = useOutletContext<TracesOutletContext>()
   const location = useLocation()
   const navigate = useNavigate()
-  const selectedIndex = traces.findIndex((trace) => trace.traceId === traceId)
-  const newerTraceId = selectedIndex > 0 ? traces[selectedIndex - 1].traceId : null
-  const olderTraceId =
-    selectedIndex >= 0 && selectedIndex < traces.length - 1
-      ? traces[selectedIndex + 1].traceId
-      : null
+  const selectedRootSpanId = rootSpanIdFromSearch(location.search)
+  const traceEntries = traces.filter((trace) => trace.traceId === traceId)
+  const detailSummary = detail?.summary
+  const matchingTypedDetailEntry =
+    detailSummary && hasTypedOperation(detailSummary)
+      ? traceEntries.find((trace) => trace.rootSpanId === detailSummary.rootSpanId)
+      : undefined
+  const canonicalEntry = selectedRootSpanId
+    ? undefined
+    : (matchingTypedDetailEntry ?? traceEntries[0])
+
+  if (canonicalEntry?.rootSpanId) {
+    return (
+      <Navigate
+        replace
+        to={traceLocation(
+          workspaceId,
+          canonicalEntry.traceId,
+          location.search,
+          canonicalEntry.rootSpanId,
+        )}
+      />
+    )
+  }
+
+  const selectedIndex = traces.findIndex(
+    (trace) =>
+      trace.traceId === traceId && (!selectedRootSpanId || trace.rootSpanId === selectedRootSpanId),
+  )
+  const newerTrace = selectedIndex > 0 ? traces[selectedIndex - 1] : null
+  const olderTrace =
+    selectedIndex >= 0 && selectedIndex < traces.length - 1 ? traces[selectedIndex + 1] : null
   const initialSummary = selectedIndex >= 0 ? traces[selectedIndex] : detail?.summary
+  const entryKey = `${traceId}\u0000${selectedRootSpanId}`
 
   return (
     <div className={s.detailOverlay}>
       <TraceDetailContent
         detail={detail}
+        entryKey={entryKey}
         extraTabs={extraTabs}
         initialSummary={initialSummary}
         loadError={loadError}
-        newerTraceId={newerTraceId}
-        olderTraceId={olderTraceId}
+        newerTrace={newerTrace}
+        olderTrace={olderTrace}
         onClose={() =>
           navigate({
             pathname: routePath('workspaceTraces', { workspaceId }),
-            search: location.search,
+            search: listSearch(location.search),
           })
         }
-        onSelectTrace={(nextTraceId) =>
-          navigate(traceLocation(workspaceId, nextTraceId, location.search))
+        onSelectTrace={(trace) =>
+          navigate(traceLocation(workspaceId, trace.traceId, location.search, trace.rootSpanId))
         }
-        traceId={traceId}
       />
     </div>
   )

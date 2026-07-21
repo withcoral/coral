@@ -106,7 +106,12 @@ function renderDetail(
   loadError: string | null,
   loadedDetail: TraceDetailData | null,
   traces = loadedDetail?.summary ? [loadedDetail.summary] : [],
+  initialEntries?: string[],
 ) {
+  const rootSpanId = loadedDetail?.summary?.rootSpanId
+  const entries = initialEntries ?? [
+    `${TRACES_PATH}/trace-07?pro${rootSpanId ? `&rootSpanId=${encodeURIComponent(rootSpanId)}` : ''}`,
+  ]
   const router = createMemoryRouter(
     [
       {
@@ -120,7 +125,7 @@ function renderDetail(
         path: TRACES_PATH,
       },
     ],
-    { initialEntries: [`${TRACES_PATH}/trace-07?pro`] },
+    { initialEntries: entries, initialIndex: entries.length - 1 },
   )
   return { router, screen: render(<RouterProvider router={router} />) }
 }
@@ -147,6 +152,47 @@ describe('TraceDetail', () => {
       .element((await screen).getByText('select * from github.pull_requests'))
       .toBeVisible()
     await expect.element((await screen).getByText('7')).toBeVisible()
+  })
+
+  it('canonicalizes a selector-less legacy URL to the matching typed detail operation', async () => {
+    const first = { ...detail().summary!, query: 'select 1', rootSpanId: 'root-a' }
+    const second = { ...detail().summary!, query: 'select 2', rootSpanId: 'root-b' }
+    const selectedDetail = detail()
+    selectedDetail.summary = {
+      ...second,
+      operationKind: TraceOperationKind.QUERY,
+      operationName: 'sql',
+    }
+    const { router, screen } = renderDetail(
+      null,
+      selectedDetail,
+      [first, second],
+      [TRACES_PATH, `${TRACES_PATH}/trace-07?pro`],
+    )
+
+    await expect
+      .poll(() => new URLSearchParams(router.state.location.search).get('rootSpanId'))
+      .toBe('root-b')
+    await expect.element((await screen).getByText('select 2')).toBeVisible()
+
+    await router.navigate(-1)
+    expect(router.state.location.pathname).toBe(TRACES_PATH)
+  })
+
+  it('falls back to the first visible operation when legacy detail has no typed match', async () => {
+    const first = { ...detail().summary!, query: 'select 1', rootSpanId: 'root-a' }
+    const second = { ...detail().summary!, query: 'select 2', rootSpanId: 'root-b' }
+    const { router, screen } = renderDetail(
+      null,
+      null,
+      [first, second],
+      [`${TRACES_PATH}/trace-07?pro`],
+    )
+
+    await expect
+      .poll(() => new URLSearchParams(router.state.location.search).get('rootSpanId'))
+      .toBe('root-a')
+    await expect.element((await screen).getByText('select 1')).toBeVisible()
   })
 
   it('keeps route loader failures closable', async () => {
@@ -196,19 +242,34 @@ describe('TraceDetail', () => {
       traceId,
     }))
     const { router } = renderDetail(null, detail(), traces)
-    await router.navigate(`${TRACES_PATH}/trace-07?search=playwright&pro`)
+    await router.navigate(`${TRACES_PATH}/trace-07?search=playwright&pro&rootSpanId=root`)
 
     dispatchModArrow('ArrowDown')
     await expect.poll(() => router.state.location.pathname).toBe(`${TRACES_PATH}/older`)
-    expect(router.state.location.search).toBe('?search=playwright&pro')
+    expect(router.state.location.search).toBe('?search=playwright&pro&rootSpanId=root')
 
-    await router.navigate(`${TRACES_PATH}/trace-07?search=playwright&pro`)
+    await router.navigate(`${TRACES_PATH}/trace-07?search=playwright&pro&rootSpanId=root`)
     dispatchModArrow('ArrowUp')
     await expect.poll(() => router.state.location.pathname).toBe(`${TRACES_PATH}/newer`)
 
     await userEvent.keyboard('{Escape}')
     await expect.poll(() => router.state.location.pathname).toBe(TRACES_PATH)
     expect(router.state.location.search).toBe('?search=playwright&pro')
+  })
+
+  it('navigates adjacent operations that share a trace ID by root span', async () => {
+    const current = detail().summary!
+    const first = { ...current, query: 'select 1', rootSpanId: 'root-a' }
+    const second = { ...current, query: 'select 2', rootSpanId: 'root-b' }
+    const selectedDetail = detail()
+    selectedDetail.summary = first
+    const { router } = renderDetail(null, selectedDetail, [first, second])
+    await router.navigate(`${TRACES_PATH}/trace-07?pro&rootSpanId=root-a`)
+
+    dispatchModArrow('ArrowDown')
+    await expect
+      .poll(() => new URLSearchParams(router.state.location.search).get('rootSpanId'))
+      .toBe('root-b')
   })
 
   it('renders the no-summary state and keeps it closable', async () => {

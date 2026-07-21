@@ -12,7 +12,8 @@ import * as s from './traces.css'
 import { PageHeader } from './page-header'
 import { StatusBar } from './status-bar'
 import { TraceList } from './trace-list'
-import type { TraceSummaryData } from './trace-utils'
+import { traceLocation } from './trace-location'
+import { traceEntryKey, traceRowId, type TraceSummaryData } from './trace-utils'
 
 const TRACE_LIST_REFRESH_MS = 30_000
 
@@ -160,13 +161,8 @@ export function TracesIndex({
         )
           return
         event.preventDefault()
-        navigate({
-          pathname: routePath('workspaceTrace', {
-            traceId: filtered[activeIndex].traceId,
-            workspaceId,
-          }),
-          search: location.search,
-        })
+        const trace = filtered[activeIndex]
+        navigate(traceLocation(workspaceId, trace.traceId, location.search, trace.rootSpanId))
       }
     }
     window.addEventListener('keydown', handler)
@@ -177,7 +173,7 @@ export function TracesIndex({
     if (activeIndex === null) return
     const trace = filtered[activeIndex]
     if (!trace) return
-    const escaped = trace.traceId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    const escaped = traceRowId(trace).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
     document.querySelector(`[data-trace-row-id="${escaped}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex, filtered])
 
@@ -232,7 +228,11 @@ export function TracesIndex({
       ) : (
         <div className={s.queryScroll}>
           <TraceList
-            activeTraceId={activeIndex !== null ? filtered[activeIndex]?.traceId : null}
+            activeTraceKey={
+              activeIndex !== null && filtered[activeIndex]
+                ? traceEntryKey(filtered[activeIndex])
+                : null
+            }
             referenceTimeMs={referenceTimeMs}
             traces={filtered}
             workspaceId={workspaceId}

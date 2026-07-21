@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 
 import { shouldRevalidate } from './traces'
-import { traceLocation } from '@/views/traces/trace-location'
+import { listSearch, rootSpanIdFromSearch, traceLocation } from '@/views/traces/trace-location'
 import { routePath } from '@/routing/routemap'
 
 const WORKSPACE_ID = 'analytics'
@@ -73,6 +73,17 @@ describe('traces shouldRevalidate', () => {
     ).toBe(false)
     expect(
       shouldRevalidate(
+        revalidationArgs(
+          `${TRACES_PATH}/trace-a?rootSpanId=root-a`,
+          `${TRACES_PATH}/trace-a?rootSpanId=root-a`,
+          'trace-a',
+          'trace-a',
+          { defaultShouldRevalidate: true },
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      shouldRevalidate(
         revalidationArgs(TRACES_PATH, '/workspaces/analytics/sources', undefined, undefined, {
           defaultShouldRevalidate: true,
         }),
@@ -103,6 +114,20 @@ describe('traces shouldRevalidate', () => {
           {
             defaultShouldRevalidate: false,
           },
+        ),
+      ),
+    ).toBe(false)
+  })
+
+  it('does not reload the parent list when only a same-trace root selector changes', () => {
+    expect(
+      shouldRevalidate(
+        revalidationArgs(
+          `${TRACES_PATH}/trace-a?search=kept&rootSpanId=root-a`,
+          `${TRACES_PATH}/trace-a?search=kept&rootSpanId=root-b`,
+          'trace-a',
+          'trace-a',
+          { defaultShouldRevalidate: true },
         ),
       ),
     ).toBe(false)
@@ -156,6 +181,28 @@ describe('nested traces data routing', () => {
       pathname: '/workspaces/analytics/traces/trace%2Fwith%3Freserved',
       search: '?search=playwright&pro',
     })
+  })
+
+  it('replaces and removes only the operation root span selector', () => {
+    const location = traceLocation(
+      WORKSPACE_ID,
+      'shared-trace',
+      '?search=playwright&rootSpanId=stale&pro',
+      'root/next',
+    )
+
+    expect(location).toEqual({
+      pathname: `${TRACES_PATH}/shared-trace`,
+      search: '?search=playwright&pro&rootSpanId=root%2Fnext',
+    })
+    expect(rootSpanIdFromSearch(location.search)).toBe('root/next')
+    expect(listSearch(location.search)).toBe('?search=playwright&pro')
+  })
+
+  it('preserves malformed encoding while removing only root span selectors', () => {
+    expect(
+      listSearch('?filter=%E0%A4%A&bad%ZZ=value&rootSpanId=stale%ZZ&pro&root%53panId=encoded'),
+    ).toBe('?filter=%E0%A4%A&bad%ZZ=value&pro')
   })
   it('preserves the list while detail is open and refreshes it immediately on close', async () => {
     const parentLoader = vi.fn().mockResolvedValue({ traces: ['trace-a', 'trace-b'] })
@@ -217,5 +264,45 @@ describe('nested traces data routing', () => {
     await router.navigate(-1)
     expect(router.state.location.pathname).toBe(TRACES_PATH)
     await expect.element(screen.getByRole('link', { name: 'trace-a' })).toBeVisible()
+  })
+
+  it('reloads only child detail for same-trace root navigation and honors explicit refresh', async () => {
+    const parentLoader = vi.fn().mockResolvedValue({ traces: ['trace-a'] })
+    const childLoader = vi.fn(({ request }: { request: Request }) => {
+      const rootSpanId = new URL(request.url).searchParams.get('rootSpanId')
+      return rootSpanId
+    })
+    const router = createMemoryRouter(
+      [
+        {
+          children: [
+            {
+              element: <DetailRoute />,
+              loader: childLoader,
+              path: ':traceId',
+            },
+          ],
+          element: <ParentRoute />,
+          loader: parentLoader,
+          path: TRACES_PATH,
+          shouldRevalidate,
+        },
+      ],
+      { initialEntries: [`${TRACES_PATH}/trace-a?rootSpanId=root-a`] },
+    )
+    const screen = await render(<RouterProvider router={router} />)
+
+    await expect.element(screen.getByText('detail root-a')).toBeVisible()
+    expect(parentLoader).toHaveBeenCalledOnce()
+    expect(childLoader).toHaveBeenCalledOnce()
+
+    await router.navigate(`${TRACES_PATH}/trace-a?rootSpanId=root-b`)
+    await expect.element(screen.getByText('detail root-b')).toBeVisible()
+    expect(parentLoader).toHaveBeenCalledOnce()
+    expect(childLoader).toHaveBeenCalledTimes(2)
+
+    await router.revalidate()
+    expect(parentLoader).toHaveBeenCalledTimes(2)
+    expect(childLoader).toHaveBeenCalledTimes(3)
   })
 })

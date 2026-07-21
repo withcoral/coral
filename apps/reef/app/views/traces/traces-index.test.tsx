@@ -25,7 +25,7 @@ interface Data {
 const WORKSPACE_ID = 'analytics'
 const TRACES_PATH = routePath('workspaceTraces', { workspaceId: WORKSPACE_ID })
 
-function summary(traceId: string): TraceSummaryData {
+function summary(traceId: string, rootSpanId = `root-${traceId}`): TraceSummaryData {
   return {
     durationNanos: '1000000',
     endTimeUnixNanos: '2000000',
@@ -33,7 +33,7 @@ function summary(traceId: string): TraceSummaryData {
     operationKind: TraceOperationKind.UNSPECIFIED,
     operationName: '',
     query: `select '${traceId}'`,
-    rootSpanId: `root-${traceId}`,
+    rootSpanId,
     rowCount: '1',
     rowCountRecorded: true,
     spanCount: 1,
@@ -182,7 +182,7 @@ describe('TracesIndex route behavior', () => {
     expect(scrollIntoView).toHaveBeenCalled()
     await userEvent.keyboard('{Enter}')
     expect(router.state.location.pathname).toBe(`${TRACES_PATH}/alpha`)
-    expect(router.state.location.search).toBe('?pro')
+    expect(router.state.location.search).toBe('?pro&rootSpanId=root-alpha')
     HTMLElement.prototype.scrollIntoView = original
   })
 
@@ -205,5 +205,27 @@ describe('TracesIndex route behavior', () => {
     }))
     await expect.element((await unavailable.screen).getByText('Tracing unavailable')).toBeVisible()
     await expect.element((await unavailable.screen).getByText('Disconnected')).toBeVisible()
+  })
+
+  it('navigates duplicate trace IDs by root span', async () => {
+    const { router, screen } = renderIndex(() => ({
+      endpointLabel: 'reef.test',
+      referenceTimeMs: 120_000,
+      loadError: null,
+      traces: [
+        { ...summary('shared', 'root-a'), query: 'select 1' },
+        { ...summary('shared', 'root-b'), query: 'select 2' },
+      ],
+    }))
+    const rendered = await screen
+
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}')
+    await expect
+      .element(rendered.getByRole('link', { name: /select 2/i }))
+      .toHaveAttribute('data-active', 'true')
+    await userEvent.keyboard('{Enter}')
+
+    expect(router.state.location.pathname).toBe(`${TRACES_PATH}/shared`)
+    expect(new URLSearchParams(router.state.location.search).get('rootSpanId')).toBe('root-b')
   })
 })

@@ -29,7 +29,9 @@ function detail(traceId: string): TraceDetailData {
 }
 
 describe('trace detail loader', () => {
-  const request = new Request('http://reef.test/workspaces/analytics/traces/trace-07')
+  const request = new Request(
+    'http://reef.test/workspaces/analytics/traces/trace-07?pro&rootSpanId=root%2Fspan',
+  )
   const workspace = create(WorkspaceSchema, { name: 'analytics' })
 
   it('loads the URL-selected trace without decoding it again', async () => {
@@ -38,7 +40,7 @@ describe('trace detail loader', () => {
     await expect(
       loadTraceDetailRouteData(request, 'trace/with?reserved', workspace, getTrace),
     ).resolves.toEqual({ detail: detail('trace/with?reserved'), loadError: null })
-    expect(getTrace).toHaveBeenCalledWith(request, 'trace/with?reserved', workspace)
+    expect(getTrace).toHaveBeenCalledWith(request, 'trace/with?reserved', 'root/span', workspace)
   })
 
   it('returns an inline error for a missing trace ID', async () => {
