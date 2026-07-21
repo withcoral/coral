@@ -25,7 +25,7 @@ env:
 jobs:
   changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     permissions:
       contents: read
@@ -161,7 +161,7 @@ jobs:
 
   rust-checks:
     name: Rust checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
@@ -202,7 +202,7 @@ jobs:
 
   postgres-database-tests:
     name: Postgres database tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.postgres_database_tests == 'true' }}
     services:
@@ -245,7 +245,7 @@ jobs:
 
   windows-rust-smoke:
     name: Windows Rust smoke
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' || needs.changes.outputs.release_workflow == 'true' }}
     steps:
@@ -353,7 +353,7 @@ jobs:
 
   ui-build:
     name: UI build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.ui-build == 'true' || needs.changes.outputs.rust_checks == 'true' }}
     steps:
@@ -397,7 +397,7 @@ jobs:
 
   ui-tests:
     name: UI tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.ui-tests == 'true' }}
     steps:
@@ -444,7 +444,7 @@ jobs:
 
   reef-checks:
     name: Reef checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.reef-checks == 'true' }}
     steps:
@@ -487,7 +487,7 @@ jobs:
 
   desktop-checks:
     name: Desktop checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.desktop-checks == 'true' }}
     steps:
@@ -523,7 +523,7 @@ jobs:
 
   proto-lint:
     name: Lint protobuf API
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.proto-lint == 'true' }}
     steps:
@@ -541,7 +541,7 @@ jobs:
 
   gha-security-audit-pr:
     name: Github Actions security audit with zizmor (PR)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name == 'pull_request' }}
     permissions:
@@ -562,7 +562,7 @@ jobs:
 
   gha-security-audit-sarif:
     name: Github Actions security audit with zizmor (SARIF)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name != 'pull_request' }}
     permissions:
@@ -584,7 +584,7 @@ jobs:
 
   source-lint:
     name: Lint source manifests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.source-lint == 'true' }}
     steps:
@@ -610,7 +610,7 @@ jobs:
 
   docs-freshness:
     name: Docs freshness check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.docs-freshness == 'true' }}
     steps:
@@ -647,7 +647,7 @@ jobs:
 
   schema-freshness:
     name: Schema freshness check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.schema-freshness == 'true' }}
     steps:
@@ -670,7 +670,7 @@ jobs:
 
   license-check:
     name: Dependency license scan
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.license-check == 'true' }}
     steps:
@@ -698,7 +698,7 @@ jobs:
 
   performance-regression:
     name: Performance regression
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.performance-regression == 'true' }}
     steps:
@@ -735,7 +735,7 @@ jobs:
             --max-mean-seconds 0.75
 
   validate:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       [
         changes,

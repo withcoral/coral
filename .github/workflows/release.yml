@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   validate-release-ref:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       TAG_NAME: ${{ github.event.release.tag_name || github.ref_name }}
     outputs:
@@ -63,7 +63,7 @@ jobs:
 
   build-ui:
     needs: validate-release-ref
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     outputs:
@@ -247,7 +247,7 @@ jobs:
       - validate-release-ref
       - build
     environment: release
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -324,7 +324,7 @@ jobs:
     needs:
       - validate-release-ref
     environment: release
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-15
     env:
       TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     steps:
@@ -392,7 +392,7 @@ jobs:
       - build
       - build-desktop-macos
       - sign-notarize-macos
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -426,7 +426,7 @@ jobs:
       - validate-release-ref
       - checksums
     environment: release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     env:
