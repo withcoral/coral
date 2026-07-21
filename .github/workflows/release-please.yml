@@ -50,11 +50,6 @@ jobs:
         if: steps.rp.outputs.pr
         run: rustup show
 
-      - name: Record release PR head
-        id: release_pr_head
-        if: steps.rp.outputs.pr
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Sync Cargo.lock to new workspace version
         if: steps.rp.outputs.pr
         run: |
@@ -87,21 +82,7 @@ jobs:
           git add apps/docs/project/changelog.mdx apps/docs/docs.json
           git commit -m "chore: regenerate changelog docs"
 
-      - name: Check for regenerated commits
-        id: regenerated_commits
-        if: steps.rp.outputs.pr
-        env:
-          RELEASE_PR_HEAD: ${{ steps.release_pr_head.outputs.sha }}
-        run: |
-          set -euo pipefail
-          if [ "$(git rev-parse HEAD)" != "$RELEASE_PR_HEAD" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Push regenerated changes
-        if: steps.regenerated_commits.outputs.changed == 'true'
         env:
           PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
           GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
