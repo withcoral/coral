@@ -46,11 +46,39 @@ static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
 const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
+const OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES: &[&str] =
+    &[coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
 pub(crate) const QUERY_TRACE_SOURCES_ATTR: &str = "coral.query.sources";
 pub(crate) const QUERY_TRACE_TABLES_ATTR: &str = "coral.query.tables";
 pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_functions";
 pub(crate) const WORKSPACE_SPAN_ATTRIBUTE: &str = "workspace";
+
+/// Records a span attribute only when Coral owns an installed local trace store.
+///
+/// The field must also use the local-only prefix so Coral's OTLP exporter strips
+/// it when local trace history and OTLP export are enabled together.
+pub(crate) fn record_local_only_span_attribute(
+    span: &tracing::Span,
+    field: &'static str,
+    value: &str,
+) {
+    let is_local_only = field.starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX);
+    debug_assert!(
+        is_local_only,
+        "local-only attribute must use the reserved prefix"
+    );
+    if !is_local_only {
+        return;
+    }
+    let local_trace_store_is_installed = INIT
+        .get()
+        .and_then(|state| state.as_ref().ok())
+        .is_some_and(|state| state.local_trace_store.is_some());
+    if local_trace_store_is_installed {
+        span.record(field, value);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstalledLocalTraceStore {
@@ -75,6 +103,7 @@ struct TargetFilteringSpanExporter<E> {
     targets: Targets,
     denied_targets: &'static [&'static str],
     excluded_rpc_services: &'static [&'static str],
+    stripped_attribute_prefixes: &'static [&'static str],
 }
 
 impl<E> TargetFilteringSpanExporter<E> {
@@ -84,6 +113,7 @@ impl<E> TargetFilteringSpanExporter<E> {
             targets,
             denied_targets: &[],
             excluded_rpc_services: &[],
+            stripped_attribute_prefixes: &[],
         }
     }
 
@@ -94,6 +124,11 @@ impl<E> TargetFilteringSpanExporter<E> {
 
     fn excluding_rpc_services(mut self, services: &'static [&'static str]) -> Self {
         self.excluded_rpc_services = services;
+        self
+    }
+
+    fn stripping_attribute_prefixes(mut self, prefixes: &'static [&'static str]) -> Self {
+        self.stripped_attribute_prefixes = prefixes;
         self
     }
 }
@@ -108,6 +143,14 @@ where
                 && !span_matches_denied_target(span, self.denied_targets)
                 && !span_matches_excluded_rpc_service(span, self.excluded_rpc_services)
         });
+        for span in &mut batch {
+            span.attributes.retain(|attribute| {
+                !self
+                    .stripped_attribute_prefixes
+                    .iter()
+                    .any(|prefix| attribute.key.as_str().starts_with(prefix))
+            });
+        }
         if batch.is_empty() {
             return Ok(());
         }
@@ -302,7 +345,8 @@ fn build_otlp_trace_exporter(
         .build()
         .map_err(|e| AppError::InvalidInput(e.to_string()))?;
     Ok(TargetFilteringSpanExporter::new(exporter, targets)
-        .denying_targets(OTLP_TRACE_DENIED_TARGETS))
+        .denying_targets(OTLP_TRACE_DENIED_TARGETS)
+        .stripping_attribute_prefixes(OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES))
 }
 
 fn add_otlp_trace_exporter(
@@ -626,9 +670,9 @@ mod tests {
 
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
-        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, OTLP_TRACE_DENIED_TARGETS, TargetFilteringSpanExporter,
-        build_log_filter, build_trace_targets, normalize_otlp_endpoint, parse_headers,
-        trace_layer_filter,
+        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES,
+        OTLP_TRACE_DENIED_TARGETS, TargetFilteringSpanExporter, build_log_filter,
+        build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
     };
 
     #[test]
@@ -799,6 +843,50 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(span_names, vec!["kept"]);
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn target_filtering_exporter_strips_local_only_span_attributes() {
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) = build_trace_targets("coral_app=trace", DEFAULT_TRACE_FILTER);
+        assert!(error.is_none());
+        let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets)
+            .stripping_attribute_prefixes(OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES);
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("local-only-attribute-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::trace_span!(
+                target: "coral_app",
+                "search",
+                public = "kept",
+                coral.local.search.query = "LOCAL_ONLY_SENTINEL",
+            );
+            let _span = span.enter();
+        });
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let span = spans.first().expect("exported span");
+        assert!(
+            span.attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "public")
+        );
+        assert!(span.attributes.iter().all(|attribute| {
+            !attribute
+                .key
+                .as_str()
+                .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
+        }));
+        assert!(!format!("{span:?}").contains("LOCAL_ONLY_SENTINEL"));
         provider.shutdown().expect("provider shutdown");
     }
 

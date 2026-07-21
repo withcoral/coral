@@ -18,16 +18,27 @@
 )]
 
 use coral_api::v1::trace_service_client::TraceServiceClient;
-use coral_api::v1::{ListSourcesRequest, ListTracesRequest};
+use coral_api::v1::{ListSourcesRequest, ListTracesRequest, SearchRequest};
 use coral_client::{AppClient, default_workspace, local::ServerBuilder};
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use tempfile::TempDir;
 use tonic::transport::Endpoint;
 use tonic::{Code, Request};
+use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+
+const SEARCH_SENTINEL: &str = "HOST_SUBSCRIBER_LOCAL_SEARCH_SENTINEL";
 
 #[tokio::test]
 async fn host_subscriber_does_not_block_server_startup() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("host-subscriber-privacy-test");
     tracing_subscriber::registry()
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .try_init()
         .expect("install host subscriber once per test process");
 
@@ -54,6 +65,31 @@ async fn host_subscriber_does_not_block_server_startup() {
         .sources;
     assert!(sources.is_empty());
 
+    app.search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: SEARCH_SENTINEL.to_string(),
+            limit: 0,
+        }))
+        .await
+        .expect("search empty catalog");
+
+    provider.force_flush().expect("flush host spans");
+    let spans = exporter.get_finished_spans().expect("finished host spans");
+    assert!(
+        spans.iter().any(|span| span.name == "coral.search"),
+        "the host subscriber should still receive the public Search span"
+    );
+    assert!(spans.iter().all(|span| {
+        span.attributes.iter().all(|attribute| {
+            !attribute
+                .key
+                .as_str()
+                .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
+        })
+    }));
+    assert!(!format!("{spans:?}").contains(SEARCH_SENTINEL));
+
     let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
         .expect("endpoint")
         .connect()
@@ -70,4 +106,5 @@ async fn host_subscriber_does_not_block_server_startup() {
     assert_eq!(trace_status.code(), Code::Unimplemented);
 
     server.shutdown().await.expect("shutdown server");
+    provider.shutdown().expect("shutdown host provider");
 }

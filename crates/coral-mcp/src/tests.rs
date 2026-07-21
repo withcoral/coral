@@ -13,8 +13,8 @@ use coral_client::{
     local::{RunningServer, ServerBuilder},
 };
 use jsonschema::Validator;
-use opentelemetry::trace::{SpanKind, TracerProvider as _};
-use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+use opentelemetry::trace::{SpanId, SpanKind, TracerProvider as _};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
 use rmcp::{
     RoleClient, ServerHandler, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
@@ -27,9 +27,39 @@ use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt as _;
 
-use crate::{CoralMcpServerFactory, McpOptions};
+use crate::{
+    CoralMcpServerFactory, McpOptions,
+    telemetry::{MCP_PROTOCOL_ERROR_MESSAGE, UNKNOWN_TOOL_NAME},
+};
 
 type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
+
+fn span_string_attribute(span: &SpanData, name: &str) -> Option<String> {
+    span.attributes
+        .iter()
+        .find(|attribute| attribute.key.as_str() == name)
+        .map(|attribute| attribute.value.as_str().into_owned())
+}
+
+fn span_descends_from(spans: &[SpanData], span: &SpanData, ancestor_span_id: SpanId) -> bool {
+    let mut parent_span_id = span.parent_span_id;
+    for _ in 0..=spans.len() {
+        if parent_span_id == ancestor_span_id {
+            return true;
+        }
+        if parent_span_id == SpanId::INVALID {
+            return false;
+        }
+        let Some(parent) = spans
+            .iter()
+            .find(|candidate| candidate.span_context.span_id() == parent_span_id)
+        else {
+            return false;
+        };
+        parent_span_id = parent.parent_span_id;
+    }
+    false
+}
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -858,6 +888,171 @@ async fn task_intent_is_not_exported_to_telemetry() {
         leaked.is_empty(),
         "exported spans contained the raw intent: {leaked:#?}"
     );
+
+    provider.shutdown().expect("provider shutdown");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unknown_tool_name_is_caller_visible_but_not_exported_to_telemetry() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("mcp-unknown-tool-name-privacy-test");
+    // Match the production first-party telemetry surface without enabling
+    // third-party protocol debug targets that may record raw request data.
+    let trace_targets = "coral_=trace,coral_engine::datafusion=off"
+        .parse::<Targets>()
+        .expect("first-party Coral trace filter");
+    let subscriber = tracing_subscriber::Registry::default().with(
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(trace_targets),
+    );
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let sentinels = [
+        "SENSITIVE prose-shaped unknown tool",
+        "SENSITIVE_UNKNOWN_TOOL_7A9D3",
+    ];
+
+    for sentinel in sentinels {
+        let returned = session
+            .client
+            .call_tool(CallToolRequestParams::new(sentinel))
+            .await
+            .expect_err("unknown tool should remain a caller-visible protocol error");
+        assert!(returned.to_string().contains(sentinel));
+    }
+
+    session.shutdown().await;
+    provider.force_flush().expect("flush spans");
+    let spans = exporter.get_finished_spans().expect("finished spans");
+    let tool_calls = spans
+        .iter()
+        .filter(|span| span.name == "coral.mcp.call_tool")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_calls.len(),
+        sentinels.len(),
+        "one span per unknown tool call"
+    );
+    for tool_call in tool_calls {
+        assert!(tool_call.attributes.iter().any(|attribute| {
+            attribute.key.as_str() == coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE
+                && attribute.value == opentelemetry::Value::Bool(true)
+        }));
+        assert_eq!(
+            span_string_attribute(tool_call, coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE),
+            Some(coral_telemetry::QUERY_STREAM_KIND_TOOL.to_string())
+        );
+        assert_eq!(
+            span_string_attribute(tool_call, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
+            Some(UNKNOWN_TOOL_NAME.to_string())
+        );
+        assert_eq!(
+            span_string_attribute(tool_call, "mcp.tool.name"),
+            Some(UNKNOWN_TOOL_NAME.to_string())
+        );
+        assert_eq!(
+            span_string_attribute(tool_call, "error.type"),
+            Some("INVALID_PARAMS".to_string())
+        );
+        assert_eq!(
+            span_string_attribute(tool_call, "exception.message"),
+            Some(MCP_PROTOCOL_ERROR_MESSAGE.to_string())
+        );
+        for sentinel in sentinels {
+            assert!(!format!("{tool_call:?}").contains(sentinel));
+        }
+    }
+    for sentinel in sentinels {
+        let leaked = spans
+            .iter()
+            .filter(|span| format!("{span:?}").contains(sentinel))
+            .collect::<Vec<_>>();
+        assert!(
+            leaked.is_empty(),
+            "exported spans contained the raw unknown tool name: {leaked:#?}"
+        );
+    }
+
+    provider.shutdown().expect("provider shutdown");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_sql_batch_preserves_tool_trace_context_across_spawned_queries() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("mcp-sql-batch-trace-context-test");
+    let trace_targets = concat!(
+        "coral_mcp=trace,",
+        "coral_client::grpc=trace,",
+        "coral_app::transport=trace,",
+        "coral_app::query::manager=trace"
+    )
+    .parse::<Targets>()
+    .expect("MCP, gRPC, and Query trace filter");
+    let subscriber = tracing_subscriber::Registry::default().with(
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(trace_targets),
+    );
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let task_id = start_test_task(&session.client).await;
+
+    let result = session
+        .client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": ["SELECT 1 AS value", "SELECT 2 AS value"]
+                }),
+            )),
+        )
+        .await
+        .expect("SQL tool call");
+    assert_eq!(result.is_error, Some(false));
+    assert_structured_content_only(&result);
+
+    session.shutdown().await;
+    provider.force_flush().expect("flush spans");
+    let spans = exporter.get_finished_spans().expect("finished spans");
+    let tool_call = spans
+        .iter()
+        .find(|span| {
+            span.name == "coral.mcp.call_tool"
+                && span_string_attribute(span, "mcp.tool.name").as_deref() == Some("sql")
+        })
+        .expect("SQL tool call span");
+    let query_spans = spans
+        .iter()
+        .filter(|span| {
+            span.name == "coral.query"
+                && span_string_attribute(span, "operation").as_deref() == Some("execute_sql")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(query_spans.len(), 2, "one Query span per SQL batch item");
+
+    let tool_trace_id = tool_call.span_context.trace_id();
+    let tool_span_id = tool_call.span_context.span_id();
+    for query_span in query_spans {
+        assert_eq!(
+            query_span.span_context.trace_id(),
+            tool_trace_id,
+            "spawned SQL query should remain in the MCP tool trace"
+        );
+        assert!(
+            span_descends_from(&spans, query_span, tool_span_id),
+            "spawned SQL query should descend from the MCP tool span"
+        );
+    }
 
     provider.shutdown().expect("provider shutdown");
 }

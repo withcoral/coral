@@ -24,6 +24,8 @@ use coral_api::v1::ExecuteSqlRequest;
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, decode_execute_sql_response, default_workspace};
 
+const LOCAL_ONLY_SENTINEL: &str = "LOCAL_ONLY_FUTURE_TOOL_SENTINEL";
+
 #[tokio::test]
 async fn otlp_export_loopback_covers_traces_logs_and_metrics() {
     let collector = MockServer::start().await;
@@ -118,6 +120,7 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
         target: "coral_app",
         "loopback_query",
         sql = "SELECT 'secret-loopback-sql'",
+        coral.local.future_tool.input = LOCAL_ONLY_SENTINEL,
         status = "ok"
     );
     let _query = query.enter();
@@ -224,6 +227,17 @@ fn assert_exported_trace_contract(trace_exports: &[ExportTraceServiceRequest], s
         trace_exports,
         "mcp-body-secret"
     ));
+    assert!(!trace_exports_contain_string(
+        trace_exports,
+        LOCAL_ONLY_SENTINEL
+    ));
+    assert!(spans.iter().all(|span| {
+        span.attributes.iter().all(|attribute| {
+            !attribute
+                .key
+                .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
+        })
+    }));
     for expected in ["loopback.log", "loopback-log-value"] {
         assert!(
             trace_exports_contain_string(trace_exports, expected),
@@ -330,6 +344,7 @@ fn assert_local_trace_history_contract(local_trace_history: &str) {
         "trace-body-secret",
         "loopback_mcp_body",
         "mcp-body-secret",
+        LOCAL_ONLY_SENTINEL,
     ] {
         assert!(
             local_trace_history.contains(expected),

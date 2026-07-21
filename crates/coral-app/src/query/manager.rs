@@ -1162,6 +1162,9 @@ fn create_query_span(
     let operation = operation.as_str();
     let span = tracing::info_span!(
         "coral.query",
+        coral.stream.entry = true,
+        coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_QUERY,
+        coral.stream.name = operation,
         otel.name = "coral.query",
         operation = operation,
         workspace = tracing::field::Empty,
@@ -1254,7 +1257,7 @@ fn query_error_message(error: &QueryManagerError) -> String {
     }
 }
 
-fn app_error_type(error: &AppError) -> &'static str {
+pub(crate) fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
@@ -1581,6 +1584,18 @@ mod tests {
             .find(|attribute| attribute.key.as_str() == "task.id")
             .expect("task.id attribute present");
         assert_eq!(task_attr.value.as_str(), task_id);
+        assert!(query_span.attributes.iter().any(|attribute| {
+            attribute.key.as_str() == coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE
+                && attribute.value == opentelemetry::Value::Bool(true)
+        }));
+        assert_eq!(
+            span_attr(query_span, coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE),
+            Some(coral_telemetry::QUERY_STREAM_KIND_QUERY.to_string())
+        );
+        assert_eq!(
+            span_attr(query_span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
+            Some("execute_sql".to_string())
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
