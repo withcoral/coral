@@ -734,7 +734,13 @@ async fn run_ui(
     }
     println!("Press Ctrl-C to stop the UI.");
 
-    run_until_server_stops(server, tokio::signal::ctrl_c()).await
+    let wait =
+        wait_for_shutdown_signal_or_server_exit(server.wait_for_exit(), tokio::signal::ctrl_c())
+            .await;
+    let shutdown = server.shutdown().await;
+    wait?;
+    shutdown?;
+    Ok(())
 }
 
 async fn run_server(
@@ -757,23 +763,25 @@ async fn run_server(
     println!("Connect clients with CORAL_ENDPOINT={endpoint}");
     println!("Press Ctrl-C to stop the server.");
 
-    run_until_server_stops(server, wait_for_server_shutdown_signal()).await
-}
-
-async fn run_until_server_stops(
-    server: coral_app::RunningServer,
-    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
-) -> Result<(), anyhow::Error> {
-    let signal = tokio::select! {
-        result = shutdown_signal => Some(result),
-        () = server.wait_for_exit() => None,
-    };
+    let wait = wait_for_shutdown_signal_or_server_exit(
+        server.wait_for_exit(),
+        wait_for_server_shutdown_signal(),
+    )
+    .await;
     let shutdown = server.shutdown().await;
-    if let Some(signal) = signal {
-        signal?;
-    }
+    wait?;
     shutdown?;
     Ok(())
+}
+
+async fn wait_for_shutdown_signal_or_server_exit(
+    server_exit: impl Future<Output = ()>,
+    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
+) -> Result<(), std::io::Error> {
+    tokio::select! {
+        result = shutdown_signal => result,
+        () = server_exit => Ok(()),
+    }
 }
 
 fn server_endpoint_is_loopback(endpoint: &str) -> bool {

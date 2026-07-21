@@ -71,6 +71,15 @@ impl RunningServer {
         self.mcp_http.as_ref().map(RunningMcpHttpServer::local_addr)
     }
 
+    /// Waits until the required gRPC server task exits.
+    ///
+    /// This method is cancellation-safe and does not consume the task result.
+    /// Call [`RunningServer::shutdown`] afterward to stop optional companions,
+    /// join the gRPC task, and surface any failure.
+    pub async fn wait_for_exit(&self) {
+        self.grpc.wait_for_exit().await;
+    }
+
     /// Stops MCP HTTP first, then always attempts to stop gRPC.
     ///
     /// # Errors
