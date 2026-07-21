@@ -11,6 +11,8 @@ const { catalogClientForRequest, fetchSchemaFromCoral, fetchTableColumnsFromCora
 vi.mock('@/lib/coral-request.server', () => ({ catalogClientForRequest }))
 vi.mock('@/lib/schema-explorer', () => ({ fetchSchemaFromCoral, fetchTableColumnsFromCoral }))
 
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
+
 import { loader as schemaLoader } from './schema'
 import { loader as schemaTableLoader } from './schema-table'
 
@@ -28,15 +30,14 @@ describe('schema loaders', () => {
     fetchSchemaFromCoral.mockResolvedValue(schema)
 
     await expect(
-      schemaLoader({ params: { workspaceId: 'analytics' }, request } as Parameters<
-        typeof schemaLoader
-      >[0]),
+      schemaLoader(authRouteTestArgs(request, { workspaceId: 'analytics' })),
     ).resolves.toEqual({ schema })
     expect(fetchSchemaFromCoral).toHaveBeenCalledWith(
       catalogClient,
       expect.objectContaining({ name: 'analytics' }),
       request.signal,
     )
+    expect(catalogClientForRequest).toHaveBeenCalledWith(request, 'test-coral-token')
   })
 
   it('lists table columns for the workspace route parameter', async () => {
@@ -44,14 +45,13 @@ describe('schema loaders', () => {
     fetchTableColumnsFromCoral.mockResolvedValue([])
 
     await expect(
-      schemaTableLoader({
-        params: {
+      schemaTableLoader(
+        authRouteTestArgs(request, {
           schemaName: 'github',
           tableName: 'issues',
           workspaceId: 'analytics',
-        },
-        request,
-      } as Parameters<typeof schemaTableLoader>[0]),
+        }),
+      ),
     ).resolves.toEqual({ columns: [] })
     expect(fetchTableColumnsFromCoral).toHaveBeenCalledWith(
       catalogClient,
@@ -60,5 +60,6 @@ describe('schema loaders', () => {
       'issues',
       request.signal,
     )
+    expect(catalogClientForRequest).toHaveBeenCalledWith(request, 'test-coral-token')
   })
 })

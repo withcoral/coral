@@ -22,18 +22,22 @@ describe('local workspaces', () => {
       workspaces: [{ name: 'default' }, { name: 'analytics' }],
     })
 
-    await expect(listWorkspacesForRequest(request)).resolves.toEqual([
+    await expect(listWorkspacesForRequest(request, 'coral-access-token')).resolves.toEqual([
       { name: 'default' },
       { name: 'analytics' },
     ])
-    await expect(firstWorkspaceForRequest(request)).resolves.toEqual({ name: 'default' })
-    expect(workspaceClientForRequest).toHaveBeenCalledWith(request)
+    await expect(firstWorkspaceForRequest(request, 'coral-access-token')).resolves.toEqual({
+      name: 'default',
+    })
+    expect(workspaceClientForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
   })
 
   it('returns a clear route error when no local workspace exists', async () => {
     listWorkspaces.mockResolvedValue({ workspaces: [] })
 
-    await expect(firstWorkspaceForRequest(new Request('http://localhost/'))).rejects.toMatchObject({
+    await expect(
+      firstWorkspaceForRequest(new Request('http://localhost/'), null),
+    ).rejects.toMatchObject({
       status: 404,
       statusText: 'Workspace Not Found',
     })

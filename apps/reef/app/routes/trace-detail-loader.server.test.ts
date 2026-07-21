@@ -34,15 +34,26 @@ describe('trace detail loader', () => {
     const getTrace = vi.fn().mockResolvedValue(detail('trace/with?reserved'))
 
     await expect(
-      loadTraceDetailRouteData(request, 'trace/with?reserved', workspace, getTrace),
+      loadTraceDetailRouteData(
+        request,
+        'trace/with?reserved',
+        workspace,
+        'coral-access-token',
+        getTrace,
+      ),
     ).resolves.toEqual({ detail: detail('trace/with?reserved'), loadError: null })
-    expect(getTrace).toHaveBeenCalledWith(request, 'trace/with?reserved', workspace)
+    expect(getTrace).toHaveBeenCalledWith(
+      request,
+      'trace/with?reserved',
+      workspace,
+      'coral-access-token',
+    )
   })
 
   it('returns an inline error for a missing trace ID', async () => {
     const getTrace = vi.fn()
     await expect(
-      loadTraceDetailRouteData(request, undefined, workspace, getTrace),
+      loadTraceDetailRouteData(request, undefined, workspace, 'coral-access-token', getTrace),
     ).resolves.toEqual({
       detail: null,
       loadError: 'Missing trace ID',
@@ -56,6 +67,7 @@ describe('trace detail loader', () => {
         request,
         'trace-07',
         workspace,
+        'coral-access-token',
         vi.fn().mockRejectedValue(new Error('HTTP 404 from TraceService')),
       ),
     ).resolves.toMatchObject({
@@ -69,6 +81,7 @@ describe('trace detail loader', () => {
         request,
         'trace-07',
         workspace,
+        'coral-access-token',
         vi.fn().mockRejectedValue(new Error('trace lookup failed')),
       ),
     ).resolves.toEqual({ detail: null, loadError: 'trace lookup failed' })
@@ -81,13 +94,13 @@ describe('trace detail loader', () => {
       .mockRejectedValueOnce(new Error('trace-b failed'))
 
     await expect(
-      loadTraceDetailRouteData(request, 'trace-a', workspace, getTrace),
+      loadTraceDetailRouteData(request, 'trace-a', workspace, 'coral-access-token', getTrace),
     ).resolves.toEqual({
       detail: detail('trace-a'),
       loadError: null,
     })
     await expect(
-      loadTraceDetailRouteData(request, 'trace-b', workspace, getTrace),
+      loadTraceDetailRouteData(request, 'trace-b', workspace, 'coral-access-token', getTrace),
     ).resolves.toEqual({
       detail: null,
       loadError: 'trace-b failed',

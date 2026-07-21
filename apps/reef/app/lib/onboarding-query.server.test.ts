@@ -1,10 +1,16 @@
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { executeSql } = vi.hoisted(() => ({ executeSql: vi.fn() }))
+const { executeSql, queryClientForRequest } = vi.hoisted(() => {
+  const executeSqlMock = vi.fn()
+  return {
+    executeSql: executeSqlMock,
+    queryClientForRequest: vi.fn(() => ({ executeSql: executeSqlMock })),
+  }
+})
 
 vi.mock('@/lib/coral-request.server', () => ({
-  queryClientForRequest: () => ({ executeSql }),
+  queryClientForRequest,
 }))
 
 import { ONBOARDING_SAMPLE_QUERY } from './onboarding-query'
@@ -13,7 +19,10 @@ import {
   loadOnboardingSampleQuery,
 } from './onboarding-query.server'
 
-beforeEach(() => executeSql.mockReset())
+beforeEach(() => {
+  executeSql.mockReset()
+  queryClientForRequest.mockClear()
+})
 
 describe('decodeOnboardingSampleQueryRows', () => {
   it('decodes the source counts returned by the onboarding query', () => {
@@ -48,12 +57,17 @@ describe('loadOnboardingSampleQuery', () => {
     })
 
     await expect(
-      loadOnboardingSampleQuery(new Request('http://reef.test/onboarding?step=query'), 'analytics'),
+      loadOnboardingSampleQuery(
+        new Request('http://reef.test/onboarding?step=query'),
+        'coral-access-token',
+        'analytics',
+      ),
     ).resolves.toEqual({
       rows: [{ source: 'github', tables: '3' }],
       status: 'success',
     })
     expect(executeSql).toHaveBeenCalledOnce()
+    expect(queryClientForRequest).toHaveBeenCalledWith(expect.any(Request), 'coral-access-token')
     expect(executeSql.mock.calls[0]?.[0]).toMatchObject({
       sql: ONBOARDING_SAMPLE_QUERY,
       workspace: { name: 'analytics' },
@@ -66,7 +80,11 @@ describe('loadOnboardingSampleQuery', () => {
     })
 
     await expect(
-      loadOnboardingSampleQuery(new Request('http://reef.test/onboarding?step=query'), 'analytics'),
+      loadOnboardingSampleQuery(
+        new Request('http://reef.test/onboarding?step=query'),
+        'coral-access-token',
+        'analytics',
+      ),
     ).resolves.toEqual({
       message: 'The sample query returned an unexpected result shape.',
       status: 'error',

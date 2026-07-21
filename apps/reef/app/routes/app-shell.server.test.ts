@@ -6,6 +6,7 @@ const { listWorkspacesForRequest } = vi.hoisted(() => ({
 
 vi.mock('@/lib/workspaces.server', () => ({ listWorkspacesForRequest }))
 
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { routePath } from '@/routing/routemap'
 
 import { loader } from './app-shell'
@@ -24,18 +25,16 @@ describe('app shell loader', () => {
     const workspaces = [{ name: 'default' }, { name: 'analytics' }]
     listWorkspacesForRequest.mockResolvedValue(workspaces)
 
-    await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toEqual({
+    await expect(loader(authRouteTestArgs(request, {}, 'coral-access-token'))).resolves.toEqual({
       workspaces,
     })
     expect(listWorkspacesForRequest).toHaveBeenCalledOnce()
-    expect(listWorkspacesForRequest).toHaveBeenCalledWith(request)
+    expect(listWorkspacesForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
   })
 
   it('leaves workspace lookup to the index redirect loader', async () => {
     await expect(
-      loader({
-        request: new Request(`http://reef.test${routePath('home')}`),
-      } as Parameters<typeof loader>[0]),
+      loader(authRouteTestArgs(new Request(`http://reef.test${routePath('home')}`), {})),
     ).resolves.toEqual({ workspaces: [] })
     expect(listWorkspacesForRequest).not.toHaveBeenCalled()
   })
@@ -46,9 +45,7 @@ describe('app shell loader', () => {
     listWorkspacesForRequest.mockRejectedValue(error)
 
     await expect(
-      loader({
-        request: new Request('http://reef.test/workspaces/default/sources'),
-      } as Parameters<typeof loader>[0]),
+      loader(authRouteTestArgs(new Request('http://reef.test/workspaces/default/sources'), {})),
     ).resolves.toEqual({ workspaces: [] })
     expect(consoleError).toHaveBeenCalledWith('Failed to load sidebar workspaces:', error)
   })

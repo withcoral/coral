@@ -1,13 +1,20 @@
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { createWorkspace } = vi.hoisted(() => ({ createWorkspace: vi.fn() }))
+const { createWorkspace, workspaceClientForRequest } = vi.hoisted(() => {
+  const createWorkspaceMock = vi.fn()
+  return {
+    createWorkspace: createWorkspaceMock,
+    workspaceClientForRequest: vi.fn(() => ({ createWorkspace: createWorkspaceMock })),
+  }
+})
 
 vi.mock('@/lib/coral-request.server', () => ({
-  workspaceClientForRequest: () => ({ createWorkspace }),
+  workspaceClientForRequest,
 }))
 
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 
 import { action } from './workspaces-action'
 
@@ -21,12 +28,11 @@ function createRequest(name: string, intent = 'create') {
 describe('create workspace action', () => {
   beforeEach(() => {
     createWorkspace.mockReset()
+    workspaceClientForRequest.mockClear()
   })
 
   it('rejects unsupported intents before mutation', async () => {
-    const result = await action({
-      request: createRequest('analytics', 'rename'),
-    } as Parameters<typeof action>[0])
+    const result = await action(authRouteTestArgs(createRequest('analytics', 'rename'), {}))
 
     expect(result).toMatchObject({
       data: { error: 'Unsupported workspace action.', name: '' },
@@ -43,7 +49,7 @@ describe('create workspace action', () => {
     ['team-', 'Workspace name must not start or end with a hyphen'],
     ['a'.repeat(64), 'Workspace name must be 63 characters or fewer'],
   ])('rejects invalid workspace name %j before mutation', async (name, error) => {
-    const result = await action({ request: createRequest(name) } as Parameters<typeof action>[0])
+    const result = await action(authRouteTestArgs(createRequest(name), {}))
 
     expect(result).toMatchObject({
       data: { error, name },
@@ -58,9 +64,8 @@ describe('create workspace action', () => {
       workspace: create(WorkspaceSchema, { name: 'analytics' }),
     })
 
-    const result = await action({
-      request: createRequest('analytics'),
-    } as Parameters<typeof action>[0])
+    const request = createRequest('analytics')
+    const result = await action(authRouteTestArgs(request, {}))
 
     expect(createWorkspace).toHaveBeenCalledOnce()
     expect(createWorkspace).toHaveBeenCalledWith(
@@ -68,17 +73,27 @@ describe('create workspace action', () => {
         workspace: expect.objectContaining({ name: 'analytics' }),
       }),
     )
+    expect(workspaceClientForRequest).toHaveBeenCalledWith(request, 'test-coral-token')
     expect(result).toBeInstanceOf(Response)
     expect((result as Response).status).toBe(302)
     expect((result as Response).headers.get('Location')).toBe('/workspaces/analytics/sources')
   })
 
+  it('keeps local workspace creation unauthenticated', async () => {
+    createWorkspace.mockResolvedValue({
+      workspace: create(WorkspaceSchema, { name: 'analytics' }),
+    })
+
+    const request = createRequest('analytics')
+    await action(authRouteTestArgs(request, {}, null))
+
+    expect(workspaceClientForRequest).toHaveBeenCalledWith(request, null)
+  })
+
   it('returns service errors to the dialog without redirecting', async () => {
     createWorkspace.mockRejectedValue(new Error('workspace already exists'))
 
-    await expect(
-      action({ request: createRequest('analytics') } as Parameters<typeof action>[0]),
-    ).resolves.toMatchObject({
+    await expect(action(authRouteTestArgs(createRequest('analytics'), {}))).resolves.toMatchObject({
       data: { error: 'workspace already exists', name: 'analytics' },
       init: { status: 502 },
     })

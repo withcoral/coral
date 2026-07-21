@@ -3,6 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import type { Route } from './+types/source-detail'
 import { action as sourcesAction, type SourcesActionData } from './sources-action'
 
+import { requestAuthContext } from '@/auth/server-context'
 import {
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
@@ -28,6 +29,7 @@ interface SourceDetailRouteData {
 }
 
 export async function loader({
+  context,
   params,
   request,
 }: Route.LoaderArgs): Promise<SourceDetailRouteData> {
@@ -40,7 +42,7 @@ export async function loader({
     }
   }
 
-  const sourceClient = sourceClientForRequest(request)
+  const sourceClient = sourceClientForRequest(request, context.get(requestAuthContext).accessToken)
   const [sourceResult, infoResult] = await Promise.allSettled([
     getInstalledSource(sourceClient, workspace, name),
     getSourceInfo(sourceClient, workspace, name),

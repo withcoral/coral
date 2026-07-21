@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 
 import type { Route } from './+types/traces'
 
+import { requestAuthContext } from '@/auth/server-context'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { ListTracesRequestSchema } from '@/generated/coral/v1/traces_pb'
 import { traceClientForRequest } from '@/lib/coral-request.server'
@@ -25,15 +26,25 @@ export type ListTracePage = (
   workspace: Workspace,
   pageSize: number,
   pageToken: string,
+  accessToken: string | null,
 ) => Promise<{ nextPageToken: string; traces: TraceSummaryData[] }>
 
-export async function loader({ params, request }: Route.LoaderArgs): Promise<TracesRouteData> {
-  return loadTracesRouteData(request, workspaceFromParams(params))
+export async function loader({
+  context,
+  params,
+  request,
+}: Route.LoaderArgs): Promise<TracesRouteData> {
+  return loadTracesRouteData(
+    request,
+    workspaceFromParams(params),
+    context.get(requestAuthContext).accessToken,
+  )
 }
 
 export async function loadTracesRouteData(
   request: Request,
   workspace: Workspace,
+  accessToken: string | null,
   listPage: ListTracePage = listTracePageForRequest,
 ): Promise<TracesRouteData> {
   const referenceTimeMs = Date.now()
@@ -42,7 +53,7 @@ export async function loadTracesRouteData(
       endpointLabel: traceEndpointLabel(request),
       loadError: null,
       referenceTimeMs,
-      traces: await listQueryTraces(request, workspace, listPage),
+      traces: await listQueryTraces(request, workspace, accessToken, listPage),
     }
   } catch (error) {
     return {
@@ -57,6 +68,7 @@ export async function loadTracesRouteData(
 export async function listQueryTraces(
   request: Request,
   workspace: Workspace,
+  accessToken: string | null,
   listPage: ListTracePage = listTracePageForRequest,
 ): Promise<TraceSummaryData[]> {
   const queryTraces: TraceSummaryData[] = []
@@ -67,7 +79,13 @@ export async function listQueryTraces(
     page < MAX_TRACE_LIST_PAGES && queryTraces.length < MAX_QUERY_TRACES;
     page += 1
   ) {
-    const response = await listPage(request, workspace, TRACE_LIST_PAGE_SIZE, pageToken)
+    const response = await listPage(
+      request,
+      workspace,
+      TRACE_LIST_PAGE_SIZE,
+      pageToken,
+      accessToken,
+    )
     queryTraces.push(...response.traces.filter(isQueryTrace))
     pageToken = response.nextPageToken
     if (!pageToken) break
@@ -89,8 +107,9 @@ async function listTracePageForRequest(
   workspace: Workspace,
   pageSize: number,
   pageToken: string,
+  accessToken: string | null,
 ): Promise<{ nextPageToken: string; traces: TraceSummaryData[] }> {
-  return traceClientForRequest(request).listTraces(
+  return traceClientForRequest(request, accessToken).listTraces(
     create(ListTracesRequestSchema, { pageSize, pageToken, workspace }),
   )
 }

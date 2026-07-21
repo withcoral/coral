@@ -24,6 +24,7 @@ import {
   type CreateBundledSourceWithOAuthResponse,
 } from '@/generated/coral/v1/sources_pb'
 import type { OAuthInstallStreamEvent } from '@/lib/source-oauth-install-stream'
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 
 import { action, relayOAuthInstallStreamEvents } from './source-oauth-install'
 
@@ -83,10 +84,9 @@ describe('action', () => {
       },
     )
 
-    const response = await action({
-      params: { sourceName: 'github', workspaceId: 'analytics' },
-      request,
-    } as Parameters<typeof action>[0])
+    const response = await action(
+      authRouteTestArgs(request, { sourceName: 'github', workspaceId: 'analytics' }),
+    )
     await response.text()
 
     expect(getSourceInfo).toHaveBeenCalledWith(

@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { deleteSource } = vi.hoisted(() => ({ deleteSource: vi.fn() }))
+const { deleteSource, sourceClientForRequest } = vi.hoisted(() => {
+  const deleteSourceMock = vi.fn()
+  return {
+    deleteSource: deleteSourceMock,
+    sourceClientForRequest: vi.fn(() => ({ deleteSource: deleteSourceMock })),
+  }
+})
 
 vi.mock('@/lib/coral-request.server', () => ({
-  sourceClientForRequest: () => ({ deleteSource }),
+  sourceClientForRequest,
 }))
+
+import { authTestContext } from '@/auth/server-context.test-helper'
 
 import { action } from './sources-action'
 
@@ -20,7 +28,11 @@ describe('sources action workspace routing', () => {
       method: 'POST',
     })
 
-    const response = await action({ params: { workspaceId: 'analytics' }, request })
+    const response = await action({
+      context: authTestContext('coral-access-token'),
+      params: { workspaceId: 'analytics' },
+      request,
+    })
 
     expect(deleteSource).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -28,6 +40,7 @@ describe('sources action workspace routing', () => {
         workspace: expect.objectContaining({ name: 'analytics' }),
       }),
     )
+    expect(sourceClientForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
     expect(response).toBeInstanceOf(Response)
     expect((response as Response).headers.get('location')).toBe('/workspaces/analytics/sources')
   })

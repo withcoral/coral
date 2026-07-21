@@ -1,6 +1,7 @@
 import { create } from '@bufbuild/protobuf'
-import { redirect } from 'react-router'
+import { redirect, type RouterContextProvider } from 'react-router'
 
+import { requestAuthContext } from '@/auth/server-context'
 import {
   CreateBundledSourceRequestSchema,
   DeleteSourceRequestSchema,
@@ -49,16 +50,22 @@ export type SourcesActionData =
   | undefined
 
 interface SourcesActionArgs {
+  context: Readonly<RouterContextProvider>
   params: { workspaceId?: string }
   request: Request
 }
 
 export async function action({
+  context,
   params,
   request,
 }: SourcesActionArgs): Promise<SourcesActionData | Response> {
   const workspace = workspaceFromParams(params)
-  const result = await runSourcesAction(request, workspace)
+  const result = await runSourcesAction(
+    request,
+    workspace,
+    context.get(requestAuthContext).accessToken,
+  )
   return result.status === 'success'
     ? redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
     : result
@@ -69,13 +76,14 @@ type SourceActionResult = Exclude<SourcesActionData, undefined>
 export async function runSourcesAction(
   request: Request,
   workspace: Workspace,
+  accessToken: string | null,
 ): Promise<SourceActionResult> {
   const formData = await request.formData()
   const intent = formValue(formData, '_intent')
   const name = formValue(formData, 'name')
   if (!name) return actionError('install', '', 'Missing source name')
 
-  const sourceClient = sourceClientForRequest(request)
+  const sourceClient = sourceClientForRequest(request, accessToken)
   try {
     if (intent === 'install') {
       const info = await getSourceInfo(sourceClient, workspace, name)

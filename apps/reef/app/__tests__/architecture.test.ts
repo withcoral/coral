@@ -596,6 +596,10 @@ describe('Architectural Tests', () => {
       expect(extractImports(requestClient)).toContain('@connectrpc/connect-web')
       expect(requestClient).toMatch(/export function sourceClientForRequest\s*\(/)
       expect(requestClient).toMatch(/export function traceClientForRequest\s*\(/)
+      expect(requestClient).toMatch(/interceptors:\s*accessToken\s*\?\s*\[bearerAuthInterceptor/)
+      expect(requestClient).toContain(
+        "rpcRequest.header.set('Authorization', `Bearer ${accessToken}`)",
+      )
     })
 
     it('retains root sidebar hydration without warming a browser Coral runtime', () => {

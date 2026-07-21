@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 
 import type { Route } from './+types/source-oauth-install'
 
+import { requestAuthContext } from '@/auth/server-context'
 import {
   CreateBundledSourceWithOAuthRequestSchema,
   GetSourceInfoRequestSchema,
@@ -35,7 +36,7 @@ const NDJSON_HEADERS = {
 // interactive OAuth/device-code installs need browser-visible server-streaming
 // progress. The browser fetches this same-origin endpoint; it never imports or
 // calls Coral's gRPC-Web client directly.
-export async function action({ params, request }: Route.ActionArgs): Promise<Response> {
+export async function action({ context, params, request }: Route.ActionArgs): Promise<Response> {
   const formData = await request.formData()
   let name: string
   try {
@@ -46,7 +47,7 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Res
     return ndjsonErrorResponse(errorMessage(error), 400)
   }
 
-  const sourceClient = sourceClientForRequest(request)
+  const sourceClient = sourceClientForRequest(request, context.get(requestAuthContext).accessToken)
   try {
     const workspace = workspaceFromParams(params)
     const info = await getSourceInfo(sourceClient, name, workspace)

@@ -34,13 +34,15 @@ describe('traces list loader', () => {
       traces: [summary('query'), summary('http', '')],
     })
 
-    await expect(loadTracesRouteData(request, workspace, listPage)).resolves.toEqual({
+    await expect(
+      loadTracesRouteData(request, workspace, 'coral-access-token', listPage),
+    ).resolves.toEqual({
       endpointLabel: 'reef.test',
       loadError: null,
       referenceTimeMs: 123_456,
       traces: [summary('query')],
     })
-    expect(listPage).toHaveBeenCalledWith(request, workspace, 100, '')
+    expect(listPage).toHaveBeenCalledWith(request, workspace, 100, '', 'coral-access-token')
   })
 
   it('loads at most two pages, preserves ordering, and caps query traces at 80', async () => {
@@ -51,10 +53,17 @@ describe('traces list loader', () => {
       .mockResolvedValueOnce({ nextPageToken: 'page-2', traces: firstPage })
       .mockResolvedValueOnce({ nextPageToken: 'page-3', traces: secondPage })
 
-    const traces = await listQueryTraces(request, workspace, listPage)
+    const traces = await listQueryTraces(request, workspace, 'coral-access-token', listPage)
 
     expect(listPage).toHaveBeenCalledTimes(2)
-    expect(listPage).toHaveBeenNthCalledWith(2, request, workspace, 100, 'page-2')
+    expect(listPage).toHaveBeenNthCalledWith(
+      2,
+      request,
+      workspace,
+      100,
+      'page-2',
+      'coral-access-token',
+    )
     expect(traces).toHaveLength(80)
     expect(traces.map(({ traceId }) => traceId)).toEqual(
       Array.from({ length: 80 }, (_, index) => `trace-${index}`),
@@ -63,14 +72,18 @@ describe('traces list loader', () => {
 
   it('maps unavailable and generic failures into route data', async () => {
     const unavailable = vi.fn().mockRejectedValue(new Error('rpc unimplemented'))
-    await expect(loadTracesRouteData(request, workspace, unavailable)).resolves.toMatchObject({
+    await expect(
+      loadTracesRouteData(request, workspace, 'coral-access-token', unavailable),
+    ).resolves.toMatchObject({
       loadError:
         'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run a query.',
       traces: [],
     })
 
     const generic = vi.fn().mockRejectedValue(new Error('sidecar unavailable'))
-    await expect(loadTracesRouteData(request, workspace, generic)).resolves.toMatchObject({
+    await expect(
+      loadTracesRouteData(request, workspace, 'coral-access-token', generic),
+    ).resolves.toMatchObject({
       loadError: 'sidecar unavailable',
       traces: [],
     })
