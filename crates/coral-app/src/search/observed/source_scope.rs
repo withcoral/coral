@@ -70,6 +70,9 @@ pub(super) fn source_surface_scopes(
     let mut scopes = Vec::new();
     for component in source.components() {
         match component {
+            RuntimeSourceComponent::Database(_) => {
+                // Database tables do not declare HTTP/MCP observation surfaces.
+            }
             RuntimeSourceComponent::Http(manifest) => {
                 scopes.extend(manifest.tables.iter().map(|table| {
                     surface_scope(

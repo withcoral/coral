@@ -11,7 +11,7 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 use serde::Serialize;
 
-use crate::backends::{RegisteredSource, SourceQualifiedName};
+use crate::backends::{RegisteredSource, RegisteredTable, SourceQualifiedName};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
@@ -555,10 +555,7 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
                 .catalog_name()
                 .unwrap_or_default()
                 .to_string(),
-            schema_name: table
-                .schema_name
-                .clone()
-                .unwrap_or_else(|| source.qualified_name.name().to_string()),
+            schema_name: registered_table_schema_name(source, table),
             table_name: table.table_name.clone(),
             description: table.description.clone(),
             guide: table.guide.clone(),
@@ -587,6 +584,22 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
         ))
     });
     tables
+}
+
+fn registered_table_schema_name(source: &RegisteredSource, table: &RegisteredTable) -> String {
+    match (&source.qualified_name, &table.schema_name) {
+        (_, Some(schema_name)) | (SourceQualifiedName::Schema(schema_name), None) => {
+            schema_name.clone()
+        }
+        (SourceQualifiedName::Catalog(catalog_name), None) => {
+            debug_assert!(
+                false,
+                "catalog-backed table '{}.{}' must record its SQL schema",
+                catalog_name, table.table_name
+            );
+            catalog_name.clone()
+        }
+    }
 }
 
 /// Collect typed table function metadata for the active runtime.
@@ -710,10 +723,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
                     .catalog_name()
                     .unwrap_or_default()
                     .to_string(),
-                schema_name: table
-                    .schema_name
-                    .clone()
-                    .unwrap_or_else(|| source.qualified_name.name().to_string()),
+                schema_name: registered_table_schema_name(source, table),
                 table_name: table.table_name.clone(),
                 description: table.description.clone(),
                 guide: table.guide.clone(),
@@ -811,10 +821,7 @@ fn catalog_filter_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogFilter
                         .catalog_name()
                         .unwrap_or_default()
                         .to_string(),
-                    schema_name: table
-                        .schema_name
-                        .clone()
-                        .unwrap_or_else(|| source.qualified_name.name().to_string()),
+                    schema_name: registered_table_schema_name(source, table),
                     table_name: table.table_name.clone(),
                     filter_name: filter.name.clone(),
                     filter_mode: filter.mode.clone(),
@@ -863,6 +870,7 @@ fn catalog_input_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogInput> 
             source.inputs.iter().map(move |input| CatalogInput {
                 schema_name: match &source.qualified_name {
                     SourceQualifiedName::Schema(name) => name.clone(),
+                    SourceQualifiedName::Catalog(_) => String::new(),
                 },
                 catalog_name: source
                     .qualified_name
@@ -1059,10 +1067,7 @@ fn source_catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<Catalo
                     .catalog_name()
                     .unwrap_or_default()
                     .to_string();
-                let schema_name = table
-                    .schema_name
-                    .clone()
-                    .unwrap_or_else(|| source.qualified_name.name().to_string());
+                let schema_name = registered_table_schema_name(source, table);
                 table
                     .columns
                     .iter()
@@ -1149,10 +1154,90 @@ fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<
 mod tests {
     use std::sync::Arc;
 
-    use crate::backends::common::test_support::StubSourceFunctionFactory;
-    use crate::backends::{RegisteredSource, RegisteredTableFunction, SourceQualifiedName};
+    use coral_spec::ManifestInputKind;
 
-    use super::collect_table_functions;
+    use crate::backends::common::{
+        RegisteredColumn, RegisteredFilter, test_support::StubSourceFunctionFactory,
+    };
+    use crate::backends::{
+        RegisteredInput, RegisteredSource, RegisteredTable, RegisteredTableFunction,
+        SourceQualifiedName,
+    };
+
+    use super::{
+        catalog_filter_rows, catalog_input_rows, collect_table_functions, collect_tables,
+        source_catalog_column_rows,
+    };
+
+    fn catalog_source() -> RegisteredSource {
+        RegisteredSource {
+            qualified_name: SourceQualifiedName::Catalog("warehouse".to_string()),
+            tables: vec![RegisteredTable {
+                schema_name: Some("public".to_string()),
+                table_name: "orders".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                columns: vec![RegisteredColumn {
+                    name: "id".to_string(),
+                    data_type: "Int64".to_string(),
+                    nullable: false,
+                    is_virtual: false,
+                    is_required_filter: true,
+                    filter_mode: Some("exact".to_string()),
+                    description: String::new(),
+                }],
+                filters: vec![RegisteredFilter {
+                    name: "id".to_string(),
+                    mode: "exact".to_string(),
+                    required: true,
+                    data_type: "Int64".to_string(),
+                    description: String::new(),
+                }],
+                required_filters: vec!["id".to_string()],
+                search_limits: None,
+            }],
+            table_functions: Vec::new(),
+            inputs: vec![RegisteredInput {
+                key: "REGION".to_string(),
+                kind: ManifestInputKind::Variable,
+                required: false,
+                default_value: "eu".to_string(),
+                hint: None,
+                resolved_value: Some("us".to_string()),
+                is_set: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn catalog_source_metadata_keeps_catalog_and_schema_separate() {
+        let sources = [catalog_source()];
+
+        let table = collect_tables(&sources)
+            .into_iter()
+            .find(|table| table.table_name == "orders")
+            .expect("catalog table metadata");
+        assert_eq!(table.catalog_name, "warehouse");
+        assert_eq!(table.schema_name, "public");
+
+        let columns = source_catalog_column_rows(&sources);
+        assert_eq!(columns.len(), 1);
+        let column = columns.first().expect("catalog column metadata");
+        assert_eq!(column.catalog_name, "warehouse");
+        assert_eq!(column.schema_name, "public");
+
+        let filters = catalog_filter_rows(&sources);
+        assert_eq!(filters.len(), 1);
+        let filter = filters.first().expect("catalog filter metadata");
+        assert_eq!(filter.catalog_name, "warehouse");
+        assert_eq!(filter.schema_name, "public");
+
+        let inputs = catalog_input_rows(&sources);
+        assert_eq!(inputs.len(), 1);
+        let input = inputs.first().expect("catalog input metadata");
+        assert_eq!(input.catalog_name, "warehouse");
+        assert_eq!(input.schema_name, "");
+    }
 
     #[test]
     fn collect_table_functions_preserves_registered_function_schema() {

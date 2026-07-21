@@ -88,6 +88,10 @@ mod udf;
 pub mod v4;
 mod validate;
 
+pub use backends::database::{
+    DatabaseConnectionSpec, DatabaseSourceManifest, MySqlConnectionSpec, PostgresConnectionSpec,
+    SqliteConnectionSpec,
+};
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub use backends::mcp::{
     McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,

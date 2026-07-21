@@ -174,6 +174,9 @@ fn catalog_info_from_components(components: &[RuntimeSourceComponent]) -> Catalo
 
     for component in components {
         match component {
+            RuntimeSourceComponent::Database(_) => {
+                // Database catalogs are live-discovered; snapshot construction must not connect.
+            }
             RuntimeSourceComponent::Http(manifest) => {
                 let schema_name = manifest.common.name.as_str();
                 catalog.tables.extend(

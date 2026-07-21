@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
+use coral_spec::backends::database::DatabaseSourceManifest;
 use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
@@ -50,6 +51,8 @@ pub struct RuntimeSourcePackage {
 /// One backend-ready component inside an app-assembled query source package.
 #[derive(Debug, Clone)]
 pub enum RuntimeSourceComponent {
+    /// Relational database-backed runtime component.
+    Database(DatabaseSourceManifest),
     /// HTTP-backed runtime component.
     Http(HttpSourceManifest),
     /// File-backed runtime component.
@@ -167,27 +170,44 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL schema names published by this selected source.
+    /// Returns the SQL schema names published by this source's two-part
+    /// components. Database components publish catalogs instead; see
+    /// [`Self::catalog_names`]. A source with no components claims its source
+    /// name as a schema. Schema and catalog names of all selected sources
+    /// share one flat namespace.
     pub fn schema_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         for component in &self.components {
+            if matches!(component, RuntimeSourceComponent::Database(_)) {
+                continue;
+            }
             let name = component.source_name();
             if !names.contains(&name) {
                 names.push(name);
             }
         }
-        if names.is_empty() {
+        if self.components.is_empty() {
             names.push(self.source_name());
         }
         names
     }
 
     #[must_use]
-    /// Returns the SQL catalog names published by this selected source.
-    /// Catalog-backed runtime components are introduced separately from the
-    /// generic qualified-table identity model.
+    /// Returns the SQL catalog names published by this source's database
+    /// components. Tables of these components resolve as
+    /// `catalog.schema.table`, with schemas discovered at registration time.
     pub fn catalog_names(&self) -> Vec<&str> {
-        Vec::new()
+        let mut names = Vec::new();
+        for component in &self.components {
+            let RuntimeSourceComponent::Database(manifest) = component else {
+                continue;
+            };
+            let name = manifest.common.name.as_str();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
 
     #[must_use]
@@ -205,9 +225,11 @@ impl QuerySource {
 
 impl RuntimeSourceComponent {
     #[must_use]
-    /// Returns the runtime schema name declared by this component.
+    /// Returns the name this component publishes at runtime: a schema name,
+    /// or a catalog name for database components.
     pub fn source_name(&self) -> &str {
         match self {
+            Self::Database(manifest) => &manifest.common.name,
             Self::Http(manifest) => &manifest.common.name,
             Self::File(manifest) => &manifest.common.name,
             Self::Mcp(manifest) => &manifest.common.name,
