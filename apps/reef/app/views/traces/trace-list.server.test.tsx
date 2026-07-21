@@ -1,6 +1,6 @@
 import { renderToString } from 'react-dom/server'
 import { MemoryRouter } from 'react-router'
-import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import { TraceOperationKind, TraceStatus } from '@/generated/coral/v1/traces_pb'
 import { describe, expect, it, vi } from 'vitest'
 
 import { TraceList } from './trace-list'
@@ -10,6 +10,8 @@ const trace: TraceSummaryData = {
   durationNanos: '1000000',
   endTimeUnixNanos: '1700000001000000000',
   name: 'coral.query',
+  operationKind: TraceOperationKind.UNSPECIFIED,
+  operationName: '',
   query: 'select 1',
   rootSpanId: 'root',
   rowCount: '1',

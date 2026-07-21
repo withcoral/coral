@@ -1,5 +1,7 @@
 //! JSONL-backed span export for local trace capture.
 
+mod query_stream;
+
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -426,6 +428,16 @@ pub(crate) enum StoredTraceStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum StoredTraceOperationKind {
+    #[default]
+    Unspecified,
+    Query,
+    Search,
+    Tool,
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TraceSummaryRecord {
     pub(crate) trace_id: String,
@@ -439,6 +451,8 @@ pub(crate) struct TraceSummaryRecord {
     pub(crate) span_count: u32,
     pub(crate) row_count: u64,
     pub(crate) row_count_recorded: bool,
+    pub(crate) operation_kind: StoredTraceOperationKind,
+    pub(crate) operation_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +538,8 @@ struct TraceListSpanRecord {
     trace_id: String,
     span_id: String,
     parent_span_id: Option<String>,
+    #[serde(default)]
+    parent_span_is_remote: bool,
     name: String,
     #[serde(default)]
     status: StoredTraceStatus,
@@ -611,6 +627,20 @@ impl TraceStore {
         let traces = self.clone();
         task::spawn_blocking(move || {
             traces.list_traces_for_workspace_sync(limit, offset, &workspace_name)
+        })
+        .await
+        .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
+    pub(crate) async fn list_query_stream(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: Option<String>,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || {
+            traces.list_query_stream_sync(limit, offset, workspace_name.as_deref())
         })
         .await
         .map_err(|source| TraceStoreError::Worker { source })?
@@ -721,6 +751,15 @@ impl TraceStore {
         sort_summaries(&mut summaries);
 
         Ok(summaries.into_iter().take(limit).collect())
+    }
+
+    fn list_query_stream_sync(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: Option<&str>,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        query_stream::list(self, limit, offset, workspace_name)
     }
 
     fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
@@ -1604,6 +1643,8 @@ fn summary_from_list_aggregate(
             span_count: aggregate.span_count,
             row_count: 0,
             row_count_recorded: false,
+            operation_kind: StoredTraceOperationKind::Unspecified,
+            operation_name: String::new(),
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
@@ -1633,6 +1674,8 @@ fn summary_from_list_aggregate(
                 span_count: aggregate.span_count,
                 row_count: row_count.unwrap_or_default(),
                 row_count_recorded: row_count.is_some(),
+                operation_kind: StoredTraceOperationKind::Unspecified,
+                operation_name: String::new(),
             }
         },
     )
@@ -1664,6 +1707,8 @@ fn summary_from_aggregate(
             span_count: aggregate.span_count,
             row_count: 0,
             row_count_recorded: false,
+            operation_kind: StoredTraceOperationKind::Unspecified,
+            operation_name: String::new(),
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
@@ -1693,6 +1738,8 @@ fn summary_from_aggregate(
                 span_count: aggregate.span_count,
                 row_count: row_count.unwrap_or_default(),
                 row_count_recorded: row_count.is_some(),
+                operation_kind: StoredTraceOperationKind::Unspecified,
+                operation_name: String::new(),
             }
         },
     )
@@ -1763,6 +1810,15 @@ fn attr_string(attributes: &JsonValue, key: &str) -> Option<String> {
         JsonValue::String(value) => Some(value.clone()),
         JsonValue::Number(value) => Some(value.to_string()),
         JsonValue::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn attr_bool(attributes: &JsonValue, key: &str) -> Option<bool> {
+    match attributes.get(key)? {
+        JsonValue::Bool(value) => Some(*value),
+        JsonValue::String(value) => value.parse().ok(),
+        JsonValue::Number(value) => value.as_i64().map(|value| value != 0),
         _ => None,
     }
 }
@@ -2804,20 +2860,20 @@ mod tests {
             .count()
     }
 
-    fn timestamped_jsonl_path(timestamp: SystemTime) -> String {
+    pub(super) fn timestamped_jsonl_path(timestamp: SystemTime) -> String {
         format!(
             "spans-{:020}-test-0000000000000000.jsonl",
             unix_nanos(timestamp)
         )
     }
 
-    fn write_record_file(path: &Path, record: &TraceSpanRecord) {
+    pub(super) fn write_record_file(path: &Path, record: &TraceSpanRecord) {
         let mut line = serde_json::to_string(record).expect("serialize record");
         line.push('\n');
         fs::write(path, line).expect("write trace record");
     }
 
-    fn write_record_file_lines(path: &Path, records: &[TraceSpanRecord]) {
+    pub(super) fn write_record_file_lines(path: &Path, records: &[TraceSpanRecord]) {
         let mut lines = String::new();
         for record in records {
             lines.push_str(&serde_json::to_string(record).expect("serialize record"));
@@ -2826,7 +2882,7 @@ mod tests {
         fs::write(path, lines).expect("write trace records");
     }
 
-    fn set_modified_time(path: &Path, modified: SystemTime) {
+    pub(super) fn set_modified_time(path: &Path, modified: SystemTime) {
         let file = fs::OpenOptions::new()
             .write(true)
             .open(path)
@@ -2835,7 +2891,7 @@ mod tests {
             .expect("set trace file modified time");
     }
 
-    fn trace_record(trace_id: &str, span_id: &str) -> TraceSpanRecord {
+    pub(super) fn trace_record(trace_id: &str, span_id: &str) -> TraceSpanRecord {
         TraceSpanRecord {
             trace_id: trace_id.to_string(),
             span_id: span_id.to_string(),

@@ -14,31 +14,65 @@ enum TraceStatus {
   TRACE_STATUS_ERROR = 2;
 }
 
+// Server-side projection used when listing locally captured traces.
+enum TraceView {
+  // Returns one summary per distributed trace for diagnostic callers.
+  TRACE_VIEW_UNSPECIFIED = 0;
+  // Returns one summary per completed user-visible operation for Query Stream.
+  // A completed operation beneath a local parent is not projected until its
+  // owning local ancestry has also completed and been exported.
+  TRACE_VIEW_QUERY_STREAM = 1;
+}
+
+// Semantic operation represented by a Query Stream summary.
+enum TraceOperationKind {
+  // The operation kind was not recorded or could not be inferred.
+  TRACE_OPERATION_KIND_UNSPECIFIED = 0;
+  // A direct SQL query operation.
+  TRACE_OPERATION_KIND_QUERY = 1;
+  // A direct Search operation.
+  TRACE_OPERATION_KIND_SEARCH = 2;
+  // An MCP tool invocation.
+  TRACE_OPERATION_KIND_TOOL = 3;
+  // Another explicitly marked user-visible operation.
+  TRACE_OPERATION_KIND_OTHER = 4;
+}
+
 // Compact trace row for list views.
 message TraceSummary {
   // W3C trace identifier.
   string trace_id = 1;
-  // Span used as the display root for this trace.
+  // Span used as the display root. In Query Stream this identifies the
+  // selected operation within a distributed trace.
   string root_span_id = 2;
-  // Display name, usually `coral.query` for query traces.
+  // Display name of the trace primary span, or the operation span in Query
+  // Stream.
   string name = 3;
-  // SQL text when the trace includes a Coral query span.
+  // SQL text when the trace or selected operation includes a Coral query span.
   string query = 4;
-  // Derived trace status.
+  // Derived trace status, or selected operation status in Query Stream.
   TraceStatus status = 5;
-  // Earliest span start time in Unix nanoseconds.
+  // Earliest trace span start time, or operation start time in Query Stream,
+  // in Unix nanoseconds.
   int64 start_time_unix_nanos = 6 [jstype = JS_STRING];
-  // Latest span end time in Unix nanoseconds.
+  // Latest trace span end time, or operation end time in Query Stream, in Unix
+  // nanoseconds.
   int64 end_time_unix_nanos = 7 [jstype = JS_STRING];
-  // Wall-clock duration between the first span start and last span end.
+  // Trace wall-clock duration, or selected operation duration in Query Stream.
   int64 duration_nanos = 8 [jstype = JS_STRING];
-  // Number of spans captured for this trace.
+  // Number of spans captured for this trace, or spans owned by the selected
+  // operation in Query Stream.
   uint32 span_count = 9;
-  // Query row count when the trace includes a completed Coral query span.
+  // Query row count when the trace or selected operation includes a completed
+  // Coral query span.
   uint64 row_count = 10 [jstype = JS_STRING];
   // Whether `row_count` was recorded. This distinguishes an unknown count from
   // a valid zero-row query.
   bool row_count_recorded = 11;
+  // Semantic operation kind for Query Stream entries.
+  TraceOperationKind operation_kind = 12;
+  // Privacy-safe operation label, such as `sql`, `search`, or an MCP tool name.
+  string operation_name = 13;
 }
 
 // Lists locally captured traces.
@@ -50,6 +84,8 @@ message ListTracesRequest {
   // Optional workspace that scopes returned traces. Omit to list all local
   // traces visible to the local server.
   Workspace workspace = 3;
+  // Projection to return. The default preserves one-summary-per-trace behavior.
+  TraceView view = 4;
 }
 
 // Page of locally captured traces.

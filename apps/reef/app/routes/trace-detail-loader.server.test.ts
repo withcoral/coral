@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
-import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import { TraceOperationKind, TraceStatus } from '@/generated/coral/v1/traces_pb'
 import type { TraceDetailData } from '@/views/traces/trace-utils'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -14,6 +14,8 @@ function detail(traceId: string): TraceDetailData {
       durationNanos: '1000000',
       endTimeUnixNanos: '2000000',
       name: 'coral.query',
+      operationKind: TraceOperationKind.UNSPECIFIED,
+      operationName: '',
       query: 'select 1',
       rootSpanId: 'root',
       rowCount: '1',

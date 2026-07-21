@@ -1,5 +1,5 @@
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import { TraceOperationKind, TraceStatus } from '@/generated/coral/v1/traces_pb'
 import { describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 
@@ -11,6 +11,8 @@ function summary(traceId: string): TraceSummaryData {
     durationNanos: '1000000',
     endTimeUnixNanos: '2000000',
     name: 'coral.query',
+    operationKind: TraceOperationKind.UNSPECIFIED,
+    operationName: '',
     query: `select '${traceId}'`,
     rootSpanId: `root-${traceId}`,
     rowCount: '1',

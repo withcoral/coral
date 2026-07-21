@@ -1,5 +1,5 @@
 import { createMemoryRouter, Outlet, RouterProvider, useParams } from 'react-router'
-import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import { TraceOperationKind, TraceStatus } from '@/generated/coral/v1/traces_pb'
 import { describe, expect, it } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
@@ -17,6 +17,8 @@ function detail(): TraceDetailData {
       durationNanos: '12000000',
       endTimeUnixNanos: '13000000',
       name: 'coral.query',
+      operationKind: TraceOperationKind.UNSPECIFIED,
+      operationName: '',
       query: 'select * from github.pull_requests',
       rootSpanId: 'root',
       rowCount: '7',
