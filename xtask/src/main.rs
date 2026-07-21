@@ -9,7 +9,7 @@
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
-//!   - `benchmark` runs representation-efficiency benchmarks.
+//!   - `benchmark` runs developer benchmarks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
 //!     artifacts.
@@ -63,7 +63,7 @@ enum Command {
     ExportSkills(ExportSkillsArgs),
     /// Run command-level performance regression checks.
     PerfCheck(perf::Args),
-    /// Run representation-efficiency benchmarks.
+    /// Run developer benchmarks.
     Benchmark(benchmarks::Args),
     /// Regenerate checked-in generated JSON schemas.
     GenerateSchemas(schemas::Args),

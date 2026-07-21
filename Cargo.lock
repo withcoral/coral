@@ -1295,11 +1295,14 @@ name = "coral-benchmarks"
 version = "0.7.1"
 dependencies = [
  "anyhow",
+ "clap",
  "coral-api",
  "coral-client",
  "coral-mcp",
  "rmcp",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tiktoken-rs",
  "tokio",

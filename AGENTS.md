@@ -139,7 +139,7 @@
 - Keep `xtask` organized by workflow: docs generation lives under
   `xtask/src/docs/`, shared source-manifest discovery lives in
   `xtask/src/sources.rs`, command-latency checks live in `xtask/src/perf.rs`,
-  representation-efficiency benchmark dispatch lives under
+  benchmark dispatch lives under
   `xtask/src/benchmarks/`, and the isolated benchmark package and fixtures live
   under `xtask/benchmarks/`. Skill export lives in `xtask/src/skills.rs`.
   Release signing and notarization automation lives in `xtask/src/release.rs`.
@@ -148,6 +148,13 @@
   fixture with the `o200k_base` tokenizer. The benchmark must call the real MCP
   tool in-process, report without enforcing a token budget, and keep
   benchmark-only code out of production crates.
+- Universal Search relevance benchmarking also lives in the isolated
+  `coral-benchmarks` package. Keep real catalog inventories, generated
+  questions, collected queries, responses, focused corpora, and replay reports
+  under ignored run directories. Only synthetic, deliberately non-sensitive
+  benchmark fixtures may be checked in. Use frozen-query replay rather than
+  rerunning agents while tuning ranking weights, and do not run agent
+  collection in CI.
 - The Electron desktop app version is tied to the CLI release version through
   release-please. The release workflow builds the macOS desktop app from
   `apps/desktop`, uploads its DMG/ZIP/update metadata to the same GitHub
