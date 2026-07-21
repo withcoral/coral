@@ -9,7 +9,7 @@ use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 
 use crate::error::ClientError;
 
-const AUTHORIZATION_METADATA_KEY: &str = "authorization";
+pub(crate) const AUTHORIZATION_METADATA_KEY: &str = "authorization";
 
 tokio::task_local! {
     static TASK_ID: Option<MetadataValue<Ascii>>;

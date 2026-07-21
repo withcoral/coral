@@ -19,7 +19,9 @@ use url::Url;
 
 use crate::error::ClientError;
 use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
-use crate::propagation::{BearerToken, ClientMetadataInterceptor, StaticClientMetadata};
+use crate::propagation::{
+    AUTHORIZATION_METADATA_KEY, BearerToken, ClientMetadataInterceptor, StaticClientMetadata,
+};
 
 /// Default workspace used by local Coral clients.
 pub use coral_api::DEFAULT_WORKSPACE_ID;
@@ -130,7 +132,11 @@ impl AppClient {
         endpoint_uri: &str,
         bearer: BearerToken,
     ) -> Result<Self, ClientError> {
-        Self::connect_with_metadata(endpoint_uri, [("authorization", bearer.authorization())]).await
+        Self::connect_with_metadata(
+            endpoint_uri,
+            [(AUTHORIZATION_METADATA_KEY, bearer.authorization())],
+        )
+        .await
     }
 
     async fn connect_with_static_metadata(
