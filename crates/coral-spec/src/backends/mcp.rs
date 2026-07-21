@@ -24,12 +24,15 @@ use crate::{
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct McpSourceManifest {
     pub common: SourceManifestCommon,
     pub server: McpServerSpec,
     pub functions: Vec<McpTableFunctionSpec>,
     pub tables: Vec<McpTableSpec>,
+    /// Skipped when serializing: declared inputs come verbatim from the
+    /// authored manifest, which fingerprinting hashes separately.
+    #[serde(skip)]
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
@@ -132,7 +135,7 @@ struct RawMcpTableFunctionSpec {
 }
 
 /// One source-scoped table-valued function backed by an MCP tool call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct McpTableFunctionSpec {
     pub common: SourceTableFunctionSpec,
     pub tool: String,
@@ -166,7 +169,7 @@ struct RawMcpTableSpec {
 }
 
 /// One SQL table backed by an MCP tool call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct McpTableSpec {
     pub common: TableCommon,
     pub tool: String,
@@ -227,7 +230,7 @@ pub struct McpTableFilterSpec {
     pub tool_arg: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct McpTableFilterBinding {
     pub name: String,
     pub tool_arg: String,

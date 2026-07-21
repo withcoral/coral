@@ -30,7 +30,7 @@ use crate::sources::model::InstalledSource;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
-const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 2;
+const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 3;
 
 /// Versioned, non-secret identity for the installed runtime contract used by
 /// query execution and derived local state.
@@ -62,7 +62,17 @@ struct RuntimeContractFingerprintInput<'a> {
     /// Stable within this explicitly versioned fingerprint format. Using the
     /// compiled component keeps artifact provenance and diagnostics out while
     /// covering every backend-ready runtime field.
-    v4_runtime_debug: Option<String>,
+    v4_runtime_contract: Option<V4RuntimeContract<'a>>,
+}
+
+/// Canonical serialization of the compiled v4 runtime component, hashed by
+/// field name rather than debugger presentation so unrelated formatting or
+/// private-structure refactors do not rotate the fingerprint.
+#[derive(Serialize)]
+#[serde(tag = "backend", rename_all = "snake_case")]
+enum V4RuntimeContract<'a> {
+    Http(&'a coral_spec::backends::http::HttpSourceManifest),
+    Mcp(&'a coral_spec::backends::mcp::McpSourceManifest),
 }
 
 /// Fingerprints authored manifest content, deterministic non-secret variable
@@ -73,10 +83,9 @@ pub(crate) fn runtime_contract_fingerprint(
     variables: &BTreeMap<String, String>,
     v4_component: Option<&RuntimeSourceComponent>,
 ) -> Result<RuntimeContractFingerprint, AppError> {
-    let v4_runtime_debug = match v4_component {
-        Some(component @ (RuntimeSourceComponent::Http(_) | RuntimeSourceComponent::Mcp(_))) => {
-            Some(format!("{component:#?}"))
-        }
+    let v4_runtime_contract = match v4_component {
+        Some(RuntimeSourceComponent::Http(http)) => Some(V4RuntimeContract::Http(http)),
+        Some(RuntimeSourceComponent::Mcp(mcp)) => Some(V4RuntimeContract::Mcp(mcp)),
         Some(RuntimeSourceComponent::File(_)) => {
             return Err(AppError::Internal(
                 "DSL v4 runtime fingerprint received a file component".to_string(),
@@ -88,7 +97,7 @@ pub(crate) fn runtime_contract_fingerprint(
         version: RUNTIME_CONTRACT_FINGERPRINT_VERSION,
         manifest_sha256: sha256_hex(manifest_yaml.as_bytes()),
         variables,
-        v4_runtime_debug,
+        v4_runtime_contract,
     };
     let bytes = serde_json::to_vec(&input).map_err(|error| {
         AppError::FailedPrecondition(format!(
@@ -844,7 +853,7 @@ mod tests {
         )
         .expect("variable fingerprint");
 
-        assert!(first.as_str().starts_with("v2:"));
+        assert!(first.as_str().starts_with("v3:"));
         assert_ne!(first, different_literal);
         assert_ne!(first, different_variable);
     }
@@ -917,7 +926,7 @@ mod tests {
         )
         .expect("fingerprint without optional provenance");
         assert_eq!(first, without_optional_provenance);
-        assert!(without_optional_provenance.as_str().starts_with("v2:"));
+        assert!(without_optional_provenance.as_str().starts_with("v3:"));
     }
 
     #[test]
