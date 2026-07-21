@@ -170,13 +170,11 @@ export function OnboardingNextStepsPage({
 
             <div className={styles.promptField}>
               <ScrollArea.Container
-                aria-label="Coral agent setup prompt"
-                aria-readonly="true"
                 className={styles.promptScrollArea}
                 constrainWidth
+                data-testid="coral-agent-setup-prompt"
                 fade="none"
                 fillContent
-                role="textbox"
               >
                 <pre className={styles.promptText}>{agentSetupPrompt}</pre>
               </ScrollArea.Container>

@@ -421,10 +421,9 @@ describe('onboarding sources step', () => {
     await expect
       .element(screen.getByRole('tab', { name: 'AI-assisted' }))
       .toHaveAttribute('aria-selected', 'true')
-    expect(
-      screen.getByRole('textbox', { exact: true, name: 'Coral agent setup prompt' }).element()
-        .textContent,
-    ).toBe(coralAgentSetupPrompt('desktop'))
+    expect(screen.getByTestId('coral-agent-setup-prompt').element().textContent).toBe(
+      coralAgentSetupPrompt('desktop'),
+    )
     await screen.getByRole('tab', { name: 'Manual' }).click()
     await expect
       .element(screen.getByLabelText('Coral MCP server configuration', { exact: true }))

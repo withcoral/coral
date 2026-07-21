@@ -61,11 +61,7 @@ describe('OnboardingNextStepsPage', () => {
     const manualTab = screen.getByRole('tab', { name: 'Manual' })
 
     await expect.element(aiAssistedTab).toHaveAttribute('aria-selected', 'true')
-    const agentSetupPrompt = screen.getByRole('textbox', {
-      exact: true,
-      name: 'Coral agent setup prompt',
-    })
-    await expect.element(agentSetupPrompt).toHaveAttribute('aria-readonly', 'true')
+    const agentSetupPrompt = screen.getByTestId('coral-agent-setup-prompt')
     expect(agentSetupPrompt.element().textContent).toBe(desktopPrompt)
     await expect
       .poll(
@@ -122,9 +118,9 @@ describe('OnboardingNextStepsPage', () => {
     ])
     const screen = await render(<Stub />)
 
-    expect(
-      screen.getByRole('textbox', { name: 'Coral agent setup prompt' }).element().textContent,
-    ).toContain('Start by identifying how I am running Coral')
+    expect(screen.getByTestId('coral-agent-setup-prompt').element().textContent).toContain(
+      'Start by identifying how I am running Coral',
+    )
 
     await screen.getByRole('tab', { name: 'Manual' }).click()
 

@@ -30,6 +30,7 @@ describe('SettingsRoute', () => {
       ])
     window.coralDesktop = {
       configureMcp: vi.fn(),
+      getMcpLaunchConfig: vi.fn(),
       listMcpClients,
     }
 
