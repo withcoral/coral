@@ -189,8 +189,7 @@ describe('Sidebar', () => {
       .not.toBeInTheDocument()
   })
 
-  it('opens desktop settings after a divider below create workspace', async () => {
-    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
+  it('always shows settings in the workspace menu', async () => {
     const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
 
     await screen.getByRole('button', { name: 'Open workspace menu' }).click()
@@ -213,22 +212,24 @@ describe('Sidebar', () => {
     await expect.poll(() => screen.router.state.location.pathname).toBe(routePath('settings'))
   })
 
-  it('shows settings navigation instead of workspace navigation on the settings route', async () => {
-    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
+  it('shows no settings navigation items on the web', async () => {
     const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
 
-    const homeLink = screen.getByRole('link', { name: 'Home' })
-    await expect.element(homeLink).toHaveAttribute('href', routePath('home'))
+    await expect.element(screen.getByRole('link', { name: 'Home' })).toBeVisible()
     await expect
       .element(screen.getByRole('button', { name: 'Open workspace menu' }))
       .not.toBeInTheDocument()
-    await expect.element(screen.getByRole('link', { name: 'MCP Clients' })).toBeVisible()
+    await expect.element(screen.getByRole('link', { name: 'MCP Clients' })).not.toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: 'Sources' })).not.toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: 'Schema' })).not.toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: 'Traces' })).not.toBeInTheDocument()
+  })
 
-    await homeLink.click()
-    await expect.poll(() => screen.router.state.location.pathname).toBe(routePath('home'))
+  it('shows MCP Clients in desktop settings navigation', async () => {
+    vi.stubEnv('VITE_CORAL_DESKTOP_APP', '1')
+    const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
+
+    await expect.element(screen.getByRole('link', { name: 'MCP Clients' })).toBeVisible()
   })
 
   it('keeps the create workspace dialog closed after back and forward navigation', async () => {

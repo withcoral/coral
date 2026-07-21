@@ -1,6 +1,6 @@
 import classNames from 'classnames'
 import { useEffect, useRef, useState } from 'react'
-import { Link, NavLink, useLocation, useParams } from 'react-router'
+import { Link, NavLink, useLocation, useMatch, useParams } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import {
@@ -29,6 +29,8 @@ interface SidebarProps {
   workspaces: ReadonlyArray<Pick<Workspace, 'name'>>
 }
 
+type NavItem = { icon: IconName; label: string; paths: string[]; to: string }
+
 export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const location = useLocation()
   const { workspaceId } = useParams()
@@ -53,17 +55,13 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
     { icon: 'Plug', label: 'Sources', paths: [routePath('home'), sourcesPath], to: sourcesPath },
     { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
     { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
-  ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
+  ] satisfies NavItem[]
   const settingsPath = routePath('settings')
-  const isSettingsRoute =
-    location.pathname === settingsPath || location.pathname.startsWith(`${settingsPath}/`)
-  const settingsNavItems = [
-    { icon: 'Settings', label: 'MCP Clients', paths: [settingsPath], to: settingsPath },
-  ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
+  const isSettingsRoute = Boolean(useMatch({ end: false, path: settingsPath }))
+  const settingsNavItems: NavItem[] = isCoralDesktopBuild()
+    ? [{ icon: 'Settings', label: 'MCP Clients', paths: [settingsPath], to: settingsPath }]
+    : []
   const navItems = isSettingsRoute ? settingsNavItems : workspaceNavItems
-  // Build-time detection keeps desktop-only navigation stable across SSR and
-  // hydration; bridge availability is checked by the Settings page itself.
-  const isDesktopApp = isCoralDesktopBuild()
   const settingsHomeButton = (
     <ButtonContainer ariaLabel="Home" as={Link} size="22" to={routePath('home')} variant="bare">
       <ButtonIcon name="ChevronLeft" />
@@ -134,7 +132,6 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
               <Menu.Container>
                 <Menu.Trigger
                   className={styles.workspaceSelector}
-                  nativeButton
                   render={
                     <ButtonContainer ariaLabel="Open workspace menu" size="32" variant="bare" />
                   }
@@ -184,14 +181,10 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
                   >
                     Create workspace
                   </Menu.Item>
-                  {isDesktopApp && (
-                    <>
-                      <Menu.Separator />
-                      <Menu.Item icon="Settings" to={settingsPath}>
-                        Settings
-                      </Menu.Item>
-                    </>
-                  )}
+                  <Menu.Separator />
+                  <Menu.Item icon="Settings" to={settingsPath}>
+                    Settings
+                  </Menu.Item>
                 </Menu.Content>
               </Menu.Container>
 
