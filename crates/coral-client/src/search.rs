@@ -141,6 +141,7 @@ impl<'a> CatalogItemValue<'a> {
 #[schemars(deny_unknown_fields)]
 struct TableSummaryValue<'a> {
     kind: &'static str,
+    catalog_name: &'a str,
     schema_name: &'a str,
     name: String,
     sql_reference: String,
@@ -152,9 +153,14 @@ impl<'a> From<&'a TableSummary> for TableSummaryValue<'a> {
     fn from(table: &'a TableSummary) -> Self {
         Self {
             kind: "table",
+            catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
-            name: format!("{}.{}", table.schema_name, table.name),
-            sql_reference: format_schema_table_equivalent(&table.schema_name, &table.name),
+            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
+            sql_reference: format_schema_table_equivalent(
+                &table.catalog_name,
+                &table.schema_name,
+                &table.name,
+            ),
             description: &table.description,
             table: TableSummaryDetailsValue::from(table),
         }
@@ -197,7 +203,11 @@ impl<'a> From<&'a TableFunction> for TableFunctionValue<'a> {
             kind: "table_function",
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
-            sql_reference: format_schema_table_equivalent(&function.schema_name, &function.name),
+            sql_reference: format_schema_table_equivalent(
+                "",
+                &function.schema_name,
+                &function.name,
+            ),
             sql_call_example: minimal_table_function_call_example(function),
             description: &function.description,
             table_function: TableFunctionDetailsValue::from(function),
@@ -357,6 +367,7 @@ impl<'a> From<&'a ColumnHint> for ColumnHintValue<'a> {
             surface_name: &hint.surface_name,
             surface_kind: surface_kind_name(hint.surface_kind),
             surface_sql_reference: format_schema_table_equivalent(
+                "",
                 &hint.schema_name,
                 &hint.surface_name,
             ),
@@ -392,6 +403,7 @@ impl<'a> From<&'a ObservedValue> for ObservedValueValue<'a> {
             surface_name: &observed.surface_name,
             surface_kind: surface_kind_name(observed.surface_kind),
             surface_sql_reference: format_schema_table_equivalent(
+                "",
                 &observed.schema_name,
                 &observed.surface_name,
             ),
@@ -567,12 +579,16 @@ fn catalog_metadata_text_lines(
     let mut lines = match metadata.item.as_ref().and_then(|item| item.item.as_ref()) {
         Some(catalog_item::Item::Table(table)) => vec![
             format!(
-                "{index}. [{provider}] table {}.{}",
-                table.schema_name, table.name
+                "{index}. [{provider}] table {}",
+                format_table_name(&table.catalog_name, &table.schema_name, &table.name)
             ),
             format!(
                 "   SQL: {}",
-                format_schema_table_equivalent(&table.schema_name, &table.name)
+                format_schema_table_equivalent(
+                    &table.catalog_name,
+                    &table.schema_name,
+                    &table.name
+                )
             ),
         ],
         Some(catalog_item::Item::TableFunction(function)) => vec![
@@ -582,7 +598,7 @@ fn catalog_metadata_text_lines(
             ),
             format!(
                 "   SQL reference: {}",
-                format_schema_table_equivalent(&function.schema_name, &function.name)
+                format_schema_table_equivalent("", &function.schema_name, &function.name)
             ),
             format!("   Call: {}", minimal_table_function_call_example(function)),
         ],
@@ -611,7 +627,7 @@ fn column_hint_text_lines(index: usize, provider: &str, hint: &ColumnHint) -> Ve
         format!(
             "   Surface: {} {}",
             surface_kind_name(hint.surface_kind),
-            format_schema_table_equivalent(&hint.schema_name, &hint.surface_name)
+            format_schema_table_equivalent("", &hint.schema_name, &hint.surface_name)
         ),
     ];
     if !hint.data_type.is_empty() {
@@ -700,7 +716,7 @@ fn preview_text(preview: &SearchTableColumnPreview) -> Option<String> {
 /// Formats the shortest SQL call example for a table function.
 #[must_use]
 pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
-    let reference = format_schema_table_equivalent(&function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent("", &function.schema_name, &function.name);
     let required_arguments = function
         .arguments
         .iter()
@@ -711,14 +727,35 @@ pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
     format!("{reference}({required_arguments})")
 }
 
+fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str) -> String {
+    if catalog_name.is_empty() {
+        format!("{schema_name}.{table_name}")
+    } else {
+        format!("{catalog_name}.{schema_name}.{table_name}")
+    }
+}
+
 /// Formats a schema-qualified SQL table or table-function reference.
 #[must_use]
-pub fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
-    format!(
-        "{}.{}",
-        format_sql_identifier(schema_name),
-        format_sql_identifier(table_name)
-    )
+pub fn format_schema_table_equivalent(
+    catalog_name: &str,
+    schema_name: &str,
+    table_name: &str,
+) -> String {
+    if catalog_name.is_empty() {
+        format!(
+            "{}.{}",
+            format_sql_identifier(schema_name),
+            format_sql_identifier(table_name)
+        )
+    } else {
+        format!(
+            "{}.{}.{}",
+            format_sql_identifier(catalog_name),
+            format_sql_identifier(schema_name),
+            format_sql_identifier(table_name)
+        )
+    }
 }
 
 /// Formats one SQL identifier, quoting it only when required.

@@ -390,6 +390,7 @@ pub(crate) fn table_to_proto(
 
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
+        catalog_name: table.catalog_name,
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
@@ -405,6 +406,7 @@ pub(crate) fn table_summary_to_proto(
 ) -> TableSummary {
     TableSummary {
         workspace: Some(workspace_to_proto(workspace_name)),
+        catalog_name: table.catalog_name,
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,

@@ -48,10 +48,18 @@ impl CatalogServiceApi for CatalogService {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let catalog_page = catalog
-                .list_catalog(&workspace_name, schema_name, kind, pagination, &attribution)
+                .list_catalog(
+                    &workspace_name,
+                    catalog_name,
+                    schema_name,
+                    kind,
+                    pagination,
+                    &attribution,
+                )
                 .await
                 .map_err(query_status)?;
             let page = catalog_page.items;
@@ -88,6 +96,7 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let pagination = search_pagination(request.pagination.map(pagination_from_proto))
@@ -97,6 +106,7 @@ impl CatalogServiceApi for CatalogService {
                     &workspace_name,
                     SearchCatalogQuery {
                         pattern: &request.pattern,
+                        catalog_name,
                         schema_name,
                         kind,
                         ignore_case: request.ignore_case,
@@ -135,12 +145,13 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
             let table_name = required_trimmed(&request.table_name, "table_name")?;
             let result = catalog
                 .describe_table(
                     &workspace_name,
-                    CatalogTableRef::new(&schema_name, &table_name),
+                    CatalogTableRef::new(catalog_name, &schema_name, &table_name),
                     &attribution,
                 )
                 .await
@@ -163,6 +174,7 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
             let table_name = required_trimmed(&request.table_name, "table_name")?;
             let pagination = column_pagination(request.pagination.map(pagination_from_proto))
@@ -171,7 +183,7 @@ impl CatalogServiceApi for CatalogService {
                 .list_columns(
                     &workspace_name,
                     ListColumnsQuery {
-                        table_ref: CatalogTableRef::new(&schema_name, &table_name),
+                        table_ref: CatalogTableRef::new(catalog_name, &schema_name, &table_name),
                         pattern: request.pattern.as_deref(),
                         ignore_case: request.ignore_case,
                         required_only: request.required_only,
@@ -182,7 +194,11 @@ impl CatalogServiceApi for CatalogService {
                 .await
                 .map_err(query_status)?
                 .ok_or_else(|| {
-                    Status::not_found(format!("table '{schema_name}.{table_name}' not found"))
+                    let qualifier = catalog_name.map_or_else(
+                        || schema_name.clone(),
+                        |catalog| format!("{catalog}.{schema_name}"),
+                    );
+                    Status::not_found(format!("table '{qualifier}.{table_name}' not found"))
                 })?;
             let pagination = pagination_to_proto(
                 page.total,

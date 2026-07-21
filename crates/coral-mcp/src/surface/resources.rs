@@ -69,13 +69,13 @@ pub(crate) fn guide_resource_content(
     let mut schemas = tables
         .iter()
         .filter(|table| table.schema_name != "coral")
-        .map(|table| table.schema_name.as_str())
+        .map(addressable_schema_name)
         .collect::<BTreeSet<_>>();
     schemas.extend(
         table_function_schema_names
             .iter()
-            .map(String::as_str)
-            .filter(|schema| *schema != "coral"),
+            .filter(|schema| *schema != "coral")
+            .cloned(),
     );
     if schemas.is_empty() {
         if sources.is_empty() {
@@ -96,11 +96,18 @@ pub(crate) fn guide_resource_content(
 FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORDER BY ordinal_position;"
                 .to_string()
         },
-        |(schema_name, table_name)| {
-            format!(
-                "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
+        |(catalog_name, schema_name, table_name)| {
+            if catalog_name.is_empty() {
+                format!(
+                    "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
 FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
-            )
+                )
+            } else {
+                format!(
+                    "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
+FROM coral.columns WHERE catalog_name = '{catalog_name}' AND schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
+                )
+            }
         },
     );
 
@@ -139,14 +146,32 @@ fn tables_resource_description(visible_table_count: usize) -> String {
     format!("Fully qualified database tables in Coral ({visible_table_count} table(s)).")
 }
 
-fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
+fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str, &str)> {
     tables
         .iter()
         .filter(|table| table.schema_name != "coral")
         .min_by(|left, right| {
-            (&left.schema_name, &left.name).cmp(&(&right.schema_name, &right.name))
+            (&left.catalog_name, &left.schema_name, &left.name).cmp(&(
+                &right.catalog_name,
+                &right.schema_name,
+                &right.name,
+            ))
         })
-        .map(|table| (table.schema_name.as_str(), table.name.as_str()))
+        .map(|table| {
+            (
+                table.catalog_name.as_str(),
+                table.schema_name.as_str(),
+                table.name.as_str(),
+            )
+        })
+}
+
+fn addressable_schema_name(table: &TableSummary) -> String {
+    if table.catalog_name.is_empty() {
+        table.schema_name.clone()
+    } else {
+        format!("{}.{}", table.catalog_name, table.schema_name)
+    }
 }
 
 struct RenderedQueryExample {
@@ -252,6 +277,7 @@ mod tests {
                 name: "default".to_string(),
             }),
             schema_name: schema_name.to_string(),
+            catalog_name: String::new(),
             name: name.to_string(),
             description: format!("{name} description"),
             required_filters: Vec::new(),
@@ -481,20 +507,24 @@ WHERE title LIKE '%bug%'",
     #[test]
     fn sql_reference_quotes_each_identifier_independently() {
         assert_eq!(
-            format_schema_table_equivalent("github", "pulls"),
+            format_schema_table_equivalent("", "github", "pulls"),
             "github.pulls"
         );
         assert_eq!(
-            format_schema_table_equivalent("github", "Pull.Requests"),
+            format_schema_table_equivalent("", "github", "Pull.Requests"),
             "github.\"Pull.Requests\""
         );
         assert_eq!(
-            format_schema_table_equivalent("git.hub", "pulls"),
+            format_schema_table_equivalent("", "git.hub", "pulls"),
             "\"git.hub\".pulls"
         );
         assert_eq!(
-            format_schema_table_equivalent("git\"hub", "pulls"),
+            format_schema_table_equivalent("", "git\"hub", "pulls"),
             "\"git\"\"hub\".pulls"
+        );
+        assert_eq!(
+            format_schema_table_equivalent("coral_db", "Main.Schema", "users"),
+            "coral_db.\"Main.Schema\".users"
         );
     }
 }
