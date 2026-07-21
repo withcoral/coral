@@ -4,6 +4,7 @@ import type { Route } from './+types/app-shell'
 
 import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
+import { requestAuthContext } from '@/auth/server-context'
 import { listWorkspacesForRequest } from '@/lib/workspaces.server'
 import { routePath } from '@/routing/routemap'
 import { ToastContainer } from '@/wax/components/toast'
@@ -14,11 +15,16 @@ interface RootLoaderData {
   sidebarIsMinimized: boolean
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export async function loader({ context, request }: Route.LoaderArgs) {
   if (isWorkspaceRedirectRoute(request)) return { workspaces: [] }
 
   try {
-    return { workspaces: await listWorkspacesForRequest(request) }
+    return {
+      workspaces: await listWorkspacesForRequest(
+        request,
+        context.get(requestAuthContext).accessToken,
+      ),
+    }
   } catch (error) {
     console.error('Failed to load sidebar workspaces:', error)
     return { workspaces: [] }

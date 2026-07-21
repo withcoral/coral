@@ -1,6 +1,7 @@
 import type { Route } from './+types/onboarding'
 import type { SourcesActionData } from './sources-action'
 
+import { requestAuthContext } from '@/auth/server-context'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
@@ -10,8 +11,9 @@ import { OnboardingView } from '@/views/onboarding/onboarding'
 import { runSourcesAction } from './sources-action'
 import { loadSourcesRouteData } from './sources-loader'
 
-export async function loader({ request }: Route.LoaderArgs) {
-  const workspaces = await listWorkspacesForRequest(request)
+export async function loader({ context, request }: Route.LoaderArgs) {
+  const accessToken = context.get(requestAuthContext).accessToken
+  const workspaces = await listWorkspacesForRequest(request, accessToken)
   const [workspace] = workspaces
   if (!workspace) {
     throw new Response('No Coral workspace is configured.', {
@@ -20,7 +22,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     })
   }
 
-  const sources = await loadSourcesRouteData(request, workspace)
+  const sources = await loadSourcesRouteData(request, workspace, accessToken)
   const step = getOnboardingStepState(new URL(request.url).searchParams.get('step'))
   const shouldRunSampleQuery =
     step.step === 'query' &&
@@ -30,15 +32,22 @@ export async function loader({ request }: Route.LoaderArgs) {
   return {
     ...sources,
     runtime: isCoralDesktopBuild() ? ('desktop' as const) : ('web' as const),
-    sampleQuery: shouldRunSampleQuery ? loadOnboardingSampleQuery(request, workspace.name) : null,
+    sampleQuery: shouldRunSampleQuery
+      ? loadOnboardingSampleQuery(request, accessToken, workspace.name)
+      : null,
     step,
     workspaceId: workspace.name,
     workspaces: workspaces.map(({ name }) => ({ name })),
   }
 }
 
-export async function action({ request }: Route.ActionArgs): Promise<SourcesActionData> {
-  return runSourcesAction(request, await firstWorkspaceForRequest(request))
+export async function action({ context, request }: Route.ActionArgs): Promise<SourcesActionData> {
+  const accessToken = context.get(requestAuthContext).accessToken
+  return runSourcesAction(
+    request,
+    await firstWorkspaceForRequest(request, accessToken),
+    accessToken,
+  )
 }
 
 export default function OnboardingRoute({ actionData, loaderData }: Route.ComponentProps) {
