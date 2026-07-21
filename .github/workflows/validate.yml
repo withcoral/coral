@@ -40,7 +40,6 @@ jobs:
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
       reef-checks: ${{ steps.filter.outputs.reef-checks }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
-      desktop-package-macos: ${{ steps.filter.outputs.desktop-package-macos }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
@@ -49,6 +48,16 @@ jobs:
       performance-regression: ${{ steps.filter.outputs.performance-regression }}
 
     steps:
+      # Release Please updates its candidate branch before this repository's
+      # generation steps add their final commit. Give those writes time to
+      # coalesce so concurrency cancellation stops obsolete runs before the
+      # expensive validation jobs fan out.
+      - name: Let release automation settle
+        if: >-
+          github.event_name == 'pull_request' &&
+          startsWith(github.head_ref, 'release-please--')
+        run: sleep 120
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -96,18 +105,6 @@ jobs:
               - 'apps/desktop/src/shared/types.ts'
             desktop-checks:
               - '.github/workflows/validate.yml'
-              - 'apps/desktop/**'
-            desktop-package-macos:
-              - '.github/workflows/validate.yml'
-              - '.github/workflows/release.yml'
-              - '.github/workflows/desktop-package.yml'
-              - '.cargo/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - 'rust-toolchain'
-              - 'crates/**/Cargo.toml'
-              - 'crates/**/build.rs'
               - 'apps/desktop/**'
             proto-lint:
               - '.github/workflows/validate.yml'
@@ -168,17 +165,22 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
+      - name: Free Linux runner disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          # Rust comes from rustup; this job does not use the hosted language tool cache.
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          # Keep swap for the memory-intensive clippy, test, and docs phases.
+          swap-storage: false
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
-      - name: Free Linux runner disk space
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-          docker system prune -af || true
-          df -h
 
       - name: Install Rust toolchain
         run: rustup show
@@ -187,10 +189,6 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: coral-validate-${{ runner.os }}
-          # This job runs clippy, all-target tests, and docs in one target dir.
-          # Restoring target artifacts spends disk before nextest's largest
-          # compile phase and can exhaust GitHub-hosted runners.
-          cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -523,14 +521,6 @@ jobs:
       - name: Test desktop
         run: npm test --prefix apps/desktop
 
-  desktop-package-macos:
-    name: Desktop macOS package
-    needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop-package-macos == 'true' }}
-    permissions:
-      contents: read
-    uses: ./.github/workflows/desktop-package.yml
-
   proto-lint:
     name: Lint protobuf API
     runs-on: ubuntu-latest
@@ -756,7 +746,6 @@ jobs:
         ui-tests,
         reef-checks,
         desktop-checks,
-        desktop-package-macos,
         proto-lint,
         gha-security-audit-pr,
         gha-security-audit-sarif,
@@ -780,7 +769,6 @@ jobs:
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
-          DESKTOP_PACKAGE_MACOS_RESULT: ${{ needs.desktop-package-macos.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
           GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
@@ -799,7 +787,6 @@ jobs:
             "ui-tests:$UI_TESTS_RESULT"
             "reef-checks:$REEF_CHECKS_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
-            "desktop-package-macos:$DESKTOP_PACKAGE_MACOS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
             "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"

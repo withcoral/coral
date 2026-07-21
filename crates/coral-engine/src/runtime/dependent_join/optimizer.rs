@@ -27,10 +27,6 @@ pub(crate) struct DependentJoinOptimizerRule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    dead_code,
-    reason = "fallback taxonomy mirrors the RFC; later optimizer slices construct the remaining reasons"
-)]
 pub(crate) enum DependentJoinFallbackReason {
     NonInner,
     NonEqui,
@@ -40,7 +36,6 @@ pub(crate) enum DependentJoinFallbackReason {
     MissingRequired,
     OverConstrained,
     NonCoercible,
-    CostUnfavourable,
     UnconsumedFilter,
     SourceDisabled,
 }
@@ -56,7 +51,6 @@ impl DependentJoinFallbackReason {
             Self::MissingRequired => "missing_required_filter",
             Self::OverConstrained => "over_constrained_filter",
             Self::NonCoercible => "non_coercible_binding_type",
-            Self::CostUnfavourable => "cost_unfavourable",
             Self::UnconsumedFilter => "unconsumed_filter",
             Self::SourceDisabled => "source_disabled",
         }

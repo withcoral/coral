@@ -8,7 +8,7 @@
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let result = coral_cli::run_from_env().await;
+    let result = Box::pin(coral_cli::run_from_env()).await;
     let _shutdown_result = tokio::task::spawn_blocking(coral_app::shutdown_tracing).await;
     match result {
         Ok(()) => Ok(()),
