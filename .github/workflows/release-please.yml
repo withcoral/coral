@@ -83,6 +83,7 @@ jobs:
           git commit -m "chore: regenerate changelog docs"
 
       - name: Push regenerated changes
+        if: steps.rp.outputs.pr
         env:
           PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
           GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
