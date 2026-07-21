@@ -64,11 +64,6 @@ enum CatalogPreload {
     WorkspaceChanged,
 }
 
-enum SnapshotOperation<T> {
-    Complete(T),
-    WorkspaceChanged,
-}
-
 impl SearchManager {
     #[cfg(test)]
     pub(crate) fn new(
@@ -134,30 +129,30 @@ impl SearchManager {
             else {
                 continue;
             };
+            let Some(snapshot) = self
+                .lifecycle_lock
+                .snapshot_if_unchanged(revision, &request.workspace_name)
+                .await
+            else {
+                continue;
+            };
             let search = self.clone();
             let request = request.clone();
             let attribution = attribution.clone();
-            let operation = run_blocking_search_operation(move || {
-                let Some(_snapshot) = search
-                    .lifecycle_lock
-                    .snapshot_if_unchanged(revision, &request.workspace_name)
-                else {
-                    return Ok(SnapshotOperation::WorkspaceChanged);
-                };
+            let response = run_blocking_search_operation(move || {
+                let _snapshot = snapshot;
                 let observed_policy = search
                     .observed_values_search_enabled
                     .then(|| search.observed_retrieval_policy(&request.workspace_name));
-                Ok(SnapshotOperation::Complete(search.engine.search(
+                Ok(search.engine.search(
                     &request,
                     &attribution,
                     resolution.as_ref(),
                     observed_policy.as_ref().map(Result::as_ref),
-                )))
+                ))
             })
             .await?;
-            if let SnapshotOperation::Complete(response) = operation {
-                return Ok(response);
-            }
+            return Ok(response);
         }
         Err(workspace_changed_error("searching"))
     }
@@ -187,6 +182,7 @@ impl SearchManager {
                 let Some(revision) = self
                     .lifecycle_lock
                     .revision_if_active(&request.workspace_name)
+                    .await
                 else {
                     continue;
                 };
@@ -195,15 +191,17 @@ impl SearchManager {
                     .await?;
                 (revision, None)
             };
+            let Some(snapshot) = self
+                .lifecycle_lock
+                .snapshot_if_unchanged(revision, &request.workspace_name)
+                .await
+            else {
+                continue;
+            };
             let search = self.clone();
             let request = request.clone();
-            let operation = run_blocking_search_operation(move || {
-                let Some(_snapshot) = search
-                    .lifecycle_lock
-                    .snapshot_if_unchanged(revision, &request.workspace_name)
-                else {
-                    return Ok(SnapshotOperation::WorkspaceChanged);
-                };
+            let response = run_blocking_search_operation(move || {
+                let _snapshot = snapshot;
                 let resolution = resolution
                     .map(|resolution| resolution.map_err(catalog_resolution_error))
                     .transpose()?;
@@ -229,14 +227,10 @@ impl SearchManager {
                         search.rebuild_observed_index(&request),
                     ],
                 };
-                Ok(SnapshotOperation::Complete(RebuildSearchIndexResponse {
-                    results,
-                }))
+                Ok(RebuildSearchIndexResponse { results })
             })
             .await?;
-            if let SnapshotOperation::Complete(response) = operation {
-                return Ok(response);
-            }
+            return Ok(response);
         }
         Err(workspace_changed_error("rebuilding the search index"))
     }
@@ -281,29 +275,28 @@ impl SearchManager {
             let Some(revision) = self
                 .lifecycle_lock
                 .revision_if_active(&request.workspace_name)
+                .await
             else {
                 continue;
             };
             self.workspaces
                 .require_workspace(&request.workspace_name)
                 .await?;
+            let Some(snapshot) = self
+                .lifecycle_lock
+                .snapshot_if_unchanged(revision, &request.workspace_name)
+                .await
+            else {
+                continue;
+            };
             let search = self.clone();
             let request = request.clone();
-            let operation = run_blocking_search_operation(move || {
-                let Some(_snapshot) = search
-                    .lifecycle_lock
-                    .snapshot_if_unchanged(revision, &request.workspace_name)
-                else {
-                    return Ok(SnapshotOperation::WorkspaceChanged);
-                };
-                Ok(SnapshotOperation::Complete(
-                    search.clear_data_blocking(&request)?,
-                ))
+            let response = run_blocking_search_operation(move || {
+                let _snapshot = snapshot;
+                search.clear_data_blocking(&request)
             })
             .await?;
-            if let SnapshotOperation::Complete(response) = operation {
-                return Ok(response);
-            }
+            return Ok(response);
         }
         Err(workspace_changed_error("clearing search data"))
     }
@@ -456,7 +449,7 @@ impl SearchManager {
         workspace_name: &WorkspaceName,
         attribution: &QueryAttribution,
     ) -> Result<CatalogPreload, SearchManagerError> {
-        let Some(revision) = self.lifecycle_lock.revision_if_active(workspace_name) else {
+        let Some(revision) = self.lifecycle_lock.revision_if_active(workspace_name).await else {
             return Ok(CatalogPreload::WorkspaceChanged);
         };
         self.workspaces.require_workspace(workspace_name).await?;

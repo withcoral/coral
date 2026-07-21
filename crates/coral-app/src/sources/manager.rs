@@ -30,7 +30,7 @@ use crate::sources::materialization::{
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
@@ -70,12 +70,13 @@ pub(crate) struct ImportSourceWithCredentialsCommand {
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SourceBindings {
     pub(crate) variables: Vec<SourceBinding>,
     pub(crate) secrets: Vec<SourceBinding>,
 }
 
+#[derive(Clone)]
 pub(crate) struct SourceBinding {
     pub(crate) key: String,
     pub(crate) value: String,
@@ -307,10 +308,11 @@ impl SourceManager {
         Ok(candidates)
     }
 
-    pub(crate) fn create_bundled_source(
+    pub(crate) async fn create_bundled_source_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         command: &CreateBundledSourceCommand,
+        revision: WorkspaceLifecycleRevision,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
@@ -321,14 +323,17 @@ impl SourceManager {
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
+            revision,
         )
+        .await
     }
 
-    pub(crate) async fn create_bundled_source_with_oauth(
+    pub(crate) async fn create_bundled_source_with_oauth_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         command: CreateBundledSourceWithOAuthCommand,
         events: ImportSourceEventSender,
+        revision: WorkspaceLifecycleRevision,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
@@ -341,14 +346,31 @@ impl SourceManager {
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
+            revision,
         )
         .await
     }
 
-    pub(crate) fn import_source(
+    #[cfg(test)]
+    pub(crate) async fn import_source(
         &self,
         workspace_name: &WorkspaceName,
         command: &ImportSourceCommand,
+    ) -> Result<InstalledSource, AppError> {
+        let revision = self
+            .lifecycle_lock
+            .snapshot(workspace_name)
+            .await
+            .revision();
+        self.import_source_if_unchanged(workspace_name, command, revision)
+            .await
+    }
+
+    pub(crate) async fn import_source_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: &ImportSourceCommand,
+        revision: WorkspaceLifecycleRevision,
     ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -362,15 +384,34 @@ impl SourceManager {
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
+            revision,
         )
+        .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn import_source_with_credentials(
         &self,
         workspace_name: &WorkspaceName,
         command: ImportSourceWithCredentialsCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
+        let revision = self
+            .lifecycle_lock
+            .snapshot(workspace_name)
+            .await
+            .revision();
+        self.import_source_with_credentials_if_unchanged(workspace_name, command, events, revision)
+            .await
+    }
+
+    pub(crate) async fn import_source_with_credentials_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: ImportSourceWithCredentialsCommand,
+        events: ImportSourceEventSender,
+        revision: WorkspaceLifecycleRevision,
+    ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
@@ -385,6 +426,7 @@ impl SourceManager {
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
+            revision,
         )
         .await
     }
@@ -393,7 +435,11 @@ impl SourceManager {
     /// the source. Shared tail of the non-OAuth install entry points; the
     /// caller supplies the resolved `candidate` plus the per-origin
     /// `manifest_yaml`/`origin`.
-    fn install_validated_source(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the install tail receives validated source state plus the workspace revision it commits against"
+    )]
+    async fn install_validated_source(
         &self,
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
@@ -401,41 +447,57 @@ impl SourceManager {
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
+        revision: WorkspaceLifecycleRevision,
     ) -> Result<InstalledSource, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
-        self.validate_runtime_schema_names_available(
-            workspace_name,
-            &candidate.name,
-            materialization_manifest_yaml,
-        )?;
-        let stored_material = self.source_stored_material_for_validation(
-            workspace_name,
-            candidate,
-            bindings,
-            &BTreeSet::new(),
-        )?;
-        let bindings = validate_bindings(candidate, bindings, &stored_material)?;
-        let materialization_inputs =
-            materialization_inputs_from_bindings(&bindings, &stored_material);
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate,
-                manifest_yaml,
-                bindings,
-                origin,
-                materialization_tmp: self
-                    .prepare_v4_materialization(
-                        workspace_name,
-                        candidate,
-                        materialization_manifest_yaml,
-                        &materialization_inputs,
-                        origin,
-                        "tmp",
-                    )?
-                    .map(|build| build.temp_dir),
-            },
-        )
+        let guard = self
+            .lifecycle_lock
+            .lock_if_unchanged(workspace_name, revision)
+            .await
+            .ok_or_else(workspace_changed_during_source_mutation)?;
+        let manager = self.clone();
+        let workspace_name = workspace_name.clone();
+        let candidate = candidate.clone();
+        let bindings = bindings.clone();
+        let manifest_yaml = manifest_yaml.map(str::to_owned);
+        let materialization_manifest_yaml = materialization_manifest_yaml.to_owned();
+        run_blocking_source_operation(move || {
+            let _lifecycle_guard = guard;
+            manager.validate_runtime_schema_names_available(
+                &workspace_name,
+                &candidate.name,
+                &materialization_manifest_yaml,
+            )?;
+            let stored_material = manager.source_stored_material_for_validation(
+                &workspace_name,
+                &candidate,
+                &bindings,
+                &BTreeSet::new(),
+            )?;
+            let bindings = validate_bindings(&candidate, &bindings, &stored_material)?;
+            let materialization_inputs =
+                materialization_inputs_from_bindings(&bindings, &stored_material);
+            let materialization_tmp = manager
+                .prepare_v4_materialization(
+                    &workspace_name,
+                    &candidate,
+                    &materialization_manifest_yaml,
+                    &materialization_inputs,
+                    origin,
+                    "tmp",
+                )?
+                .map(|build| build.temp_dir);
+            manager.persist_source(
+                &workspace_name,
+                PersistSourceRequest {
+                    candidate: &candidate,
+                    manifest_yaml: manifest_yaml.as_deref(),
+                    bindings,
+                    origin,
+                    materialization_tmp,
+                },
+            )
+        })
+        .await
     }
 
     /// Resolves OAuth credential material (driving the authorization flow over
@@ -456,6 +518,7 @@ impl SourceManager {
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
+        revision: WorkspaceLifecycleRevision,
     ) -> Result<InstalledSource, AppError> {
         self.validate_runtime_schema_names_available(
             workspace_name,
@@ -486,53 +549,104 @@ impl SourceManager {
                 events,
             )
             .await?;
-        let _lifecycle_guard = self.lifecycle_lock.lock();
-        self.validate_runtime_schema_names_available(
-            workspace_name,
-            &candidate.name,
-            materialization_manifest_yaml,
-        )?;
-        let stored_material = self.source_stored_material_for_validation(
-            workspace_name,
-            candidate,
-            bindings,
-            &oauth_input_keys,
-        )?;
-        let mut validation_material = stored_material.clone();
-        for material in &oauth_material {
-            validation_material.insert(material.input_key.clone(), material.access_token.clone());
-        }
-        let mut bindings = validate_bindings(candidate, bindings, &validation_material)?;
-        merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
-        let materialization_inputs =
-            materialization_inputs_from_bindings(&bindings, &stored_material);
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate,
-                manifest_yaml,
-                bindings,
-                origin,
-                materialization_tmp: self
-                    .prepare_v4_materialization(
-                        workspace_name,
-                        candidate,
-                        materialization_manifest_yaml,
-                        &materialization_inputs,
-                        origin,
-                        "tmp",
-                    )?
-                    .map(|build| build.temp_dir),
-            },
-        )
+        let guard = self
+            .lifecycle_lock
+            .lock_if_unchanged(workspace_name, revision)
+            .await
+            .ok_or_else(workspace_changed_during_source_mutation)?;
+        let manager = self.clone();
+        let workspace_name = workspace_name.clone();
+        let candidate = candidate.clone();
+        let bindings = bindings.clone();
+        let manifest_yaml = manifest_yaml.map(str::to_owned);
+        let materialization_manifest_yaml = materialization_manifest_yaml.to_owned();
+        run_blocking_source_operation(move || {
+            let _lifecycle_guard = guard;
+            manager.validate_runtime_schema_names_available(
+                &workspace_name,
+                &candidate.name,
+                &materialization_manifest_yaml,
+            )?;
+            let stored_material = manager.source_stored_material_for_validation(
+                &workspace_name,
+                &candidate,
+                &bindings,
+                &oauth_input_keys,
+            )?;
+            let mut validation_material = stored_material.clone();
+            for material in &oauth_material {
+                validation_material
+                    .insert(material.input_key.clone(), material.access_token.clone());
+            }
+            let mut bindings = validate_bindings(&candidate, &bindings, &validation_material)?;
+            merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
+            let materialization_inputs =
+                materialization_inputs_from_bindings(&bindings, &stored_material);
+            let materialization_tmp = manager
+                .prepare_v4_materialization(
+                    &workspace_name,
+                    &candidate,
+                    &materialization_manifest_yaml,
+                    &materialization_inputs,
+                    origin,
+                    "tmp",
+                )?
+                .map(|build| build.temp_dir);
+            manager.persist_source(
+                &workspace_name,
+                PersistSourceRequest {
+                    candidate: &candidate,
+                    manifest_yaml: manifest_yaml.as_deref(),
+                    bindings,
+                    origin,
+                    materialization_tmp,
+                },
+            )
+        })
+        .await
     }
 
-    pub(crate) fn delete_source(
+    #[cfg(test)]
+    pub(crate) async fn delete_source(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let revision = self
+            .lifecycle_lock
+            .snapshot(workspace_name)
+            .await
+            .revision();
+        self.delete_source_if_unchanged(workspace_name, source_name, revision)
+            .await
+    }
+
+    pub(crate) async fn delete_source_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        revision: WorkspaceLifecycleRevision,
+    ) -> Result<InstalledSource, AppError> {
+        let guard = self
+            .lifecycle_lock
+            .lock_if_unchanged(workspace_name, revision)
+            .await
+            .ok_or_else(workspace_changed_during_source_mutation)?;
+        let manager = self.clone();
+        let workspace_name = workspace_name.clone();
+        let source_name = source_name.clone();
+        run_blocking_source_operation(move || {
+            let _lifecycle_guard = guard;
+            manager.delete_source_locked(&workspace_name, &source_name)
+        })
+        .await
+    }
+
+    fn delete_source_locked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
         let credential_guard = self
@@ -1612,6 +1726,24 @@ fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) 
     }
 }
 
+async fn run_blocking_source_operation<T>(
+    operation: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+{
+    let span = tracing::Span::current();
+    tokio::task::spawn_blocking(move || span.in_scope(operation))
+        .await
+        .map_err(AppError::from)?
+}
+
+fn workspace_changed_during_source_mutation() -> AppError {
+    AppError::FailedPrecondition(
+        "workspace changed while applying the source lifecycle operation".to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -1844,8 +1976,8 @@ tables:
         .to_string()
     }
 
-    #[test]
-    fn readd_source_waits_for_state_lock_before_replacing_manifest() {
+    #[tokio::test]
+    async fn readd_source_waits_for_state_lock_before_replacing_manifest() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1869,6 +2001,7 @@ tables:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("initial import");
 
         let source_name = SourceName::parse("public_messages").expect("source");
@@ -1934,8 +2067,46 @@ tables:
         assert!(stored_after.contains("https://replacement.example.com"));
     }
 
-    #[test]
-    fn readd_source_revalidates_required_secret_material_under_state_lock() {
+    #[tokio::test]
+    async fn import_rejects_a_workspace_revision_invalidated_while_waiting() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let lifecycle_lock = crate::workspaces::WorkspaceLifecycleLock::default();
+        let workspace = default_workspace();
+        let revision = lifecycle_lock.snapshot(&workspace).await.revision();
+        let manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+            lifecycle_lock.clone(),
+        );
+        drop(lifecycle_lock.lock(&workspace).await);
+
+        let error = manager
+            .import_source_if_unchanged(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets(),
+                    bindings: SourceBindings::default(),
+                },
+                revision,
+            )
+            .await
+            .expect_err("stale workspace revision should reject import");
+
+        assert!(error.to_string().contains("workspace changed"));
+        assert!(
+            manager
+                .list_workspace_sources(&default_workspace())
+                .expect("list sources")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn readd_source_revalidates_required_secret_material_under_state_lock() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1964,6 +2135,7 @@ tables:
                     },
                 },
             )
+            .await
             .expect("initial import");
 
         let source_name = SourceName::parse("secured_messages").expect("source");
@@ -2003,8 +2175,8 @@ tables:
         );
     }
 
-    #[test]
-    fn delete_source_waits_for_state_lock_before_removing_credentials() {
+    #[tokio::test]
+    async fn delete_source_waits_for_state_lock_before_removing_credentials() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2033,6 +2205,7 @@ tables:
                     },
                 },
             )
+            .await
             .expect("initial import");
 
         let source_name = SourceName::parse("secured_messages").expect("source");
@@ -2045,8 +2218,11 @@ tables:
         let (done_tx, done_rx) = std_mpsc::channel();
         let handle = thread::spawn(move || {
             started_tx.send(()).expect("send started");
-            let result = delete_manager
-                .delete_source(&delete_workspace_name, &delete_source_name)
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime")
+                .block_on(delete_manager.delete_source(&delete_workspace_name, &delete_source_name))
                 .map(|source| source.name.as_str().to_string())
                 .map_err(|error| error.to_string());
             done_tx.send(result).expect("send delete result");
@@ -2094,8 +2270,8 @@ tables:
     }
 
     #[cfg(unix)]
-    #[test]
-    fn delete_source_preserves_credentials_when_directory_staging_fails() {
+    #[tokio::test]
+    async fn delete_source_preserves_credentials_when_directory_staging_fails() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let temp = TempDir::new().expect("temp dir");
@@ -2126,6 +2302,7 @@ tables:
                     },
                 },
             )
+            .await
             .expect("initial import");
 
         let source_name = SourceName::parse("secured_messages").expect("source");
@@ -2139,7 +2316,7 @@ tables:
         std::fs::set_permissions(source_parent, readonly_permissions)
             .expect("make source parent unwritable");
 
-        let delete_result = manager.delete_source(&workspace_name, &source_name);
+        let delete_result = manager.delete_source(&workspace_name, &source_name).await;
 
         std::fs::set_permissions(source_parent, original_permissions)
             .expect("restore source parent permissions");
@@ -2464,8 +2641,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_v4_source_writes_materialized_artifacts() {
+    #[tokio::test]
+    async fn import_v4_source_writes_materialized_artifacts() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
@@ -2487,6 +2664,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import v4 source");
 
         assert_eq!(installed.name.as_str(), "github_v4_test");
@@ -2502,8 +2680,8 @@ surface:
         assert_eq!(info.name.as_str(), "github_v4_test");
     }
 
-    #[test]
-    fn import_v4_source_rejects_derived_base_url_input_token_defaults() {
+    #[tokio::test]
+    async fn import_v4_source_rejects_derived_base_url_input_token_defaults() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
@@ -2529,6 +2707,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect_err("source add should reject derived base_url input token defaults");
 
         let message = error.to_string();
@@ -2547,8 +2726,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_v4_source_rejects_unresolved_relative_descriptor() {
+    #[tokio::test]
+    async fn import_v4_source_rejects_unresolved_relative_descriptor() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2567,6 +2746,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect_err("raw relative descriptors should fail in app import");
 
         assert!(
@@ -2577,8 +2757,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_v4_source_preserves_intent_yaml_without_openapi_metadata() {
+    #[tokio::test]
+    async fn import_v4_source_preserves_intent_yaml_without_openapi_metadata() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
@@ -2600,6 +2780,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import v4 source");
 
         let source_name = SourceName::parse("github_v4_test").expect("source");
@@ -2616,8 +2797,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_restores_prior_state_when_secret_persistence_fails() {
+    #[tokio::test]
+    async fn import_restores_prior_state_when_secret_persistence_fails() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2651,6 +2832,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect_err("secret persistence should fail");
 
         assert!(
@@ -2719,8 +2901,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_materializes_variable_defaults_server_side() {
+    #[tokio::test]
+    async fn import_materializes_variable_defaults_server_side() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2744,6 +2926,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("import source");
 
         assert_eq!(
@@ -2752,8 +2935,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_new_source_uses_keychain_when_auto_probe_succeeds() {
+    #[tokio::test]
+    async fn import_new_source_uses_keychain_when_auto_probe_succeeds() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2783,6 +2966,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("import source");
 
         assert_eq!(
@@ -2809,6 +2993,7 @@ surface:
 
         manager
             .delete_source(&default_workspace(), &source_name)
+            .await
             .expect("delete source");
         assert!(
             credential_manager
@@ -2823,8 +3008,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_source_without_secret_material_does_not_probe_keychain() {
+    #[tokio::test]
+    async fn import_source_without_secret_material_does_not_probe_keychain() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2847,6 +3032,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import source");
 
         assert!(source.secrets.is_empty());
@@ -2865,8 +3051,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_missing_secret_does_not_probe_keychain_for_new_source() {
+    #[tokio::test]
+    async fn import_missing_secret_does_not_probe_keychain_for_new_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2887,6 +3073,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect_err("missing required secret should fail validation");
 
         assert!(
@@ -2897,8 +3084,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_replaces_malformed_existing_credential_material() {
+    #[tokio::test]
+    async fn import_replaces_malformed_existing_credential_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2924,6 +3111,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("initial import");
 
         let secret_path = layout.secret_file(&default_workspace(), &source_name);
@@ -2943,6 +3131,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("replace malformed credential material");
 
         assert_eq!(
@@ -2951,8 +3140,8 @@ surface:
         );
     }
 
-    #[test]
-    fn credential_revision_rotates_only_when_credential_material_is_replaced() {
+    #[tokio::test]
+    async fn credential_revision_rotates_only_when_credential_material_is_replaced() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2977,6 +3166,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("initial import");
         assert!(!first.credential_revision.is_nil());
 
@@ -2988,6 +3178,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("reimport with stored credential material");
         assert_eq!(unchanged.credential_revision, first.credential_revision);
 
@@ -3005,12 +3196,13 @@ surface:
                     },
                 },
             )
+            .await
             .expect("credential replacement");
         assert_ne!(replaced.credential_revision, first.credential_revision);
     }
 
-    #[test]
-    fn delete_removes_source_with_malformed_credential_material() {
+    #[tokio::test]
+    async fn delete_removes_source_with_malformed_credential_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -3036,6 +3228,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("initial import");
 
         let secret_path = layout.secret_file(&default_workspace(), &source_name);
@@ -3043,6 +3236,7 @@ surface:
 
         manager
             .delete_source(&default_workspace(), &source_name)
+            .await
             .expect("delete source with malformed credential material");
 
         assert!(
@@ -3058,8 +3252,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_accepts_secret_already_populated_in_credential_material() {
+    #[tokio::test]
+    async fn import_accepts_secret_already_populated_in_credential_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -3094,6 +3288,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import source");
 
         assert_eq!(source.secrets, vec!["API_TOKEN"]);
@@ -3116,8 +3311,8 @@ surface:
         );
     }
 
-    #[test]
-    fn import_preserves_credential_store_io_errors_when_material_is_needed() {
+    #[tokio::test]
+    async fn import_preserves_credential_store_io_errors_when_material_is_needed() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -3139,6 +3334,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect_err("stored material I/O error should fail import");
 
         assert!(
@@ -3152,8 +3348,8 @@ surface:
         );
     }
 
-    #[test]
-    fn manual_secret_reimport_clears_prior_oauth_material() {
+    #[tokio::test]
+    async fn manual_secret_reimport_clears_prior_oauth_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -3198,6 +3394,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("import source");
 
         let material = credential_manager
@@ -3219,8 +3416,8 @@ surface:
         );
     }
 
-    #[test]
-    fn source_rollback_snapshots_credentials_after_refresh_lock() {
+    #[tokio::test]
+    async fn source_rollback_snapshots_credentials_after_refresh_lock() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -3247,6 +3444,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("install source");
         let refresh_lock = credential_store
             .credential_refresh_lock(&workspace_name, &credential_set_id)
@@ -3260,19 +3458,23 @@ surface:
         let import_workspace = workspace_name.clone();
         let import_handle = thread::spawn(move || {
             started_tx.send(()).expect("signal import start");
-            import_manager.import_source(
-                &import_workspace,
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_with_secret(),
-                    bindings: SourceBindings {
-                        variables: Vec::new(),
-                        secrets: vec![SourceBinding {
-                            key: "API_TOKEN".to_string(),
-                            value: "manual-token".to_string(),
-                        }],
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime")
+                .block_on(import_manager.import_source(
+                    &import_workspace,
+                    &ImportSourceCommand {
+                        manifest_yaml: manifest_with_secret(),
+                        bindings: SourceBindings {
+                            variables: Vec::new(),
+                            secrets: vec![SourceBinding {
+                                key: "API_TOKEN".to_string(),
+                                value: "manual-token".to_string(),
+                            }],
+                        },
                     },
-                },
-            )
+                ))
         });
         started_rx.recv().expect("wait for import thread");
         thread::sleep(Duration::from_millis(50));
@@ -3498,6 +3700,7 @@ surface:
                     },
                 },
             )
+            .await
             .expect("install source");
 
         let redirect_port = free_loopback_port();

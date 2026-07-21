@@ -743,7 +743,7 @@ impl QueryManager {
         self.require_workspace(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
-        let _lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let _lifecycle_snapshot = self.lifecycle_lock.snapshot(workspace_name).await;
         let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
         self.validate_udf_sql_against_snapshot(workspace_name, raw_sql, &loaded_sources, &config)
             .await
@@ -755,12 +755,17 @@ impl QueryManager {
         raw_sql: &str,
     ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
         for _ in 0..2 {
-            let revision = self.lifecycle_lock.snapshot().revision();
+            let revision = self
+                .lifecycle_lock
+                .snapshot(workspace_name)
+                .await
+                .revision();
             self.require_workspace(workspace_name)
                 .await
                 .map_err(QueryManagerError::App)?;
-            let Some((loaded_sources, config)) =
-                self.function_validation_snapshot_if_unchanged(workspace_name, revision)?
+            let Some((loaded_sources, config)) = self
+                .function_validation_snapshot_if_unchanged(workspace_name, revision)
+                .await?
             else {
                 continue;
             };
@@ -780,6 +785,7 @@ impl QueryManager {
                     &runtime_function,
                     revision,
                 )
+                .await
                 .map_err(QueryManagerError::App)?
             {
                 ValidatedFunctionInstall::Installed => return Ok(runtime_function),
@@ -792,12 +798,12 @@ impl QueryManager {
         )))
     }
 
-    fn function_validation_snapshot_if_unchanged(
+    async fn function_validation_snapshot_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         revision: WorkspaceLifecycleRevision,
     ) -> Result<Option<(Vec<LoadedQuerySource>, AppConfig)>, QueryManagerError> {
-        let lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let lifecycle_snapshot = self.lifecycle_lock.snapshot(workspace_name).await;
         if lifecycle_snapshot.revision() != revision {
             return Ok(None);
         }
@@ -1734,7 +1740,7 @@ mod tests {
         )
         .await;
         let workspace_name = WorkspaceName::default();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path()).await;
         let function_sql = r"/*
 name: demo_items
 schema: functions
@@ -1752,6 +1758,7 @@ select text from function_demo.messages
             .manager
             .function_manager
             .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .await
             .expect("install function");
 
         let manager =
@@ -1933,6 +1940,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import v4 source");
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
@@ -2007,6 +2015,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import identity-gated v4 source");
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
@@ -2078,6 +2087,7 @@ surface:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import v4 source");
 
         let source_name = SourceName::parse("github_v4_pagination_override").expect("source name");
@@ -2186,7 +2196,7 @@ pagination:
             .collect()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn add_user_function_revalidates_when_source_changes_before_commit() {
         let fake_home = tempfile::tempdir().expect("fake home");
         let mut fixture = query_manager_with(
@@ -2198,7 +2208,7 @@ pagination:
         )
         .await;
         let workspace_name = WorkspaceName::default();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path()).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let config_store = fixture.manager.config_store.clone();
         let lifecycle_lock = fixture.manager.lifecycle_lock.clone();
@@ -2208,10 +2218,13 @@ pagination:
             PrepareCountingExtensionsProvider {
                 calls: Arc::clone(&calls),
                 on_first_prepare: Some(Arc::new(move || {
-                    let _lifecycle_guard = lifecycle_lock.lock();
-                    config_store
-                        .remove_source(&workspace, &source_name)
-                        .expect("remove source during function validation");
+                    tokio::task::block_in_place(|| {
+                        let _lifecycle_guard = tokio::runtime::Handle::current()
+                            .block_on(lifecycle_lock.lock(&workspace));
+                        config_store
+                            .remove_source(&workspace, &source_name)
+                            .expect("remove source during function validation");
+                    });
                 })),
             },
         ));
@@ -2262,7 +2275,7 @@ select text from function_demo.messages
         )
         .await;
         let workspace_name = WorkspaceName::default();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path()).await;
         let function_sql = r"/*
 name: messages_by_type
 schema: functions
@@ -2282,6 +2295,7 @@ where type = $kind
             .manager
             .function_manager
             .install_validated_user_function(&workspace_name, function_sql, &validated_function)
+            .await
             .expect("install function");
 
         let catalog = fixture
@@ -2336,7 +2350,7 @@ where type = $kind
         );
     }
 
-    fn install_function_demo_source(
+    async fn install_function_demo_source(
         manager: &QueryManager,
         workspace_name: &WorkspaceName,
         fake_home: &std::path::Path,
@@ -2381,6 +2395,7 @@ tables:
                     bindings: SourceBindings::default(),
                 },
             )
+            .await
             .expect("import source");
     }
 
@@ -2504,7 +2519,7 @@ tables:
         )
         .await;
         let workspace_name = WorkspaceName::default();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path()).await;
         let failed_source =
             install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
 
@@ -2535,7 +2550,7 @@ tables:
         )
         .await;
         let workspace_name = WorkspaceName::default();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path()).await;
         let failed_source =
             install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path());
 
@@ -2600,6 +2615,7 @@ select 1 as value
             .manager
             .function_manager
             .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .await
             .expect("install constant function");
         install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
 
@@ -2693,6 +2709,7 @@ select 1 as value
             .manager
             .function_manager
             .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .await
             .expect("install constant function");
         calls.store(0, Ordering::SeqCst);
 

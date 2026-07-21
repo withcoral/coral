@@ -1,5 +1,7 @@
-use std::collections::BTreeSet;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::sources::model::InstalledSource;
 use crate::workspaces::WorkspaceName;
@@ -20,8 +22,7 @@ pub(crate) struct DeletedWorkspace {
 
 #[derive(Debug, Default)]
 struct WorkspaceLifecycleState {
-    revision: u64,
-    deleting_workspaces: BTreeSet<WorkspaceName>,
+    revisions: BTreeMap<WorkspaceName, u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -33,121 +34,97 @@ impl WorkspaceLifecycleLock {
     /// Serializes a workspace lifecycle write and advances the revision when
     /// the write guard is released.
     #[must_use = "bind the returned guard for the full critical section"]
-    pub(crate) fn lock(&self) -> WorkspaceLifecycleGuard<'_> {
+    pub(crate) async fn lock(&self, workspace_name: &WorkspaceName) -> WorkspaceLifecycleGuard {
         WorkspaceLifecycleGuard {
-            guard: self.write_inner(),
+            guard: Arc::clone(&self.inner).write_owned().await,
+            workspace_name: workspace_name.clone(),
         }
     }
 
     #[must_use = "bind the returned snapshot while loading workspace state"]
-    pub(crate) fn snapshot(&self) -> WorkspaceLifecycleSnapshot<'_> {
+    pub(crate) async fn snapshot(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> WorkspaceLifecycleSnapshot {
         WorkspaceLifecycleSnapshot {
-            guard: self.read_inner(),
+            guard: Arc::clone(&self.inner).read_owned().await,
+            workspace_name: workspace_name.clone(),
         }
     }
 
-    pub(crate) fn snapshot_if_unchanged(
+    pub(crate) async fn snapshot_if_unchanged(
         &self,
         revision: WorkspaceLifecycleRevision,
         workspace_name: &WorkspaceName,
-    ) -> Option<WorkspaceLifecycleSnapshot<'_>> {
-        let guard = self.read_inner();
-        (guard.revision == revision.0 && !guard.deleting_workspaces.contains(workspace_name))
-            .then_some(WorkspaceLifecycleSnapshot { guard })
-    }
-
-    pub(crate) fn revision_if_active(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Option<WorkspaceLifecycleRevision> {
-        let snapshot = self.snapshot();
-        (!snapshot.workspace_is_deleting(workspace_name)).then(|| snapshot.revision())
-    }
-
-    pub(crate) fn mark_workspace_deleting(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Option<WorkspaceDeletionMarker> {
-        let mut guard = self.write_inner();
-        if !guard.deleting_workspaces.insert(workspace_name.clone()) {
-            return None;
-        }
-        guard.revision = guard.revision.wrapping_add(1);
-        Some(WorkspaceDeletionMarker {
-            lifecycle: self.clone(),
-            workspace_name: workspace_name.clone(),
+    ) -> Option<WorkspaceLifecycleSnapshot> {
+        let guard = Arc::clone(&self.inner).read_owned().await;
+        (workspace_revision(&guard, workspace_name) == revision.0).then(|| {
+            WorkspaceLifecycleSnapshot {
+                guard,
+                workspace_name: workspace_name.clone(),
+            }
         })
     }
 
-    pub(crate) fn lock_if_unchanged(
+    pub(crate) async fn revision_if_active(
         &self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<WorkspaceLifecycleRevision> {
+        Some(self.snapshot(workspace_name).await.revision())
+    }
+
+    pub(crate) async fn lock_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
         revision: WorkspaceLifecycleRevision,
-    ) -> Option<WorkspaceLifecycleGuard<'_>> {
-        let guard = self.write_inner();
-        if guard.revision == revision.0 {
-            Some(WorkspaceLifecycleGuard { guard })
+    ) -> Option<WorkspaceLifecycleGuard> {
+        let guard = Arc::clone(&self.inner).write_owned().await;
+        if workspace_revision(&guard, workspace_name) == revision.0 {
+            Some(WorkspaceLifecycleGuard {
+                guard,
+                workspace_name: workspace_name.clone(),
+            })
         } else {
             None
         }
     }
-
-    fn read_inner(&self) -> RwLockReadGuard<'_, WorkspaceLifecycleState> {
-        self.inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn write_inner(&self) -> RwLockWriteGuard<'_, WorkspaceLifecycleState> {
-        self.inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn unmark_workspace_deleting(&self, workspace_name: &WorkspaceName) {
-        let mut guard = self.write_inner();
-        if guard.deleting_workspaces.remove(workspace_name) {
-            guard.revision = guard.revision.wrapping_add(1);
-        }
-    }
 }
 
 #[must_use]
-pub(crate) struct WorkspaceLifecycleGuard<'a> {
-    guard: RwLockWriteGuard<'a, WorkspaceLifecycleState>,
-}
-
-impl Drop for WorkspaceLifecycleGuard<'_> {
-    fn drop(&mut self) {
-        self.guard.revision = self.guard.revision.wrapping_add(1);
-    }
-}
-
-#[must_use]
-pub(crate) struct WorkspaceLifecycleSnapshot<'a> {
-    guard: RwLockReadGuard<'a, WorkspaceLifecycleState>,
-}
-
-impl WorkspaceLifecycleSnapshot<'_> {
-    pub(crate) fn revision(&self) -> WorkspaceLifecycleRevision {
-        WorkspaceLifecycleRevision(self.guard.revision)
-    }
-
-    pub(crate) fn workspace_is_deleting(&self, workspace_name: &WorkspaceName) -> bool {
-        self.guard.deleting_workspaces.contains(workspace_name)
-    }
-}
-
-#[must_use]
-pub(crate) struct WorkspaceDeletionMarker {
-    lifecycle: WorkspaceLifecycleLock,
+pub(crate) struct WorkspaceLifecycleGuard {
+    guard: OwnedRwLockWriteGuard<WorkspaceLifecycleState>,
     workspace_name: WorkspaceName,
 }
 
-impl Drop for WorkspaceDeletionMarker {
+impl Drop for WorkspaceLifecycleGuard {
     fn drop(&mut self) {
-        self.lifecycle
-            .unmark_workspace_deleting(&self.workspace_name);
+        let revision = self
+            .guard
+            .revisions
+            .entry(self.workspace_name.clone())
+            .or_default();
+        *revision = revision.wrapping_add(1);
     }
+}
+
+#[must_use]
+pub(crate) struct WorkspaceLifecycleSnapshot {
+    guard: OwnedRwLockReadGuard<WorkspaceLifecycleState>,
+    workspace_name: WorkspaceName,
+}
+
+impl WorkspaceLifecycleSnapshot {
+    pub(crate) fn revision(&self) -> WorkspaceLifecycleRevision {
+        WorkspaceLifecycleRevision(workspace_revision(&self.guard, &self.workspace_name))
+    }
+}
+
+fn workspace_revision(state: &WorkspaceLifecycleState, workspace_name: &WorkspaceName) -> u64 {
+    state
+        .revisions
+        .get(workspace_name)
+        .copied()
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,82 +134,91 @@ pub(crate) struct WorkspaceLifecycleRevision(u64);
 mod tests {
     use super::*;
 
-    #[test]
-    fn deletion_marker_marks_workspace_and_advances_revision_at_each_transition() {
+    #[tokio::test]
+    async fn write_guard_advances_revision_when_released() {
         let lifecycle = WorkspaceLifecycleLock::default();
         let workspace = WorkspaceName::parse("acme").expect("workspace");
         let initial_revision = lifecycle
             .revision_if_active(&workspace)
+            .await
             .expect("workspace starts active");
 
-        let marker = lifecycle
-            .mark_workspace_deleting(&workspace)
-            .expect("mark workspace deleting");
+        drop(lifecycle.lock(&workspace).await);
 
-        let deleting_snapshot = lifecycle.snapshot();
         assert_eq!(
-            deleting_snapshot.revision().0,
+            lifecycle.snapshot(&workspace).await.revision().0,
             initial_revision.0.wrapping_add(1)
         );
-        assert!(deleting_snapshot.workspace_is_deleting(&workspace));
-        let deleting_revision = deleting_snapshot.revision();
-        drop(deleting_snapshot);
-        assert_eq!(lifecycle.revision_if_active(&workspace), None);
-        assert!(
-            lifecycle
-                .snapshot_if_unchanged(deleting_revision, &workspace)
-                .is_none()
-        );
-        assert!(lifecycle.mark_workspace_deleting(&workspace).is_none());
-
-        drop(marker);
-
-        let active_snapshot = lifecycle.snapshot();
-        assert_eq!(
-            active_snapshot.revision().0,
-            initial_revision.0.wrapping_add(2)
-        );
-        assert!(!active_snapshot.workspace_is_deleting(&workspace));
     }
 
-    #[test]
-    fn stale_revision_cannot_acquire_a_snapshot_or_write_guard() {
+    #[tokio::test]
+    async fn stale_revision_cannot_acquire_a_snapshot_or_write_guard() {
         let lifecycle = WorkspaceLifecycleLock::default();
         let workspace = WorkspaceName::parse("acme").expect("workspace");
-        let stale_revision = lifecycle.snapshot().revision();
+        let stale_revision = lifecycle.snapshot(&workspace).await.revision();
 
-        drop(lifecycle.lock());
+        drop(lifecycle.lock(&workspace).await);
 
         assert!(
             lifecycle
                 .snapshot_if_unchanged(stale_revision, &workspace)
+                .await
                 .is_none()
         );
-        assert!(lifecycle.lock_if_unchanged(stale_revision).is_none());
+        assert!(
+            lifecycle
+                .lock_if_unchanged(&workspace, stale_revision)
+                .await
+                .is_none()
+        );
 
-        let current_revision = lifecycle.snapshot().revision();
+        let current_revision = lifecycle.snapshot(&workspace).await.revision();
         assert!(
             lifecycle
                 .snapshot_if_unchanged(current_revision, &workspace)
+                .await
                 .is_some()
         );
-        assert!(lifecycle.lock_if_unchanged(current_revision).is_some());
+        assert!(
+            lifecycle
+                .lock_if_unchanged(&workspace, current_revision)
+                .await
+                .is_some()
+        );
     }
 
-    #[test]
-    fn read_snapshot_excludes_lifecycle_writes_until_it_is_released() {
+    #[tokio::test]
+    async fn unrelated_workspace_write_does_not_invalidate_revision() {
         let lifecycle = WorkspaceLifecycleLock::default();
-        let snapshot = lifecycle.snapshot();
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let unrelated = WorkspaceName::parse("other").expect("workspace");
+        let revision = lifecycle.snapshot(&workspace).await.revision();
+
+        drop(lifecycle.lock(&unrelated).await);
+
+        assert!(
+            lifecycle
+                .snapshot_if_unchanged(revision, &workspace)
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn read_snapshot_excludes_lifecycle_writes_until_it_is_released() {
+        let lifecycle = WorkspaceLifecycleLock::default();
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let snapshot = lifecycle.snapshot(&workspace).await;
         let initial_revision = snapshot.revision();
-        let Err(_write_error) = lifecycle.inner.try_write() else {
+        let Err(_write_error) = Arc::clone(&lifecycle.inner).try_write_owned() else {
             panic!("read snapshot should exclude lifecycle writes");
         };
 
         drop(snapshot);
-        drop(lifecycle.lock());
+        drop(lifecycle.lock(&workspace).await);
 
         assert_eq!(
-            lifecycle.snapshot().revision().0,
+            lifecycle.snapshot(&workspace).await.revision().0,
             initial_revision.0.wrapping_add(1)
         );
     }

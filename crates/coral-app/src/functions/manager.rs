@@ -83,7 +83,7 @@ impl FunctionManager {
     }
 
     #[cfg(test)]
-    pub(crate) fn install_validated_user_function(
+    pub(crate) async fn install_validated_user_function(
         &self,
         workspace_name: &WorkspaceName,
         raw_sql: &str,
@@ -91,9 +91,10 @@ impl FunctionManager {
     ) -> Result<InstalledFunction, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
         self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
+            .await
     }
 
-    pub(crate) fn install_validated_user_function_if_unchanged(
+    pub(crate) async fn install_validated_user_function_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         raw_sql: &str,
@@ -101,7 +102,11 @@ impl FunctionManager {
         revision: WorkspaceLifecycleRevision,
     ) -> Result<ValidatedFunctionInstall, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
-        let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged(revision) else {
+        let Some(_lifecycle_guard) = self
+            .lifecycle_lock
+            .lock_if_unchanged(workspace_name, revision)
+            .await
+        else {
             return Ok(ValidatedFunctionInstall::WorkspaceChanged);
         };
         self.install_user_function_artifact_with_lifecycle_lock(
@@ -113,13 +118,13 @@ impl FunctionManager {
     }
 
     #[cfg(test)]
-    fn install_user_function_artifact(
+    async fn install_user_function_artifact(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
     ) -> Result<InstalledFunction, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let _lifecycle_guard = self.lifecycle_lock.lock(workspace_name).await;
         self.install_user_function_artifact_with_lifecycle_lock(
             workspace_name,
             function_name,
@@ -299,12 +304,12 @@ impl FunctionManager {
             .collect()
     }
 
-    pub(crate) fn remove_user_function(
+    pub(crate) async fn remove_user_function(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
     ) -> Result<(), AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let _lifecycle_guard = self.lifecycle_lock.lock(workspace_name).await;
         let _state_lock = self.config_store.state_lock_exclusive()?;
         self.config_store
             .get_function_unlocked(workspace_name, function_name)?;
@@ -543,7 +548,7 @@ select 1 as id
         }
     }
 
-    fn install_fixture_function(
+    async fn install_fixture_function(
         manager: &FunctionManager,
         workspace: &WorkspaceName,
         raw_sql: &str,
@@ -551,6 +556,7 @@ select 1 as id
         let runtime_function = validated_function(raw_sql);
         manager
             .install_validated_user_function(workspace, raw_sql, &runtime_function)
+            .await
             .expect("install function")
     }
 
@@ -559,7 +565,7 @@ select 1 as id
         let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql_with_owner_query("review_queue");
-        install_fixture_function(&manager, &workspace, &raw_sql);
+        install_fixture_function(&manager, &workspace, &raw_sql).await;
         let function_name = FunctionName::parse("review_queue").expect("function name");
         std::fs::write(
             layout.function_file(&workspace, &function_name),
@@ -595,8 +601,8 @@ select 1 as id
     async fn list_functions_builds_one_inference_runtime_for_all_functions() {
         let (_temp, _layout, _config_store, manager) = fixture();
         let workspace = workspace();
-        install_fixture_function(&manager, &workspace, &function_sql("first"));
-        install_fixture_function(&manager, &workspace, &function_sql("second"));
+        install_fixture_function(&manager, &workspace, &function_sql("first")).await;
+        install_fixture_function(&manager, &workspace, &function_sql("second")).await;
         let runtime_builds = std::sync::atomic::AtomicUsize::new(0);
 
         let listed = manager
@@ -616,7 +622,7 @@ select 1 as id
         let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql_with_owner_query("review_queue");
-        let installed = install_fixture_function(&manager, &workspace, &raw_sql);
+        let installed = install_fixture_function(&manager, &workspace, &raw_sql).await;
         std::fs::write(
             layout.function_file(&workspace, &installed.name),
             raw_sql.replace(
@@ -644,7 +650,7 @@ select 1 as id
         let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
-        let installed = install_fixture_function(&manager, &workspace, &raw_sql);
+        let installed = install_fixture_function(&manager, &workspace, &raw_sql).await;
         std::fs::write(
             layout.function_file(&workspace, &installed.name),
             raw_sql.replace("name: review_queue", "name: renamed"),
@@ -664,6 +670,7 @@ select 1 as id
         assert!(error.contains("declares name 'renamed'"));
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("inventory name remains removable");
     }
 
@@ -672,7 +679,7 @@ select 1 as id
         let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let installed =
-            install_fixture_function(&manager, &workspace, &function_sql("missing_artifact"));
+            install_fixture_function(&manager, &workspace, &function_sql("missing_artifact")).await;
         std::fs::remove_file(layout.function_file(&workspace, &installed.name))
             .expect("remove existing artifact");
 
@@ -694,7 +701,7 @@ select 1 as id
         let (_temp, _layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
-        install_fixture_function(&manager, &workspace, &raw_sql);
+        install_fixture_function(&manager, &workspace, &raw_sql).await;
         let runtime = coral_engine::CoralQuery::prepare(&[], QueryRuntimeConfig::default())
             .await
             .expect("prepare runtime");
@@ -710,15 +717,16 @@ select 1 as id
         assert_eq!(runtime_function.result_columns.len(), 1);
     }
 
-    #[test]
-    fn remove_user_function_removes_inventory_and_artifacts() {
+    #[tokio::test]
+    async fn remove_user_function_removes_inventory_and_artifacts() {
         let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
-        let installed = install_fixture_function(&manager, &workspace, &raw_sql);
+        let installed = install_fixture_function(&manager, &workspace, &raw_sql).await;
 
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("remove function");
 
         assert!(
@@ -733,13 +741,14 @@ select 1 as id
         );
     }
 
-    #[test]
-    fn remove_user_function_reports_typed_missing_function() {
+    #[tokio::test]
+    async fn remove_user_function_reports_typed_missing_function() {
         let (_temp, _layout, _config_store, manager) = fixture();
         let function_name = FunctionName::parse("missing").expect("function name");
 
         let error = manager
             .remove_user_function(&workspace(), &function_name)
+            .await
             .expect_err("missing function should fail");
 
         assert!(matches!(
@@ -748,16 +757,16 @@ select 1 as id
         ));
     }
 
-    #[test]
-    fn install_user_function_waits_for_workspace_lifecycle_lock() {
+    #[tokio::test]
+    async fn install_user_function_waits_for_workspace_lifecycle_lock() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let config_store = ConfigStore::new(layout.clone());
         let lifecycle_lock = WorkspaceLifecycleLock::default();
         let manager = FunctionManager::new(config_store, &layout, lifecycle_lock.clone());
-        let lifecycle_guard = lifecycle_lock.lock();
         let workspace = workspace();
+        let lifecycle_guard = lifecycle_lock.lock(&workspace).await;
 
         let install_manager = manager.clone();
         let install_workspace = workspace.clone();
@@ -767,8 +776,15 @@ select 1 as id
             started_tx.send(()).expect("send started");
             let raw_sql = function_sql("review_queue");
             let runtime_function = validated_function(&raw_sql);
-            let result = install_manager
-                .install_validated_user_function(&install_workspace, &raw_sql, &runtime_function)
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime")
+                .block_on(install_manager.install_validated_user_function(
+                    &install_workspace,
+                    &raw_sql,
+                    &runtime_function,
+                ))
                 .map(|function| function.name.to_string())
                 .map_err(|error| error.to_string());
             done_tx.send(result).expect("send install result");
@@ -794,12 +810,12 @@ select 1 as id
         handle.join().expect("join install thread");
     }
 
-    #[test]
-    fn install_user_function_reports_inventory_and_restore_failures() {
+    #[tokio::test]
+    async fn install_user_function_reports_inventory_and_restore_failures() {
         let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let original_sql = function_sql("review_queue");
-        install_fixture_function(&manager, &workspace, &original_sql);
+        install_fixture_function(&manager, &workspace, &original_sql).await;
 
         let function_name = FunctionName::parse("review_queue").expect("function name");
         let replacement_sql = format!("{original_sql}\n");
@@ -816,6 +832,7 @@ select 1 as id
         let runtime_function = validated_function(&replacement_sql);
         let error = manager
             .install_validated_user_function(&workspace, &replacement_sql, &runtime_function)
+            .await
             .expect_err("inventory and restore failures should be reported together");
 
         let AppError::FailedPrecondition(message) = error else {
