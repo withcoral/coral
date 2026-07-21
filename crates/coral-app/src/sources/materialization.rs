@@ -442,7 +442,18 @@ pub(crate) fn load_v4_materialization_with_reporter(
         V4ProjectionCatalogOrigin::Materialized => ProjectionInputSyncMode::RecomputeInputExposure,
         V4ProjectionCatalogOrigin::Override => ProjectionInputSyncMode::PreserveExistingExposure,
     };
-    sync_projection_inputs(&plan, &mut projections, projection_sync_mode);
+    sync_projection_inputs(&plan, &mut projections, projection_sync_mode).map_err(|error| {
+        match projections_file.origin {
+            V4ProjectionCatalogOrigin::Materialized => {
+                incompatible_materialization_error(source_name, error.to_string())
+            }
+            V4ProjectionCatalogOrigin::Override => invalid_projection_override_error(
+                source_name,
+                &projections_file.path,
+                error.to_string(),
+            ),
+        }
+    })?;
     diagnostic_reporter.report_source_diagnostics(
         workspace_name,
         source_name,

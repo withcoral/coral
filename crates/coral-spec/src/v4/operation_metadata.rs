@@ -781,7 +781,7 @@ pub fn sync_projection_inputs(
     plan: &ValidatedSurfacePlan,
     projections: &mut ProjectionCatalog,
     mode: ProjectionInputSyncMode,
-) {
+) -> Result<()> {
     let operations = plan
         .semantic_ir()
         .operations
@@ -797,6 +797,22 @@ pub fn sync_projection_inputs(
             ProjectionKind::TableFunction { .. } => SqlInputExposure::FunctionArg,
         };
         for input in &mut projection.inputs {
+            // An input the operation does not declare would keep its SQL
+            // exposure while runtime lowering silently drops it from the wire
+            // request, so reject it here where the mismatch is actionable.
+            if !operation.inputs.iter().any(|operation_input| {
+                operation_input.location == input.source_location
+                    && operation_input.name == input.wire_name
+            }) {
+                return Err(ManifestError::validation(format!(
+                    "projection '{}' input '{}' does not match a {:?} input named '{}' on operation '{}'",
+                    projection.name,
+                    input.name,
+                    input.source_location,
+                    input.wire_name,
+                    operation.id
+                )));
+            }
             let pagination_owned =
                 plan.pagination_owns_input(operation, &input.wire_name, input.source_location);
             match mode {
@@ -814,6 +830,7 @@ pub fn sync_projection_inputs(
                 && plan.input_is_lookup_key(&operation.id, &input.wire_name);
         }
     }
+    Ok(())
 }
 
 fn input_exposure(
@@ -1135,6 +1152,32 @@ surface:
     }
 
     #[test]
+    fn projection_sync_rejects_input_missing_from_operation() {
+        let (manifest, imported) = imported();
+        let plan = imported.validated_plan().expect("plan");
+        let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+        let projection = catalog.projections.first_mut().expect("projection");
+        let mut stale = projection.inputs.first().expect("input").clone();
+        stale.name = "stale".to_string();
+        stale.wire_name = "renamed_upstream".to_string();
+        projection.inputs.push(stale);
+
+        let error = sync_projection_inputs(
+            &plan,
+            &mut catalog,
+            ProjectionInputSyncMode::PreserveExistingExposure,
+        )
+        .expect_err("stale override input must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("input 'stale' does not match a Query input named 'renamed_upstream'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn projection_override_identity_survives_policy_reconciliation() {
         let (manifest, imported) = imported();
         let plan = imported.validated_plan().expect("plan");
@@ -1150,7 +1193,8 @@ surface:
             &plan,
             &mut catalog,
             ProjectionInputSyncMode::PreserveExistingExposure,
-        );
+        )
+        .expect("sync");
 
         let projection = catalog.projections.first().expect("projection");
         assert_eq!(projection.name, "authored_items");
