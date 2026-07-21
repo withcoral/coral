@@ -368,7 +368,7 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain("route(':schemaName/:tableName', 'routes/schema-table.tsx')")
       expect(routeConfig).toContain("route(routePattern('workspaceTraces'), 'routes/traces.tsx', [")
       expect(routeConfig).toContain("route(':traceId', 'routes/trace-detail.tsx')")
-      // Settings is gated to the desktop build, but the route entry is still present.
+      // Settings stays in the shared app shell; desktop-only sections are gated in the route.
       expect(routeConfig).toContain("route(routePattern('settings'), 'routes/settings.tsx')")
 
       // Structural check: the same-origin resource route and onboarding stay

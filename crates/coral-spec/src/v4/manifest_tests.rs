@@ -466,3 +466,125 @@ surface:
         ManifestOAuthScopeDelimiter::Comma
     );
 }
+
+#[test]
+fn parses_and_normalizes_v4_identity_requirements() {
+    let manifest = parse_source_manifest_yaml(
+        r#"
+name: github
+dsl_version: 4
+identity_requirements:
+  accepts:
+    - id: " github_rest_read "
+      identity_specs: [" github_oauth ", github_pat]
+      audience: {host: github.com, port: 443}
+surface:
+  type: openapi
+  file: /tmp/github-openapi.yaml
+"#,
+    )
+    .expect("v4 manifest");
+    let accepted = manifest
+        .as_v4()
+        .and_then(|v4| v4.identity_requirements.as_ref())
+        .and_then(|requirements| requirements.accepts.first())
+        .expect("accepted identity requirement");
+
+    assert_eq!(accepted.id, "github_rest_read");
+    assert_eq!(accepted.identity_specs, ["github_oauth", "github_pat"]);
+    assert_eq!(
+        accepted.audience.get("host"),
+        Some(&serde_json::json!("github.com"))
+    );
+    assert_eq!(accepted.audience.get("port"), Some(&serde_json::json!(443)));
+}
+
+#[test]
+fn rejects_invalid_v4_identity_requirement_entries() {
+    let invalid = [
+        (
+            "  accepts:\n    - {id: github_rest_read, identity_specs: [github_oauth]}\n    - {id: \" github_rest_read \", identity_specs: [github_pat]}\n",
+            "duplicate identity requirement id 'github_rest_read'",
+        ),
+        (
+            "  accepts:\n    - {id: github_rest_read, identity_specs: [github_oauth, \" github_oauth \"]}\n",
+            "duplicate identity spec id 'github_oauth'",
+        ),
+    ];
+
+    for (requirements, expected) in invalid {
+        let raw = format!(
+            "name: github\ndsl_version: 4\nidentity_requirements:\n{requirements}surface:\n  type: openapi\n  file: /tmp/github-openapi.yaml\n"
+        );
+        let error = parse_source_manifest_yaml(&raw).expect_err("duplicates should fail");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_secret_inputs_only_on_identity_gated_sources() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+inputs:
+  TOKEN: {kind: secret}
+identity_requirements:
+  accepts:
+    - {id: github_rest_read, identity_specs: [github_oauth]}
+surface:
+  type: openapi
+  file: /tmp/github-openapi.yaml
+",
+    )
+    .expect_err("gated source should reject legacy secrets");
+
+    assert!(
+        error.to_string().contains(
+            "input 'TOKEN' must not use kind: secret in DSL v4; use identity_requirements and identity specs for credentials"
+        ),
+        "unexpected error: {error}"
+    );
+
+    parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+inputs:
+  TOKEN: {kind: secret}
+surface:
+  type: openapi
+  file: /tmp/github-openapi.yaml
+",
+    )
+    .expect("ungated source retains legacy secret inputs");
+}
+
+#[test]
+fn rejects_identity_requirements_on_mcp_sources() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+identity_requirements:
+  accepts:
+    - {id: demo, identity_specs: [demo_oauth]}
+surface:
+  type: mcp
+  server:
+    transport: stdio
+    command: demo-mcp-server
+",
+    )
+    .expect_err("identity requirements are OpenAPI-only");
+
+    assert!(
+        error
+            .to_string()
+            .contains("identity_requirements are only supported for OpenAPI sources"),
+        "unexpected error: {error}"
+    );
+}

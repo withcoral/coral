@@ -756,6 +756,7 @@ impl ServerHandler for CoralMcpServer {
             &self.workspace().name,
             self.startup_context.source_names(),
             self.startup_context.query_examples(),
+            self.options.observed_values_search_enabled,
         ))
     }
 
@@ -790,6 +791,7 @@ impl ServerHandler for CoralMcpServer {
                 ToolAvailability {
                     tasks_enabled: self.options.tasks_enabled,
                     feedback_enabled: self.options.feedback_enabled,
+                    observed_values_search_enabled: self.options.observed_values_search_enabled,
                 },
             );
             Ok(ListToolsResult::with_all_items(tools))
@@ -870,7 +872,12 @@ impl ServerHandler for CoralMcpServer {
                         .map_err(|status| status_to_error_data(&status))?;
                     Ok(ReadResourceResult::new(vec![
                         ResourceContents::text(
-                            guide_resource_content(&sources, &tables, &table_function_schema_names),
+                            guide_resource_content(
+                                &sources,
+                                &tables,
+                                &table_function_schema_names,
+                                self.options.observed_values_search_enabled,
+                            ),
                             request.uri,
                         )
                         .with_mime_type("text/markdown"),

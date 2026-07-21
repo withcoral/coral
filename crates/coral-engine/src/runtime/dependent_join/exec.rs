@@ -29,9 +29,7 @@ use crate::runtime::dependent_join::fetcher::{BindingFetcher, BindingFetcherConf
 use crate::runtime::dependent_join::logical::BindingKey;
 use crate::runtime::dependent_join::output::{BuildJoinedBatchesConfig, build_joined_batches};
 use crate::runtime::dependent_join::state::{DependentJoinRuntimeState, ResolverCaps};
-use crate::runtime::memory::{
-    CoralExecutionPlan, CoralMemoryBehavior, RetainedMemory, RetainedRecordBatches,
-};
+use crate::runtime::memory::{RetainedMemory, RetainedRecordBatches};
 
 pub(crate) struct DependentJoinExec {
     resolver: Arc<dyn ExecutionPlan>,
@@ -205,18 +203,6 @@ impl DisplayAs for DependentJoinExec {
     }
 }
 
-impl CoralExecutionPlan for DependentJoinExec {
-    fn memory_behavior(&self) -> CoralMemoryBehavior {
-        CoralMemoryBehavior::RetainsMemory {
-            consumer_name: format!(
-                "DependentJoinExec({}.{})",
-                self.dependent_source_schema,
-                self.table.name()
-            ),
-        }
-    }
-}
-
 fn format_binding_keys(binding_keys: &[BindingKey]) -> String {
     let rendered = binding_keys
         .iter()
@@ -326,10 +312,14 @@ impl ExecutionPlan for DependentJoinExec {
         let stream_schema = Arc::clone(&self.output_schema);
         let retained_stream_schema = Arc::clone(&self.output_schema);
         let metrics = DependentJoinMetrics::new(&self.metrics, partition);
-        let memory = self
-            .memory_behavior()
-            .retained_memory(context.as_ref())
-            .expect("DependentJoinExec must retain memory");
+        let memory = RetainedMemory::for_operator(
+            context.as_ref(),
+            format!(
+                "DependentJoinExec({}.{})",
+                self.dependent_source_schema,
+                self.table.name()
+            ),
+        );
 
         let output = stream::once(async move {
             execute_dependent_join(

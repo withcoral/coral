@@ -4,7 +4,7 @@ use crate::{ManifestError, Result};
 
 pub fn normalize_source_document(bytes: &[u8]) -> Result<String> {
     let value: Value = serde_yaml::from_slice(bytes).map_err(ManifestError::parse_yaml)?;
-    serde_yaml::to_string(&value).map_err(ManifestError::parse_yaml)
+    serde_yaml::to_string(&value).map_err(ManifestError::serialize_yaml)
 }
 
 #[derive(Debug, Clone, Default)]

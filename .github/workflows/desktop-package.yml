@@ -3,6 +3,8 @@ name: Desktop macOS package
 on:
   workflow_call:
   workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
@@ -32,17 +34,17 @@ jobs:
         with:
           shared-key: coral-desktop-macos-universal
           cache-on-failure: true
-          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
 
       - name: Set up Node without npm cache
-        if: ${{ github.event_name != 'workflow_dispatch' }}
+        if: ${{ github.event_name != 'workflow_dispatch' && github.event_name != 'schedule' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version

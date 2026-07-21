@@ -20,9 +20,9 @@ use coral_api::v1::{
     AddFunctionResponse, CatalogRebuildResult, DiscoverSourcesResponse, ExecuteSqlResponse,
     Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady,
     ListFunctionsResponse, ListSourcesResponse, ListWorkspacesResponse, RebuildSearchIndexResponse,
-    SearchDataScope, SearchMaintenanceResult, SearchMaintenanceState, SearchProvider, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function, search_clear_target,
-    search_maintenance_result,
+    SearchDataScope, SearchIndexProvider, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function,
+    search_clear_target, search_maintenance_result,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -1061,6 +1061,15 @@ async fn search_index_rebuild_calls_app_maintenance_rpc() {
         stdout.contains("Rebuilt catalog search index"),
         "expected rebuild output: {stdout}"
     );
+    assert!(
+        stdout.contains("Rebuilt observed-values search index")
+            && stdout.contains("Pre-rebuild queue: processed 2")
+            && stdout.contains("upserted 2")
+            && stdout.contains("wrote 2 FTS rows")
+            && stdout.contains("failed 1")
+            && stdout.contains("remaining 1"),
+        "expected structured observed pre-rebuild drain output: {stdout}"
+    );
 
     assert!(
         server.search_requests().is_empty(),
@@ -1069,6 +1078,7 @@ async fn search_index_rebuild_calls_app_maintenance_rpc() {
     let requests = server.rebuild_search_index_requests();
     assert_eq!(requests.len(), 1, "expected one rebuild call");
     assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].provider, SearchIndexProvider::All as i32);
     assert!(requests[0].force);
 
     server.shutdown().await;
@@ -1112,6 +1122,47 @@ async fn search_index_rebuild_reports_current_projection_as_skipped() {
         !stdout.contains("Rebuilt catalog"),
         "no-op rebuild must not claim a rebuild: {stdout}"
     );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_index_drain_calls_app_maintenance_rpc() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search-index", "drain", "--budget-ms", "2500"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Drained observed-values search queue"),
+        "expected drain output: {stdout}"
+    );
+    assert!(
+        stdout.contains("dropped 1"),
+        "expected dropped storage job count: {stdout}"
+    );
+
+    assert!(
+        server.search_requests().is_empty(),
+        "maintenance command must not call Search"
+    );
+    let requests = server.drain_search_queue_requests();
+    assert_eq!(requests.len(), 1, "expected one drain call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].budget_ms, 2500);
+
+    server
+        .cmd()
+        .args(["search-index", "drain"])
+        .assert()
+        .success();
+    let requests = server.drain_search_queue_requests();
+    assert_eq!(requests.len(), 2, "expected second drain call");
+    assert_eq!(requests[1].budget_ms, 0);
 
     server.shutdown().await;
 }
@@ -1179,6 +1230,36 @@ async fn search_index_clear_calls_app_maintenance_rpc() {
     let requests = server.clear_search_data_requests();
     assert_eq!(requests.len(), 2, "expected second clear call");
     assert_workspace_name(requests[1].workspace.as_ref(), "work");
+
+    server
+        .cmd()
+        .args([
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--source",
+            "searchable",
+            "--workspace",
+            "default",
+            "--yes",
+        ])
+        .assert()
+        .success();
+    let requests = server.clear_search_data_requests();
+    assert_eq!(requests.len(), 3, "expected source clear call");
+    assert_default_workspace(requests[2].workspace.as_ref());
+    assert_eq!(requests[2].scope, SearchDataScope::All as i32);
+    match requests[2]
+        .target
+        .as_ref()
+        .and_then(|target| target.target.as_ref())
+    {
+        Some(search_clear_target::Target::SourceName(source_name)) => {
+            assert_eq!(source_name, "searchable");
+        }
+        other => panic!("expected source clear target, got {other:?}"),
+    }
 
     server.shutdown().await;
 }
