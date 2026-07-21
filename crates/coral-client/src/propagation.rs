@@ -32,11 +32,12 @@ impl BearerToken {
     /// Returns [`ClientError::InvalidBearerToken`] when the token is empty or
     /// cannot be represented as ASCII gRPC metadata.
     pub fn new(token: impl AsRef<str>) -> Result<Self, ClientError> {
-        let token = token.as_ref().trim();
+        let token = token.as_ref().trim_start();
         let token = match token.split_at_checked(7) {
             Some((prefix, token)) if prefix.eq_ignore_ascii_case("bearer ") => token,
             _ => token,
-        };
+        }
+        .trim_end();
         if token.is_empty() || token.chars().any(char::is_whitespace) {
             return Err(ClientError::InvalidBearerToken(
                 "token must be non-empty and contain no whitespace".to_string(),
@@ -226,7 +227,7 @@ mod tests {
 
     #[test]
     fn bearer_token_rejects_empty_and_invalid_metadata() {
-        for token in ["", "  ", "Bearer \nsecret"] {
+        for token in ["", "  ", "Bearer ", "Bearer \nsecret"] {
             assert!(matches!(
                 BearerToken::new(token),
                 Err(ClientError::InvalidBearerToken(_))
