@@ -240,6 +240,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: macos-unsigned-${{ matrix.target }}
+          if-no-files-found: error
           path: unsigned-${{ matrix.target }}/coral
 
   sign-notarize-macos:
@@ -323,6 +324,7 @@ jobs:
   build-desktop-macos:
     needs:
       - validate-release-ref
+      - build
     environment: release
     runs-on: macos-latest
     env:
@@ -345,18 +347,135 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
+      - name: Download unsigned x86_64 macOS binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-unsigned-x86_64-apple-darwin
+          path: ${{ runner.temp }}/coral-desktop-cli/x86_64
+
+      - name: Download unsigned arm64 macOS binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-unsigned-aarch64-apple-darwin
+          path: ${{ runner.temp }}/coral-desktop-cli/arm64
+
+      - name: Validate and combine macOS binaries
+        id: universal-coral
+        shell: bash
+        env:
+          RELEASE_COMMIT_SHA: ${{ needs.validate-release-ref.outputs.commit-sha }}
+          X86_64_ARTIFACT_DIR: ${{ runner.temp }}/coral-desktop-cli/x86_64
+          ARM64_ARTIFACT_DIR: ${{ runner.temp }}/coral-desktop-cli/arm64
+          UNIVERSAL_DIR: ${{ runner.temp }}/coral-desktop-cli/universal
+        run: |
+          set -euo pipefail
+
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [ "$checked_out_commit" != "$RELEASE_COMMIT_SHA" ]; then
+            echo "Checked-out commit ${checked_out_commit} does not match validated release commit ${RELEASE_COMMIT_SHA}." >&2
+            exit 1
+          fi
+
+          require_single_coral() {
+            local artifact_dir="$1"
+            local expected_arch="$2"
+            local label="$3"
+            local files=()
+            while IFS= read -r -d '' file_path; do
+              files+=("$file_path")
+            done < <(find "$artifact_dir" -type f -print0)
+
+            if [ "${#files[@]}" -ne 1 ]; then
+              echo "${label} artifact must contain exactly one file; found ${#files[@]}." >&2
+              find "$artifact_dir" -maxdepth 3 -print >&2
+              exit 1
+            fi
+
+            local binary="${files[0]}"
+            if [ "$(basename "$binary")" != "coral" ]; then
+              echo "${label} artifact contains unexpected filename: ${binary}." >&2
+              exit 1
+            fi
+            if [ ! -s "$binary" ]; then
+              echo "${label} artifact contains an empty coral binary: ${binary}." >&2
+              exit 1
+            fi
+            chmod 755 "$binary"
+
+            local actual_archs
+            actual_archs="$(lipo -archs "$binary")"
+            if [ "$actual_archs" != "$expected_arch" ]; then
+              echo "${label} coral must be thin ${expected_arch}; lipo reported '${actual_archs}'." >&2
+              exit 1
+            fi
+            if ! file "$binary" | grep -Eq "Mach-O 64-bit executable ${expected_arch}([, ]|$)"; then
+              echo "${label} coral is not the expected ${expected_arch} Mach-O executable:" >&2
+              file "$binary" >&2
+              exit 1
+            fi
+
+            printf '%s\n' "$binary"
+          }
+
+          x86_64_binary="$(require_single_coral "$X86_64_ARTIFACT_DIR" x86_64 x86_64)"
+          arm64_binary="$(require_single_coral "$ARM64_ARTIFACT_DIR" arm64 arm64)"
+
+          mkdir -p "$UNIVERSAL_DIR"
+          universal_binary="$UNIVERSAL_DIR/coral"
+          lipo -create "$x86_64_binary" "$arm64_binary" -output "$universal_binary"
+          chmod 755 "$universal_binary"
+
+          universal_archs="$(lipo -archs "$universal_binary")"
+          if [ "$universal_archs" != "x86_64 arm64" ] && [ "$universal_archs" != "arm64 x86_64" ]; then
+            echo "Universal coral must contain exactly x86_64 and arm64; lipo reported '${universal_archs}'." >&2
+            exit 1
+          fi
+
+          expected_version="${TAG_NAME#v}"
+          expected_commit="$(git rev-parse --short "$RELEASE_COMMIT_SHA")"
+          expected_output="coral ${expected_version}+${expected_commit}"
+          version_output="$("$universal_binary" --version)"
+          if [ "$version_output" != "$expected_output" ]; then
+            echo "Universal coral version mismatch: expected '${expected_output}', got '${version_output}'." >&2
+            exit 1
+          fi
+
+          checksum="$(shasum -a 256 "$universal_binary" | awk '{print $1}')"
+          echo "Combined same-run macOS artifacts for ${RELEASE_COMMIT_SHA}."
+          echo "Universal coral architectures: ${universal_archs}"
+          echo "Universal coral SHA-256: ${checksum}"
+          echo "path=${universal_binary}" >> "$GITHUB_OUTPUT"
+
       - name: Build xtask
         run: cargo build --locked -p xtask
 
       # Build before Apple credentials enter the environment: the desktop
-      # build installs UI and Reef dependencies and executes Rust build scripts.
-      # The release flag is compiled into the main process to enable updates;
-      # signing and notarization still happen only in the credentialed step.
+      # build installs and compiles Reef, then stages the already-built universal
+      # CLI from this run's matrix artifacts. The release flag is compiled into
+      # the main process to enable updates; signing and notarization still happen
+      # only in the credentialed step.
       - name: Build universal desktop inputs
         env:
           CORAL_DESKTOP_RELEASE: "1"
-          CORAL_DESKTOP_UNIVERSAL: "1"
+          CORAL_DESKTOP_PREBUILT_CORAL: ${{ steps.universal-coral.outputs.path }}
         run: npm run build --prefix apps/desktop
+
+      - name: Verify staged universal sidecar
+        shell: bash
+        env:
+          UNIVERSAL_CORAL: ${{ steps.universal-coral.outputs.path }}
+        run: |
+          set -euo pipefail
+          staged_coral="apps/desktop/resources/coral/coral"
+          test -s "$staged_coral"
+          test -x "$staged_coral"
+          cmp "$UNIVERSAL_CORAL" "$staged_coral"
+          staged_archs="$(lipo -archs "$staged_coral")"
+          if [ "$staged_archs" != "x86_64 arm64" ] && [ "$staged_archs" != "arm64 x86_64" ]; then
+            echo "Staged desktop sidecar must contain exactly x86_64 and arm64; lipo reported '${staged_archs}'." >&2
+            exit 1
+          fi
+          echo "Staged desktop sidecar architectures: ${staged_archs}"
 
       - name: Verify release updater bundle
         run: npm run verify:release-build --prefix apps/desktop
@@ -375,6 +494,32 @@ jobs:
           ./target/debug/xtask release-desktop-macos-package \
             --tag "$TAG_NAME" \
             --work-dir "$RUNNER_TEMP/coral-desktop-release"
+
+      - name: Verify packaged universal sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          packaged_sidecars=()
+          while IFS= read -r -d '' sidecar; do
+            packaged_sidecars+=("$sidecar")
+          done < <(find apps/desktop/dist -type f \
+            -path '*/Coral.app/Contents/Resources/coral/coral' -print0)
+
+          if [ "${#packaged_sidecars[@]}" -ne 1 ]; then
+            echo "Expected exactly one packaged Coral.app sidecar; found ${#packaged_sidecars[@]}." >&2
+            find apps/desktop/dist -maxdepth 5 -print >&2
+            exit 1
+          fi
+
+          packaged_coral="${packaged_sidecars[0]}"
+          test -s "$packaged_coral"
+          test -x "$packaged_coral"
+          packaged_archs="$(lipo -archs "$packaged_coral")"
+          if [ "$packaged_archs" != "x86_64 arm64" ] && [ "$packaged_archs" != "arm64 x86_64" ]; then
+            echo "Packaged desktop sidecar must contain exactly x86_64 and arm64; lipo reported '${packaged_archs}'." >&2
+            exit 1
+          fi
+          echo "Packaged desktop sidecar architectures: ${packaged_archs}"
 
       - name: Upload desktop artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

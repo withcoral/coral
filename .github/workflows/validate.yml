@@ -40,7 +40,8 @@ jobs:
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
       reef-checks: ${{ steps.filter.outputs.reef-checks }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
-      desktop-package-macos: ${{ steps.filter.outputs.desktop-package-macos }}
+      desktop-package-smoke: ${{ steps.filter.outputs.desktop-package-smoke == 'true' || steps.desktop-package-source-filter.outputs.desktop-source == 'true' || steps.desktop-package-source-filter.outputs.reef-source == 'true' }}
+      desktop-package-universal: ${{ steps.filter.outputs.desktop-package-universal }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
@@ -97,7 +98,14 @@ jobs:
             desktop-checks:
               - '.github/workflows/validate.yml'
               - 'apps/desktop/**'
-            desktop-package-macos:
+            desktop-package-smoke:
+              - 'apps/desktop/electron.vite.config.ts'
+              - 'apps/desktop/tsconfig.json'
+              # Reef's production client and server outputs are embedded in
+              # Coral.app, so runtime changes need the same assembly smoke.
+              - 'apps/reef/public/**'
+              - 'crates/coral-api/proto/**'
+            desktop-package-universal:
               - '.github/workflows/validate.yml'
               - '.github/workflows/release.yml'
               - '.github/workflows/desktop-package.yml'
@@ -108,7 +116,27 @@ jobs:
               - 'rust-toolchain'
               - 'crates/**/Cargo.toml'
               - 'crates/**/build.rs'
-              - 'apps/desktop/**'
+              - 'apps/desktop/.node-version'
+              - 'apps/desktop/package.json'
+              - 'apps/desktop/package-lock.json'
+              - 'apps/desktop/electron-builder.config.ts'
+              - 'apps/desktop/resources/**'
+              - 'apps/desktop/scripts/stage-coral.mjs'
+              - 'apps/desktop/scripts/stage-coral-plan.mjs'
+              - 'apps/desktop/scripts/clean-dist.mjs'
+              - 'apps/desktop/scripts/copy-reef-server.mjs'
+              - 'apps/desktop/scripts/verify-dist.mjs'
+              - 'apps/desktop/scripts/verify-release-build.mjs'
+              - 'apps/desktop/scripts/verify-package-dir.mjs'
+              # These inputs control the Reef dependency graph, generated
+              # client, or build layout that Electron packages.
+              - 'apps/reef/.node-version'
+              - 'apps/reef/package.json'
+              - 'apps/reef/package-lock.json'
+              - 'apps/reef/buf.gen.yaml'
+              - 'apps/reef/react-router.config.ts'
+              - 'apps/reef/tsconfig.json'
+              - 'apps/reef/vite.config.ts'
             proto-lint:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -161,6 +189,36 @@ jobs:
               - 'xtask/src/main.rs'
               - 'xtask/src/perf.rs'
               - 'sources/core/github/**'
+
+      # Keep test and Storybook-only source changes out of packaging. This
+      # separate filter uses `every` so each file must match its source tree
+      # and all exclusion rules; the main filter uses the default OR behavior.
+      - name: Detect package source changes
+        id: desktop-package-source-filter
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          predicate-quantifier: every
+          filters: |
+            desktop-source:
+              - 'apps/desktop/src/**'
+              - '!**/*.test'
+              - '!**/*.test.*'
+              - '!**/*.spec'
+              - '!**/*.spec.*'
+              - '!**/*.stories'
+              - '!**/*.stories.*'
+              - '!apps/desktop/src/**/__tests__/**'
+              - '!apps/desktop/src/**/__stories__/**'
+            reef-source:
+              - 'apps/reef/app/**'
+              - '!**/*.test'
+              - '!**/*.test.*'
+              - '!**/*.spec'
+              - '!**/*.spec.*'
+              - '!**/*.stories'
+              - '!**/*.stories.*'
+              - '!apps/reef/app/**/__tests__/**'
+              - '!apps/reef/app/**/__stories__/**'
 
   rust-checks:
     name: Rust checks
@@ -523,13 +581,25 @@ jobs:
       - name: Test desktop
         run: npm test --prefix apps/desktop
 
-  desktop-package-macos:
-    name: Desktop macOS package
+  desktop-package-universal:
+    name: Desktop macOS universal package
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop-package-macos == 'true' }}
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop-package-universal == 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/desktop-package.yml
+    with:
+      mode: universal
+
+  desktop-package-smoke:
+    name: Desktop macOS package smoke
+    needs: changes
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop-package-smoke == 'true' && needs.changes.outputs.desktop-package-universal != 'true' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-package.yml
+    with:
+      mode: smoke
 
   proto-lint:
     name: Lint protobuf API
@@ -756,7 +826,8 @@ jobs:
         ui-tests,
         reef-checks,
         desktop-checks,
-        desktop-package-macos,
+        desktop-package-universal,
+        desktop-package-smoke,
         proto-lint,
         gha-security-audit-pr,
         gha-security-audit-sarif,
@@ -780,7 +851,8 @@ jobs:
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
-          DESKTOP_PACKAGE_MACOS_RESULT: ${{ needs.desktop-package-macos.result }}
+          DESKTOP_PACKAGE_UNIVERSAL_RESULT: ${{ needs.desktop-package-universal.result }}
+          DESKTOP_PACKAGE_SMOKE_RESULT: ${{ needs.desktop-package-smoke.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
           GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
@@ -799,7 +871,8 @@ jobs:
             "ui-tests:$UI_TESTS_RESULT"
             "reef-checks:$REEF_CHECKS_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
-            "desktop-package-macos:$DESKTOP_PACKAGE_MACOS_RESULT"
+            "desktop-package-universal:$DESKTOP_PACKAGE_UNIVERSAL_RESULT"
+            "desktop-package-smoke:$DESKTOP_PACKAGE_SMOKE_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
             "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"

@@ -34,6 +34,7 @@ test('non-release packages are explicitly unsigned', () => {
   const config = createConfig({})
 
   assert.equal(config.forceCodeSigning, false)
+  assert.equal(config.afterPack, undefined)
   assert.equal(config.mac?.identity, null)
   assert.equal(config.mac?.hardenedRuntime, false)
   assert.equal(config.mac?.entitlements, null)
@@ -48,6 +49,7 @@ test('release packages enable strict signing and notarization', () => {
   })
 
   assert.equal(config.forceCodeSigning, true)
+  assert.equal(typeof config.afterPack, 'function')
   assert.equal(config.mac?.identity, undefined)
   assert.equal(config.mac?.hardenedRuntime, true)
   assert.equal(config.mac?.entitlements, 'resources/entitlements.mac.plist')

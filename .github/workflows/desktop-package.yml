@@ -2,7 +2,21 @@ name: Desktop macOS package
 
 on:
   workflow_call:
+    inputs:
+      mode:
+        description: Packaging validation mode (smoke or universal)
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Packaging validation mode
+        required: true
+        default: universal
+        type: choice
+        options:
+          - universal
+          - smoke
 
 permissions:
   contents: read
@@ -17,17 +31,34 @@ env:
 
 jobs:
   package:
-    name: Build unsigned package
-    runs-on: macos-latest
+    name: Validate desktop package (${{ inputs.mode }})
+    # The smoke lane must match the published aarch64 sidecar. Universal lipo
+    # builds also work on the ARM runner.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
+      - name: Validate packaging mode
+        env:
+          PACKAGE_MODE: ${{ inputs.mode }}
+        run: |
+          case "$PACKAGE_MODE" in
+            smoke|universal) ;;
+            *)
+              echo "Unsupported desktop packaging mode: $PACKAGE_MODE" >&2
+              echo "Expected one of: smoke, universal" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Install Rust toolchain
+        if: ${{ inputs.mode == 'universal' }}
         run: rustup show
 
       - name: Cache Rust artifacts
+        if: ${{ inputs.mode == 'universal' }}
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: coral-desktop-macos-universal
@@ -58,17 +89,122 @@ jobs:
             apps/desktop/resources/entitlements.mac.plist \
             apps/desktop/resources/entitlements.mac.inherit.plist
 
-      - name: Package desktop app
+      - name: Check desktop
+        run: npm run check --prefix apps/desktop
+
+      - name: Test desktop
+        run: npm test --prefix apps/desktop
+
+      - name: Resolve and verify published ARM sidecar
+        if: ${{ inputs.mode == 'smoke' }}
+        id: smoke-sidecar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          runner_arch="$(uname -m)"
+          if [ "$runner_arch" != "arm64" ]; then
+            echo "Desktop package smoke requires an arm64 runner; found: $runner_arch" >&2
+            exit 1
+          fi
+
+          archive_name="coral-aarch64-apple-darwin.tar.gz"
+          download_dir="$(mktemp -d "$RUNNER_TEMP/coral-desktop-smoke-download.XXXXXX")"
+          extract_dir="$(mktemp -d "$RUNNER_TEMP/coral-desktop-smoke-sidecar.XXXXXX")"
+
+          release_tag="$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name')"
+          if [ -z "$release_tag" ]; then
+            echo "Could not resolve the latest published Coral release tag" >&2
+            exit 1
+          fi
+          echo "Using published Coral release: $release_tag"
+
+          gh release download "$release_tag" \
+            --repo "$REPOSITORY" \
+            --dir "$download_dir" \
+            --pattern "$archive_name" \
+            --pattern checksums.sha256
+
+          archive_path="$download_dir/$archive_name"
+          checksums_path="$download_dir/checksums.sha256"
+          if [ ! -s "$archive_path" ]; then
+            echo "Downloaded Coral archive is missing or empty: $archive_path" >&2
+            exit 1
+          fi
+          if [ ! -s "$checksums_path" ]; then
+            echo "Downloaded checksum file is missing or empty: $checksums_path" >&2
+            exit 1
+          fi
+
+          checksum_matches="$download_dir/checksum-matches"
+          awk -v name="$archive_name" \
+            '($2 == name || $2 == ("*" name)) && length($1) == 64 { print $1 }' \
+            "$checksums_path" > "$checksum_matches"
+          checksum_count="$(wc -l < "$checksum_matches" | tr -d '[:space:]')"
+          if [ "$checksum_count" != "1" ]; then
+            echo "Expected exactly one checksum for $archive_name; found $checksum_count" >&2
+            exit 1
+          fi
+
+          expected_checksum="$(tr '[:upper:]' '[:lower:]' < "$checksum_matches")"
+          actual_checksum="$(shasum -a 256 "$archive_path" | awk '{ print $1 }')"
+          if [ "$actual_checksum" != "$expected_checksum" ]; then
+            echo "Checksum verification failed for $archive_name" >&2
+            echo "Expected: $expected_checksum" >&2
+            echo "Actual:   $actual_checksum" >&2
+            exit 1
+          fi
+          echo "Verified checksum for $archive_name"
+
+          tar -xzf "$archive_path" -C "$extract_dir"
+          coral_path="$extract_dir/coral"
+          if [ ! -f "$coral_path" ]; then
+            echo "Published archive did not contain the expected coral executable" >&2
+            exit 1
+          fi
+          if [ ! -s "$coral_path" ]; then
+            echo "Published coral executable is empty: $coral_path" >&2
+            exit 1
+          fi
+          if [ ! -x "$coral_path" ]; then
+            echo "Published coral executable is not executable: $coral_path" >&2
+            exit 1
+          fi
+
+          file "$coral_path"
+          sidecar_archs="$(lipo -archs "$coral_path")"
+          if [ "$sidecar_archs" != "arm64" ]; then
+            echo "Expected a thin arm64 Coral sidecar; found: $sidecar_archs" >&2
+            exit 1
+          fi
+          echo "Verified thin arm64 sidecar: $coral_path"
+          echo "coral-path=$coral_path" >> "$GITHUB_OUTPUT"
+
+      - name: Package native unpacked desktop app
+        if: ${{ inputs.mode == 'smoke' }}
+        env:
+          CORAL_DESKTOP_PREBUILT_CORAL: ${{ steps.smoke-sidecar.outputs.coral-path }}
+        run: npm run package:mac:smoke --prefix apps/desktop
+
+      - name: Verify native unpacked desktop app
+        if: ${{ inputs.mode == 'smoke' }}
+        run: node apps/desktop/scripts/verify-package-dir.mjs apps/desktop/dist
+
+      - name: Package universal desktop app
+        if: ${{ inputs.mode == 'universal' }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run package:mac --prefix apps/desktop
 
-      - name: Verify desktop package artifacts
+      - name: Verify universal desktop package artifacts
+        if: ${{ inputs.mode == 'universal' }}
         run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist
 
       # PR and manual builds are available for inspection for one week.
       - name: Upload desktop package artifact
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+        if: ${{ inputs.mode == 'universal' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-desktop-macos-unsigned

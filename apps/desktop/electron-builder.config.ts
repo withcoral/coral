@@ -1,6 +1,8 @@
+import { execFileSync } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
+import { join } from 'node:path'
 
-import type { Configuration } from 'electron-builder'
+import type { AfterPackContext, Configuration } from 'electron-builder'
 
 const API_KEY_NOTARIZATION_ENV = [
   'APPLE_API_KEY',
@@ -36,6 +38,49 @@ function requireNotarizationCredentials(env: NodeJS.ProcessEnv): void {
   }
 }
 
+export function verifyUniversalReleaseSidecar(context: AfterPackContext): void {
+  const appName = `${context.packager.appInfo.productFilename}.app`
+  const sidecarPath = join(
+    context.appOutDir,
+    appName,
+    'Contents',
+    'Resources',
+    'coral',
+    'coral',
+  )
+
+  let sidecarMetadata
+  try {
+    sidecarMetadata = statSync(sidecarPath)
+    accessSync(sidecarPath, constants.R_OK | constants.X_OK)
+  } catch {
+    throw new Error(`release desktop sidecar must be a readable, executable file: ${sidecarPath}`)
+  }
+  if (!sidecarMetadata.isFile() || sidecarMetadata.size === 0) {
+    throw new Error(`release desktop sidecar must be a readable, executable file: ${sidecarPath}`)
+  }
+
+  const architectures = execFileSync('lipo', ['-archs', sidecarPath], {
+    encoding: 'utf8',
+  })
+    .trim()
+    .split(/\s+/)
+    .sort()
+  if (
+    architectures.length !== 2 ||
+    architectures[0] !== 'arm64' ||
+    architectures[1] !== 'x86_64'
+  ) {
+    throw new Error(
+      `release desktop sidecar must contain exactly arm64 and x86_64; lipo reported '${architectures.join(' ')}'`,
+    )
+  }
+
+  console.info(
+    `[desktop-package] verified pre-sign sidecar architectures: ${architectures.join(' ')}`,
+  )
+}
+
 export function createConfig(env: NodeJS.ProcessEnv = process.env): Configuration {
   const releaseBuild = env.CORAL_DESKTOP_RELEASE === '1'
   if (releaseBuild) requireNotarizationCredentials(env)
@@ -56,6 +101,10 @@ export function createConfig(env: NodeJS.ProcessEnv = process.env): Configuratio
       output: 'dist',
       buildResources: 'resources',
     },
+    // afterPack runs after Coral.app is assembled but before electron-builder
+    // signs it, so release packaging fails before signing begins if the staged
+    // sidecar lost either architecture.
+    afterPack: releaseBuild ? verifyUniversalReleaseSidecar : undefined,
     files: ['out/**/*', 'package.json'],
     extraResources: [
       {

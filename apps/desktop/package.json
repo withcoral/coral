@@ -14,7 +14,7 @@
     "postbuild": "node ./scripts/copy-reef-server.mjs",
     "type-check": "tsc --noEmit",
     "check": "npm run type-check && npm run test:config",
-    "test:config": "node --test scripts/electron-builder-config.test.mjs scripts/electron-vite-config.test.mjs",
+    "test:config": "node --test scripts/electron-builder-config.test.mjs scripts/electron-vite-config.test.mjs scripts/stage-coral.test.mjs scripts/verify-package-dir.test.mjs",
     "test": "vitest run",
     "verify:release-build": "node ./scripts/verify-release-build.mjs",
     "prepackage": "npm run build",
@@ -26,6 +26,8 @@
     "prepackage:mac": "CORAL_DESKTOP_UNIVERSAL=1 npm run build",
     "package:mac": "npm run package:mac:prepared",
     "package:mac:prepared": "electron-builder --mac --universal --publish never --config electron-builder.config.ts",
+    "prepackage:mac:smoke": "node -e \"if (!process.env.CORAL_DESKTOP_PREBUILT_CORAL?.trim()) throw new Error('package:mac:smoke requires CORAL_DESKTOP_PREBUILT_CORAL')\" && npm run build",
+    "package:mac:smoke": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
   "dependencies": {
@@ -52,6 +54,7 @@
     "tinykeys": "4.0.0"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@types/node": "^22.19.2",
     "electron": "^42.3.3",
     "electron-builder": "^26.15.2",
