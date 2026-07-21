@@ -846,16 +846,17 @@ fn validate_semantic_ir(
     {
         return Err("semantic IR identity mismatch".to_string());
     }
-    if semantic_ir.importer_version != expected_importer_version(manifest.surface.surface_type) {
+    if semantic_ir.importer_version != expected_importer_version(manifest.surface.surface_type)? {
         return Err("semantic IR importer version mismatch".to_string());
     }
     Ok(())
 }
 
-fn expected_importer_version(surface_type: SurfaceType) -> &'static str {
+fn expected_importer_version(surface_type: SurfaceType) -> Result<&'static str, String> {
     match surface_type {
-        SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
-        SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+        SurfaceType::OpenApi => Ok(OPENAPI_IMPORTER_VERSION),
+        SurfaceType::Mcp => Ok(MCP_IMPORTER_VERSION),
+        SurfaceType::Database => Err("database surfaces are not materialized".to_string()),
     }
 }
 
@@ -972,6 +973,10 @@ fn materialize_surface(
     match surface.surface_type {
         SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
         SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
+        SurfaceType::Database => Err(AppError::FailedPrecondition(format!(
+            "database source '{}' must be registered directly, not materialized",
+            manifest.common.name
+        ))),
     }
 }
 
@@ -1122,6 +1127,9 @@ fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppEr
         coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
         coral_spec::v4::SurfaceDescriptor::McpServer { .. } => Err(AppError::FailedPrecondition(
             "DSL v4 MCP surface does not have an OpenAPI descriptor".to_string(),
+        )),
+        coral_spec::v4::SurfaceDescriptor::Database { .. } => Err(AppError::FailedPrecondition(
+            "DSL v4 database surface does not have an OpenAPI descriptor".to_string(),
         )),
     }
 }
@@ -1448,6 +1456,14 @@ mod tests {
 
     fn source_name() -> SourceName {
         SourceName::parse("github_v4_materialization_test").expect("source name")
+    }
+
+    #[test]
+    fn database_surface_reports_that_it_cannot_be_materialized() {
+        let error = expected_importer_version(SurfaceType::Database)
+            .expect_err("database surfaces have no importer version");
+
+        assert_eq!(error, "database surfaces are not materialized");
     }
 
     fn openapi_fixture() -> &'static str {

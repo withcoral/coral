@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use coral_spec::v4::SurfaceDescriptor;
+use coral_spec::v4::{SurfaceDescriptor, SurfaceType};
 use serde_yaml::Value as YamlValue;
 
 use crate::bootstrap::AppError;
@@ -986,6 +986,9 @@ impl SourceManager {
         let Some(v4) = manifest.as_v4() else {
             return Ok(None);
         };
+        if v4.surface.surface_type == SurfaceType::Database {
+            return Ok(None);
+        }
         if matches!(origin, SourceOrigin::Bundled)
             && matches!(
                 v4.surface.descriptor,
@@ -1781,7 +1784,9 @@ mod tests {
     use crate::search::observed::{SearchObservationHandle, SqliteObservedValuesStore};
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
-    use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
+    use crate::sources::materialization::{
+        FINGERPRINT_FILENAME, MaterializationInputs, PROJECTIONS_FILENAME,
+    };
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceName};
@@ -2505,6 +2510,62 @@ surface:
             inputs.secrets.get("OPTIONAL_TOKEN").map(String::as_str),
             Some("persisted-secret")
         );
+    }
+
+    #[test]
+    fn database_source_skips_v4_materialization() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let candidate = CandidateSource {
+            name: SourceName::parse("coral_db").expect("source"),
+            description: String::new(),
+            version: None,
+            inputs: vec![ManifestInputSpec {
+                key: "DB_PASSWORD".to_string(),
+                kind: ManifestInputKind::Secret,
+                required: true,
+                default_value: String::new(),
+                hint: None,
+                credential: None,
+            }],
+            installed: false,
+            origin: SourceOrigin::Imported,
+            credential_storage: Some(CredentialStorageKind::File),
+        };
+        let manifest_yaml = r#"
+name: coral_db
+dsl_version: 4
+inputs:
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: postgres
+  connection:
+    host: localhost
+    port: "5432"
+    database: coral
+    user: coral_reader
+    password: "{{input.DB_PASSWORD}}"
+"#;
+
+        let materialization = manager
+            .prepare_v4_materialization(
+                &default_workspace(),
+                &candidate,
+                manifest_yaml,
+                &MaterializationInputs::default(),
+                SourceOrigin::Imported,
+                "test",
+            )
+            .expect("database materialization decision");
+
+        assert!(materialization.is_none());
     }
 
     #[test]

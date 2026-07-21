@@ -119,7 +119,8 @@ root.
 - An installed source's persisted credential-storage route is authoritative.
   A missing route is legacy file storage, not an instruction to re-run global
   backend selection.
-- Source `name` is the canonical installed identifier and SQL schema name.
+- Source `name` is the canonical installed identifier and SQL namespace: a
+  schema for ordinary sources and a catalog for database sources.
 - `coral-client::local` intentionally depends on `coral-app::ServerBuilder` for
   the explicit local bootstrap seam.
 - Prefer documenting `coral-client` as the public local entrypoint and

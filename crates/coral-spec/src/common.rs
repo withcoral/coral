@@ -22,7 +22,8 @@ use crate::{ManifestError, ParsedTemplate, Result};
 /// Source SQL names the runtime owns. Kept in step with `RESERVED_SCHEMA_NAMES`
 /// in `coral-engine`'s registry: a name the engine refuses at registration has
 /// to fail manifest validation too, or the manifest validator accepts a source
-/// that can never register.
+/// that can never register. `datafusion` is `DataFusion`'s synthetic default
+/// catalog.
 const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "datafusion", "public"];
 
 /// Arrow field metadata key marking a source-authored column as excluded from
@@ -94,6 +95,7 @@ pub enum SourceBackend {
     Http,
     File,
     Mcp,
+    Database,
 }
 
 /// The normalized scalar type vocabulary shared by source specs, the query
