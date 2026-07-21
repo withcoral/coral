@@ -4,7 +4,8 @@
 //! unauthenticated local [`coral_client::AppClient`] across sessions and is not
 //! a safe construction path for a long-running, non-loopback server.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::error::Error;
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -12,21 +13,20 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_client::{AppClient, default_workspace};
 use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ProtocolVersion};
 use rmcp::transport::common::http_header::HEADER_MCP_PROTOCOL_VERSION;
 use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::SessionManager,
-    session::local::LocalSessionManager,
+    StreamableHttpServerConfig, StreamableHttpService,
+    session::{SessionManager, local::LocalSessionManager},
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -53,7 +53,68 @@ type Fut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 type TokenValidator = Arc<dyn Fn(String) -> Fut<Result<(), ()>> + Send + Sync>;
 type SessionClientFactory = Arc<dyn Fn(String) -> Fut<Result<AppClient, ()>> + Send + Sync>;
 type AuthState = Arc<AuthenticatedHttpState>;
-type BoundSessions = Arc<Mutex<BTreeMap<String, BoundSession>>>;
+
+/// Error returned by an authenticated MCP session-binding store.
+pub type SessionBindingStoreError = Box<dyn Error + Send + Sync + 'static>;
+
+/// Bearer-token fingerprint used to bind an MCP session to its authorization context.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct SessionBindingFingerprint([u8; 32]);
+
+impl SessionBindingFingerprint {
+    /// Returns the fingerprint bytes for storage.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Result of authorizing a request against a stored session binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SessionBindingStatus {
+    /// The supplied authorization context owns the session.
+    Authorized,
+    /// No active binding exists for the session.
+    Missing,
+    /// The session belongs to a different authorization context.
+    Mismatch,
+}
+
+/// Storage seam for binding MCP session IDs to authorization contexts.
+///
+/// Implementations must atomically compare and refresh a binding in
+/// [`SessionBindingStore::authorize_and_touch`]. Live MCP handlers remain
+/// process-local and outside this store.
+#[async_trait]
+pub trait SessionBindingStore: Send + Sync + 'static {
+    /// Creates or replaces a session binding.
+    async fn bind(
+        &self,
+        session_id: &str,
+        fingerprint: SessionBindingFingerprint,
+    ) -> Result<(), SessionBindingStoreError>;
+
+    /// Atomically authorizes and refreshes a session binding.
+    async fn authorize_and_touch(
+        &self,
+        session_id: &str,
+        fingerprint: &SessionBindingFingerprint,
+    ) -> Result<SessionBindingStatus, SessionBindingStoreError>;
+
+    /// Removes a session binding.
+    async fn remove(&self, session_id: &str) -> Result<(), SessionBindingStoreError>;
+}
+
+#[derive(Default)]
+struct InMemorySessionBindingStore {
+    bindings: Mutex<HashMap<String, InMemorySessionBinding>>,
+}
+
+struct InMemorySessionBinding {
+    fingerprint: SessionBindingFingerprint,
+    last_seen: Instant,
+}
 
 /// Configuration for the auth-disabled loopback MCP HTTP server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,10 +208,12 @@ pub struct AuthenticatedMcpHttpRuntime {
     session_client_factory: SessionClientFactory,
     options: McpOptions,
     readiness: ReadinessProbe,
+    session_bindings: Arc<dyn SessionBindingStore>,
 }
 
 impl AuthenticatedMcpHttpRuntime {
-    /// Creates a runtime whose client factory MUST forward its bearer.
+    /// Creates a runtime whose client factory must forward the caller's bearer
+    /// token on outbound requests.
     pub fn new<V, VF, F, FF, R, RF>(
         validator: V,
         session_client_factory: F,
@@ -170,7 +233,19 @@ impl AuthenticatedMcpHttpRuntime {
             session_client_factory: Arc::new(move |token| Box::pin(session_client_factory(token))),
             options,
             readiness: ReadinessProbe(Arc::new(move || Box::pin(readiness()))),
+            session_bindings: Arc::new(InMemorySessionBindingStore::default()),
         }
+    }
+
+    /// Configures storage for binding MCP sessions to authorization contexts.
+    ///
+    /// This store protects the authorization association for each MCP session.
+    /// Live MCP handlers remain process-local, so deployments must use
+    /// process-sticky routing.
+    #[must_use]
+    pub fn with_session_binding_store(mut self, store: Arc<dyn SessionBindingStore>) -> Self {
+        self.session_bindings = store;
+        self
     }
 }
 
@@ -374,7 +449,7 @@ pub async fn start_authenticated(
             source,
         })?;
     let local_addr = listener.local_addr().map_err(McpHttpError::Server)?;
-    let (router, state, _bindings) = authenticated_router(config, runtime);
+    let (router, state) = authenticated_router(config, runtime);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -471,7 +546,7 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
     };
     serve_mcp_request(
         request,
-        state.factory.clone(),
+        Some(state.factory.clone()),
         state.server.sessions.clone(),
         state.server.config.clone(),
     )
@@ -528,18 +603,18 @@ fn initialize_protocol_header_matches(headers: &HeaderMap, body_protocol: &str) 
 fn authenticated_router(
     config: AuthenticatedMcpHttpConfig,
     runtime: AuthenticatedMcpHttpRuntime,
-) -> (Router, Arc<ServerState>, BoundSessions) {
+) -> (Router, Arc<ServerState>) {
+    let streamable_config =
+        StreamableHttpServerConfig::default().with_allowed_hosts(config.allowed_hosts.clone());
     let server = Arc::new(ServerState {
         sessions: Arc::new(LocalSessionManager::default()),
-        config: StreamableHttpServerConfig::default()
-            .with_allowed_hosts(config.allowed_hosts.clone()),
+        config: streamable_config,
         requests: RwLock::new(()),
     });
     let state = Arc::new(AuthenticatedHttpState {
         config,
         runtime,
         server: server.clone(),
-        bindings: Arc::new(Mutex::new(BTreeMap::new())),
     });
     let router = Router::new()
         .route("/mcp", any(authenticated_mcp))
@@ -548,20 +623,13 @@ fn authenticated_router(
         .route(METADATA_ROOT, get(metadata))
         .route(METADATA_ROUTE, get(metadata))
         .with_state(state.clone());
-    (router, server, state.bindings.clone())
+    (router, server)
 }
 
 struct AuthenticatedHttpState {
     config: AuthenticatedMcpHttpConfig,
     runtime: AuthenticatedMcpHttpRuntime,
     server: Arc<ServerState>,
-    bindings: BoundSessions,
-}
-
-struct BoundSession {
-    token_fingerprint: String,
-    last_seen: Instant,
-    factory: CoralMcpServerFactory,
 }
 
 async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body>) -> Response {
@@ -580,11 +648,12 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
     if validation.is_err() {
         return unauthorized_response(&state.config);
     }
-    let token_fingerprint = fingerprint(&token);
+    let binding_fingerprint = binding_fingerprint(&token);
     let request_session = match session_id(request.headers()) {
         Ok(session) => session.map(str::to_string),
         Err(()) => return StatusCode::BAD_REQUEST.into_response(),
     };
+    let closes_session = request.method() == Method::DELETE;
     let request = if request_session.is_none() {
         tokio::select! {
             biased;
@@ -598,50 +667,104 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
         request
     };
     let factory = if let Some(session_id) = request_session.as_deref() {
-        match bound_factory(&state, session_id, &token_fingerprint).await {
-            Ok(factory) => factory,
+        if let Err(status) = authorize_bound_session(&state, session_id, &binding_fingerprint).await
+        {
+            return status.into_response();
+        }
+        None
+    } else {
+        match create_session_factory(&state, token).await {
+            Ok(factory) => Some(factory),
             Err(status) => return status.into_response(),
         }
-    } else {
-        let client = tokio::select! {
-            biased;
-            () = state.server.config.cancellation_token.cancelled() => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            client = (state.runtime.session_client_factory)(token) => client,
-        };
-        match client {
-            Ok(client) => CoralMcpServerFactory::new(client, state.runtime.options.clone()),
-            Err(()) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-        }
     };
-    let closes_session = request.method() == Method::DELETE;
     let response = serve_mcp_request(
         request,
-        factory.clone(),
+        factory,
         state.server.sessions.clone(),
         state.server.config.clone(),
     )
     .await;
+    finalize_authenticated_response(
+        &state,
+        request_session.as_deref(),
+        binding_fingerprint,
+        closes_session,
+        response,
+    )
+    .await
+}
+
+async fn finalize_authenticated_response(
+    state: &AuthenticatedHttpState,
+    request_session: Option<&str>,
+    binding_fingerprint: SessionBindingFingerprint,
+    closes_session: bool,
+    response: Response,
+) -> Response {
     if request_session.is_none()
         && response.status().is_success()
         && let Ok(Some(session_id)) = session_id(response.headers())
     {
-        let mut bindings = state.bindings.lock().await;
-        let removed = insert_bound_session(
-            &mut bindings,
-            session_id,
-            token_fingerprint,
-            factory,
-            Instant::now(),
-        );
-        drop(bindings);
-        close_managed_sessions(state.server.sessions.as_ref(), removed).await;
-    } else if closes_session
-        && (response.status().is_success() || response.status() == StatusCode::NOT_FOUND)
+        if let Err(_error) = state
+            .runtime
+            .session_bindings
+            .bind(session_id, binding_fingerprint)
+            .await
+        {
+            remove_managed_session(state.server.as_ref(), session_id).await;
+            let _remove_result = state.runtime.session_bindings.remove(session_id).await;
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    } else if (closes_session && response.status().is_success()
+        || response.status() == StatusCode::NOT_FOUND)
         && let Some(session_id) = request_session
+        && state
+            .runtime
+            .session_bindings
+            .remove(session_id)
+            .await
+            .is_err()
     {
-        state.bindings.lock().await.remove(&session_id);
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     response
+}
+
+async fn create_session_factory(
+    state: &AuthenticatedHttpState,
+    token: String,
+) -> Result<CoralMcpServerFactory, StatusCode> {
+    let client = tokio::select! {
+        biased;
+        () = state.server.config.cancellation_token.cancelled() => Err(StatusCode::SERVICE_UNAVAILABLE),
+        client = (state.runtime.session_client_factory)(token) => client.map_err(|()| StatusCode::SERVICE_UNAVAILABLE),
+    }?;
+    Ok(CoralMcpServerFactory::new(
+        client,
+        state.runtime.options.clone(),
+    ))
+}
+
+async fn authorize_bound_session(
+    state: &AuthenticatedHttpState,
+    session_id: &str,
+    fingerprint: &SessionBindingFingerprint,
+) -> Result<(), StatusCode> {
+    let status = state
+        .runtime
+        .session_bindings
+        .authorize_and_touch(session_id, fingerprint)
+        .await
+        .map_err(|_error| StatusCode::SERVICE_UNAVAILABLE)?;
+    if status == SessionBindingStatus::Missing {
+        remove_managed_session(state.server.as_ref(), session_id).await;
+    }
+    match status {
+        SessionBindingStatus::Authorized => Ok(()),
+        SessionBindingStatus::Missing => Err(StatusCode::NOT_FOUND),
+        SessionBindingStatus::Mismatch => Err(StatusCode::FORBIDDEN),
+    }
 }
 
 async fn initialize_request(request: Request<Body>) -> Result<Request<Body>, Response> {
@@ -673,46 +796,8 @@ async fn initialize_request(request: Request<Body>) -> Result<Request<Body>, Res
     Ok(Request::from_parts(parts, Body::from(bytes)))
 }
 
-async fn bound_factory(
-    state: &AuthenticatedHttpState,
-    session_id: &str,
-    token_fingerprint: &str,
-) -> Result<CoralMcpServerFactory, StatusCode> {
-    let (expired, bound_fingerprint) = {
-        let mut bindings = state.bindings.lock().await;
-        let expired = prune_expired_bound_sessions(&mut bindings, Instant::now());
-        let fingerprint = bindings
-            .get(session_id)
-            .map(|binding| binding.token_fingerprint.clone());
-        (expired, fingerprint)
-    };
-    close_managed_sessions(state.server.sessions.as_ref(), expired).await;
-    let Some(bound_fingerprint) = bound_fingerprint else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-    let managed = state
-        .server
-        .sessions
-        .has_session(&Arc::from(session_id))
-        .await
-        .map_err(|_error| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !managed {
-        state.bindings.lock().await.remove(session_id);
-        return Err(StatusCode::NOT_FOUND);
-    }
-    if bound_fingerprint != token_fingerprint {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let mut bindings = state.bindings.lock().await;
-    let binding = bindings.get_mut(session_id).ok_or(StatusCode::NOT_FOUND)?;
-    binding.last_seen = Instant::now();
-    Ok(binding.factory.clone())
-}
-
-async fn close_managed_sessions(sessions: &LocalSessionManager, ids: Vec<String>) {
-    for id in ids {
-        let _close_result = sessions.close_session(&Arc::from(id)).await;
-    }
+async fn remove_managed_session(server: &ServerState, id: &str) {
+    let _close_result = server.sessions.close_session(&Arc::from(id)).await;
 }
 
 async fn authenticated_readyz(State(state): State<Arc<AuthenticatedHttpState>>) -> StatusCode {
@@ -777,50 +862,94 @@ fn session_id(headers: &HeaderMap) -> Result<Option<&str>, ()> {
     Ok(Some(value))
 }
 
-fn fingerprint(token: &str) -> String {
-    URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()))
+fn binding_fingerprint(token: &str) -> SessionBindingFingerprint {
+    SessionBindingFingerprint(Sha256::digest(token.as_bytes()).into())
 }
 
-fn insert_bound_session(
-    sessions: &mut BTreeMap<String, BoundSession>,
+#[async_trait]
+impl SessionBindingStore for InMemorySessionBindingStore {
+    async fn bind(
+        &self,
+        session_id: &str,
+        fingerprint: SessionBindingFingerprint,
+    ) -> Result<(), SessionBindingStoreError> {
+        let mut bindings = self.bindings.lock().await;
+        insert_session_binding(&mut bindings, session_id, fingerprint, Instant::now());
+        Ok(())
+    }
+
+    async fn authorize_and_touch(
+        &self,
+        session_id: &str,
+        fingerprint: &SessionBindingFingerprint,
+    ) -> Result<SessionBindingStatus, SessionBindingStoreError> {
+        let mut bindings = self.bindings.lock().await;
+        Ok(authorize_session_binding(
+            &mut bindings,
+            session_id,
+            fingerprint,
+            Instant::now(),
+        ))
+    }
+
+    async fn remove(&self, session_id: &str) -> Result<(), SessionBindingStoreError> {
+        self.bindings.lock().await.remove(session_id);
+        Ok(())
+    }
+}
+
+fn insert_session_binding(
+    bindings: &mut HashMap<String, InMemorySessionBinding>,
     session_id: &str,
-    token_fingerprint: String,
-    factory: CoralMcpServerFactory,
+    fingerprint: SessionBindingFingerprint,
     now: Instant,
-) -> Vec<String> {
-    let mut removed = prune_expired_bound_sessions(sessions, now);
-    if !sessions.contains_key(session_id)
-        && sessions.len() >= MAX_BOUND_SESSIONS
-        && let Some(oldest) = sessions
+) {
+    prune_expired_session_bindings(bindings, now);
+    if !bindings.contains_key(session_id)
+        && bindings.len() >= MAX_BOUND_SESSIONS
+        && let Some(oldest) = bindings
             .iter()
             .min_by_key(|(_, binding)| binding.last_seen)
             .map(|(session_id, _)| session_id.clone())
     {
-        sessions.remove(&oldest);
-        removed.push(oldest);
+        bindings.remove(&oldest);
     }
-    let binding = BoundSession {
-        token_fingerprint,
+    let binding = InMemorySessionBinding {
+        fingerprint,
         last_seen: now,
-        factory,
     };
-    sessions.insert(session_id.to_string(), binding);
-    removed
+    bindings.insert(session_id.to_string(), binding);
 }
 
-fn prune_expired_bound_sessions(
-    sessions: &mut BTreeMap<String, BoundSession>,
+fn authorize_session_binding(
+    bindings: &mut HashMap<String, InMemorySessionBinding>,
+    session_id: &str,
+    fingerprint: &SessionBindingFingerprint,
     now: Instant,
-) -> Vec<String> {
-    let mut expired = Vec::new();
-    sessions.retain(|session_id, binding| {
-        let active = now.saturating_duration_since(binding.last_seen) <= BOUND_SESSION_IDLE_TIMEOUT;
-        if !active {
-            expired.push(session_id.clone());
-        }
-        active
+) -> SessionBindingStatus {
+    let Some(binding) = bindings.get(session_id) else {
+        return SessionBindingStatus::Missing;
+    };
+    if now.saturating_duration_since(binding.last_seen) > BOUND_SESSION_IDLE_TIMEOUT {
+        bindings.remove(session_id);
+        return SessionBindingStatus::Missing;
+    }
+    if binding.fingerprint != *fingerprint {
+        return SessionBindingStatus::Mismatch;
+    }
+    if let Some(binding) = bindings.get_mut(session_id) {
+        binding.last_seen = now;
+    }
+    SessionBindingStatus::Authorized
+}
+
+fn prune_expired_session_bindings(
+    bindings: &mut HashMap<String, InMemorySessionBinding>,
+    now: Instant,
+) {
+    bindings.retain(|_session_id, binding| {
+        now.saturating_duration_since(binding.last_seen) <= BOUND_SESSION_IDLE_TIMEOUT
     });
-    expired
 }
 
 // The service wrapper is intentionally request-scoped. Auth-required routing
@@ -828,12 +957,21 @@ fn prune_expired_bound_sessions(
 // while later requests reuse the handler already held by `sessions`.
 async fn serve_mcp_request(
     request: Request<Body>,
-    factory: CoralMcpServerFactory,
+    factory: Option<CoralMcpServerFactory>,
     sessions: Arc<LocalSessionManager>,
     config: StreamableHttpServerConfig,
 ) -> Response {
     let cancellation = config.cancellation_token.clone();
-    let service = StreamableHttpService::new(move || Ok(factory.create()), sessions, config);
+    let service = StreamableHttpService::new(
+        move || {
+            factory
+                .as_ref()
+                .map(CoralMcpServerFactory::create)
+                .ok_or_else(|| io::Error::other("MCP session handler factory unavailable"))
+        },
+        sessions,
+        config,
+    );
     tokio::select! {
         biased;
         () = cancellation.cancelled() => StatusCode::SERVICE_UNAVAILABLE.into_response(),
