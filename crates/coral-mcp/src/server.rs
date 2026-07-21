@@ -822,15 +822,7 @@ impl ServerHandler for CoralMcpServer {
                     feedback_enabled: self.options.feedback_enabled,
                     observed_values_search_enabled: self.options.observed_values_search_enabled,
                 },
-            )
-            .into_iter()
-            .filter(|tool| {
-                tool.name
-                    .as_ref()
-                    .parse::<ToolName>()
-                    .is_ok_and(|name| self.tool_allowed(name))
-            })
-            .collect();
+            );
             Ok(ListToolsResult::with_all_items(tools))
         })
         .await
