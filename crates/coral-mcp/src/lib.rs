@@ -99,6 +99,8 @@ impl McpQueryExample {
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
+    /// Advertise observed-value search behavior across MCP discovery surfaces.
+    pub observed_values_search_enabled: bool,
     /// Expose the task lifecycle and attribution surface.
     pub tasks_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.

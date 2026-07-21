@@ -5,6 +5,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::hash::sha256_hex;
+use crate::search::observed::ObservedValuesLiveScope;
 use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 
 const SOURCE_SCOPE_FORMAT_VERSION: u8 = 1;
@@ -60,6 +61,16 @@ pub(super) struct ObservedSourceSurfaceScope {
 impl ObservedSourceSurfaceScope {
     pub(super) fn key(&self) -> SurfaceKey {
         self.surface_key.clone()
+    }
+
+    pub(super) fn live_scope(&self) -> ObservedValuesLiveScope {
+        ObservedValuesLiveScope {
+            owner_source_name: self.owner_source_name.clone(),
+            source_name: self.source_name.clone(),
+            source_scope_id: self.source_scope_id.clone(),
+            surface_kind: self.surface_key.surface_kind,
+            surface_name: self.surface_key.surface_name.clone(),
+        }
     }
 }
 

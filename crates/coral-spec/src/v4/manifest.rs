@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -10,14 +11,17 @@ use crate::inputs::{
     validate_oauth_endpoint_templates_with_scope,
 };
 use crate::{
-    DatabaseConnectionSpec, DatabaseProvider, HeaderSpec, ManifestError, ManifestInputSpec,
-    MySqlConnectionSpec, ParsedTemplate, PostgresConnectionSpec, Result, SqliteConnectionSpec,
-    TemplateNamespace, validate_source_name, validate_test_queries,
+    DatabaseConnectionSpec, DatabaseProvider, HeaderSpec, ManifestError, ManifestInputKind,
+    ManifestInputSpec, MySqlConnectionSpec, ParsedTemplate, PostgresConnectionSpec, Result,
+    SqliteConnectionSpec, TemplateNamespace, validate_identifier, validate_source_name,
+    validate_test_queries,
 };
 
 #[derive(Debug, Clone)]
 pub struct V4SourceManifest {
     pub common: V4SourceCommon,
+    /// Identity requirements that gate this source at runtime.
+    pub identity_requirements: Option<IdentityRequirements>,
     pub surface: V4Surface,
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
@@ -98,6 +102,29 @@ pub struct DatabaseRuntimeConfig {
     pub connection: DatabaseConnectionSpec,
 }
 
+/// Identity authentication contract declared by a DSL v4 source.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityRequirements {
+    /// Accepted identity alternatives. A source may be authenticated by any
+    /// one entry in this list.
+    pub accepts: Vec<AcceptedIdentityRequirement>,
+}
+
+/// One acceptable identity shape for a source identity requirement.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptedIdentityRequirement {
+    /// Stable author-chosen requirement identifier, scoped to the source.
+    pub id: String,
+    /// Identity spec ids that may satisfy this requirement.
+    pub identity_specs: Vec<String>,
+    /// Provider-specific audience constraints matched during identity
+    /// binding and runtime resolution.
+    #[serde(default)]
+    pub audience: BTreeMap<String, Value>,
+}
+
 impl V4Surface {
     pub fn openapi_runtime(&self) -> Option<&OpenApiRuntimeConfig> {
         match &self.runtime {
@@ -134,6 +161,8 @@ struct RawV4SourceManifest {
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
+    #[serde(default)]
+    identity_requirements: Option<IdentityRequirements>,
     surface: RawV4Surface,
 }
 
@@ -182,16 +211,11 @@ impl V4SourceManifest {
             name,
             description,
             test_queries,
+            mut identity_requirements,
             surface,
             ..
         } = raw;
-        if dsl_version != 4 {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' declares dsl_version {dsl_version}; expected 4"
-            )));
-        }
-        validate_v4_source_name(&name)?;
-        validate_test_queries(&name, &test_queries)?;
+        validate_manifest_header(&name, dsl_version, &test_queries)?;
         let common = V4SourceCommon {
             dsl_version,
             name: name.clone(),
@@ -205,13 +229,34 @@ impl V4SourceManifest {
         validate_input_references(surface_value, &declared_inputs)?;
         validate_oauth_endpoint_templates_with_scope(&declared_inputs, "top-level inputs")?;
         let surface = parse_surface(&name, surface, surface_value, &declared_inputs)?;
+        normalize_and_validate_source_identity_requirements(
+            &name,
+            identity_requirements.as_mut(),
+            &surface,
+            &declared_inputs,
+        )?;
 
         Ok(Self {
             common,
+            identity_requirements,
             surface,
             declared_inputs,
         })
     }
+}
+
+fn validate_manifest_header(
+    source_name: &str,
+    dsl_version: u32,
+    test_queries: &[String],
+) -> Result<()> {
+    if dsl_version != 4 {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' declares dsl_version {dsl_version}; expected 4"
+        )));
+    }
+    validate_v4_source_name(source_name)?;
+    validate_test_queries(source_name, test_queries)
 }
 
 fn parse_surface(
@@ -426,6 +471,112 @@ fn validate_v4_source_name(name: &str) -> Result<()> {
         )));
     }
     validate_source_name(name)
+}
+
+fn validate_identity_source_inputs(source_name: &str, inputs: &[ManifestInputSpec]) -> Result<()> {
+    for input in inputs {
+        if input.kind == ManifestInputKind::Secret {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' input '{}' must not use kind: secret in DSL v4; use identity_requirements and identity specs for credentials",
+                input.key
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_identity_requirements(requirements: &mut IdentityRequirements) {
+    for accepted in &mut requirements.accepts {
+        trim_in_place(&mut accepted.id);
+        for identity_spec in &mut accepted.identity_specs {
+            trim_in_place(identity_spec);
+        }
+    }
+}
+
+fn trim_in_place(value: &mut String) {
+    if value.trim().len() != value.len() {
+        *value = value.trim().to_string();
+    }
+}
+
+fn normalize_and_validate_source_identity_requirements(
+    source_name: &str,
+    requirements: Option<&mut IdentityRequirements>,
+    surface: &V4Surface,
+    inputs: &[ManifestInputSpec],
+) -> Result<()> {
+    let Some(requirements) = requirements else {
+        return Ok(());
+    };
+    if surface.surface_type != SurfaceType::OpenApi {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' identity_requirements are only supported for OpenAPI sources"
+        )));
+    }
+    validate_identity_source_inputs(source_name, inputs)?;
+    normalize_identity_requirements(requirements);
+    validate_identity_requirements(source_name, requirements)
+}
+
+fn validate_identity_requirements(
+    source_name: &str,
+    requirements: &IdentityRequirements,
+) -> Result<()> {
+    if requirements.accepts.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' identity_requirements.accepts must contain at least one accepted identity"
+        )));
+    }
+
+    let mut seen_accept_ids = HashSet::new();
+    for accepted in &requirements.accepts {
+        if accepted.id.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' identity requirement id must be non-empty"
+            )));
+        }
+        if !seen_accept_ids.insert(accepted.id.clone()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' has duplicate identity requirement id '{}'",
+                accepted.id
+            )));
+        }
+        validate_accepted_identity_specs(source_name, accepted)?;
+    }
+
+    Ok(())
+}
+
+fn validate_accepted_identity_specs(
+    source_name: &str,
+    accepted: &AcceptedIdentityRequirement,
+) -> Result<()> {
+    if accepted.identity_specs.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' identity requirement '{}' identity_specs must contain at least one identity spec id",
+            accepted.id
+        )));
+    }
+
+    let mut seen_identity_specs = HashSet::new();
+    for identity_spec_id in &accepted.identity_specs {
+        validate_identifier(
+            identity_spec_id,
+            &format!(
+                "source '{source_name}' identity requirement '{}' identity spec id",
+                accepted.id
+            ),
+        )?;
+        if !seen_identity_specs.insert(identity_spec_id) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' identity requirement '{}' has duplicate identity spec id '{}'",
+                accepted.id, identity_spec_id
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn mcp_server_location(server: &McpServerSpec) -> String {

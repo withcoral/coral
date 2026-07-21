@@ -123,7 +123,6 @@ const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/reef'], 
   cwd: repoRoot,
   env: {
     ...process.env,
-    CORAL_DESKTOP_APP: '1',
     CORAL_ENDPOINT: `http://127.0.0.1:${sidecarPort}`,
     VITE_CORAL_DESKTOP_APP: '1',
   },

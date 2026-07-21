@@ -133,13 +133,15 @@ pub(crate) fn query_source_from_installed_manifest(
                 v4,
                 diagnostic_reporter,
             )?;
-            let component =
-                runtime_component_for_v4_source(v4, &materialized).map_err(|error| {
-                    incompatible_materialization_error(
+            let component = runtime_component_for_v4_source(v4, &materialized).map_err(
+                |error| match error {
+                    error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
+                    error => incompatible_materialization_error(
                         &source.name,
                         format!("failed to assemble runtime package: {error}"),
-                    )
-                })?;
+                    ),
+                },
+            )?;
             (component, Some(materialized))
         };
         let query_source = QuerySource::from_runtime_components(
@@ -177,6 +179,11 @@ pub(crate) fn runtime_component_for_v4_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
 ) -> Result<Option<RuntimeSourceComponent>, AppError> {
+    if manifest.identity_requirements.is_some() {
+        return Err(AppError::UnsupportedV4IdentityRequirements {
+            source_name: manifest.common.name.clone(),
+        });
+    }
     if !has_published_projection(materialized) {
         return Ok(None);
     }
@@ -522,19 +529,21 @@ mod tests {
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
-        Fingerprint, FingerprintSurface, HttpMethod, IrExecutionAttachment, IrOperation,
-        IrOperationOutput, MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment,
-        McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig,
-        PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionKind,
-        ProjectionVisibility, RestExecutionAttachment, RestResponseAttachment,
-        SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
-        V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceCommon, V4SourceManifest,
-        V4Surface,
+        AcceptedIdentityRequirement, Fingerprint, FingerprintSurface, HttpMethod,
+        IdentityRequirements, IrExecutionAttachment, IrOperation, IrOperationOutput,
+        MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig,
+        OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection,
+        ProjectionCatalog, ProjectionKind, ProjectionVisibility, RestExecutionAttachment,
+        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor,
+        SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
+        V4SourceCommon, V4SourceManifest, V4Surface,
     };
     use coral_spec::{
         DatabaseConnectionSpec, ManifestInputKind, PageSizeSpec, PaginationMode, PaginationSpec,
         ResponseSpec, parse_source_manifest_yaml,
     };
+
+    use crate::bootstrap::AppError;
 
     use super::{
         runtime_component_for_v4_database_source, runtime_component_for_v4_source,
@@ -619,6 +628,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         }
@@ -861,6 +871,7 @@ surface:
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -925,6 +936,7 @@ surface:
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -972,6 +984,7 @@ surface:
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -1027,6 +1040,7 @@ surface:
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -1050,6 +1064,45 @@ surface:
             .expect("runtime component assembly");
 
         assert!(component.is_none());
+    }
+
+    #[test]
+    fn runtime_component_fails_closed_for_identity_gated_source_without_projections() {
+        let mut manifest = manifest_with_surface(surface_without_authored_base_url());
+        manifest.identity_requirements = Some(IdentityRequirements {
+            accepts: vec![AcceptedIdentityRequirement {
+                id: "github".to_string(),
+                identity_specs: vec!["github_oauth".to_string()],
+                audience: BTreeMap::new(),
+            }],
+        });
+        let materialized = V4MaterializedSource {
+            fingerprint: None,
+            surface: materialized_surface(PathBuf::from("/tmp/openapi.yaml")),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let error = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect_err("identity-gated source must fail before projection filtering");
+
+        assert!(matches!(
+            &error,
+            AppError::UnsupportedV4IdentityRequirements { source_name }
+                if source_name == "demo"
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("cannot resolve source identities")
+        );
+        assert!(!error.to_string().contains("Re-add"));
     }
 
     #[test]

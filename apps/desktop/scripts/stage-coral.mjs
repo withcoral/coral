@@ -36,7 +36,6 @@ await run('npm', ['ci', '--prefix', 'apps/reef'])
 await run('npm', ['run', 'build', '--prefix', 'apps/reef'], {
   env: {
     ...process.env,
-    CORAL_DESKTOP_APP: '1',
     VITE_CORAL_DESKTOP_APP: '1',
   },
 })

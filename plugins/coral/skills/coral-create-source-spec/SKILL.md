@@ -55,6 +55,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - auth
    - variables and secrets
    - credential retrieval methods for secrets, including OAuth when the provider supports browser-based setup
+   - if authoring a separate `kind: identity` manifest, identity setup inputs and OAuth method config
    - tables
    - table functions for source-scoped parameterized endpoints
    - filters
@@ -90,6 +91,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - OAuth URL fields may template declared `kind: variable` inputs with `{{input.KEY}}` for non-secret endpoint components such as tenant IDs or domains. This includes `endpoints.*`, `resource`, and `client.dynamic_registration.registration_url`. Do not reference secret inputs, filters, function arguments, state, or inline defaults from OAuth URLs.
 - If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
+- In a `kind: identity` manifest, put provider `issuer`, identity `type`, setup inputs, OAuth URLs, client IDs, and client secrets on the identity spec itself. Identity OAuth `client.id` may use `default`, a variable `input`, or both; `client.secret.input` must reference a declared secret input. OAuth URL templates may reference only declared variable inputs. Identity inputs must not declare source credential methods.
 - Each credential method accepts optional `label`, `description`, and `hint` fields, surfaced during interactive install and in the generated source docs. When an input offers more than one method, put the how-to-get-it guidance in each method's `hint` (rendered next to that method's fields) instead of in one long input-level `hint`, and scope each hint to the inputs that method collects.
 - For short-lived OAuth access tokens, make sure the OAuth method can obtain refresh tokens when the provider supports them, and document any scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire unless the source has another supported long-lived credential path.
 - Keep table and table-function names stable, SQL-friendly, and unique within

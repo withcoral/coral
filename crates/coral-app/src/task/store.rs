@@ -1,10 +1,5 @@
 //! Per-workspace, append-only task lifecycle store.
 
-#![allow(
-    dead_code,
-    reason = "The task stack introduces stores before service slices consume them."
-)]
-
 use std::path::Path;
 
 use coral_api::CORAL_TASK_INTENT_MAX_CHARS;
