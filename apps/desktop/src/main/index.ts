@@ -12,6 +12,7 @@ import {
 import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
 import { checkForDesktopUpdates, desktopUpdatesSupported, installAutoUpdater } from './auto-update'
 
+// Temporary no-op edit used to exercise the native macOS packaging smoke lane.
 const SHUTDOWN_TIMEOUT_MS = 6000
 
 let mainWindow: BrowserWindow | null = null
