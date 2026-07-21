@@ -1,7 +1,7 @@
 name: release-please
 on:
-  push:
-    branches: [main]
+  repository_dispatch:
+    types: [main-validated]
 permissions:
   contents: read
 concurrency:

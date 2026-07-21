@@ -65,6 +65,14 @@
   replacement skipped run cancels any in-progress validation for the PR branch.
   Keep that draft gate aligned between the initial change detector and final
   aggregate `validate` job.
+- Release Please is dispatched only after the aggregate `Validate` job succeeds
+  for a push to `main`; it does not also poll or re-check the mutable branch tip.
+- Trusted Release Please PRs use a fail-closed validation fast path only when
+  their author, same-repository branch, base branch, and changed-file allowlist
+  all match. The fast path must prove that the exact PR base SHA passed Validate
+  on `main`, check that release versions agree and generated docs are fresh, and
+  remain part of the aggregate required `validate` job. Any classifier mismatch
+  must run the ordinary validation path.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`

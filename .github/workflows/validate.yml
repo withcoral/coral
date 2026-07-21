@@ -31,6 +31,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
+      release_candidate: ${{ steps.release-candidate.outputs.release_candidate }}
       github_actions: ${{ steps.filter.outputs.github_actions }}
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
       postgres_database_tests: ${{ steps.filter.outputs.postgres_database_tests }}
@@ -53,8 +54,32 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Detect changes
+      - name: Detect release candidate changes
+        id: release-filter
+        if: >-
+          ${{ github.event_name == 'pull_request' &&
+              github.event.pull_request.user.login == 'coral-release-bot[bot]' &&
+              github.event.pull_request.base.ref == 'main' &&
+              github.event.pull_request.head.ref == 'release-please--branches--main--components--coral' &&
+              github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          filters: |
+            non_release_candidate_artifacts:
+              - '**'
+              - '!{.release-please-manifest.json,CHANGELOG.md,Cargo.lock,Cargo.toml}'
+              - '!apps/desktop/package{,-lock}.json'
+              - '!apps/docs/{docs.json,project/changelog.mdx}'
+
+      - name: Classify Release Please candidate
+        id: release-candidate
+        env:
+          RELEASE_CANDIDATE: ${{ steps.release-filter.outputs.non_release_candidate_artifacts == 'false' }}
+        run: echo "release_candidate=$RELEASE_CANDIDATE" >> "$GITHUB_OUTPUT"
+
+      - name: Detect ordinary changes
         id: filter
+        if: steps.release-candidate.outputs.release_candidate != 'true'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
           filters: |
@@ -744,12 +769,58 @@ jobs:
             --coral-bin target/release/coral \
             --max-mean-seconds 0.75
 
+  release-candidate-integrity:
+    name: Release candidate integrity
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.release_candidate == 'true' }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Verify exact base commit passed Validate on main
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          count="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow validate.yml \
+            --branch main --commit "$BASE_SHA" --event push --status success \
+            --limit 1 --json databaseId --jq length)"
+          if [ "$count" -eq 0 ]; then
+            echo "Base commit $BASE_SHA has not passed Validate on main." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Verify locked Cargo metadata
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)" # x-release-please-version$/\1/p' Cargo.toml)"
+          cargo metadata --locked --no-deps --format-version 1 |
+            jq -e --arg version "$version" 'all(.packages[]; .version == $version)' >/dev/null
+          jq -e --arg version "$version" '.["."] == $version' .release-please-manifest.json >/dev/null
+          jq -e --arg version "$version" '.version == $version' apps/desktop/package.json >/dev/null
+          jq -e --arg version "$version" \
+            '.version == $version and .packages[""].version == $version' \
+            apps/desktop/package-lock.json >/dev/null
+
+      - name: Verify generated docs are fresh
+        run: make docs-check
+
   validate:
     runs-on: ubuntu-latest
     needs:
       [
         changes,
+        release-candidate-integrity,
         rust-checks,
+        postgres-database-tests,
         windows-rust-smoke,
         install-script,
         ui-build,
@@ -773,7 +844,9 @@ jobs:
       - name: Check all job results
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
+          RELEASE_CANDIDATE_INTEGRITY_RESULT: ${{ needs.release-candidate-integrity.result }}
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
+          POSTGRES_DATABASE_TESTS_RESULT: ${{ needs.postgres-database-tests.result }}
           WINDOWS_RUST_SMOKE_RESULT: ${{ needs.windows-rust-smoke.result }}
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
           UI_BUILD_RESULT: ${{ needs.ui-build.result }}
@@ -792,7 +865,9 @@ jobs:
         run: |
           jobs=(
             "changes:$CHANGES_RESULT"
+            "release-candidate-integrity:$RELEASE_CANDIDATE_INTEGRITY_RESULT"
             "rust-checks:$RUST_CHECKS_RESULT"
+            "postgres-database-tests:$POSTGRES_DATABASE_TESTS_RESULT"
             "windows-rust-smoke:$WINDOWS_RUST_SMOKE_RESULT"
             "install-script:$INSTALL_SCRIPT_RESULT"
             "ui-build:$UI_BUILD_RESULT"
@@ -830,3 +905,16 @@ jobs:
           if [ $failed -eq 1 ]; then
             exit 1
           fi
+
+  dispatch-release-please:
+    name: Dispatch Release Please
+    runs-on: ubuntu-latest
+    needs: validate
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.validate.result == 'success' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Dispatch validated main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" -f event_type=main-validated
