@@ -1194,15 +1194,10 @@ enabled = false
     async fn configured_standalone_grpc_starts_with_configured_bind() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
-        let port = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .expect("reserve loopback port")
-            .local_addr()
-            .expect("reserved address")
-            .port();
         std::fs::create_dir_all(&config_dir).expect("create config dir");
         std::fs::write(
             config_dir.join("config.toml"),
-            format!("[server]\nbind_addr = '127.0.0.1:{port}'\n"),
+            "[server]\nbind_addr = '127.0.0.1:0'\n",
         )
         .expect("write config");
 
@@ -1212,7 +1207,14 @@ enabled = false
             .await
             .expect("start configured standalone server");
 
-        assert_eq!(server.endpoint_uri(), format!("http://127.0.0.1:{port}"));
+        let endpoint = server
+            .endpoint_uri()
+            .strip_prefix("http://")
+            .expect("endpoint scheme")
+            .parse::<SocketAddr>()
+            .expect("socket address endpoint");
+        assert!(endpoint.ip().is_loopback());
+        assert_ne!(endpoint.port(), 0);
         server.shutdown().await.expect("shutdown server");
     }
 

@@ -737,8 +737,10 @@ async fn run_ui(
     run_until_server_stops(server, tokio::signal::ctrl_c()).await
 }
 
-async fn run_server() -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_standalone_server().await?;
+async fn run_server(
+    feature_overrides: coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let server = bootstrap::start_standalone_server(feature_overrides).await?;
     let endpoint = server.endpoint_uri().to_string();
 
     if !server_endpoint_is_loopback(&endpoint) {
@@ -817,7 +819,9 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
-        Command::Server => run_server().await.map_err(Into::into),
+        Command::Server => run_server(feature_overrides.clone())
+            .await
+            .map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args, feature_overrides.clone())
             .await
