@@ -168,17 +168,22 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
+      - name: Free Linux runner disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          # Rust comes from rustup; this job does not use the hosted language tool cache.
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          # Keep swap for the memory-intensive clippy, test, and docs phases.
+          swap-storage: false
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
-      - name: Free Linux runner disk space
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-          docker system prune -af || true
-          df -h
 
       - name: Install Rust toolchain
         run: rustup show
@@ -187,10 +192,6 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: coral-validate-${{ runner.os }}
-          # This job runs clippy, all-target tests, and docs in one target dir.
-          # Restoring target artifacts spends disk before nextest's largest
-          # compile phase and can exhaust GitHub-hosted runners.
-          cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
