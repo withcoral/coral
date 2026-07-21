@@ -1072,6 +1072,7 @@ mod tests {
                 description: format!("Alpha {index}"),
                 matched_fields: vec!["field_name".to_string()],
                 retrieval_score: 1,
+                is_workspace_function: false,
             })
             .collect()
     }

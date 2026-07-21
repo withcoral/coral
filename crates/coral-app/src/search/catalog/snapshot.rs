@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use coral_engine::{
-    CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+    CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionProvenance,
     TableFunctionResultColumnInfo, TableInfo,
 };
 use coral_spec::SourceTableFunctionKind;
@@ -14,7 +14,7 @@ use crate::search::catalog::sqlite_index::{
 };
 use crate::search::result::{SearchFieldRole, SearchSurfaceKind};
 
-const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v3";
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v4";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
@@ -85,6 +85,7 @@ pub(crate) struct CatalogDocument {
     pub(crate) title: String,
     pub(crate) description: String,
     pub(crate) searchable_text: String,
+    pub(crate) is_workspace_function: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,7 @@ impl CatalogDocument {
             title: self.title.clone(),
             description: self.description.clone(),
             searchable_text: self.searchable_text.clone(),
+            is_workspace_function: self.is_workspace_function,
             payload_json: "{}".to_string(),
         }
     }
@@ -214,6 +216,7 @@ fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
             table.guide.as_str(),
             table.required_filters.join(" ").as_str(),
         ]),
+        is_workspace_function: false,
     });
 
     for column in &table.columns {
@@ -249,6 +252,7 @@ fn table_column_document(
             column.data_type.as_str(),
             column.description.as_str(),
         ]),
+        is_workspace_function: false,
     });
 }
 
@@ -276,6 +280,7 @@ fn table_required_filter_document(
             filter,
             "required table filter",
         ]),
+        is_workspace_function: false,
     });
 }
 
@@ -320,6 +325,7 @@ fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<Ca
             arguments.as_str(),
             result_columns.as_str(),
         ]),
+        is_workspace_function: is_workspace_function(function),
     });
 
     for argument in &function.arguments {
@@ -359,6 +365,7 @@ fn table_function_argument_document(
             values.as_str(),
             "table function argument",
         ]),
+        is_workspace_function: is_workspace_function(function),
     });
 }
 
@@ -391,7 +398,12 @@ fn table_function_result_column_document(
             column.description.as_str(),
             "table function result column",
         ]),
+        is_workspace_function: is_workspace_function(function),
     });
+}
+
+fn is_workspace_function(function: &TableFunctionInfo) -> bool {
+    function.provenance == TableFunctionProvenance::WorkspaceFunction
 }
 
 fn qualified_name(schema_name: &str, surface_name: &str) -> String {
@@ -457,6 +469,13 @@ fn catalog_snapshot_fingerprint(
         update_hash(&mut hasher, &function.function_name);
         update_hash(&mut hasher, &function.description);
         update_hash(&mut hasher, function.kind.as_str());
+        update_hash(
+            &mut hasher,
+            match function.provenance {
+                TableFunctionProvenance::Source => "source",
+                TableFunctionProvenance::WorkspaceFunction => "workspace_function",
+            },
+        );
         let search_limits_json = function
             .search_limits
             .as_ref()
@@ -513,7 +532,7 @@ fn update_hash(hasher: &mut Sha256, value: &str) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use coral_engine::{CatalogInfo, TableInfo};
+    use coral_engine::{CatalogInfo, TableFunctionInfo, TableFunctionProvenance, TableInfo};
 
     use super::{CatalogDocumentKind, CatalogSearchSnapshot};
 
@@ -569,6 +588,27 @@ mod tests {
             && doc.field_name == "title"));
     }
 
+    #[test]
+    fn snapshot_preserves_workspace_function_provenance() {
+        let source = CatalogSearchSnapshot::from_catalog(&catalog_with_function(
+            TableFunctionProvenance::Source,
+        ));
+        let workspace = CatalogSearchSnapshot::from_catalog(&catalog_with_function(
+            TableFunctionProvenance::WorkspaceFunction,
+        ));
+
+        assert_ne!(source.fingerprint, workspace.fingerprint);
+        assert!(
+            workspace
+                .index_snapshot()
+                .documents
+                .iter()
+                .any(|document| document.doc_kind
+                    == crate::search::catalog::sqlite_index::CatalogIndexDocumentKind::CatalogTableFunction
+                    && document.is_workspace_function)
+        );
+    }
+
     fn catalog_with_table(table_name: &str) -> CatalogInfo {
         CatalogInfo {
             tables: vec![TableInfo {
@@ -588,6 +628,22 @@ mod tests {
                 required_filters: Vec::new(),
             }],
             table_functions: Vec::new(),
+        }
+    }
+
+    fn catalog_with_function(provenance: TableFunctionProvenance) -> CatalogInfo {
+        CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![TableFunctionInfo {
+                schema_name: "workspace".to_string(),
+                function_name: "deploy".to_string(),
+                description: "Deploy the current release".to_string(),
+                arguments: Vec::new(),
+                result_columns: Vec::new(),
+                kind: coral_spec::SourceTableFunctionKind::Table,
+                search_limits: None,
+                provenance,
+            }],
         }
     }
 }

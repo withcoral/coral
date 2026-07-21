@@ -49,7 +49,8 @@ fn refresh_and_search_catalog_metadata() {
 
     assert!(hits.hits.iter().any(|hit| hit.doc_kind
         == CatalogIndexDocumentKind::CatalogTableFunction
-        && hit.surface_name == "search_deployments"));
+        && hit.surface_name == "search_deployments"
+        && hit.is_workspace_function));
     assert_eq!(hits.document_count, 3);
     let sha_hit = hits
         .hits
@@ -671,6 +672,40 @@ fn fts_ranking_weights_qualified_name_before_title_inside_limit() {
 }
 
 #[test]
+fn workspace_function_is_retained_before_candidate_limit() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let snapshot = workspace_function_priority_snapshot();
+    store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh");
+
+    let hits = store
+        .search_catalog(&["deploy".to_string()], 1)
+        .expect("search");
+
+    assert!(hits.hits.iter().any(|hit| hit.is_workspace_function));
+    assert!(hits.retrieval_limited);
+}
+
+#[test]
+fn workspace_function_fts_match_is_retained_outside_bm25_window() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let snapshot = workspace_function_fts_priority_snapshot();
+    store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh");
+
+    let hits = store
+        .search_catalog(&["needle".to_string()], 1)
+        .expect("search");
+
+    assert!(hits.hits.iter().any(|hit| hit.is_workspace_function));
+    assert!(hits.retrieval_limited);
+}
+
+#[test]
 fn exact_identifier_is_retained_before_prefix_limit() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
@@ -877,7 +912,7 @@ fn catalog_index_snapshot() -> CatalogIndexSnapshot {
     CatalogIndexSnapshot {
         fingerprint: "catalog-fixture-v1".to_string(),
         documents: vec![
-            document(DocumentInput {
+            workspace_function_document(DocumentInput {
                 doc_id: "catalog:function:github.search_deployments",
                 doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
                 source_name: "github",
@@ -951,6 +986,82 @@ fn fts_weight_snapshot() -> CatalogIndexSnapshot {
                 searchable_text: "",
             }),
         ],
+    }
+}
+
+fn workspace_function_priority_snapshot() -> CatalogIndexSnapshot {
+    let mut documents = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|source_name| {
+            document(DocumentInput {
+                doc_id: source_name,
+                doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+                source_name,
+                surface_kind: "table_function",
+                surface_name: "deploy",
+                field_name: "",
+                field_role: "",
+                qualified_name: source_name,
+                title: "deploy",
+                description: "",
+                searchable_text: "deploy",
+            })
+        })
+        .collect::<Vec<_>>();
+    documents.push(workspace_function_document(DocumentInput {
+        doc_id: "workspace-deploy",
+        doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+        source_name: "coral",
+        surface_kind: "table_function",
+        surface_name: "deploy",
+        field_name: "",
+        field_role: "",
+        qualified_name: "coral.deploy",
+        title: "deploy",
+        description: "",
+        searchable_text: "deploy",
+    }));
+    CatalogIndexSnapshot {
+        fingerprint: "workspace-function-priority-fixture-v1".to_string(),
+        documents,
+    }
+}
+
+fn workspace_function_fts_priority_snapshot() -> CatalogIndexSnapshot {
+    let mut documents = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|source_name| {
+            document(DocumentInput {
+                doc_id: source_name,
+                doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+                source_name,
+                surface_kind: "table_function",
+                surface_name: source_name,
+                field_name: "",
+                field_role: "",
+                qualified_name: source_name,
+                title: source_name,
+                description: "needle",
+                searchable_text: "",
+            })
+        })
+        .collect::<Vec<_>>();
+    documents.push(workspace_function_document(DocumentInput {
+        doc_id: "workspace-local",
+        doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+        source_name: "coral",
+        surface_kind: "table_function",
+        surface_name: "local",
+        field_name: "",
+        field_role: "",
+        qualified_name: "coral.local",
+        title: "local",
+        description: "needle in a deliberately longer description",
+        searchable_text: "",
+    }));
+    CatalogIndexSnapshot {
+        fingerprint: "workspace-function-fts-priority-fixture-v1".to_string(),
+        documents,
     }
 }
 
@@ -1098,6 +1209,12 @@ fn document(input: DocumentInput<'_>) -> CatalogIndexDocument {
     owned_document(input.source_name, input)
 }
 
+fn workspace_function_document(input: DocumentInput<'_>) -> CatalogIndexDocument {
+    let mut document = document(input);
+    document.is_workspace_function = true;
+    document
+}
+
 fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogIndexDocument {
     CatalogIndexDocument {
         doc_id: input.doc_id.to_string(),
@@ -1112,6 +1229,7 @@ fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogI
         title: input.title.to_string(),
         description: input.description.to_string(),
         searchable_text: input.searchable_text.to_string(),
+        is_workspace_function: false,
         payload_json: "{}".to_string(),
     }
 }

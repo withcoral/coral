@@ -129,9 +129,27 @@ impl SqliteCatalogIndex {
         let mut retrieval_limited = false;
 
         if let Some(match_query) = fts_match_query(&terms) {
-            let mut fts_hits = fts_search(connection, workspace_name, &match_query, &terms, limit)?;
+            let mut fts_hits = fts_search(
+                connection,
+                workspace_name,
+                &match_query,
+                &terms,
+                limit,
+                false,
+            )?;
             retrieval_limited |= truncate_probe_hits(&mut fts_hits, limit);
             merge_hits(&mut hits, fts_hits);
+
+            let mut workspace_function_hits = fts_search(
+                connection,
+                workspace_name,
+                &match_query,
+                &terms,
+                limit,
+                true,
+            )?;
+            retrieval_limited |= truncate_probe_hits(&mut workspace_function_hits, limit);
+            merge_hits(&mut hits, workspace_function_hits);
         }
 
         let exact_hits = exact_prefix_search(
@@ -228,6 +246,7 @@ pub(crate) struct CatalogIndexDocument {
     pub(crate) title: String,
     pub(crate) description: String,
     pub(crate) searchable_text: String,
+    pub(crate) is_workspace_function: bool,
     pub(crate) payload_json: String,
 }
 
@@ -295,6 +314,7 @@ pub(crate) struct CatalogSearchHit {
     pub(crate) description: String,
     pub(crate) matched_fields: Vec<String>,
     pub(crate) retrieval_score: u32,
+    pub(crate) is_workspace_function: bool,
 }
 
 fn replace_catalog_documents(
@@ -377,10 +397,10 @@ fn insert_catalog_snapshot_documents(
         INSERT INTO catalog_documents (
             workspace, doc_id, doc_kind, source_name, surface_kind, surface_name,
             field_name, field_role, qualified_name, title, description, payload_json,
-            snapshot_fingerprint, updated_at
+            snapshot_fingerprint, updated_at, is_workspace_function
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?14)
         ",
     )?;
     let mut fts_insert = transaction.prepare(
@@ -408,6 +428,7 @@ fn insert_catalog_snapshot_documents(
             &document.description,
             &document.payload_json,
             &snapshot.fingerprint,
+            document.is_workspace_function,
         ])?;
         fts_insert.execute(params![
             workspace_name.as_str(),
@@ -611,6 +632,7 @@ fn fts_search(
     match_query: &str,
     terms: &[String],
     limit: usize,
+    workspace_functions_only: bool,
 ) -> Result<Vec<CatalogSearchHit>, SqliteSearchError> {
     let mut statement = connection.prepare(
         "
@@ -628,21 +650,28 @@ fn fts_search(
             f.title,
             f.qualified_name,
             f.description,
-            f.searchable_text
+            f.searchable_text,
+            d.is_workspace_function
         FROM catalog_documents_fts f
         JOIN catalog_documents d
             ON d.workspace = f.workspace AND d.doc_id = f.doc_id
-        WHERE f.workspace = ?1 AND catalog_documents_fts MATCH ?2
+        WHERE f.workspace = ?1
+            AND catalog_documents_fts MATCH ?2
+            AND (
+                ?3 = 0
+                OR (d.doc_kind = 'catalog_table_function' AND d.is_workspace_function)
+            )
         ORDER BY bm25(catalog_documents_fts, 1.0, 1.0, 6.0, 8.0, 2.0, 1.0) ASC,
             d.doc_kind ASC,
             d.doc_id ASC
-        LIMIT ?3
+        LIMIT ?4
         ",
     )?;
     let rows = statement.query_map(
         params![
             workspace_name.as_str(),
             match_query,
+            workspace_functions_only,
             i64::try_from(probe_limit(limit)).unwrap_or(i64::MAX),
         ],
         |row| hit_from_row(row, terms, 2_000),
@@ -676,7 +705,8 @@ fn exact_prefix_search(
             d.title,
             d.qualified_name,
             d.description,
-            ''
+            '',
+            d.is_workspace_function
         FROM catalog_documents d
         WHERE d.workspace = ?1
             AND (
@@ -703,6 +733,10 @@ fn exact_prefix_search(
                 THEN 3
                 ELSE 4
             END,
+            CASE
+                WHEN d.doc_kind = 'catalog_table_function' THEN d.is_workspace_function
+                ELSE 0
+            END DESC,
             d.doc_kind ASC,
             d.doc_id ASC
         LIMIT ?4
@@ -791,6 +825,7 @@ fn hit_from_row(
         description: row.get(9)?,
         matched_fields,
         retrieval_score: base_score,
+        is_workspace_function: row.get(14)?,
     })
 }
 

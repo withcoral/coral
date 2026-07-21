@@ -872,6 +872,7 @@ mod tests {
             result_columns: Vec::new(),
             kind: SourceTableFunctionKind::Search,
             search_limits: None,
+            provenance: coral_engine::TableFunctionProvenance::Source,
         };
 
         let proto = table_function_to_proto(&workspace_name, function);

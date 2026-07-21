@@ -6,6 +6,7 @@ use crate::search::catalog::sqlite_index::{CatalogIndexDocumentKind, CatalogSear
 
 const PARENT_CATALOG_SURFACE_RELEVANCE_BOOST: u32 = 20_000;
 const COLUMN_HINT_RELEVANCE_BOOST: u32 = 0;
+const WORKSPACE_FUNCTION_RELEVANCE_BOOST: u32 = 4_000;
 const EXACT_QUALIFIED_NAME_TERM_RELEVANCE_BOOST: u32 = 12_000;
 const EXACT_SOURCE_NAME_TERM_RELEVANCE_BOOST: u32 = 9_000;
 const EXACT_TITLE_SURFACE_OR_FIELD_TERM_RELEVANCE_BOOST: u32 = 8_000;
@@ -69,6 +70,9 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
     let description = hit.description.to_lowercase();
     let searchable_text = searchable_text(hit, &description);
     let mut score = doc_kind_boost(hit.doc_kind);
+    if hit.doc_kind == CatalogIndexDocumentKind::CatalogTableFunction && hit.is_workspace_function {
+        score = score.saturating_add(WORKSPACE_FUNCTION_RELEVANCE_BOOST);
+    }
     let required_term_count = terms
         .iter()
         .filter(|term| is_required_query_term(term))
@@ -307,6 +311,45 @@ mod tests {
     }
 
     #[test]
+    fn workspace_function_beats_equally_relevant_source_function() {
+        let source_function = hit(HitInput {
+            doc_id: "catalog:function:a_source.deploy",
+            doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+            source_name: "a_source",
+            surface_kind: "table_function",
+            surface_name: "deploy",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: vec!["qualified_name", "title"],
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        let mut workspace_function = hit(HitInput {
+            doc_id: "catalog:function:z_workspace.deploy",
+            doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+            source_name: "z_workspace",
+            surface_kind: "table_function",
+            surface_name: "deploy",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: vec!["qualified_name", "title"],
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        workspace_function.is_workspace_function = true;
+
+        let hits = rank_catalog_hits(
+            vec![source_function, workspace_function],
+            &["deploy".to_string()],
+        );
+
+        assert_eq!(
+            hits.first().expect("top ranked hit").hit.doc_id,
+            "catalog:function:z_workspace.deploy"
+        );
+    }
+
+    #[test]
     fn multi_term_identifier_prefix_intent_beats_same_source_noise() {
         let hits = rank_catalog_hits(
             vec![
@@ -503,6 +546,7 @@ mod tests {
                 .map(str::to_string)
                 .collect(),
             retrieval_score: input.retrieval_score,
+            is_workspace_function: false,
         }
     }
 }

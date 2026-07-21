@@ -14,8 +14,8 @@ use serde::Serialize;
 use crate::backends::RegisteredSource;
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
-    ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
-    TableInfo,
+    ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionProvenance,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// Schema name for source metadata tables such as `coral.tables`.
@@ -31,6 +31,7 @@ pub(crate) struct CatalogTableFunction {
     pub(crate) result_columns: Vec<CatalogTableFunctionResultColumn>,
     pub(crate) kind: SourceTableFunctionKind,
     pub(crate) search_limits: Option<SearchLimitsSpec>,
+    pub(crate) provenance: TableFunctionProvenance,
 }
 
 #[derive(Debug, Clone)]
@@ -585,6 +586,7 @@ pub(crate) fn collect_table_functions(
                 .collect(),
             kind: function.kind,
             search_limits: function.search_limits,
+            provenance: function.provenance,
         })
         .collect()
 }
@@ -624,6 +626,7 @@ fn catalog_table_functions(
                         .collect(),
                     kind: function.kind,
                     search_limits: function.search_limits.clone(),
+                    provenance: TableFunctionProvenance::Source,
                 })
         })
         .chain(catalog_only_table_functions.iter().cloned())

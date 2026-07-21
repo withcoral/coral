@@ -7,9 +7,9 @@ use arrow::record_batch::RecordBatch;
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryExecutionProvenance, QueryParameterValue,
     QueryParameters, QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig,
-    QueryRuntimeContext, StatusCode, UdfRuntimeArgument, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    QueryRuntimeContext, StatusCode, TableFunctionProvenance, UdfRuntimeArgument,
+    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
+    UdfRuntimeSignature, UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
 };
 use coral_spec::ManifestDataType;
 use serde_json::{Value, json};
@@ -1005,6 +1005,10 @@ async fn published_udf_table_function_is_cataloged() {
     let function = catalog.table_functions.first().expect("udf table function");
     assert_eq!(function.schema_name, "udfs");
     assert_eq!(function.function_name, "review_queue");
+    assert_eq!(
+        function.provenance,
+        TableFunctionProvenance::WorkspaceFunction
+    );
     let [_min_score, _mode, payload, _query, _since] = function.arguments.as_slice() else {
         panic!("expected five review queue arguments");
     };

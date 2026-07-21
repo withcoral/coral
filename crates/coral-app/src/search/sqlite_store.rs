@@ -19,7 +19,7 @@ use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 4;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 5;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -45,6 +45,10 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
     SearchSqliteMigration {
         version: 4,
         sql: include_str!("migrations/0004_catalog_source_ownership.sql"),
+    },
+    SearchSqliteMigration {
+        version: 5,
+        sql: include_str!("migrations/0005_catalog_function_provenance.sql"),
     },
 ];
 
@@ -617,7 +621,14 @@ fn apply_migration(
     let transaction = connection.transaction()?;
     let initializes_catalog_source_ownership =
         migration.version == 4 && !tables_exist(&transaction, &["catalog_source_owners"])?;
-    transaction.execute_batch(migration.sql)?;
+    let adds_catalog_function_provenance = migration.version == 5
+        && !schema_query_is_valid(
+            &transaction,
+            "SELECT is_workspace_function FROM catalog_documents LIMIT 0",
+        )?;
+    if migration.version != 5 || adds_catalog_function_provenance {
+        transaction.execute_batch(migration.sql)?;
+    }
     if initializes_catalog_source_ownership {
         // Existing catalog rows predate durable installed-owner identity. They
         // are disposable and cannot be safely backfilled for multi-component
@@ -687,7 +698,8 @@ fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSear
             description,
             payload_json,
             snapshot_fingerprint,
-            updated_at
+            updated_at,
+            is_workspace_function
         FROM catalog_documents
         LIMIT 0
         ",
@@ -987,6 +999,30 @@ mod tests {
             &connection,
             "idx_catalog_source_owners_workspace_owner"
         ));
+    }
+
+    #[test]
+    fn opening_v4_adds_catalog_function_provenance_without_dropping_catalog_rows() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let mut connection = Connection::open(&path).expect("raw v4 connection");
+        for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(4) {
+            super::apply_migration(&mut connection, migration).expect("apply v4 history");
+        }
+        seed_catalog_document(&connection);
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+        let is_workspace_function: bool = connection
+            .query_row(
+                "SELECT is_workspace_function FROM catalog_documents WHERE workspace = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("catalog function provenance");
+
+        assert_eq!(catalog_document_count(&connection), 1);
+        assert!(!is_workspace_function);
     }
 
     #[test]
@@ -1673,6 +1709,7 @@ mod tests {
             title: surface_name.to_string(),
             description: String::new(),
             searchable_text: surface_name.to_string(),
+            is_workspace_function: false,
             payload_json: "{}".to_string(),
         }
     }

@@ -181,6 +181,7 @@ fn catalog_table_function(
             })
             .collect(),
         search_limits: None,
+        provenance: crate::TableFunctionProvenance::WorkspaceFunction,
     }
 }
 

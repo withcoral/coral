@@ -97,4 +97,15 @@ pub struct TableFunctionInfo {
     pub kind: SourceTableFunctionKind,
     /// Provider search limit metadata, when declared by the source.
     pub search_limits: Option<SearchLimitsSpec>,
+    /// How the function entered the query-visible catalog.
+    pub provenance: TableFunctionProvenance,
+}
+
+/// Provenance of a query-visible table function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableFunctionProvenance {
+    /// Function declared by an installed source.
+    Source,
+    /// Function installed in the workspace function inventory.
+    WorkspaceFunction,
 }

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use coral_engine::{CoralQuery, CoreError, QuerySource, TableInfo};
+use coral_engine::{CoralQuery, CoreError, QuerySource, TableFunctionProvenance, TableInfo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -759,6 +759,7 @@ async fn list_catalog_matches_table_function_metadata() {
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.function_name, "search_issues");
     assert_eq!(function.description, "Search issues");
+    assert_eq!(function.provenance, TableFunctionProvenance::Source);
     assert_eq!(function.arguments.len(), 4);
     assert_eq!(function.arguments[0].name, "q");
     assert!(function.arguments[0].required);
