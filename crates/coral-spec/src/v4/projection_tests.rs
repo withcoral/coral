@@ -1482,3 +1482,110 @@ fn generated_mcp_projection_snake_cases_camel_input_names() {
         Some(&"notification_id")
     );
 }
+
+fn imported_items_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: per_page, in: query, schema: {type: integer, default: 25, maximum: 100}}
+        - {name: state, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+#[test]
+fn projection_sync_rejects_input_missing_from_operation() {
+    let (manifest, imported) = imported_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    let projection = catalog.projections.first_mut().expect("projection");
+    let mut stale = projection.inputs.first().expect("input").clone();
+    stale.name = "stale".to_string();
+    stale.wire_name = "renamed_upstream".to_string();
+    projection.inputs.push(stale);
+
+    let error = sync_projection_inputs(
+        &plan,
+        &mut catalog,
+        ProjectionInputSyncMode::PreserveExistingExposure,
+    )
+    .expect_err("stale override input must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("input 'stale' does not match a Query input named 'renamed_upstream'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_override_identity_survives_policy_reconciliation() {
+    let (manifest, imported) = imported_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    let projection = catalog.projections.first_mut().expect("projection");
+    projection.name = "authored_items".to_string();
+    projection.guide = "Keep this guide".to_string();
+    projection.inputs.iter_mut().for_each(|input| {
+        input.sql_exposure = SqlInputExposure::FunctionArg;
+    });
+
+    sync_projection_inputs(
+        &plan,
+        &mut catalog,
+        ProjectionInputSyncMode::PreserveExistingExposure,
+    )
+    .expect("sync");
+
+    let projection = catalog.projections.first().expect("projection");
+    assert_eq!(projection.name, "authored_items");
+    assert_eq!(projection.guide, "Keep this guide");
+    assert_eq!(
+        projection
+            .inputs
+            .iter()
+            .find(|input| input.wire_name == "page")
+            .expect("page")
+            .sql_exposure,
+        SqlInputExposure::Internal
+    );
+    assert_eq!(
+        projection
+            .inputs
+            .iter()
+            .find(|input| input.wire_name == "state")
+            .expect("state")
+            .sql_exposure,
+        SqlInputExposure::FunctionArg
+    );
+}

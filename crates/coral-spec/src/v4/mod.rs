@@ -49,14 +49,13 @@ pub use manifest::{
 pub use naming::normalize_identifier;
 pub use operation_metadata::{
     ImportedSurface, McpOperationPagination, OperationMetadata, OperationMetadataCatalog,
-    ProjectionInputSyncMode, ValidatedSurfacePlan, sync_projection_inputs,
-    validate_operation_metadata_structure, validate_semantic_ir_structure,
+    ValidatedSurfacePlan, validate_operation_metadata_structure, validate_semantic_ir_structure,
 };
 pub use projections::{
-    Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
-    ProjectionVisibility, SqlInputExposure, generate_projection_catalog, mcp_projection_arg_specs,
-    projection_arg_specs, projection_column_specs, projection_filter_specs,
-    request_spec_for_projection,
+    Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionInputSyncMode,
+    ProjectionKind, ProjectionVisibility, SqlInputExposure, generate_projection_catalog,
+    mcp_projection_arg_specs, projection_arg_specs, projection_column_specs,
+    projection_filter_specs, request_spec_for_projection, sync_projection_inputs,
 };
 pub use schema::generated_v4_source_manifest_schema;
 pub use surfaces::{
