@@ -550,13 +550,13 @@ mod tests {
             .await
             .expect("store")
             .expect("approval");
-        assert!(approval.provider_id == "alpha");
-        assert!(approval.client_id == CLIENT_ID);
-        assert!(approval.client_name == "web");
-        assert!(approval.redirect_uri == REDIRECT_URI);
-        assert!(approval.client_state.as_deref() == Some(CLIENT_STATE));
-        assert!(approval.code_challenge == CHALLENGE);
-        assert!(approval.scope == SCOPE);
+        assert_eq!(approval.provider_id, "alpha");
+        assert_eq!(approval.client_id, CLIENT_ID);
+        assert_eq!(approval.client_name, "web");
+        assert_eq!(approval.redirect_uri, REDIRECT_URI);
+        assert_eq!(approval.client_state.as_deref(), Some(CLIENT_STATE));
+        assert_eq!(approval.code_challenge, CHALLENGE);
+        assert_eq!(approval.scope, SCOPE);
 
         let mut cli = pairs();
         replace(
