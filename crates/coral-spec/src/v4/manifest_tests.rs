@@ -1,8 +1,16 @@
+use crate::v4::{SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4SourceManifest};
 use crate::{
-    ManifestCredentialMethodKind, ManifestOAuthDynamicClientRegistrationAuthMethod,
-    ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
-    ManifestOAuthScopeDelimiter, parse_source_manifest_yaml,
+    DatabaseConnectionSpec, DatabaseProvider, ManifestCredentialMethodKind,
+    ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
+    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, parse_source_manifest_yaml,
 };
+
+fn parse_v4_without_schema(
+    raw: &str,
+) -> std::result::Result<V4SourceManifest, crate::ManifestError> {
+    let value = serde_yaml::from_str(raw).map_err(crate::ManifestError::parse_yaml)?;
+    V4SourceManifest::parse_manifest_value(value)
+}
 
 #[test]
 fn parses_v4_manifest_top_level_inputs() {
@@ -64,24 +72,280 @@ surface:
 }
 
 #[test]
-fn reserved_source_namespace_is_rejected() {
-    let error = parse_source_manifest_yaml(
+fn parses_v4_database_surface_with_provider_specific_connection() {
+    let manifest = parse_source_manifest_yaml(
+        r#"
+name: coral_db
+dsl_version: 4
+inputs:
+  DB_HOST:
+    kind: variable
+    default: localhost
+  DB_PORT:
+    kind: variable
+    default: "5432"
+  DB_USER:
+    kind: variable
+    default: coral_reader
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: postgres
+  connection:
+    host: "{{input.DB_HOST}}"
+    port: "{{input.DB_PORT}}"
+    database: coral
+    user: "{{input.DB_USER}}"
+    password: "{{input.DB_PASSWORD}}"
+    sslmode: require
+"#,
+    )
+    .expect("v4 manifest");
+
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    assert_eq!(surface.surface_type, SurfaceType::Database);
+    assert!(matches!(
+        &surface.descriptor,
+        SurfaceDescriptor::Database {
+            provider: DatabaseProvider::Postgres,
+        }
+    ));
+
+    let SurfaceRuntimeConfig::Database(runtime) = &surface.runtime else {
+        panic!("database runtime");
+    };
+    let DatabaseConnectionSpec::Postgres(connection) = &runtime.connection else {
+        panic!("postgres connection");
+    };
+    assert_eq!(connection.host.raw(), "{{input.DB_HOST}}");
+    assert_eq!(connection.port.raw(), "{{input.DB_PORT}}");
+    assert_eq!(connection.database.raw(), "coral");
+    assert_eq!(connection.user.raw(), "{{input.DB_USER}}");
+    assert_eq!(connection.password.raw(), "{{input.DB_PASSWORD}}");
+    assert_eq!(
+        connection.sslmode.as_ref().expect("sslmode template").raw(),
+        "require"
+    );
+}
+
+#[test]
+fn parses_v4_mysql_database_surface() {
+    let manifest = parse_source_manifest_yaml(
+        r#"
+name: coral_mysql
+dsl_version: 4
+inputs:
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: mysql
+  connection:
+    host: localhost
+    port: "3306"
+    database: coral
+    user: coral_reader
+    password: "{{input.DB_PASSWORD}}"
+"#,
+    )
+    .expect("MySQL database manifest");
+
+    let runtime = manifest
+        .as_v4()
+        .expect("v4 manifest")
+        .surface
+        .database_runtime()
+        .expect("database runtime");
+    let DatabaseConnectionSpec::MySql(connection) = &runtime.connection else {
+        panic!("MySQL connection");
+    };
+    assert_eq!(connection.port.raw(), "3306");
+    assert_eq!(connection.password.raw(), "{{input.DB_PASSWORD}}");
+}
+
+#[test]
+fn parses_v4_sqlite_database_surface() {
+    let manifest = parse_source_manifest_yaml(
         r"
-name: public
+name: coral_sqlite
 dsl_version: 4
 surface:
-    type: openapi
-    file: /tmp/openapi.yaml
+  type: database
+  provider: sqlite
+  connection:
+    path: /tmp/coral.sqlite
 ",
     )
-    .expect_err("reserved relation namespace should fail");
+    .expect("SQLite database manifest");
+
+    let runtime = manifest
+        .as_v4()
+        .expect("v4 manifest")
+        .surface
+        .database_runtime()
+        .expect("database runtime");
+    let DatabaseConnectionSpec::Sqlite(connection) = &runtime.connection else {
+        panic!("SQLite connection");
+    };
+    assert_eq!(connection.path.raw(), "/tmp/coral.sqlite");
+}
+
+#[test]
+fn v4_database_surface_requires_provider_and_connection() {
+    let cases = [
+        (
+            r"
+name: coral_db
+dsl_version: 4
+surface:
+  type: database
+  connection:
+    path: /tmp/coral.sqlite
+",
+            "database surface must declare provider",
+        ),
+        (
+            r"
+name: coral_db
+dsl_version: 4
+surface:
+  type: database
+  provider: sqlite
+",
+            "database surface must declare connection",
+        ),
+    ];
+
+    for (raw, expected) in cases {
+        let error = parse_v4_without_schema(raw).expect_err("invalid database surface");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn v4_database_connection_must_match_provider() {
+    let error = parse_v4_without_schema(
+        r#"
+name: coral_db
+dsl_version: 4
+surface:
+  type: database
+  provider: sqlite
+  connection:
+    host: localhost
+    port: "5432"
+    database: coral
+    user: coral_reader
+    password: ignored
+"#,
+    )
+    .expect_err("provider-specific connection must be rejected");
 
     assert!(
         error
             .to_string()
-            .contains("source name 'public' is reserved"),
+            .contains("connection is invalid for provider 'sqlite'"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn v4_database_surface_rejects_fields_from_other_surface_types() {
+    let cases = [
+        (
+            r"
+name: coral_db
+dsl_version: 4
+surface:
+  type: database
+  provider: sqlite
+  url: https://example.com/openapi.json
+  connection:
+    path: /tmp/coral.sqlite
+",
+            "must not declare url, file, or server",
+        ),
+        (
+            r"
+name: coral_db
+dsl_version: 4
+surface:
+  type: database
+  provider: sqlite
+  base_url: https://example.com
+  connection:
+    path: /tmp/coral.sqlite
+",
+            "must not declare OpenAPI field 'base_url'",
+        ),
+    ];
+
+    for (raw, expected) in cases {
+        let error = parse_v4_without_schema(raw).expect_err("foreign field must be rejected");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_v4_database_connection_templates_referencing_runtime_tokens() {
+    let error = parse_source_manifest_yaml(
+        r#"
+name: coral_db
+dsl_version: 4
+inputs:
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: postgres
+  connection:
+    host: localhost
+    port: "5432"
+    database: "{{filter.tenant}}"
+    user: coral_reader
+    password: "{{input.DB_PASSWORD}}"
+"#,
+    )
+    .expect_err("runtime token should fail");
+
+    assert!(
+        error.to_string().contains(
+            "connection.database may only reference top-level inputs; unsupported template token '{{filter.tenant}}'"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn reserved_source_namespace_is_rejected() {
+    for name in ["coral", "coral_admin", "datafusion", "public"] {
+        let raw = format!(
+            r"
+name: {name}
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+"
+        );
+        let error =
+            parse_source_manifest_yaml(&raw).expect_err("reserved relation namespace should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("source name '{name}' is reserved")),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[test]

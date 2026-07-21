@@ -195,6 +195,42 @@ tables:
 }
 
 #[test]
+fn loader_does_not_connect_or_publish_static_tables_for_database_sources() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let config_store = ConfigStore::new(layout.clone());
+    let workspace_name = WorkspaceName::parse("work").expect("workspace");
+    let source_name = SourceName::parse("coral_db").expect("source");
+    let manifest_yaml = r"
+name: coral_db
+dsl_version: 4
+surface:
+  type: database
+  provider: sqlite
+  connection:
+    path: /path/that/must/not/be/opened.sqlite
+";
+
+    config_store
+        .create_legacy_workspace_entry_for_tests(&workspace_name)
+        .expect("create legacy workspace entry");
+    install_imported_source(
+        &layout,
+        &config_store,
+        &workspace_name,
+        &source_name,
+        manifest_yaml,
+    );
+
+    let catalog = CatalogSnapshotLoader::new(config_store, layout)
+        .load_catalog(&workspace_name)
+        .expect("database source should not require a live connection");
+
+    assert!(catalog.tables.is_empty());
+    assert!(catalog.table_functions.is_empty());
+}
+
+#[test]
 fn loader_fails_closed_when_installed_manifest_cannot_be_read() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");

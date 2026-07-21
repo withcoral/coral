@@ -12,6 +12,7 @@ use coral_engine::{
     CatalogInfo, ColumnInfo, RuntimeSourceComponent, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
+use coral_spec::v4::SurfaceType;
 use coral_spec::{
     ColumnSpec, FilterSpec, SourceTableFunctionSpec, TableCommon, ValidatedSourceManifest,
 };
@@ -23,7 +24,9 @@ use crate::sources::materialization::{
     load_v4_materialization_with_reporter,
 };
 use crate::sources::model::InstalledSource;
-use crate::sources::runtime_package::runtime_component_for_v4_source;
+use crate::sources::runtime_package::{
+    runtime_component_for_v4_database_source, runtime_component_for_v4_source,
+};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
@@ -129,6 +132,10 @@ impl CatalogSnapshotLoader {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         if let Some(v4) = source_spec.as_v4() {
+            if v4.surface.surface_type == SurfaceType::Database {
+                return runtime_component_for_v4_database_source(v4)
+                    .map(|component| vec![component]);
+            }
             let materialized = load_v4_materialization_with_reporter(
                 &self.layout,
                 workspace_name,

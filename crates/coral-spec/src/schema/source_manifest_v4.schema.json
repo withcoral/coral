@@ -779,6 +779,19 @@
             "type",
             "server"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "database"
+            }
+          },
+          "$ref": "#/$defs/V4DatabaseSurfaceSchema",
+          "required": [
+            "type"
+          ]
         }
       ]
     },
@@ -1777,6 +1790,159 @@
       "type": "string",
       "enum": [
         "bearer"
+      ]
+    },
+    "V4PostgresDatabaseSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "database"
+        },
+        "provider": {
+          "type": "string",
+          "const": "postgres"
+        },
+        "connection": {
+          "$ref": "#/$defs/V4PostgresConnectionSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "provider",
+        "connection"
+      ]
+    },
+    "V4PostgresConnectionSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "sslmode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "database",
+        "user",
+        "password"
+      ]
+    },
+    "V4MySqlDatabaseSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "database"
+        },
+        "provider": {
+          "type": "string",
+          "const": "mysql"
+        },
+        "connection": {
+          "$ref": "#/$defs/V4MySqlConnectionSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "provider",
+        "connection"
+      ]
+    },
+    "V4MySqlConnectionSchema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "database",
+        "user",
+        "password"
+      ]
+    },
+    "V4SqliteDatabaseSurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "database"
+        },
+        "provider": {
+          "type": "string",
+          "const": "sqlite"
+        },
+        "connection": {
+          "$ref": "#/$defs/V4SqliteConnectionSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "provider",
+        "connection"
+      ]
+    },
+    "V4SqliteConnectionSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ]
+    },
+    "V4DatabaseSurfaceSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4PostgresDatabaseSurfaceSchema"
+        },
+        {
+          "$ref": "#/$defs/V4MySqlDatabaseSurfaceSchema"
+        },
+        {
+          "$ref": "#/$defs/V4SqliteDatabaseSurfaceSchema"
+        }
       ]
     }
   },

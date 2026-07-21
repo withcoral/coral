@@ -6,9 +6,29 @@
 //! Backend-owned manifest model for relational database sources.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{ManifestInputSpec, ParsedTemplate, SourceManifestCommon};
+
+/// Provider selected by an authored database surface.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseProvider {
+    Postgres,
+    #[serde(rename = "mysql")]
+    MySql,
+    Sqlite,
+}
+
+impl DatabaseProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgres",
+            Self::MySql => "mysql",
+            Self::Sqlite => "sqlite",
+        }
+    }
+}
 
 /// Validated database source manifest consumed by the query engine.
 #[derive(Debug, Clone)]

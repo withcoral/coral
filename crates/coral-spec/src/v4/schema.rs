@@ -39,6 +39,7 @@ struct V4SourceManifestSchema {
 enum V4SurfaceSchema {
     Openapi(V4OpenApiSurfaceSchema),
     Mcp(V4McpSurfaceSchema),
+    Database(V4DatabaseSurfaceSchema),
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -66,6 +67,75 @@ struct V4OpenApiSurfaceSchema {
 #[serde(deny_unknown_fields)]
 struct V4McpSurfaceSchema {
     server: McpServerSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4DatabaseSurfaceSchema {
+    Postgres(V4PostgresDatabaseSurfaceSchema),
+    MySql(V4MySqlDatabaseSurfaceSchema),
+    Sqlite(V4SqliteDatabaseSurfaceSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4PostgresDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(extend("const" = "postgres"))]
+    provider: String,
+    connection: V4PostgresConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4MySqlDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(extend("const" = "mysql"))]
+    provider: String,
+    connection: V4MySqlConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4SqliteDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(extend("const" = "sqlite"))]
+    provider: String,
+    connection: V4SqliteConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4PostgresConnectionSchema {
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sslmode: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4MySqlConnectionSchema {
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4SqliteConnectionSchema {
+    path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -480,6 +550,33 @@ surface:
             "generated schema should accept MCP surface: {errors:?}"
         );
         parse_source_manifest_yaml(raw).expect("parser accepts MCP surface");
+    }
+
+    #[test]
+    fn generated_schema_accepts_database_surface() {
+        let raw = r#"
+name: coral_db
+dsl_version: 4
+inputs:
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: postgres
+  connection:
+    host: localhost
+    port: "5432"
+    database: coral
+    user: coral_reader
+    password: "{{input.DB_PASSWORD}}"
+"#;
+
+        let errors = validation_errors(&validator(), &manifest_json(raw));
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept database surface: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts database surface");
     }
 
     #[test]
