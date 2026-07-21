@@ -70,6 +70,7 @@ paths:
       operationId: list_project_items
       parameters:
         - {name: project_id, in: path, required: true, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
       responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
 ";
     let mut ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
@@ -130,7 +131,9 @@ fn lookup_key_allowlist_controls_joinability_not_exposure() {
     );
     assert!(filter_lookup_key(&catalog, "state"));
 
-    // Function arguments never carry the flag, allowlisted or not.
+    // Function arguments never carry the flag, allowlisted or not: 'state' is
+    // an allowlisted query input on this table function and 'project_id' is a
+    // non-allowlisted path input, yet neither is flagged.
     let project_items = catalog
         .projections
         .iter()
@@ -138,6 +141,10 @@ fn lookup_key_allowlist_controls_joinability_not_exposure() {
         .expect("projection");
     assert_eq!(
         exposure(&catalog, "list_project_items", "project_id"),
+        SqlInputExposure::FunctionArg
+    );
+    assert_eq!(
+        exposure(&catalog, "list_project_items", "state"),
         SqlInputExposure::FunctionArg
     );
     assert!(project_items.inputs.iter().all(|input| !input.lookup_key));
