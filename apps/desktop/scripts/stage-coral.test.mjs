@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
@@ -40,6 +49,7 @@ test('stages a valid prebuilt Coral file and makes the output executable', async
   const plan = createPlan(fixture, {
     [PREBUILT_CORAL_ENV]: sourceBinary,
   })
+  await validatePrebuiltCoral(sourceBinary, { outputDir: plan.outputDir })
   await mkdir(plan.outputDir, { recursive: true })
   const staleOutput = join(plan.outputDir, 'stale')
   await writeFile(staleOutput, 'remove me')
@@ -75,6 +85,34 @@ test('rejects a prebuilt Coral file inside the staging output before cleanup', a
     new RegExp(`${PREBUILT_CORAL_ENV} must point outside the staging output directory`),
   )
   assert.equal(await readFile(sourceBinary, 'utf8'), 'already staged coral')
+})
+
+test('rejects a prebuilt path whose symlinked parent resolves inside staging', async (t) => {
+  const fixture = await createFixture(t)
+  const outputDir = join(fixture.desktopRoot, 'resources', 'coral')
+  const stagedBinary = join(outputDir, 'coral')
+  const aliasedOutputDir = join(fixture.root, 'prebuilt-alias')
+  await mkdir(outputDir, { recursive: true })
+  await writeFile(stagedBinary, 'already staged coral')
+  await symlink(
+    outputDir,
+    aliasedOutputDir,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  )
+
+  const plan = createPlan(fixture, {
+    [PREBUILT_CORAL_ENV]: join(aliasedOutputDir, 'coral'),
+  })
+
+  await assert.rejects(
+    validatePrebuiltCoral(plan.sourceBinary, { outputDir: plan.outputDir }),
+    new RegExp(`${PREBUILT_CORAL_ENV} must point outside the staging output directory`),
+  )
+  await assert.rejects(
+    stageCoralBinary(plan),
+    new RegExp(`${PREBUILT_CORAL_ENV} must point outside the staging output directory`),
+  )
+  assert.equal(await readFile(stagedBinary, 'utf8'), 'already staged coral')
 })
 
 test('rejects relative, missing, empty, directory, and unreadable prebuilt inputs', async (t) => {

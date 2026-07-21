@@ -63,12 +63,26 @@ cargo run --locked -p coral-cli -- ui --no-open --port 0
 npm run build --prefix apps/desktop
 ```
 
-The build script compiles the release Coral binary, builds Reef in React Router
-framework mode, stages Reef's server bundle under `apps/desktop/out/reef-server/`,
-and stages the Coral binary under `apps/desktop/resources/coral/` for Electron
-packaging. The packaged app serves document, data, action, and route-discovery
-requests through the staged server bundle; static assets are copied from
-`apps/reef/build/client/` into the app resources.
+By default, the build script builds the embedded UI and release Coral binary,
+builds Reef in React Router framework mode, stages Reef's server bundle under
+`apps/desktop/out/reef-server/`, and stages the Coral binary under
+`apps/desktop/resources/coral/` for Electron packaging. The packaged app serves
+document, data, action, and route-discovery requests through the staged server
+bundle; static assets are copied from `apps/reef/build/client/` into the app
+resources.
+
+CI packaging can explicitly stage an existing Coral executable instead:
+
+```shell
+CORAL_DESKTOP_PREBUILT_CORAL=/absolute/path/to/coral npm run build --prefix apps/desktop
+```
+
+The prebuilt path must be absolute, readable, non-empty, and outside the staging
+directory. This mode skips the embedded UI build and all Cargo, rustup, and lipo
+commands; Reef and Electron still build normally. It is used by the native
+packaging smoke and to reuse same-run release binaries, cannot be combined with
+`CORAL_DESKTOP_UNIVERSAL=1`, and never falls back to compiling Coral when the
+input is invalid.
 
 ```shell
 npm run package:dir --prefix apps/desktop
