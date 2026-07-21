@@ -830,7 +830,7 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
-        Command::Server => run_server(feature_overrides.clone())
+        Command::Server => Box::pin(run_server(feature_overrides.clone()))
             .await
             .map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
