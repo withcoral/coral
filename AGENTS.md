@@ -51,11 +51,15 @@
   latency. CI installs the bundled `github` source with fake credentials and
   fails when release `coral sql "select * from coral.tables"` has a hyperfine
   mean above 750 ms.
-- Pull requests do not automatically build macOS Desktop packages. Use manual
-  dispatch for an unsigned packaging preflight when a distribution-sensitive
-  change warrants one. Validation artifacts stay unsigned and must not be
-  reused for a release; Desktop release publishing must rebuild from a clean
-  checkout with signing and notarization.
+- Package-relevant Desktop application and embedded Reef PRs must exercise the
+  native unpacked macOS packaging smoke in addition to their normal checks.
+  Automatic PR validation does not build the release-shaped universal DMG/ZIP;
+  use manual dispatch for an unsigned universal packaging preflight when a
+  distribution-sensitive change warrants one. Validation artifacts stay
+  unsigned and must not be reused for a release; Desktop release publishing
+  must rebuild from a clean checkout with signing and notarization. PR
+  descriptions for changes to this gate must call out the resulting contributor
+  or agent behavior change.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.
