@@ -56,10 +56,11 @@
   Automatic PR validation does not build the release-shaped universal DMG/ZIP;
   use manual dispatch for an unsigned universal packaging preflight when a
   distribution-sensitive change warrants one. Validation artifacts stay
-  unsigned and must not be reused for a release; Desktop release publishing
-  must rebuild from a clean checkout with signing and notarization. PR
-  descriptions for changes to this gate must call out the resulting contributor
-  or agent behavior change.
+  unsigned and must not be reused for a release. Desktop release packaging must
+  reuse the clean, same-run x86_64 and arm64 CLI build artifacts, combine them
+  into its universal sidecar, and then retain the existing signing and
+  notarization flow. PR descriptions for changes to this gate or artifact-reuse
+  rule must call out the resulting contributor or agent behavior change.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.

@@ -79,9 +79,10 @@ CORAL_DESKTOP_PREBUILT_CORAL=/absolute/path/to/coral npm run build --prefix apps
 
 The prebuilt path must be absolute, readable, non-empty, and outside the staging
 directory. This mode skips the embedded UI build and all Cargo, rustup, and lipo
-commands; Reef and Electron still build normally. It is intended for trusted CI
-artifacts, cannot be combined with `CORAL_DESKTOP_UNIVERSAL=1`, and never falls
-back to compiling Coral when the input is invalid.
+commands; Reef and Electron still build normally. It is used by the native
+packaging smoke and to reuse same-run release binaries, cannot be combined with
+`CORAL_DESKTOP_UNIVERSAL=1`, and never falls back to compiling Coral when the
+input is invalid.
 
 ```shell
 npm run package:dir --prefix apps/desktop
