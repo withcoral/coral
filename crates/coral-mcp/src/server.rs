@@ -120,7 +120,6 @@ impl ToolCallOutcome {
 struct TaskCallContext {
     task_id: Option<TaskId>,
     task_id_metadata: Option<MetadataValue<Ascii>>,
-    intent: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,10 +153,9 @@ impl TaskCallContext {
         if requirement == TaskContextRequirement::None {
             return Ok(Self::default());
         }
-        let intent = requirement
-            .requires_intent()
-            .then(|| required_tool_intent_argument(arguments, "intent"))
-            .transpose()?;
+        if requirement.requires_intent() {
+            required_tool_intent_argument(arguments, "intent")?;
+        }
         let task_id = requirement
             .requires_task_id()
             .then(|| required_task_id_argument(arguments, "task_id"))
@@ -177,16 +175,12 @@ impl TaskCallContext {
         Ok(Self {
             task_id,
             task_id_metadata,
-            intent,
         })
     }
 
     fn record_telemetry(&self, span: &tracing::Span) {
         if let Some(task_id) = self.task_id.as_ref() {
             telemetry::record_task_id(span, &task_id.to_string());
-        }
-        if let Some(intent) = self.intent.as_ref() {
-            telemetry::record_tool_intent(span, intent);
         }
     }
 
@@ -1125,5 +1119,70 @@ mod startup_context_tests {
             context.query_examples().last().map(McpQueryExample::sql),
             Some("SELECT 4")
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_call_telemetry_tests {
+    use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use serde_json::{Map, Value};
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::finish_tool_call;
+    use crate::surface::list_catalog_arguments;
+    use crate::telemetry::{self, MCP_PROTOCOL_ERROR_MESSAGE};
+
+    #[test]
+    fn finish_tool_call_returns_details_without_recording_them() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("mcp-tool-error-privacy-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let sentinel = "SENSITIVE_LIST_CATALOG_KIND_MARKER";
+        let arguments = Map::from_iter([("kind".to_string(), Value::String(sentinel.to_string()))]);
+        let Err(error) = list_catalog_arguments(Some(&arguments)) else {
+            panic!("unknown list_catalog kind should fail argument parsing");
+        };
+        let span = telemetry::call_tool_span("list_catalog", None);
+        let returned = finish_tool_call(&span, Err(error))
+            .expect_err("invalid list_catalog kind should remain a caller-visible protocol error");
+        assert!(returned.message.contains(sentinel));
+        drop(span);
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let tool_call = spans
+            .iter()
+            .find(|span| span.name == "coral.mcp.call_tool")
+            .expect("tool call span");
+
+        assert_eq!(
+            string_attribute(tool_call, "error.type"),
+            Some("INVALID_PARAMS".to_string())
+        );
+        assert_eq!(
+            string_attribute(tool_call, "exception.message"),
+            Some(MCP_PROTOCOL_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(
+            tool_call.status,
+            OtelStatus::error(MCP_PROTOCOL_ERROR_MESSAGE)
+        );
+        assert!(!format!("{tool_call:?}").contains(sentinel));
+
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    fn string_attribute(span: &SpanData, name: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == name)
+            .map(|attribute| attribute.value.as_str().into_owned())
     }
 }

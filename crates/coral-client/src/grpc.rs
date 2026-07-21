@@ -20,6 +20,7 @@ use crate::status_error::{DecodedStatusError, decode_status_error};
 
 const MISSING_GRPC_STATUS_ERROR_TYPE: &str = "MISSING_GRPC_STATUS";
 const MISSING_GRPC_STATUS_MESSAGE: &str = "missing gRPC response status";
+const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
 /// Tonic `Service` wrapper that records one client span per gRPC request.
 #[derive(Clone)]
@@ -266,8 +267,8 @@ fn record_grpc_status(span: &tracing::Span, code: Code, status: &Status) {
         span.record("status", "ok");
         span.set_status(OtelStatus::Ok);
     } else {
-        let error = decode_grpc_client_error(status);
-        record_error(span, error.error_type.as_str(), error.message);
+        let error_type = grpc_client_error_type(status);
+        record_error(span, error_type.as_str(), GRPC_REQUEST_ERROR_MESSAGE);
     }
 }
 
@@ -291,47 +292,37 @@ fn record_transport_error(span: &tracing::Span) {
     record_error(span, "TRANSPORT", "gRPC transport error");
 }
 
-fn record_error(
-    span: &tracing::Span,
-    error_type: impl AsRef<str>,
-    message: impl std::fmt::Display,
-) {
-    let message = message.to_string();
+fn record_error(span: &tracing::Span, error_type: impl AsRef<str>, message: &'static str) {
     span.record("status", "error");
     span.record("error.type", error_type.as_ref());
-    span.record("exception.message", field::display(&message));
+    span.record("exception.message", message);
     span.set_status(OtelStatus::error(message));
 }
 
-struct GrpcClientError {
-    error_type: String,
-    message: String,
-}
-
-fn decode_grpc_client_error(status: &Status) -> GrpcClientError {
+fn grpc_client_error_type(status: &Status) -> String {
     match decode_status_error(status) {
-        DecodedStatusError::Structured(error) => GrpcClientError {
-            error_type: error.reason,
-            message: error.message,
-        },
-        DecodedStatusError::Plain(message) => GrpcClientError {
-            error_type: grpc_response_status_code(status.code()).to_string(),
-            message,
-        },
+        DecodedStatusError::Structured(error) => error.reason,
+        DecodedStatusError::Plain(_) => grpc_response_status_code(status.code()).to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_SUMMARY};
     use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
     use opentelemetry::{KeyValue, Value};
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
     use tonic::codegen::http;
+    use tonic::{Code, Status};
+    use tonic_types::{ErrorDetail, StatusExt as _};
     use tracing_subscriber::prelude::*;
 
     use super::{
-        GrpcClientEndpoint, GrpcClientSpanMetadata, MISSING_GRPC_STATUS_ERROR_TYPE,
-        MISSING_GRPC_STATUS_MESSAGE, grpc_client_span, record_missing_grpc_status,
+        GRPC_REQUEST_ERROR_MESSAGE, GrpcClientEndpoint, GrpcClientSpanMetadata,
+        MISSING_GRPC_STATUS_ERROR_TYPE, MISSING_GRPC_STATUS_MESSAGE, grpc_client_span,
+        record_grpc_status, record_missing_grpc_status,
     };
 
     #[test]
@@ -414,6 +405,82 @@ mod tests {
             Some(MISSING_GRPC_STATUS_ERROR_TYPE)
         );
         assert_eq!(span.status, OtelStatus::error(MISSING_GRPC_STATUS_MESSAGE));
+    }
+
+    #[test]
+    fn plain_grpc_status_message_is_not_exported() {
+        let sentinel = "SENSITIVE_CLIENT_GRPC_ERROR_MARKER";
+        let status = Status::invalid_argument(format!("invalid input: {sentinel}"));
+
+        let span = export_grpc_status(&status);
+
+        assert!(status.message().contains(sentinel));
+        assert_eq!(
+            string_attr(&span.attributes, "error.type"),
+            Some("INVALID_ARGUMENT")
+        );
+        assert_eq!(
+            string_attr(&span.attributes, "exception.message"),
+            Some(GRPC_REQUEST_ERROR_MESSAGE)
+        );
+        assert_eq!(span.status, OtelStatus::error(GRPC_REQUEST_ERROR_MESSAGE));
+        assert!(!format!("{span:?}").contains(sentinel));
+    }
+
+    #[test]
+    fn structured_grpc_status_keeps_only_its_categorical_reason() {
+        let sentinel = "SENSITIVE_CLIENT_STRUCTURED_ERROR_MARKER";
+        let metadata = HashMap::from([(
+            CORAL_ERROR_METADATA_SUMMARY.to_string(),
+            format!("summary containing {sentinel}"),
+        )]);
+        let status = Status::with_error_details_vec(
+            Code::InvalidArgument,
+            format!("fallback containing {sentinel}"),
+            vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                "INVALID_CATALOG_KIND",
+                CORAL_ERROR_DOMAIN,
+                metadata,
+            ))],
+        );
+
+        let span = export_grpc_status(&status);
+
+        assert!(status.message().contains(sentinel));
+        assert_eq!(
+            string_attr(&span.attributes, "error.type"),
+            Some("INVALID_CATALOG_KIND")
+        );
+        assert_eq!(
+            string_attr(&span.attributes, "exception.message"),
+            Some(GRPC_REQUEST_ERROR_MESSAGE)
+        );
+        assert_eq!(span.status, OtelStatus::error(GRPC_REQUEST_ERROR_MESSAGE));
+        assert!(!format!("{span:?}").contains(sentinel));
+    }
+
+    fn export_grpc_status(status: &Status) -> SpanData {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("coral-client-error-privacy-test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let metadata = GrpcClientSpanMetadata::new("coral.v1.QueryService", "ExecuteSql");
+            let span = grpc_client_span(&metadata, &GrpcClientEndpoint::default());
+            record_grpc_status(&span, status.code(), status);
+        });
+
+        provider.force_flush().expect("spans should flush");
+        exporter
+            .get_finished_spans()
+            .expect("finished spans should be readable")
+            .into_iter()
+            .find(|span| span.name == "coral.v1.QueryService/ExecuteSql")
+            .expect("client span should export")
     }
 
     fn i64_attr(attributes: &[KeyValue], key: &str) -> Option<i64> {

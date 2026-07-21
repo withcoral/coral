@@ -13,6 +13,8 @@ use coral_client::{
     local::{RunningServer, ServerBuilder},
 };
 use jsonschema::Validator;
+use opentelemetry::trace::{SpanKind, TracerProvider as _};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use rmcp::{
     RoleClient, ServerHandler, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
@@ -21,6 +23,9 @@ use rmcp::{
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 use crate::{CoralMcpServerFactory, McpOptions};
 
@@ -747,6 +752,106 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     assert_eq!(raw_after_error.lines().count(), 2);
 
     session.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn task_intent_is_persisted_but_not_exported_to_telemetry() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("mcp-task-intent-privacy-test");
+    let trace_targets = "coral_mcp=trace,coral_client::grpc=trace,coral_app::transport=trace"
+        .parse::<Targets>()
+        .expect("MCP and gRPC trace filter");
+    let subscriber = tracing_subscriber::Registry::default().with(
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(trace_targets),
+    );
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let sentinel = "SENSITIVE_RAW_TASK_INTENT_TELEMETRY_MARKER";
+
+    let started = session
+        .client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": sentinel
+            }))),
+        )
+        .await
+        .expect("start task");
+    assert_eq!(started.is_error, Some(false));
+    assert_structured_content_only(&started);
+    let task_id = started
+        .structured_content
+        .expect("start task structured content")["task_id"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    uuid::Uuid::parse_str(&task_id).expect("task id is a UUID");
+
+    let tasks_path = temp
+        .path()
+        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
+    let persisted = fs::read_to_string(tasks_path).expect("task file should exist");
+    let start_record = persisted
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
+        .find(|record| record["task_id"] == task_id && record["event"] == "start")
+        .expect("task start record");
+    assert_eq!(start_record["intent"], sentinel);
+
+    session.shutdown().await;
+    provider.force_flush().expect("flush spans");
+    let spans = exporter.get_finished_spans().expect("finished spans");
+    let tool_call = spans
+        .iter()
+        .find(|span| {
+            span.name == "coral.mcp.call_tool"
+                && span.attributes.iter().any(|attribute| {
+                    attribute.key.as_str() == "mcp.tool.name"
+                        && attribute.value.as_str() == "start_task"
+                })
+        })
+        .expect("start_task tool call span");
+    assert!(
+        tool_call
+            .attributes
+            .iter()
+            .all(|attribute| attribute.key.as_str() != "mcp.tool.intent")
+    );
+    assert!(
+        spans.iter().any(|span| {
+            span.name == "coral.v1.TaskService/StartTask" && span.span_kind == SpanKind::Client
+        }),
+        "start_task should export its client gRPC span"
+    );
+    assert!(
+        spans.iter().any(|span| {
+            span.name == "coral.v1.TaskService/StartTask" && span.span_kind == SpanKind::Server
+        }),
+        "start_task should export its server gRPC span"
+    );
+    let leaked = spans
+        .iter()
+        .filter(|span| format!("{span:?}").contains(sentinel))
+        .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "exported spans contained the raw intent: {leaked:#?}"
+    );
+
+    provider.shutdown().expect("provider shutdown");
 }
 
 #[tokio::test]

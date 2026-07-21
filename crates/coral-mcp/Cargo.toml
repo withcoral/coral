@@ -30,5 +30,7 @@ coral-telemetry.workspace = true
 [dev-dependencies]
 coral-app.workspace = true
 jsonschema.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tonic-types.workspace = true
+tracing-subscriber.workspace = true
