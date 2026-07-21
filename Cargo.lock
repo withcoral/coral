@@ -1210,7 +1210,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -1222,7 +1222,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "arrow",
  "coral-api",
@@ -1335,11 +1335,11 @@ dependencies = [
  "opentelemetry_sdk",
  "schemars",
  "serde",
-  "serde_json",
-  "thiserror",
-  "tokio",
-  "tokio-stream",
-  "tonic",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
  "tonic-types",
  "tracing",
  "tracing-opentelemetry",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "coral-api",
  "coral-app",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "jsonschema",
  "schemars",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "coral-telemetry"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
@@ -6990,7 +6990,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
