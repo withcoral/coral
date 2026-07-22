@@ -17,6 +17,7 @@ describe('fetchSchemaFromCoral', () => {
             value: {
               arguments: [
                 {
+                  dataType: 'Utf8',
                   name: 'channel',
                   required: true,
                   values: ['general', 'random'],
@@ -62,6 +63,7 @@ describe('fetchSchemaFromCoral', () => {
                 {
                   name: 'channel',
                   required: true,
+                  type: 'Utf8',
                   values: ['general', 'random'],
                 },
               ],

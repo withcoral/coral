@@ -52,6 +52,7 @@ export function SchemaTableFunctionView() {
               <Table.Head>
                 <Table.Row>
                   <Table.HeaderCell>name</Table.HeaderCell>
+                  <Table.HeaderCell>type</Table.HeaderCell>
                   <Table.HeaderCell>allowed values</Table.HeaderCell>
                 </Table.Row>
               </Table.Head>
@@ -72,6 +73,7 @@ export function SchemaTableFunctionView() {
                         </Tooltip>
                       ) : null}
                     </Table.Cell>
+                    <Table.Cell mono>{argument.type}</Table.Cell>
                     <Table.Cell mono>
                       {argument.values.length > 0 ? argument.values.join(', ') : '-'}
                     </Table.Cell>

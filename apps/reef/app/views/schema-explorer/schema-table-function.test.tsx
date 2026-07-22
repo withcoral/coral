@@ -13,8 +13,8 @@ const SCHEMA = {
       items: [
         {
           arguments: [
-            { name: 'channel', required: true, values: ['general', 'random'] },
-            { name: 'cursor', required: false, values: [] },
+            { name: 'channel', required: true, type: 'LargeUtf8', values: ['general', 'random'] },
+            { name: 'cursor', required: false, type: 'Utf8', values: [] },
           ],
           description: 'Lists messages in a channel.',
           kind: 'tableFunction',
@@ -65,6 +65,7 @@ it('shows table-function arguments and result columns from the parent schema res
     .toBeVisible()
   await expect.element(screen.getByText('Lists messages in a channel.')).toBeVisible()
   await expect.element(screen.getByLabelText('Required argument')).toHaveTextContent('*')
+  await expect.element(screen.getByRole('cell', { name: 'LargeUtf8' })).toBeVisible()
   await expect.element(screen.getByRole('cell', { name: 'general, random' })).toBeVisible()
   await expect.element(screen.getByRole('cell', { name: 'Message text.' })).toBeVisible()
 })

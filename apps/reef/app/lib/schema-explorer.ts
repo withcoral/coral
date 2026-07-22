@@ -35,6 +35,7 @@ export interface TableDef {
 export interface TableFunctionArgumentDef {
   name: string
   required: boolean
+  type: string
   values: string[]
 }
 
@@ -103,6 +104,7 @@ export async function fetchSchemaFromCoral(
         arguments: tableFunction.arguments.map((argument) => ({
           name: argument.name,
           required: argument.required,
+          type: argument.dataType || 'unknown',
           values: argument.values,
         })),
         description: optional(tableFunction.description),

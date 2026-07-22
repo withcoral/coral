@@ -21,8 +21,8 @@ const SCHEMA = {
         },
         {
           arguments: [
-            { name: 'channel', required: true, values: [] },
-            { name: 'cursor', required: false, values: [] },
+            { name: 'channel', required: true, type: 'Utf8', values: [] },
+            { name: 'cursor', required: false, type: 'Utf8', values: [] },
           ],
           kind: 'tableFunction',
           name: 'messages',
