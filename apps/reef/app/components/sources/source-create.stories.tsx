@@ -55,8 +55,27 @@ export const Basics: Story = {
     const page = within(canvasElement.ownerDocument.body)
 
     await expect(page.getByRole('dialog')).toBeVisible()
-    await expect(page.getByText('Step 1 of 3 — URL')).toBeVisible()
+    await expect(page.getByText('Step 1/3')).toBeVisible()
     await expect(page.getByLabelText('Source URL')).toBeVisible()
+    await expect(
+      page.getByText('Enter an OpenAPI document or streamable HTTP MCP endpoint.'),
+    ).toBeVisible()
+  },
+}
+
+export const DiscardConfirmation: Story = {
+  name: 'Discard confirmation',
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
+
+    await userEvent.type(page.getByLabelText('Source URL'), DISCOVERY.url)
+    await userEvent.click(page.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(page.getByRole('dialog', { name: 'Discard source draft?' })).toBeVisible(),
+    )
+    await expect(page.getByRole('button', { name: 'Keep editing' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Discard' })).toBeVisible()
   },
 }
 
@@ -69,6 +88,7 @@ export const Connection: Story = {
     await userEvent.click(page.getByRole('button', { name: 'Next' }))
 
     await waitFor(() => expect(page.getByLabelText('Name')).toHaveValue('weather_api'))
+    await waitFor(() => expect(page.getByText('Step 2/3')).toBeVisible())
     await waitFor(() => expect(activeDialogCount(canvasElement.ownerDocument)).toBe(2))
     await userEvent.click(page.getByRole('radio', { name: 'MCP server' }))
     await expect(page.getByRole('radio', { name: 'MCP server' })).toBeChecked()
@@ -84,14 +104,16 @@ export const Credentials: Story = {
     await waitFor(() => expect(page.getByLabelText('Name')).toHaveValue('weather_api'))
     await userEvent.click(page.getByRole('button', { name: 'Next' }))
 
-    await waitFor(() => {
-      const activeToken = page
-        .getAllByPlaceholderText('Paste token')
-        .find((element) => !element.hasAttribute('disabled'))
-      if (!activeToken) throw new Error('Active token input not found')
-      return expect(activeToken).toBeVisible()
-    })
+    const activeToken = page
+      .getAllByPlaceholderText('Paste token')
+      .find((element) => !element.hasAttribute('disabled'))
+    if (!activeToken) throw new Error('Active token input not found')
+    await waitFor(() => expect(activeToken).toBeVisible())
     await waitFor(() => expect(activeDialogCount(canvasElement.ownerDocument)).toBe(3))
+    await waitFor(() => expect(page.getByText('Step 3/3')).toBeVisible())
+    await userEvent.click(page.getByRole('radio', { name: 'None' }))
+    await expect(page.getByText('This endpoint doesn’t require credentials.')).toBeVisible()
+    await expect(activeToken).not.toBeVisible()
   },
 }
 

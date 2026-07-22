@@ -46,7 +46,7 @@ export function SourcesIndex({
         headerAction={
           <ButtonContainer
             as={Link}
-            size="32"
+            size="36"
             to={routePath('workspaceSourceInstall', { workspaceId })}
             variant="primary"
           >

@@ -24,7 +24,7 @@ describe('source install client action', () => {
       serverAction,
     } as never)
 
-    expect(addToast).toHaveBeenCalledWith('neutral', {
+    expect(addToast).toHaveBeenCalledWith('success', {
       title: 'Created spotify',
       description: 'The source was validated and installed.',
     })

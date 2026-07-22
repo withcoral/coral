@@ -20,7 +20,7 @@ export async function clientAction({
   const result = await serverAction()
   if (result?.status !== 'success') return result
 
-  addToast('neutral', {
+  addToast('success', {
     title: `Created ${result.name}`,
     description: 'The source was validated and installed.',
   })

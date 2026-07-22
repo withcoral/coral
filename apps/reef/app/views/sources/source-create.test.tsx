@@ -1,5 +1,5 @@
 import { createMemoryRouter, RouterProvider, useActionData, useNavigate } from 'react-router'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
 
@@ -71,6 +71,51 @@ describe('SourceCreateDialog', () => {
     expect(router.state.location.pathname).toBe('/workspaces/analytics/sources')
   })
 
+  it('confirms before discarding a draft with user-entered information', async () => {
+    const { router, screen } = await renderSourceCreate()
+
+    await screen.getByLabelText('Source URL').fill('https://example.com/openapi.yaml')
+    await screen.getByRole('button', { name: 'Cancel' }).click()
+
+    const confirmation = screen.getByRole('dialog', { name: 'Discard source draft?' })
+    await expect.element(confirmation).toBeVisible()
+    await confirmation.getByRole('button', { name: 'Keep editing' }).click()
+    await expect.element(confirmation).not.toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/workspaces/analytics/sources/install')
+
+    await userEvent.keyboard('{Escape}')
+    await screen
+      .getByRole('dialog', { name: 'Discard source draft?' })
+      .getByRole('button', { name: 'Discard' })
+      .click()
+
+    expect(router.state.location.pathname).toBe('/workspaces/analytics/sources')
+  })
+
+  it('does not submit the import form when Enter is pressed with an invalid URL', async () => {
+    const action = vi.fn(async () => ({
+      intent: 'import' as const,
+      message: 'The import form should not have been submitted.',
+      name: 'weather_api',
+      status: 'error' as const,
+    }))
+    const { screen } = await renderSourceCreate(DISCOVERY, action)
+
+    await screen.getByLabelText('Source URL').fill(DISCOVERY.url)
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await expect.element(screen.getByText('Step 2/3')).toBeVisible()
+    await screen.getByRole('button', { name: 'Back' }).click()
+
+    const urlInput = screen.getByLabelText('Source URL')
+    await urlInput.fill('oioioi')
+    urlInput.element().focus()
+    await userEvent.keyboard('{Enter}')
+
+    expect(action).not.toHaveBeenCalled()
+    await expect.element(screen.getByText('Step 1/3')).toBeVisible()
+    await expect.element(screen.getByText('Step 2/3')).not.toBeInTheDocument()
+  })
+
   it('opens each wizard step as a nested dialog', async () => {
     const { screen } = await renderSourceCreate()
 
@@ -79,7 +124,7 @@ describe('SourceCreateDialog', () => {
     await screen.getByLabelText('Source URL').fill(DISCOVERY.url)
     await screen.getByRole('button', { name: 'Next' }).click()
 
-    await expect.element(screen.getByText('Step 2 of 3 — Details')).toBeVisible()
+    await expect.element(screen.getByText('Step 2/3')).toBeVisible()
     await expect.poll(activeDialogCount).toBe(2)
     await expect.element(screen.getByLabelText('Name')).toHaveValue('weather_api')
     await expect
@@ -89,12 +134,12 @@ describe('SourceCreateDialog', () => {
 
     await screen.getByRole('button', { name: 'Next' }).click()
 
-    await expect.element(screen.getByText('Step 3 of 3 — Credentials')).toBeVisible()
+    await expect.element(screen.getByText('Step 3/3')).toBeVisible()
     await expect.poll(activeDialogCount).toBe(3)
 
     await screen.getByRole('button', { name: 'Back' }).click()
 
-    await expect.element(screen.getByText('Step 2 of 3 — Details')).toBeVisible()
+    await expect.element(screen.getByText('Step 2/3')).toBeVisible()
     await expect.poll(activeDialogCount).toBe(2)
   })
 
@@ -238,6 +283,9 @@ describe('SourceCreateDialog', () => {
 
     await screen.getByRole('radio', { name: 'None' }).click()
     await expect.element(screen.getByRole('radio', { name: 'None' })).toBeChecked()
+    await expect
+      .element(screen.getByText('This endpoint doesn’t require credentials.'))
+      .toBeVisible()
     await expect.poll(activeDialogHeight).toBe(initialHeight)
 
     await screen.getByRole('radio', { name: 'Custom header' }).click()

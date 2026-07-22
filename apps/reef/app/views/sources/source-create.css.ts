@@ -1,8 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-import { fontFamily } from '@/wax/theme/font.css'
-import { theme } from '@/wax/theme/theme.css'
-
 export const header = style({
   alignItems: 'center',
   gap: 10,
@@ -40,34 +37,6 @@ export const authPanel = style({
 export const authPanelHidden = style({
   pointerEvents: 'none',
   visibility: 'hidden',
-})
-
-export const summaryBox = style({
-  background: theme.surface.onMainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 6,
-  padding: 12,
-})
-
-export const summaryRow = style({
-  display: 'flex',
-  gap: 8,
-})
-
-export const summaryKey = style({
-  color: theme.content.tertiary,
-  flex: '0 0 96px',
-})
-
-export const summaryValue = style({
-  color: theme.content.primary,
-  fontFamily: fontFamily.dmMono,
-  fontSize: 12,
-  minWidth: 0,
-  overflowWrap: 'anywhere',
 })
 
 export const importError = style({

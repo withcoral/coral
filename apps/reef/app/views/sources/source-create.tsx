@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { useEffect, useId, useRef, useState } from 'react'
+import { type FormEvent, type RefObject, useEffect, useId, useRef, useState } from 'react'
 import { Form, useFetcher, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
@@ -60,8 +60,15 @@ export function SourceCreateDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const requestCancelRef = useRef<() => void>(() => onOpenChange(false))
+
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) requestCancelRef.current()
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup size="l">
@@ -70,6 +77,7 @@ export function SourceCreateDialog({
               actionData={actionData}
               discoveryPath={discoveryPath}
               onCancel={() => onOpenChange(false)}
+              requestCancelRef={requestCancelRef}
             />
           ) : null}
         </Dialog.Popup>
@@ -82,13 +90,16 @@ function SourceCreateDialogContent({
   actionData,
   discoveryPath,
   onCancel,
+  requestCancelRef,
 }: {
   actionData: SourcesActionData
   discoveryPath: string
   onCancel: () => void
+  requestCancelRef: RefObject<() => void>
 }) {
   const [step, setStep] = useState(0)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
+  const [confirmingCancel, setConfirmingCancel] = useState(false)
   const formId = useId()
   const discovery = useFetcher<SourceDiscoveryData>()
 
@@ -130,6 +141,18 @@ function SourceCreateDialogContent({
   }, [discovery.data, step])
 
   const update = (patch: Partial<Draft>) => setDraft((prev) => ({ ...prev, ...patch }))
+  const inspectUrl = () =>
+    discovery.load(`${discoveryPath}?url=${encodeURIComponent(draft.url.trim())}`)
+  const requestCancel = () => {
+    if (draftIsDirty(draft)) {
+      setConfirmingCancel(true)
+      return
+    }
+    onCancel()
+  }
+  useEffect(() => {
+    requestCancelRef.current = requestCancel
+  })
 
   const stepValid = (() => {
     if (step === 0) return draft.url.trim().startsWith('https://')
@@ -141,8 +164,20 @@ function SourceCreateDialogContent({
     return draft.auth === 'none' || draft.token.trim().length > 0
   })()
 
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    if (step === 2) return
+
+    event.preventDefault()
+    if (!stepValid || discovering || submitting) return
+    if (step === 0) {
+      inspectUrl()
+      return
+    }
+    setStep(2)
+  }
+
   return (
-    <Form className={styles.dialogContent} id={formId} method="post">
+    <Form className={styles.dialogContent} id={formId} method="post" onSubmit={handleSubmit}>
       <input type="hidden" name="_intent" value="import" />
       <input type="hidden" name="name" value={draft.name.trim()} />
       <input type="hidden" name="manifest_yaml" value={buildManifestYaml(draft)} />
@@ -159,14 +194,12 @@ function SourceCreateDialogContent({
       {discoveryError ? <SourceError>{discoveryError}</SourceError> : null}
 
       <Dialog.Actions>
-        <ButtonContainer disabled={submitting} onClick={onCancel} size="32" variant="bare">
+        <ButtonContainer disabled={submitting} onClick={requestCancel} size="32" variant="bare">
           <ButtonText>Cancel</ButtonText>
         </ButtonContainer>
         <ButtonContainer
           disabled={!stepValid || discovering}
-          onClick={() =>
-            discovery.load(`${discoveryPath}?url=${encodeURIComponent(draft.url.trim())}`)
-          }
+          onClick={inspectUrl}
           size="32"
           variant="primary"
         >
@@ -188,7 +221,12 @@ function SourceCreateDialogContent({
               <DetailsStep discovery={discoveryResult} draft={draft} update={update} />
 
               <Dialog.Actions>
-                <ButtonContainer disabled={submitting} onClick={onCancel} size="32" variant="bare">
+                <ButtonContainer
+                  disabled={submitting}
+                  onClick={requestCancel}
+                  size="32"
+                  variant="bare"
+                >
                   <ButtonText>Cancel</ButtonText>
                 </ButtonContainer>
                 <ButtonContainer
@@ -228,7 +266,7 @@ function SourceCreateDialogContent({
                       <Dialog.Actions>
                         <ButtonContainer
                           disabled={submitting}
-                          onClick={onCancel}
+                          onClick={requestCancel}
                           size="32"
                           variant="bare"
                         >
@@ -261,6 +299,26 @@ function SourceCreateDialogContent({
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
+      <Dialog.Root open={confirmingCancel} onOpenChange={setConfirmingCancel}>
+        <Dialog.Portal>
+          <Dialog.Popup size="m">
+            <Dialog.Title>Discard source draft?</Dialog.Title>
+            <Dialog.Description>The information you entered will be lost.</Dialog.Description>
+            <Dialog.Actions>
+              <ButtonContainer
+                onClick={() => setConfirmingCancel(false)}
+                size="32"
+                variant="secondary"
+              >
+                <ButtonText>Keep editing</ButtonText>
+              </ButtonContainer>
+              <ButtonContainer onClick={onCancel} size="32" variant="destructive">
+                <ButtonText>Discard</ButtonText>
+              </ButtonContainer>
+            </Dialog.Actions>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </Form>
   )
 }
@@ -271,18 +329,12 @@ function StepHeader({ step }: { step: number }) {
       className={styles.header}
       pill={
         <Pill as="span" color="graySubtle">
-          Step {step + 1} of {STEP_COUNT} — {stepTitle(step)}
+          Step {step + 1}/{STEP_COUNT}
         </Pill>
       }
       title={<Typography.HeadingMedium as="span">Create source</Typography.HeadingMedium>}
     />
   )
-}
-
-function stepTitle(step: number): string {
-  if (step === 0) return 'URL'
-  if (step === 1) return 'Details'
-  return 'Credentials'
 }
 
 function UrlStep({ draft, update }: { draft: Draft; update: (patch: Partial<Draft>) => void }) {
@@ -293,8 +345,7 @@ function UrlStep({ draft, update }: { draft: Draft; update: (patch: Partial<Draf
         className={styles.fieldItem}
         hint={
           <Typography.BodySmall variant="tertiary">
-            Enter an OpenAPI document or streamable HTTP MCP endpoint. Coral will inspect the URL
-            before you continue.
+            Enter an OpenAPI document or streamable HTTP MCP endpoint.
           </Typography.BodySmall>
         }
         htmlFor={idUrl}
@@ -330,7 +381,7 @@ function DetailsStep({
     <div className={styles.fieldGroup}>
       {discovery ? (
         <Typography.BodySmall variant="tertiary">
-          {discoverySummary(discovery)} Review the detected details or choose MCP instead.
+          {discoverySummary(discovery)} Review the detected details.
         </Typography.BodySmall>
       ) : null}
       <SourceField
@@ -443,7 +494,7 @@ function CredentialsStep({
           className={classNames(styles.authPanel, draft.auth !== 'none' && styles.authPanelHidden)}
         >
           <Typography.BodySmall variant="tertiary">
-            No credentials needed — click Create source to install.
+            This endpoint doesn’t require credentials.
           </Typography.BodySmall>
         </div>
         <div
@@ -496,15 +547,6 @@ function CredentialsStep({
           </SourceField>
         </div>
       </div>
-      <div className={styles.summaryBox}>
-        <SummaryRow label="Name" value={draft.name.trim()} />
-        <SummaryRow
-          label="Type"
-          value={draft.surfaceType === 'openapi' ? 'REST API (OpenAPI)' : 'MCP server'}
-        />
-        <SummaryRow label="URL" value={draft.url.trim()} />
-        <SummaryRow label="Auth" value={authSummary(draft)} />
-      </div>
     </div>
   )
 }
@@ -514,19 +556,11 @@ function authChoiceFromDiscovery(auth: SourceDetectedAuth): AuthChoice | null {
   return null
 }
 
-function SummaryRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className={styles.summaryRow}>
-      <Typography.BodySmall className={styles.summaryKey}>{label}</Typography.BodySmall>
-      <span className={styles.summaryValue}>{value}</span>
-    </div>
-  )
-}
-
-function authSummary(draft: Draft): string {
-  if (draft.auth === 'none') return 'None'
-  if (draft.auth === 'bearer') return 'Bearer token'
-  return `Header ${draft.headerName.trim()}`
+function draftIsDirty(draft: Draft): boolean {
+  return Object.keys(EMPTY_DRAFT).some((key) => {
+    const draftKey = key as keyof Draft
+    return draft[draftKey] !== EMPTY_DRAFT[draftKey]
+  })
 }
 
 function sourceNameIsValid(name: string): boolean {
