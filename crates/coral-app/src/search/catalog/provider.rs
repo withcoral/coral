@@ -1,19 +1,16 @@
 //! Catalog metadata Universal Search provider.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 
 use crate::bootstrap::AppError;
-use crate::catalog::discovery::CatalogItem;
 use crate::catalog::model::CatalogResolution;
 use crate::query::manager::QueryManagerError;
-use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_hits};
-use crate::search::catalog::snapshot::{
-    CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
-};
+use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_surfaces};
+use crate::search::catalog::snapshot::{CatalogSearchSnapshot, field_role_from_str};
 use crate::search::catalog::sqlite_index::{
-    CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
+    CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
 };
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult, SearchClearTarget,
@@ -22,9 +19,10 @@ use crate::search::maintenance::{
 };
 use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
-    CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchCandidate,
-    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind, SearchProviderState,
-    SearchRequest, SearchSurfaceKind, TableColumnPreview, TableColumnPreviewColumn,
+    CatalogMetadataResult, ProviderCoverage, ProviderStatus, SearchCandidate, SearchFieldRole,
+    SearchManagerError, SearchPayload, SearchProviderKind, SearchProviderState, SearchRequest,
+    SearchSurfaceKind, SurfaceField, TableCatalogMetadataResult,
+    TableFunctionCatalogMetadataResult,
 };
 use crate::search::sqlite_store::{
     SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
@@ -33,8 +31,7 @@ use crate::state::AppStateLayout;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
-const MAX_COLUMN_HINTS_PER_SURFACE: usize = 3;
-const TABLE_COLUMN_PREVIEW_LIMIT: usize = 5;
+const OPTIONAL_MATCHING_FIELD_LIMIT: usize = 5;
 
 struct CatalogProjection {
     store: SqliteSearchStore,
@@ -373,23 +370,29 @@ fn catalog_search_outcome(
     projection: &CatalogProjection,
 ) -> ProviderSearchOutcome {
     let retrieved_hit_count = search_hits.hits.len();
-    let ranked_hits = rank_catalog_hits(search_hits.hits, &request.terms);
-    let candidate_set = catalog_candidates_from_hits(catalog, ranked_hits);
-    let candidate_count = candidate_set.candidates.len();
+    let ranked_surfaces = rank_catalog_surfaces(search_hits.hits, &request.terms);
+    let candidates = catalog_candidates_from_surfaces(catalog, ranked_surfaces);
+    let candidate_count = candidates.len();
+    let surface_count = u32::try_from(
+        catalog
+            .tables
+            .len()
+            .saturating_add(catalog.table_functions.len()),
+    )
+    .unwrap_or(u32::MAX);
     if retrieved_hit_count != candidate_count {
         tracing::debug!(
             workspace = %request.workspace_name,
             retrieved_hit_count,
             candidate_count,
-            omitted_column_hint_count = candidate_set.omitted_column_hint_count,
-            "mapped SQLite catalog hits into provider candidates"
+            "grouped SQLite catalog hits into surface candidates"
         );
     }
-    let has_more = search_hits.retrieval_limited || candidate_set.omitted_column_hint_count > 0;
+    let has_more = search_hits.retrieval_limited;
     let has_failures = !failed_source_names.is_empty();
     let state = if has_more || has_failures {
         SearchProviderState::Partial
-    } else if candidate_set.candidates.is_empty() {
+    } else if candidates.is_empty() {
         SearchProviderState::Empty
     } else {
         SearchProviderState::ResultsFound
@@ -400,18 +403,17 @@ fn catalog_search_outcome(
         projection.refresh.refreshed,
         projection.stale_index,
         search_hits.retrieval_limited,
-        candidate_set.omitted_column_hint_count,
         failed_source_names,
     );
     ProviderSearchOutcome {
-        candidates: candidate_set.candidates,
+        candidates,
         status: ProviderStatus {
             provider: SearchProviderKind::CatalogMetadata,
             state,
             note,
             coverage: Some(ProviderCoverage {
-                eligible_units: search_hits.document_count,
-                searched_units: search_hits.document_count,
+                eligible_units: surface_count,
+                searched_units: surface_count,
                 failed_units: u32::try_from(failed_source_names.len()).unwrap_or(u32::MAX),
                 returned_count: u32::try_from(candidate_count).unwrap_or(u32::MAX),
                 has_more,
@@ -441,131 +443,202 @@ fn missing_cached_projection_outcome(
     )))
 }
 
-fn catalog_candidates_from_hits(
+fn catalog_candidates_from_surfaces(
     catalog: &CatalogInfo,
-    hits: Vec<RankedCatalogHit>,
-) -> CatalogCandidateSet {
+    surfaces: Vec<crate::search::catalog::ranking::RankedCatalogSurface>,
+) -> Vec<SearchCandidate> {
     let mut candidates = Vec::new();
-    let mut column_hints_by_surface = BTreeMap::<(SearchSurfaceKind, String, String), usize>::new();
-    let mut omitted_column_hint_count = 0;
-
-    for ranked_hit in hits {
-        let hit = ranked_hit.hit;
-        match hit.doc_kind {
-            CatalogIndexDocumentKind::CatalogTable => {
-                if let Some(table) = find_table(catalog, &hit.source_name, &hit.surface_name) {
-                    candidates.push(table_candidate(table, &hit, ranked_hit.score));
-                }
+    for surface in surfaces {
+        let surface_fields = surface_fields(
+            catalog,
+            surface.key.kind,
+            &surface.key.source_name,
+            &surface.key.surface_name,
+            &surface.fields,
+        );
+        let surface_candidate = match surface.key.kind {
+            SearchSurfaceKind::Table => {
+                find_table(catalog, &surface.key.source_name, &surface.key.surface_name).map(
+                    |table| table_candidate(table, surface.best_evidence_score, surface_fields),
+                )
             }
-            CatalogIndexDocumentKind::CatalogTableFunction => {
-                if let Some(function) = find_function(catalog, &hit.source_name, &hit.surface_name)
-                {
-                    candidates.push(table_function_candidate(function, &hit, ranked_hit.score));
-                }
-            }
-            CatalogIndexDocumentKind::ColumnHint => {
-                let Some(surface_kind) = surface_kind_from_str(&hit.surface_kind) else {
-                    continue;
-                };
-                let count_key = (
-                    surface_kind,
-                    hit.source_name.clone(),
-                    hit.surface_name.clone(),
-                );
-                let count = column_hints_by_surface.entry(count_key).or_default();
-                if *count >= MAX_COLUMN_HINTS_PER_SURFACE {
-                    omitted_column_hint_count += 1;
-                    continue;
-                }
-                candidates.push(column_hint_candidate(
-                    catalog,
-                    &hit,
-                    surface_kind,
-                    ranked_hit.score,
-                ));
-                *count += 1;
-            }
+            SearchSurfaceKind::TableFunction => find_function(
+                catalog,
+                &surface.key.source_name,
+                &surface.key.surface_name,
+            )
+            .map(|function| {
+                table_function_candidate(function, surface.best_evidence_score, surface_fields)
+            }),
+        };
+        if let Some(candidate) = surface_candidate {
+            candidates.push(candidate);
         }
     }
 
-    CatalogCandidateSet {
-        candidates,
-        omitted_column_hint_count,
-    }
+    candidates
 }
 
-struct CatalogCandidateSet {
-    candidates: Vec<SearchCandidate>,
-    omitted_column_hint_count: usize,
-}
-
-fn table_candidate(table: &TableInfo, hit: &CatalogSearchHit, score: u32) -> SearchCandidate {
+fn table_candidate(
+    table: &TableInfo,
+    score: u32,
+    surface_fields: SurfaceFieldSelection,
+) -> SearchCandidate {
     SearchCandidate {
-        key: hit.doc_id.clone(),
+        key: format!("catalog:table:{}.{}", table.schema_name, table.table_name),
         score,
         provider: SearchProviderKind::CatalogMetadata,
-        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult {
-            item: CatalogItem::Table(table_summary(table)),
-            matched_fields: hit.matched_fields.clone(),
-            table_column_preview: Some(table_column_preview(table)),
-        }),
+        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult::Table(
+            TableCatalogMetadataResult {
+                item: table_summary(table),
+                fields: surface_fields.included_fields,
+                omitted_matching_field_count: surface_fields.omitted_matching_field_count,
+            },
+        )),
     }
 }
 
 fn table_function_candidate(
     function: &TableFunctionInfo,
-    hit: &CatalogSearchHit,
     score: u32,
+    surface_fields: SurfaceFieldSelection,
 ) -> SearchCandidate {
     SearchCandidate {
-        key: hit.doc_id.clone(),
+        key: format!(
+            "catalog:function:{}.{}",
+            function.schema_name, function.function_name
+        ),
         score,
         provider: SearchProviderKind::CatalogMetadata,
-        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult {
-            item: CatalogItem::TableFunction(function.clone()),
-            matched_fields: hit.matched_fields.clone(),
-            table_column_preview: None,
-        }),
+        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult::TableFunction(
+            TableFunctionCatalogMetadataResult {
+                item: function.clone(),
+                arguments: surface_fields
+                    .included_fields
+                    .iter()
+                    .filter(|field| field.role == SearchFieldRole::TableFunctionArgument)
+                    .cloned()
+                    .collect(),
+                returns: surface_fields
+                    .included_fields
+                    .into_iter()
+                    .filter(|field| field.role == SearchFieldRole::TableFunctionResultColumn)
+                    .collect(),
+                omitted_matching_field_count: surface_fields.omitted_matching_field_count,
+            },
+        )),
     }
 }
 
-fn column_hint_candidate(
+struct SurfaceFieldSelection {
+    included_fields: Vec<SurfaceField>,
+    omitted_matching_field_count: u32,
+}
+
+fn surface_fields(
     catalog: &CatalogInfo,
-    hit: &CatalogSearchHit,
     surface_kind: SearchSurfaceKind,
-    score: u32,
-) -> SearchCandidate {
-    let metadata = column_hint_metadata(catalog, hit, surface_kind);
-    SearchCandidate {
-        key: hit.doc_id.clone(),
-        score,
-        provider: SearchProviderKind::CatalogMetadata,
-        payload: SearchPayload::ColumnHint(ColumnHintResult {
-            schema_name: hit.source_name.clone(),
-            surface_name: hit.surface_name.clone(),
+    source_name: &str,
+    surface_name: &str,
+    hits: &[RankedCatalogHit],
+) -> SurfaceFieldSelection {
+    let mut fields = required_fields(catalog, surface_kind, source_name, surface_name);
+    let mut seen = fields
+        .iter()
+        .map(|field| surface_field_identity(surface_kind, field.role, &field.name))
+        .collect::<BTreeSet<_>>();
+    let mut optional_count = 0;
+    let mut omitted_count = 0;
+    for hit in hits {
+        let metadata = surface_field_metadata(catalog, &hit.hit, surface_kind);
+        if !seen.insert(surface_field_identity(
             surface_kind,
-            name: hit.field_name.clone(),
+            metadata.field_role,
+            &hit.hit.field_name,
+        )) {
+            continue;
+        }
+        if !metadata.required && optional_count == OPTIONAL_MATCHING_FIELD_LIMIT {
+            omitted_count += 1;
+            continue;
+        }
+        optional_count += usize::from(!metadata.required);
+        fields.push(SurfaceField {
+            name: hit.hit.field_name.clone(),
             data_type: metadata.data_type,
             required: metadata.required,
-            description: metadata.description,
-            matched_fields: hit.matched_fields.clone(),
-            field_role: metadata.field_role,
-        }),
+            role: metadata.field_role,
+        });
+    }
+    SurfaceFieldSelection {
+        included_fields: fields,
+        omitted_matching_field_count: u32::try_from(omitted_count).unwrap_or(u32::MAX),
     }
 }
 
-struct ColumnHintMetadata {
+fn surface_field_identity(
+    surface_kind: SearchSurfaceKind,
+    role: SearchFieldRole,
+    name: &str,
+) -> (Option<SearchFieldRole>, String) {
+    let role = match surface_kind {
+        SearchSurfaceKind::Table => None,
+        SearchSurfaceKind::TableFunction => Some(role),
+    };
+    (role, name.to_string())
+}
+
+fn required_fields(
+    catalog: &CatalogInfo,
+    surface_kind: SearchSurfaceKind,
+    source_name: &str,
+    surface_name: &str,
+) -> Vec<SurfaceField> {
+    match surface_kind {
+        SearchSurfaceKind::Table => find_table(catalog, source_name, surface_name)
+            .into_iter()
+            .flat_map(|table| {
+                table.required_filters.iter().map(|name| {
+                    let column = table.columns.iter().find(|column| column.name == *name);
+                    SurfaceField {
+                        name: name.clone(),
+                        data_type: column
+                            .map_or_else(String::new, |column| column.data_type.clone()),
+                        required: true,
+                        role: SearchFieldRole::TableFilter,
+                    }
+                })
+            })
+            .collect(),
+        SearchSurfaceKind::TableFunction => find_function(catalog, source_name, surface_name)
+            .into_iter()
+            .flat_map(|function| {
+                function
+                    .arguments
+                    .iter()
+                    .filter(|argument| argument.required)
+                    .map(|argument| SurfaceField {
+                        name: argument.name.clone(),
+                        data_type: String::new(),
+                        required: true,
+                        role: SearchFieldRole::TableFunctionArgument,
+                    })
+            })
+            .collect(),
+    }
+}
+
+struct SurfaceFieldMetadata {
     data_type: String,
     required: bool,
-    description: String,
     field_role: SearchFieldRole,
 }
 
-fn column_hint_metadata(
+fn surface_field_metadata(
     catalog: &CatalogInfo,
     hit: &CatalogSearchHit,
     surface_kind: SearchSurfaceKind,
-) -> ColumnHintMetadata {
+) -> SurfaceFieldMetadata {
     let fallback_role = match surface_kind {
         SearchSurfaceKind::Table => SearchFieldRole::TableColumn,
         SearchSurfaceKind::TableFunction => SearchFieldRole::TableFunctionResultColumn,
@@ -581,11 +654,10 @@ fn column_hint_metadata(
                         .find(|column| column.name == hit.field_name)
                 })
                 .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |column| ColumnHintMetadata {
+                    || fallback_surface_field_metadata(field_role),
+                    |column| SurfaceFieldMetadata {
                         data_type: column.data_type.clone(),
                         required: column.is_required_filter,
-                        description: column.description.clone(),
                         field_role,
                     },
                 )
@@ -598,13 +670,9 @@ fn column_hint_metadata(
                         .iter()
                         .find(|column| column.name == hit.field_name)
                 });
-            ColumnHintMetadata {
+            SurfaceFieldMetadata {
                 data_type: column.map_or_else(String::new, |column| column.data_type.clone()),
                 required: true,
-                description: column.map_or_else(
-                    || "Required table filter".to_string(),
-                    |column| column.description.clone(),
-                ),
                 field_role,
             }
         }
@@ -617,11 +685,10 @@ fn column_hint_metadata(
                         .find(|argument| argument.name == hit.field_name)
                 })
                 .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |argument| ColumnHintMetadata {
+                    || fallback_surface_field_metadata(field_role),
+                    |argument| SurfaceFieldMetadata {
                         data_type: String::new(),
                         required: argument.required,
-                        description: "Table function argument".to_string(),
                         field_role,
                     },
                 )
@@ -635,27 +702,22 @@ fn column_hint_metadata(
                         .find(|column| column.name == hit.field_name)
                 })
                 .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |column| ColumnHintMetadata {
+                    || fallback_surface_field_metadata(field_role),
+                    |column| SurfaceFieldMetadata {
                         data_type: column.data_type.clone(),
                         required: false,
-                        description: column.description.clone(),
                         field_role,
                     },
                 )
         }
-        _ => fallback_column_hint_metadata(hit, field_role),
+        _ => fallback_surface_field_metadata(field_role),
     }
 }
 
-fn fallback_column_hint_metadata(
-    hit: &CatalogSearchHit,
-    field_role: SearchFieldRole,
-) -> ColumnHintMetadata {
-    ColumnHintMetadata {
+fn fallback_surface_field_metadata(field_role: SearchFieldRole) -> SurfaceFieldMetadata {
+    SurfaceFieldMetadata {
         data_type: String::new(),
         required: matches!(field_role, SearchFieldRole::TableFilter),
-        description: hit.description.clone(),
         field_role,
     }
 }
@@ -664,26 +726,6 @@ fn table_summary(table: &TableInfo) -> TableInfo {
     let mut table = table.clone();
     table.columns.clear();
     table
-}
-
-fn table_column_preview(table: &TableInfo) -> TableColumnPreview {
-    let columns = table
-        .columns
-        .iter()
-        .take(TABLE_COLUMN_PREVIEW_LIMIT)
-        .cloned()
-        .map(|column| TableColumnPreviewColumn {
-            column,
-            matched_fields: Vec::new(),
-        })
-        .collect::<Vec<_>>();
-    let column_count = u32::try_from(table.columns.len()).unwrap_or(u32::MAX);
-    let omitted_column_count = table.columns.len().saturating_sub(columns.len());
-    TableColumnPreview {
-        column_count,
-        columns,
-        omitted_column_count: u32::try_from(omitted_column_count).unwrap_or(u32::MAX),
-    }
 }
 
 fn find_table<'a>(
@@ -747,7 +789,6 @@ fn catalog_provider_note(
     refreshed: bool,
     stale_index: bool,
     retrieval_limited: bool,
-    omitted_column_hint_count: usize,
     failed_source_names: &BTreeSet<String>,
 ) -> String {
     let refresh_note = if stale_index {
@@ -762,11 +803,7 @@ fn catalog_provider_note(
             format!("Catalog metadata returned {total_count} search hints{refresh_note}")
         }
         SearchProviderState::Partial => {
-            let reason = partial_catalog_provider_reason(
-                retrieval_limited,
-                omitted_column_hint_count,
-                failed_source_names,
-            );
+            let reason = partial_catalog_provider_reason(retrieval_limited, failed_source_names);
             format!("Catalog metadata returned {total_count} search hints; {reason}{refresh_note}")
         }
         SearchProviderState::Empty => {
@@ -780,7 +817,6 @@ fn catalog_provider_note(
 
 fn partial_catalog_provider_reason(
     retrieval_limited: bool,
-    omitted_column_hint_count: usize,
     failed_source_names: &BTreeSet<String>,
 ) -> String {
     const MAX_FAILED_SOURCE_NAMES_IN_NOTE: usize = 3;
@@ -788,11 +824,6 @@ fn partial_catalog_provider_reason(
     let mut reasons = Vec::new();
     if retrieval_limited {
         reasons.push("local retrieval cap was reached".to_string());
-    }
-    if omitted_column_hint_count > 0 {
-        reasons.push(format!(
-            "{omitted_column_hint_count} matching column hint(s) exceeded the per-surface cap"
-        ));
     }
     if !failed_source_names.is_empty() {
         let displayed_names = failed_source_names
@@ -829,18 +860,25 @@ fn partial_catalog_provider_reason(
 mod tests {
     use std::collections::BTreeSet;
 
-    use coral_engine::{CatalogInfo, ColumnInfo, TableInfo};
+    use coral_engine::{
+        CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+        TableFunctionResultColumnInfo, TableInfo,
+    };
+    use coral_spec::SourceTableFunctionKind;
     use tempfile::tempdir;
 
     use super::{
-        CatalogProjection, MAX_COLUMN_HINTS_PER_SURFACE, catalog_provider_note,
-        catalog_search_outcome, search_sqlite_app_error,
+        CatalogProjection, OPTIONAL_MATCHING_FIELD_LIMIT, catalog_provider_note,
+        catalog_search_outcome, search_sqlite_app_error, surface_fields,
     };
     use crate::bootstrap::AppError;
+    use crate::search::catalog::ranking::RankedCatalogHit;
     use crate::search::catalog::sqlite_index::{
         CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
     };
-    use crate::search::result::{SearchProviderState, SearchRequest};
+    use crate::search::result::{
+        CatalogMetadataResult, SearchPayload, SearchProviderState, SearchRequest, SearchSurfaceKind,
+    };
     use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
     use crate::workspaces::WorkspaceName;
 
@@ -852,7 +890,6 @@ mod tests {
             false,
             true,
             false,
-            0,
             &BTreeSet::new(),
         );
 
@@ -899,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn column_hint_cap_reports_partial_provider_coverage() {
+    fn surface_envelope_keeps_required_fields_and_caps_optional_matches() {
         let temp = tempdir().expect("tempdir");
         let workspace_name = WorkspaceName::default();
         let projection = CatalogProjection {
@@ -910,34 +947,139 @@ mod tests {
             .expect("search store"),
             refresh: CatalogRefreshResult {
                 refreshed: false,
-                document_count: 5,
+                document_count: 8,
             },
             stale_index: false,
             refresh_lock_error: None,
-            expected_document_count: 5,
+            expected_document_count: 8,
         };
-        let request = SearchRequest::new(workspace_name, "alpha", 10).expect("search request");
-        let catalog = column_cap_catalog(5);
+        let request =
+            SearchRequest::new(workspace_name, "alpha alpha_5", 10).expect("search request");
+        let catalog = column_cap_catalog(7);
+        let mut hits = column_cap_hits(7);
+        hits.push(CatalogSearchHit {
+            doc_id: "catalog:table:fixture.payments".to_string(),
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "fixture".to_string(),
+            surface_kind: "table".to_string(),
+            surface_name: "payments".to_string(),
+            field_name: String::new(),
+            field_role: String::new(),
+            description: "Payments".to_string(),
+            matched_fields: vec!["searchable_text".to_string()],
+            retrieval_score: 1,
+        });
         let outcome = catalog_search_outcome(
             &request,
             &catalog,
             &BTreeSet::new(),
             CatalogSearchHits {
-                hits: column_cap_hits(5),
-                document_count: 5,
+                hits,
+                document_count: 8,
                 retrieval_limited: false,
             },
             &projection,
         );
 
-        assert_eq!(outcome.candidates.len(), MAX_COLUMN_HINTS_PER_SURFACE);
-        assert_eq!(outcome.status.state, SearchProviderState::Partial);
-        assert!(outcome.status.coverage.as_ref().expect("coverage").has_more);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.status.state, SearchProviderState::ResultsFound);
+        assert!(!outcome.status.coverage.as_ref().expect("coverage").has_more);
+        let metadata = outcome
+            .candidates
+            .iter()
+            .find_map(|candidate| match &candidate.payload {
+                SearchPayload::CatalogMetadata(CatalogMetadataResult::Table(result)) => {
+                    Some(result)
+                }
+                _ => None,
+            })
+            .expect("surface metadata");
+        assert_eq!(
+            metadata
+                .fields
+                .iter()
+                .filter(|field| !field.required)
+                .count(),
+            OPTIONAL_MATCHING_FIELD_LIMIT
+        );
+        let required_field = metadata.fields.first().expect("required field");
+        assert_eq!(required_field.name, "alpha_0");
+        assert!(required_field.required);
+        assert_eq!(
+            metadata
+                .fields
+                .iter()
+                .filter(|field| field.name == "alpha_0")
+                .count(),
+            1,
+            "a required filter should not also appear as a table column"
+        );
         assert!(
-            outcome
-                .status
-                .note
-                .contains("2 matching column hint(s) exceeded the per-surface cap")
+            metadata.fields.iter().any(|field| field.name == "alpha_5"),
+            "strong optional matches should remain visible"
+        );
+        assert_eq!(metadata.omitted_matching_field_count, 1);
+    }
+
+    #[test]
+    fn function_argument_and_return_can_share_a_name() {
+        let catalog = CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![TableFunctionInfo {
+                schema_name: "notion".to_string(),
+                function_name: "search_templates".to_string(),
+                description: String::new(),
+                arguments: vec![TableFunctionArgumentInfo {
+                    name: "name".to_string(),
+                    required: true,
+                    values: Vec::new(),
+                }],
+                result_columns: vec![TableFunctionResultColumnInfo {
+                    name: "name".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    description: "Template name".to_string(),
+                }],
+                kind: SourceTableFunctionKind::Search,
+                search_limits: None,
+            }],
+        };
+        let hits = vec![RankedCatalogHit {
+            hit: CatalogSearchHit {
+                doc_id: "column:function:notion.search_templates:name".to_string(),
+                doc_kind: CatalogIndexDocumentKind::ColumnHint,
+                source_name: "notion".to_string(),
+                surface_kind: "table_function".to_string(),
+                surface_name: "search_templates".to_string(),
+                field_name: "name".to_string(),
+                field_role: "table_function_result_column".to_string(),
+                description: "Template name".to_string(),
+                matched_fields: vec!["field_name".to_string()],
+                retrieval_score: 1,
+            },
+            score: 1,
+        }];
+
+        let selection = surface_fields(
+            &catalog,
+            SearchSurfaceKind::TableFunction,
+            "notion",
+            "search_templates",
+            &hits,
+        );
+
+        assert_eq!(selection.included_fields.len(), 2);
+        let roles = selection
+            .included_fields
+            .iter()
+            .map(|field| field.role)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            [
+                crate::search::result::SearchFieldRole::TableFunctionArgument,
+                crate::search::result::SearchFieldRole::TableFunctionResultColumn,
+            ]
         );
     }
 
@@ -1018,7 +1160,6 @@ mod tests {
             false,
             false,
             false,
-            0,
             &failed_source_names,
         );
 
@@ -1048,12 +1189,12 @@ mod tests {
                         data_type: "Utf8".to_string(),
                         nullable: true,
                         is_virtual: false,
-                        is_required_filter: false,
+                        is_required_filter: index == 0,
                         description: format!("Alpha {index}"),
                         ordinal_position: u32::try_from(index).unwrap_or(u32::MAX),
                     })
                     .collect(),
-                required_filters: Vec::new(),
+                required_filters: vec!["alpha_0".to_string()],
             }],
             table_functions: Vec::new(),
         }

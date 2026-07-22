@@ -21,12 +21,17 @@ Among the ranked results, you might see:
 Results
 1. [catalog_metadata] table github.issues
    SQL: github.issues
+   fields: owner (Utf8), repo (Utf8), state (Utf8)
+   required filters: owner, repo
 2. [catalog_metadata] table function github.search_issues
    SQL reference: github.search_issues
    Call: github.search_issues(q => '<value>')
+   arguments: q
+   required arguments: q
+   returns: title (Utf8), url (Utf8)
 ```
 
-The `SQL` line gives you the table reference. For a table function, `SQL reference` identifies the function and `Call` shows its required arguments.
+The `SQL` line gives you the table reference. For tables, `fields` contains required and query-relevant columns, and `required filters` identifies the constraints you must supply. For table functions, `arguments` and `returns` keep inputs separate from result columns, while `required arguments` identifies the inputs you must supply. When present, `omitted_matching_field_count` tells you that additional query-matching fields were left out.
 
 Use a catalog result's `SQL` reference or `Call` example in a query with `coral sql` to fetch rows. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
 

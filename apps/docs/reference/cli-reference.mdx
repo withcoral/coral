@@ -75,7 +75,7 @@ Search prepares the current workspace query runtime and catalog, then searches a
 local index. Runtime preparation can read stored credentials, initialize source
 providers, and inspect file metadata in local or object storage, but it does not
 execute your data query or return source rows. Catalog results provide a
-`sql_reference` or `sql_call_example`. When the `observed_values_search` feature
+`sql_reference`. When the `observed_values_search` feature
 is enabled, search also reads observed-value memory; those results identify the
 value and the surface and column where Coral saw it. Use those clues with
 `coral sql` to fetch current rows.
@@ -94,10 +94,13 @@ Enable them persistently using Coral [runtime features](/reference/configuration
 
 With `--json`, the response separates `results`, `provider_statuses`, and
 `truncation`. Each result identifies its provider and typed result kind.
-Catalog table results include `sql_reference`; table-function results include
-`sql_reference` and `sql_call_example`. Catalog field-level results include
-`surface_sql_reference`, identifying the table or table function that owns the
-matching column, filter, argument, or result column.
+Catalog metadata results identify one table or table function in `item`.
+Table results use `fields` for required and query-relevant columns and
+`required_filters` for required constraints. Table-function results use
+`arguments`, `required_arguments`, sparse `argument_values`, and `returns` to
+keep inputs separate from result columns. When more query-matching fields exist
+than fit in the response, `omitted_matching_field_count` reports how many were
+left out.
 
 Observed-value results include the value, its `schema_name`, surface, column,
 field path, observation count, and when it was last observed. `schema_name` is

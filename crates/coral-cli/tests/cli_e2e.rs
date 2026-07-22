@@ -962,6 +962,18 @@ async fn search_command_renders_text_output_and_provider_statuses() {
         "expected SQL reference: {stdout}"
     );
     assert!(
+        stdout.contains("text (Utf8)"),
+        "expected field evidence: {stdout}"
+    );
+    assert!(
+        stdout.contains("required filters: owner"),
+        "expected required field: {stdout}"
+    );
+    assert!(
+        stdout.contains("omitted matching fields: 1"),
+        "expected omitted matching field count: {stdout}"
+    );
+    assert!(
         stdout.contains("Provider statuses"),
         "expected provider statuses section: {stdout}"
     );
@@ -1004,8 +1016,31 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
         "local_messages.messages"
     );
     assert_eq!(
-        response["results"][1]["column_hint"]["field_role"],
-        "table_column"
+        response["results"][0]["catalog_metadata"]["fields"]["text"],
+        "Utf8"
+    );
+    assert_eq!(
+        response["results"][0]["catalog_metadata"]["required_filters"],
+        serde_json::json!(["owner"])
+    );
+    assert_eq!(
+        response["results"][0]["catalog_metadata"]["omitted_matching_field_count"],
+        1
+    );
+    assert!(
+        response["results"][0]["catalog_metadata"]
+            .get("table_column_preview")
+            .is_none()
+    );
+    assert!(
+        response["results"][0]["catalog_metadata"]
+            .get("surface_fields")
+            .is_none()
+    );
+    assert!(
+        response["results"][0]["catalog_metadata"]["item"]
+            .get("table")
+            .is_none()
     );
     assert_eq!(
         response["provider_statuses"][0]["coverage"]["searched_units"],
@@ -1018,7 +1053,7 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     assert!(response["provider_statuses"][1]["coverage"].is_null());
     assert_eq!(response["provider_statuses"][2]["state"], "skipped");
     assert!(response["provider_statuses"][2]["coverage"].is_null());
-    assert_eq!(response["truncation"]["returned_count"], 2);
+    assert_eq!(response["truncation"]["returned_count"], 1);
 
     let requests = server.search_requests();
     assert_eq!(requests.len(), 1, "expected one search call");

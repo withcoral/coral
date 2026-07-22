@@ -12,9 +12,8 @@ use coral_api::v1::{
     CreateWorkspaceRequest, DeleteWorkspaceRequest, DrainSearchQueueRequest, ListCatalogRequest,
     PaginationRequest, RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope,
     SearchFieldRole, SearchIndexProvider, SearchMaintenanceState, SearchProvider,
-    SearchProviderState, SearchRequest, SearchSurfaceKind, TableFunctionKind,
-    ValidateSourceRequest, Workspace, catalog_item, search_clear_target, search_maintenance_result,
-    search_result,
+    SearchProviderState, SearchRequest, TableFunctionKind, ValidateSourceRequest, Workspace,
+    catalog_item, search_clear_target, search_maintenance_result, search_result,
 };
 use coral_app::EngineExtensionsProvider;
 use coral_client::default_workspace;
@@ -570,7 +569,7 @@ async fn table_function_proto_exposes_search_metadata() {
 }
 
 #[tokio::test]
-async fn search_returns_catalog_metadata_for_search_functions_and_column_hints() {
+async fn search_returns_function_fields_in_one_surface_envelope() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
@@ -632,21 +631,19 @@ async fn search_returns_catalog_metadata_for_search_functions_and_column_hints()
                                 limits.default_top_k == 5
                                     && limits.max_top_k == 20
                                     && limits.max_calls_per_query == 2
+                            })
+                            && function.result_columns.iter().any(|column| {
+                                column.name == "title" && column.data_type == "Utf8"
                             }),
                     catalog_item::Item::Table(_) => false,
                 }
+            }) && metadata.surface_fields.iter().any(|field| {
+                field.name == "title"
+                    && field.data_type == "Utf8"
+                    && SearchFieldRole::try_from(field.role).is_ok_and(|role| {
+                        role == SearchFieldRole::TableFunctionResultColumn
+                    })
             })
-    )));
-    assert!(response.results.iter().any(|result| matches!(
-        result.payload.as_ref(),
-        Some(search_result::Payload::ColumnHint(hint))
-            if hint.surface_name == "search_messages"
-                && hint.name == "title"
-                && SearchSurfaceKind::try_from(hint.surface_kind)
-                    .is_ok_and(|kind| kind == SearchSurfaceKind::TableFunction)
-                && SearchFieldRole::try_from(hint.field_role)
-                    .is_ok_and(|role| role == SearchFieldRole::TableFunctionResultColumn)
-                && hint.data_type == "Utf8"
     )));
 }
 
@@ -1284,63 +1281,6 @@ async fn source_scoped_all_clear_does_not_load_manifest_and_bumps_generation() {
 }
 
 #[tokio::test]
-async fn search_table_preview_columns_do_not_inherit_table_matched_fields() {
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(table_preview_manifest_yaml(), Vec::new(), Vec::new())
-        .await;
-
-    let response = harness
-        .search_client()
-        .search(Request::new(SearchRequest {
-            workspace: Some(default_workspace()),
-            query: "conversation archive".to_string(),
-            limit: 10,
-        }))
-        .await
-        .expect("search")
-        .into_inner();
-
-    let metadata = response
-        .results
-        .iter()
-        .find_map(|result| {
-            let Some(search_result::Payload::CatalogMetadata(metadata)) = result.payload.as_ref()
-            else {
-                return None;
-            };
-            metadata
-                .item
-                .as_ref()
-                .and_then(|item| item.item.as_ref())
-                .is_some_and(|item| {
-                    matches!(item, catalog_item::Item::Table(table) if table.name == "messages")
-                })
-                .then_some(metadata)
-        })
-        .expect("messages table metadata");
-    assert!(
-        metadata
-            .matched_fields
-            .iter()
-            .any(|field| field == "description"),
-        "table metadata should explain that the table description matched"
-    );
-    let preview = metadata
-        .table_column_preview
-        .as_ref()
-        .expect("table column preview");
-    assert_eq!(preview.column_count, 2);
-    assert!(
-        preview
-            .columns
-            .iter()
-            .all(|column| column.matched_fields.is_empty()),
-        "preview columns should not inherit table-level matched fields"
-    );
-}
-
-#[tokio::test]
 async fn search_provider_coverage_counts_mapped_candidates() {
     let harness = GrpcHarness::new().await;
     harness
@@ -1365,7 +1305,7 @@ async fn search_provider_coverage_counts_mapped_candidates() {
     let catalog_status = assert_provider_state(
         &response,
         SearchProvider::CatalogMetadata,
-        SearchProviderState::Partial,
+        SearchProviderState::ResultsFound,
     );
     let coverage = catalog_status.coverage.as_ref().expect("coverage");
     assert_eq!(
@@ -1373,7 +1313,7 @@ async fn search_provider_coverage_counts_mapped_candidates() {
         u32::try_from(response.results.len()).expect("result count"),
         "coverage should count mapped provider candidates, not raw SQLite hits"
     );
-    assert_eq!(coverage.returned_count, 4);
+    assert_eq!(coverage.returned_count, 1);
 }
 
 #[tokio::test]

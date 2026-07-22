@@ -1,8 +1,11 @@
 //! Catalog provider relevance ranking.
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 
+use crate::search::catalog::snapshot::surface_kind_from_str;
 use crate::search::catalog::sqlite_index::{CatalogIndexDocumentKind, CatalogSearchHit};
+use crate::search::result::SearchSurfaceKind;
 
 const PARENT_CATALOG_SURFACE_RELEVANCE_BOOST: u32 = 20_000;
 const COLUMN_HINT_RELEVANCE_BOOST: u32 = 0;
@@ -26,6 +29,78 @@ const COLUMN_HINT_RANK_ORDER: u8 = 1;
 pub(crate) struct RankedCatalogHit {
     pub(crate) hit: CatalogSearchHit,
     pub(crate) score: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct CatalogSurfaceKey {
+    pub(crate) source_name: String,
+    pub(crate) kind: SearchSurfaceKind,
+    pub(crate) surface_name: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct RankedCatalogSurface {
+    pub(crate) key: CatalogSurfaceKey,
+    pub(crate) best_evidence_score: u32,
+    pub(crate) fields: Vec<RankedCatalogHit>,
+}
+
+pub(crate) fn rank_catalog_surfaces(
+    hits: Vec<CatalogSearchHit>,
+    terms: &[String],
+) -> Vec<RankedCatalogSurface> {
+    let mut grouped = BTreeMap::<CatalogSurfaceKey, Vec<RankedCatalogHit>>::new();
+    for hit in rank_catalog_hits(hits, terms) {
+        let Some(kind) = surface_kind_from_str(&hit.hit.surface_kind) else {
+            continue;
+        };
+        grouped
+            .entry(CatalogSurfaceKey {
+                source_name: hit.hit.source_name.clone(),
+                kind,
+                surface_name: hit.hit.surface_name.clone(),
+            })
+            .or_default()
+            .push(hit);
+    }
+
+    let mut surfaces = grouped
+        .into_iter()
+        .map(|(key, hits)| rank_surface(key, hits))
+        .collect::<Vec<_>>();
+    surfaces.sort_by(|left, right| {
+        (
+            Reverse(left.best_evidence_score),
+            left.key.source_name.as_str(),
+            left.key.surface_name.as_str(),
+        )
+            .cmp(&(
+                Reverse(right.best_evidence_score),
+                right.key.source_name.as_str(),
+                right.key.surface_name.as_str(),
+            ))
+    });
+    surfaces
+}
+
+fn rank_surface(key: CatalogSurfaceKey, hits: Vec<RankedCatalogHit>) -> RankedCatalogSurface {
+    let mut best_evidence_score = 0;
+    let mut fields = Vec::new();
+    for hit in hits {
+        best_evidence_score = best_evidence_score.max(hit.score);
+        if matches!(hit.hit.doc_kind, CatalogIndexDocumentKind::ColumnHint) {
+            fields.push(hit);
+        }
+    }
+    fields.sort_by(|left, right| {
+        (Reverse(left.score), left.hit.doc_id.as_str())
+            .cmp(&(Reverse(right.score), right.hit.doc_id.as_str()))
+    });
+    RankedCatalogSurface {
+        key,
+        best_evidence_score,
+        fields,
+    }
 }
 
 pub(crate) fn rank_catalog_hits(

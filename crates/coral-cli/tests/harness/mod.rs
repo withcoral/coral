@@ -22,7 +22,7 @@ use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceService
 use coral_api::v1::{
     AddFunctionRequest, AddFunctionResponse, CatalogClearResult, CatalogCounts, CatalogItem,
     CatalogMetadata, CatalogRebuildResult, CatalogSearchResult, ClearSearchDataRequest,
-    ClearSearchDataResponse, Column, ColumnHint, ColumnSearchResult, CreateBundledSourceRequest,
+    ClearSearchDataResponse, Column, ColumnSearchResult, CreateBundledSourceRequest,
     CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
     DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
@@ -38,12 +38,11 @@ use coral_api::v1::{
     SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult,
     SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
     SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult, SearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableFunction, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    import_source_response, search_maintenance_result, search_result,
-    source_input_spec::Input as ProtoSourceInput,
+    SearchStorageCleanupResult, SearchSurfaceField, Source, SourceCredentialStorage, SourceInfo,
+    SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableFunction, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, import_source_response, search_maintenance_result,
+    search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -373,61 +372,39 @@ fn mock_validate_response() -> ValidateSourceResponse {
 fn mock_search_response() -> SearchResponse {
     let table = mock_visible_table();
     SearchResponse {
-        results: vec![
-            SearchResult {
-                provider: SearchProvider::CatalogMetadata as i32,
-                payload: Some(search_result::Payload::CatalogMetadata(CatalogMetadata {
-                    item: Some(CatalogItem {
-                        item: Some(catalog_item::Item::Table(table_summary(&table))),
-                    }),
-                    matched_fields: vec!["description".to_string()],
-                    table_column_preview: Some(SearchTableColumnPreview {
-                        column_count: 3,
-                        columns: vec![
-                            SearchTableColumnPreviewColumn {
-                                name: "owner".to_string(),
-                                data_type: "Utf8".to_string(),
-                                is_required_filter: true,
-                                description: "Repository owner filter".to_string(),
-                                matched_fields: Vec::new(),
-                            },
-                            SearchTableColumnPreviewColumn {
-                                name: "text".to_string(),
-                                data_type: "Utf8".to_string(),
-                                is_required_filter: false,
-                                description: "Message text".to_string(),
-                                matched_fields: vec!["description".to_string()],
-                            },
-                        ],
-                        omitted_column_count: 1,
-                    }),
-                })),
-            },
-            SearchResult {
-                provider: SearchProvider::CatalogMetadata as i32,
-                payload: Some(search_result::Payload::ColumnHint(ColumnHint {
-                    schema_name: "local_messages".to_string(),
-                    surface_name: "messages".to_string(),
-                    surface_kind: SearchSurfaceKind::Table as i32,
-                    name: "text".to_string(),
-                    data_type: "Utf8".to_string(),
-                    required: false,
-                    description: "Message text".to_string(),
-                    matched_fields: vec!["column_name".to_string()],
-                    field_role: SearchFieldRole::TableColumn as i32,
-                })),
-            },
-        ],
+        results: vec![SearchResult {
+            provider: SearchProvider::CatalogMetadata as i32,
+            payload: Some(search_result::Payload::CatalogMetadata(CatalogMetadata {
+                item: Some(CatalogItem {
+                    item: Some(catalog_item::Item::Table(table_summary(&table))),
+                }),
+                surface_fields: vec![
+                    SearchSurfaceField {
+                        name: "owner".to_string(),
+                        data_type: "Utf8".to_string(),
+                        required: true,
+                        role: SearchFieldRole::TableFilter as i32,
+                    },
+                    SearchSurfaceField {
+                        name: "text".to_string(),
+                        data_type: "Utf8".to_string(),
+                        required: false,
+                        role: SearchFieldRole::TableColumn as i32,
+                    },
+                ],
+                omitted_matching_field_count: 1,
+            })),
+        }],
         provider_statuses: vec![
             mock_provider_status(
                 SearchProvider::CatalogMetadata,
                 SearchProviderState::ResultsFound,
-                "Catalog metadata returned 2 search hints",
+                "Catalog metadata returned 1 search result",
                 Some(SearchProviderCoverage {
                     eligible_units: 3,
                     searched_units: 3,
                     failed_units: 0,
-                    returned_count: 2,
+                    returned_count: 1,
                     has_more: false,
                     budget_exhausted: false,
                     timed_out: false,
@@ -449,7 +426,7 @@ fn mock_search_response() -> SearchResponse {
         ],
         truncation: Some(SearchResultTruncation {
             truncated: false,
-            returned_count: 2,
+            returned_count: 1,
             max_results: 10,
             note: String::new(),
         }),

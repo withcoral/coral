@@ -8,7 +8,7 @@ use coral_api::v1::{
     CatalogClearResult as ProtoCatalogClearResult, CatalogMetadata,
     CatalogRebuildResult as ProtoCatalogRebuildResult,
     ClearSearchDataRequest as ProtoClearSearchDataRequest,
-    ClearSearchDataResponse as ProtoClearSearchDataResponse, ColumnHint,
+    ClearSearchDataResponse as ProtoClearSearchDataResponse,
     DrainSearchQueueRequest as ProtoDrainSearchQueueRequest,
     DrainSearchQueueResponse as ProtoDrainSearchQueueResponse,
     ObservedClearResult as ProtoObservedClearResult,
@@ -23,13 +23,13 @@ use coral_api::v1::{
     SearchProviderCoverage, SearchProviderState, SearchProviderStatus,
     SearchRequest as ProtoSearchRequest, SearchResponse as ProtoSearchResponse,
     SearchResult as ProtoSearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult as ProtoSearchStorageCleanupResult,
-    SearchSurfaceKind as ProtoSearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn,
+    SearchStorageCleanupResult as ProtoSearchStorageCleanupResult, SearchSurfaceField,
+    SearchSurfaceKind as ProtoSearchSurfaceKind,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
+use crate::catalog::discovery::CatalogItem;
 use crate::query::QueryAttribution;
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult,
@@ -45,10 +45,9 @@ use crate::search::maintenance::{
 };
 use crate::search::manager::SearchManager;
 use crate::search::result::{
-    CatalogMetadataResult, ColumnHintResult, ObservedValueResult, ProviderCoverage, ProviderStatus,
-    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind,
+    CatalogMetadataResult, ObservedValueResult, ProviderCoverage, ProviderStatus, SearchFieldRole,
+    SearchManagerError, SearchPayload, SearchProviderKind,
     SearchProviderState as DomainProviderState, SearchRequest, SearchResponse, SearchSurfaceKind,
-    TableColumnPreview as DomainTableColumnPreview,
 };
 use crate::sources::SourceName;
 use crate::transport::{
@@ -393,7 +392,6 @@ fn search_payload_to_proto(
         SearchPayload::CatalogMetadata(result) => {
             Payload::CatalogMetadata(catalog_metadata_to_proto(workspace_name, result))
         }
-        SearchPayload::ColumnHint(result) => Payload::ColumnHint(column_hint_to_proto(result)),
         SearchPayload::ObservedValue(result) => {
             Payload::ObservedValue(observed_value_to_proto(result))
         }
@@ -404,44 +402,34 @@ fn catalog_metadata_to_proto(
     workspace_name: &crate::workspaces::WorkspaceName,
     result: CatalogMetadataResult,
 ) -> CatalogMetadata {
+    let (item, surface_fields, omitted_matching_field_count) = match result {
+        CatalogMetadataResult::Table(result) => (
+            CatalogItem::Table(result.item),
+            result.fields,
+            result.omitted_matching_field_count,
+        ),
+        CatalogMetadataResult::TableFunction(result) => {
+            let mut fields = result.arguments;
+            fields.extend(result.returns);
+            (
+                CatalogItem::TableFunction(result.item),
+                fields,
+                result.omitted_matching_field_count,
+            )
+        }
+    };
     CatalogMetadata {
-        item: Some(catalog_item_to_proto(workspace_name, result.item)),
-        matched_fields: result.matched_fields,
-        table_column_preview: result
-            .table_column_preview
-            .map(table_column_preview_to_proto),
-    }
-}
-
-fn table_column_preview_to_proto(preview: DomainTableColumnPreview) -> SearchTableColumnPreview {
-    SearchTableColumnPreview {
-        column_count: preview.column_count,
-        columns: preview
-            .columns
+        item: Some(catalog_item_to_proto(workspace_name, item)),
+        surface_fields: surface_fields
             .into_iter()
-            .map(|column| SearchTableColumnPreviewColumn {
-                name: column.column.name,
-                data_type: column.column.data_type,
-                is_required_filter: column.column.is_required_filter,
-                description: column.column.description,
-                matched_fields: column.matched_fields,
+            .map(|field| SearchSurfaceField {
+                name: field.name,
+                data_type: field.data_type,
+                required: field.required,
+                role: field_role_to_proto(field.role) as i32,
             })
             .collect(),
-        omitted_column_count: preview.omitted_column_count,
-    }
-}
-
-fn column_hint_to_proto(result: ColumnHintResult) -> ColumnHint {
-    ColumnHint {
-        schema_name: result.schema_name,
-        surface_name: result.surface_name,
-        surface_kind: surface_kind_to_proto(result.surface_kind) as i32,
-        name: result.name,
-        data_type: result.data_type,
-        required: result.required,
-        description: result.description,
-        matched_fields: result.matched_fields,
-        field_role: field_role_to_proto(result.field_role) as i32,
+        omitted_matching_field_count,
     }
 }
 

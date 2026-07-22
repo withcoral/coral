@@ -2,10 +2,9 @@
 
 use std::cmp::Reverse;
 
-use coral_engine::ColumnInfo;
+use coral_engine::{TableFunctionInfo, TableInfo};
 
 use crate::bootstrap::AppError;
-use crate::catalog::discovery::CatalogItem;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const DEFAULT_UNIVERSAL_SEARCH_LIMIT: u32 = 10;
@@ -131,8 +130,7 @@ impl SearchCandidate {
     pub(crate) fn type_order(&self) -> u8 {
         match &self.payload {
             SearchPayload::CatalogMetadata(_) => 0,
-            SearchPayload::ColumnHint(_) => 1,
-            SearchPayload::ObservedValue(_) => 2,
+            SearchPayload::ObservedValue(_) => 1,
         }
     }
 }
@@ -172,41 +170,36 @@ pub(crate) struct SearchResult {
 #[derive(Debug, Clone)]
 pub(crate) enum SearchPayload {
     CatalogMetadata(CatalogMetadataResult),
-    ColumnHint(ColumnHintResult),
     ObservedValue(ObservedValueResult),
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CatalogMetadataResult {
-    pub(crate) item: CatalogItem,
-    pub(crate) matched_fields: Vec<String>,
-    pub(crate) table_column_preview: Option<TableColumnPreview>,
+pub(crate) enum CatalogMetadataResult {
+    Table(TableCatalogMetadataResult),
+    TableFunction(TableFunctionCatalogMetadataResult),
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TableColumnPreview {
-    pub(crate) column_count: u32,
-    pub(crate) columns: Vec<TableColumnPreviewColumn>,
-    pub(crate) omitted_column_count: u32,
+pub(crate) struct TableCatalogMetadataResult {
+    pub(crate) item: TableInfo,
+    pub(crate) fields: Vec<SurfaceField>,
+    pub(crate) omitted_matching_field_count: u32,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TableColumnPreviewColumn {
-    pub(crate) column: ColumnInfo,
-    pub(crate) matched_fields: Vec<String>,
+pub(crate) struct TableFunctionCatalogMetadataResult {
+    pub(crate) item: TableFunctionInfo,
+    pub(crate) arguments: Vec<SurfaceField>,
+    pub(crate) returns: Vec<SurfaceField>,
+    pub(crate) omitted_matching_field_count: u32,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ColumnHintResult {
-    pub(crate) schema_name: String,
-    pub(crate) surface_name: String,
-    pub(crate) surface_kind: SearchSurfaceKind,
+pub(crate) struct SurfaceField {
     pub(crate) name: String,
     pub(crate) data_type: String,
     pub(crate) required: bool,
-    pub(crate) description: String,
-    pub(crate) matched_fields: Vec<String>,
-    pub(crate) field_role: SearchFieldRole,
+    pub(crate) role: SearchFieldRole,
 }
 
 #[derive(Debug, Clone)]
@@ -227,7 +220,7 @@ pub(crate) enum SearchSurfaceKind {
     TableFunction,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[expect(
     clippy::enum_variant_names,
     reason = "field roles intentionally mirror the protobuf role names"
