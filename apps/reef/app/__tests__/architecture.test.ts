@@ -367,6 +367,9 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain("route(routePattern('workspaceSchema'), 'routes/schema.tsx', [")
       expect(routeConfig).toContain("index('routes/schema-empty.tsx')")
       expect(routeConfig).toContain("route(':schemaName/:tableName', 'routes/schema-table.tsx')")
+      expect(routeConfig).toContain(
+        "route(':schemaName/functions/:functionName', 'routes/schema-table-function.tsx')",
+      )
       expect(routeConfig).toContain("route(routePattern('workspaceTraces'), 'routes/traces.tsx', [")
       expect(routeConfig).toContain("route(':traceId', 'routes/trace-detail.tsx')")
       // Settings stays in the shared app shell; desktop-only sections are gated in the route.

@@ -9,6 +9,8 @@ const CANONICAL_PATTERNS = {
   workspaces: '/workspaces',
   workspaceSchema: '/workspaces/:workspaceId/schema',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
+  workspaceSchemaTableFunction:
+    '/workspaces/:workspaceId/schema/:schemaName/functions/:functionName',
   workspaceSource: '/workspaces/:workspaceId/sources/:sourceName',
   workspaceSourceDiscovery: '/workspaces/:workspaceId/sources/discover',
   workspaceSourceInstall: '/workspaces/:workspaceId/sources/install',
@@ -42,6 +44,11 @@ describe('route map', () => {
         tableName: 'issues',
         workspaceId: 'analytics',
       }),
+      workspaceSchemaTableFunction: routePath('workspaceSchemaTableFunction', {
+        functionName: 'search_issues',
+        schemaName: 'github',
+        workspaceId: 'analytics',
+      }),
       workspaceSource: routePath('workspaceSource', {
         sourceName: 'github',
         workspaceId: 'analytics',
@@ -64,6 +71,7 @@ describe('route map', () => {
       workspaces: '/workspaces',
       workspaceSchema: '/workspaces/analytics/schema',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
+      workspaceSchemaTableFunction: '/workspaces/analytics/schema/github/functions/search_issues',
       workspaceSource: '/workspaces/analytics/sources/github',
       workspaceSourceDiscovery: '/workspaces/analytics/sources/discover',
       workspaceSourceInstall: '/workspaces/analytics/sources/install',

@@ -2,7 +2,13 @@ import { useMemo, useState } from 'react'
 import { NavLink, Outlet, useParams, useRouteError } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
-import type { SchemaGroup, SchemaResponse, TableDef } from '@/lib/schema-explorer'
+import type {
+  SchemaGroup,
+  SchemaItemDef,
+  SchemaResponse,
+  TableDef,
+  TableFunctionDef,
+} from '@/lib/schema-explorer'
 import { routePath } from '@/routing/routemap'
 import { PageHeader } from '@/views/traces/page-header'
 import { Container as ButtonContainer } from '@/wax/components/button'
@@ -21,14 +27,27 @@ export function findSchemaTable(
 ): TableDef | undefined {
   return schema.connectors
     .find((connector) => connector.name === schemaName)
-    ?.tables.find((table) => table.name === tableName)
+    ?.items.find((item): item is TableDef => item.kind === 'table' && item.name === tableName)
+}
+
+export function findSchemaTableFunction(
+  schema: SchemaResponse,
+  schemaName: string,
+  functionName: string,
+): TableFunctionDef | undefined {
+  return schema.connectors
+    .find((connector) => connector.name === schemaName)
+    ?.items.find(
+      (item): item is TableFunctionDef =>
+        item.kind === 'tableFunction' && item.name === functionName,
+    )
 }
 
 function schemaMatchesSearch(schema: SchemaGroup, search: string) {
   if (!search) return true
   return (
     schemaNameMatchesSearch(schema, search) ||
-    schema.tables.some((table) => tableMatchesSearch(table, search))
+    schema.items.some((item) => catalogItemMatchesSearch(item, search))
   )
 }
 
@@ -36,20 +55,44 @@ function schemaNameMatchesSearch(schema: SchemaGroup, search: string) {
   return schema.name.toLowerCase().includes(search)
 }
 
-function tableMatchesSearch(table: TableDef, search: string) {
+function catalogItemMatchesSearch(item: SchemaItemDef, search: string) {
   if (!search) return true
-  if (table.name.toLowerCase().includes(search)) return true
-  if (table.description?.toLowerCase().includes(search)) return true
+  if (item.name.toLowerCase().includes(search)) return true
+  if (item.description?.toLowerCase().includes(search)) return true
+  if (
+    item.kind === 'tableFunction' &&
+    item.arguments.some((argument) => argument.name.toLowerCase().includes(search))
+  ) {
+    return true
+  }
   return false
 }
 
-function visibleTablesForSchema(schema: SchemaGroup, search: string) {
-  if (!search || schemaNameMatchesSearch(schema, search)) return schema.tables
-  return schema.tables.filter((table) => tableMatchesSearch(table, search))
+function visibleItemsForSchema(schema: SchemaGroup, search: string) {
+  if (!search || schemaNameMatchesSearch(schema, search)) return schema.items
+  return schema.items.filter((item) => catalogItemMatchesSearch(item, search))
 }
 
 function tablePath(workspaceId: string, schemaName: string, tableName: string) {
   return routePath('workspaceSchemaTable', { schemaName, tableName, workspaceId })
+}
+
+function tableFunctionPath(workspaceId: string, schemaName: string, functionName: string) {
+  return routePath('workspaceSchemaTableFunction', { functionName, schemaName, workspaceId })
+}
+
+function catalogItemPath(workspaceId: string, schemaName: string, item: SchemaItemDef) {
+  return item.kind === 'table'
+    ? tablePath(workspaceId, schemaName, item.name)
+    : tableFunctionPath(workspaceId, schemaName, item.name)
+}
+
+export function tableFunctionTreeArguments(tableFunction: TableFunctionDef) {
+  const argumentsToShow = tableFunction.arguments
+    .filter((argument) => argument.required)
+    .map((argument) => argument.name)
+  if (tableFunction.arguments.some((argument) => !argument.required)) argumentsToShow.push('...')
+  return `(${argumentsToShow.join(', ')})`
 }
 
 // Header + two-panel scaffold for the error state so it looks like the loaded page.
@@ -98,10 +141,10 @@ export function SchemaExplorer({
   schema: SchemaResponse
   workspaceId: string
 }) {
-  const activeTable = useParams()
+  const activeItem = useParams()
   const [search, setSearch] = useState('')
   // Collapsed by default so the initial render is one row per schema, not one per
-  // table — expanding every schema up front renders hundreds of rows and makes the
+  // catalog item — expanding every schema up front renders hundreds of rows and makes the
   // first paint sluggish. A search expands matching schemas (see `expanded` below).
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(() => new Set())
 
@@ -109,11 +152,6 @@ export function SchemaExplorer({
   const filteredSchemas = useMemo(
     () => schema.connectors.filter((connector) => schemaMatchesSearch(connector, normalizedSearch)),
     [normalizedSearch, schema],
-  )
-
-  const filteredTableCount = filteredSchemas.reduce(
-    (count, connector) => count + visibleTablesForSchema(connector, normalizedSearch).length,
-    0,
   )
 
   const toggleSchema = (name: string) => {
@@ -127,17 +165,7 @@ export function SchemaExplorer({
 
   return (
     <section aria-label="Schema explorer" className={styles.root}>
-      <PageHeader
-        title={
-          <>
-            <Typography.BodyStrong variant="secondary">Schema explorer</Typography.BodyStrong>
-            <Typography.BodySmall variant="tertiary">
-              {filteredSchemas.length} {filteredSchemas.length === 1 ? 'schema' : 'schemas'} /{' '}
-              {filteredTableCount} {filteredTableCount === 1 ? 'table' : 'tables'}
-            </Typography.BodySmall>
-          </>
-        }
-      >
+      <PageHeader title="Schema explorer">
         <div className={styles.headerSearch}>
           <TextInput
             icon="Search"
@@ -162,7 +190,7 @@ export function SchemaExplorer({
               ) : filteredSchemas.length === 0 ? (
                 <div className={styles.treeEmpty}>
                   <Typography.BodySmall variant="tertiary">
-                    No queryable tables in this workspace.
+                    No queryable tables or table functions in this workspace.
                   </Typography.BodySmall>
                 </div>
               ) : (
@@ -170,8 +198,8 @@ export function SchemaExplorer({
                   {filteredSchemas.map((connector) => {
                     // A search forces matching schemas open so results are visible.
                     const expanded = normalizedSearch !== '' || expandedSchemas.has(connector.name)
-                    const connectorChildrenId = `schema-${connector.name}-tables`
-                    const visibleTables = visibleTablesForSchema(connector, normalizedSearch)
+                    const connectorChildrenId = `schema-${connector.name}-items`
+                    const visibleItems = visibleItemsForSchema(connector, normalizedSearch)
                     return (
                       <div key={connector.name}>
                         <ButtonContainer
@@ -192,35 +220,53 @@ export function SchemaExplorer({
                             {connector.name}
                           </Typography.BodyStrong>
                           <Typography.BodySmall
-                            className={styles.connectorTableCount}
+                            className={styles.connectorItemCount}
                             variant="tertiary"
                           >
-                            {visibleTables.length}
+                            {visibleItems.length}
                           </Typography.BodySmall>
                         </ButtonContainer>
 
                         {expanded ? (
                           <div className={styles.connectorChildren} id={connectorChildrenId}>
-                            {visibleTables.map((table) => (
-                              <ButtonContainer
-                                as={NavLink}
-                                className={styles.treeRow}
-                                fullWidth
-                                isActive={
-                                  activeTable.schemaName === connector.name &&
-                                  activeTable.tableName === table.name
-                                }
-                                key={tablePath(workspaceId, connector.name, table.name)}
-                                size="22"
-                                to={tablePath(workspaceId, connector.name, table.name)}
-                                variant="bare"
-                              >
-                                <Icon color="secondary" name="Table2" size="14" />
-                                <Typography.BodyStrong className={styles.tableName}>
-                                  {table.name}
-                                </Typography.BodyStrong>
-                              </ButtonContainer>
-                            ))}
+                            {visibleItems.map((item) => {
+                              const path = catalogItemPath(workspaceId, connector.name, item)
+                              const active =
+                                activeItem.schemaName === connector.name &&
+                                (item.kind === 'table'
+                                  ? activeItem.tableName === item.name
+                                  : activeItem.functionName === item.name)
+                              return (
+                                <ButtonContainer
+                                  as={NavLink}
+                                  className={styles.treeRow}
+                                  fullWidth
+                                  isActive={active}
+                                  key={path}
+                                  size="22"
+                                  to={path}
+                                  variant="bare"
+                                >
+                                  <Icon
+                                    color="secondary"
+                                    name={item.kind === 'table' ? 'Table2' : 'SquareFunction'}
+                                    size="14"
+                                  />
+                                  {item.kind === 'table' ? (
+                                    <Typography.BodyStrong className={styles.itemName}>
+                                      {item.name}
+                                    </Typography.BodyStrong>
+                                  ) : (
+                                    <span className={styles.itemName}>
+                                      <Typography.BodyStrong>{item.name}</Typography.BodyStrong>
+                                      <Typography.Body>
+                                        {tableFunctionTreeArguments(item)}
+                                      </Typography.Body>
+                                    </span>
+                                  )}
+                                </ButtonContainer>
+                              )
+                            })}
                           </div>
                         ) : null}
                       </div>

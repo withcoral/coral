@@ -11,12 +11,22 @@ const SCHEMA = {
   connectors: [
     {
       name: 'github?api',
-      tables: [
+      items: [
         {
           columns: [],
           columnsLoaded: false,
+          kind: 'table',
           name: 'issues/closed',
           requiredFilters: [],
+        },
+        {
+          arguments: [
+            { name: 'channel', required: true, values: [] },
+            { name: 'cursor', required: false, values: [] },
+          ],
+          kind: 'tableFunction',
+          name: 'messages',
+          resultColumns: [],
         },
       ],
     },
@@ -36,6 +46,8 @@ it('links tables within the active workspace schema route', async () => {
   )
   const screen = await render(<RouterProvider router={router} />)
 
+  await expect.element(screen.getByPlaceholder('Filter schemas and tables')).toBeVisible()
+  await expect.element(screen.getByText(/schemas \/.*tables/)).not.toBeInTheDocument()
   await screen.getByRole('button', { name: /github\?api/ }).click()
   await expect.element(screen.getByRole('link', { name: 'issues/closed' })).toHaveAttribute(
     'href',
@@ -45,4 +57,14 @@ it('links tables within the active workspace schema route', async () => {
       workspaceId,
     }),
   )
+  await expect
+    .element(screen.getByRole('link', { name: 'messages(channel, ...)' }))
+    .toHaveAttribute(
+      'href',
+      routePath('workspaceSchemaTableFunction', {
+        functionName: 'messages',
+        schemaName: 'github?api',
+        workspaceId,
+      }),
+    )
 })
