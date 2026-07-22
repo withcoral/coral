@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value};
 
 use crate::ResponseSpec;
-use crate::v4::diagnostics::Diagnostic;
+use crate::v4::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::v4::ir::{
     IrEntityCandidate, IrOperationOutput, OutputCardinality, RestResponseAttachment,
 };
@@ -70,7 +70,7 @@ impl OpenApiImporter<'_> {
 
         let Some(resolved) = self.resolve_ref(&selected.schema, operation_id, diagnostics) else {
             diagnostics.push(Diagnostic::warning(
-                "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
+                DiagnosticCode::OpenApiResponseSchemeUnresolved,
                 format!("operation '{operation_id}' response schema could not be resolved"),
                 Some(operation_id.to_string()),
             ));

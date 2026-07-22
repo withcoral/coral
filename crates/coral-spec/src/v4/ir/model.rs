@@ -170,7 +170,7 @@ mod tests {
         IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
         SemanticIr,
     };
-    use crate::v4::diagnostics::Diagnostic;
+    use crate::v4::diagnostics::{Diagnostic, DiagnosticCode};
     use crate::v4::ir::mcp::McpExecutionAttachment;
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
     use crate::v4::manifest::SurfaceType;
@@ -226,7 +226,11 @@ mod tests {
                     description: String::new(),
                 },
             ],
-            diagnostics: vec![Diagnostic::warning("TEST", "diagnostic", None)],
+            diagnostics: vec![Diagnostic::warning(
+                DiagnosticCode::McpInputSchemaRefUnsupported,
+                "diagnostic",
+                None,
+            )],
         };
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize semantic IR");

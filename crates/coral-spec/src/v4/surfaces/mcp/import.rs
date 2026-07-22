@@ -117,6 +117,7 @@ mod tests {
 
     use super::super::model::McpToolDescriptor;
     use super::*;
+    use crate::v4::diagnostics::DiagnosticCode;
     use crate::v4::ir::{IrField, IrOperation, IrScalarType, IrTypeShape, OutputCardinality};
     use crate::v4::{
         OperationMetadata, ProjectionVisibility, SqlInputExposure, generate_projection_catalog,
@@ -520,7 +521,7 @@ surface:
         assert!(
             ir.diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_NOT_FOUND")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::McpInputSchemaRefNotFound)
         );
 
         let projections = generate_projection_catalog(
@@ -563,7 +564,7 @@ surface:
         assert!(
             ir.diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_UNSUPPORTED")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::McpInputSchemaRefUnsupported)
         );
     }
 
@@ -586,11 +587,9 @@ surface:
 
         let ir = import_catalog(&catalog);
         assert!(ir.operations.is_empty());
-        assert!(
-            ir.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "MCP_INPUT_SCHEMA_REQUIRED_PROPERTY_MISSING"
-            })
-        );
+        assert!(ir.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::McpInputSchemaRequiredPropertyMissing
+        }));
     }
 
     #[test]
@@ -817,7 +816,7 @@ surface:
         assert!(
             ir.diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_CONFLICT")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::McpInputSchemaConflict)
         );
     }
 
@@ -851,9 +850,8 @@ surface:
         let ir = import_catalog(&catalog);
         assert!(ir.operations.is_empty());
         assert!(
-            ir.diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED")
+            ir.diagnostics.iter().any(|diagnostic| diagnostic.code
+                == DiagnosticCode::McpInputSchemaCompositionUnsupported)
         );
 
         let projections = generate_projection_catalog(

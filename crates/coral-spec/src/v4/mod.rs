@@ -34,7 +34,7 @@ pub use artifacts::{
     Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
     validate_materialized_source, validate_materialized_source_structure,
 };
-pub use diagnostics::{Diagnostic, DiagnosticSeverity};
+pub use diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
 pub use ir::{
     HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
     IrOperationInput, IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape,

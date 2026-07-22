@@ -6,6 +6,7 @@ use super::test_support::github_openapi;
 use super::*;
 use crate::{
     ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+    v4::diagnostics::DiagnosticCode,
 };
 
 #[test]
@@ -419,7 +420,7 @@ components:
         catalog
             .diagnostics
             .iter()
-            .all(|diagnostic| diagnostic.code != "PROJECTION_NAME_COLLISION_RESOLVED"),
+            .all(|diagnostic| diagnostic.code != DiagnosticCode::ProjectionNameCollisionResolved),
         "tag-grouped names should not need collision diagnostics: {:?}",
         catalog.diagnostics
     );
@@ -579,7 +580,7 @@ paths:
             .diagnostics
             .iter()
             .any(
-                |diagnostic| diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
+                |diagnostic| diagnostic.code == DiagnosticCode::ProjectionInputUnsupported
                     && diagnostic.message.contains("Header")
             ),
         "required header sharing the pagination param name must stay unsupported: {:?}",
@@ -627,7 +628,7 @@ paths:
     for dropped in ["Header input 'X-Api-Version'", "Cookie input 'session'"] {
         assert!(
             projection.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
+                diagnostic.code == DiagnosticCode::ProjectionInputUnsupported
                     && diagnostic.message.contains(dropped)
                     && diagnostic
                         .message
@@ -1201,14 +1202,14 @@ components:
     let catalog_collision_diagnostics = catalog
         .diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .filter(|diagnostic| diagnostic.code == DiagnosticCode::ProjectionNameCollisionResolved)
         .collect::<Vec<_>>();
     assert_eq!(catalog_collision_diagnostics.len(), 3);
     let projection_collision_diagnostics = catalog
         .projections
         .iter()
         .flat_map(|projection| &projection.diagnostics)
-        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .filter(|diagnostic| diagnostic.code == DiagnosticCode::ProjectionNameCollisionResolved)
         .count();
     assert_eq!(
         projection_collision_diagnostics,

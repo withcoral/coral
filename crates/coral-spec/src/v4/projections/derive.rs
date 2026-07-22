@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::v4::diagnostics::Diagnostic;
+use crate::v4::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput, IrType,
     IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
@@ -91,7 +91,7 @@ fn generate_projection(
             if exposure == SqlInputExposure::Internal && input.required && !pagination_owned_input {
                 visibility = ProjectionVisibility::Hidden;
                 projection_diagnostics.push(Diagnostic::warning(
-                    "PROJECTION_INPUT_UNSUPPORTED",
+                    DiagnosticCode::ProjectionInputUnsupported,
                     format!(
                         "required {:?} input '{}' cannot be exposed in SQL",
                         input.location, input.name
@@ -106,7 +106,7 @@ fn generate_projection(
                 // an optional header or cookie is omitted from every generated
                 // request; the projection stays usable but must say so.
                 projection_diagnostics.push(Diagnostic::warning(
-                    "PROJECTION_INPUT_UNSUPPORTED",
+                    DiagnosticCode::ProjectionInputUnsupported,
                     format!(
                         "optional {:?} input '{}' is not sent by generated requests",
                         input.location, input.name

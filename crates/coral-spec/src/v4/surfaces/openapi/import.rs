@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde_json::Value;
 
-use crate::v4::diagnostics::Diagnostic;
+use crate::v4::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::v4::ir::{IrType, SemanticIr};
 use crate::v4::manifest::{V4SourceManifest, V4Surface};
 use crate::v4::surfaces::json_schema::{RefError, resolve_local_ref};
@@ -145,13 +145,13 @@ impl<'a> OpenApiImporter<'a> {
     fn ref_error_diagnostic(error: RefError<'_>, context: &RefDiagnosticContext<'_>) -> Diagnostic {
         let (code, message) = match error {
             RefError::External(reference) => (
-                "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
+                DiagnosticCode::OpenApiExternalRefUnsupported,
                 format!(
                     "external reference '{reference}' is unsupported; Coral currently requires dereferenced or bundled OpenAPI documents"
                 ),
             ),
             RefError::NotFound(reference) => (
-                "OPENAPI_REF_NOT_FOUND",
+                DiagnosticCode::OpenApiRefNotFound,
                 format!("reference '{reference}' was not found"),
             ),
         };

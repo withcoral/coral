@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::v4::diagnostics::{Diagnostic, DiagnosticSeverity};
+use crate::v4::diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
 use crate::v4::ir::{IrExecutionAttachment, IrOperation, OutputCardinality, SemanticIr};
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
@@ -68,7 +68,7 @@ pub(super) fn resolve_projection_name_collisions(
                 .expect("projection index came from projections");
             projection.name.clone_from(&name);
             let diagnostic = Diagnostic {
-                code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
+                code: DiagnosticCode::ProjectionNameCollisionResolved,
                 severity: DiagnosticSeverity::Warning,
                 message: format!("projection name collision resolved as '{name}'"),
                 operation_id: Some(projection.operation_id.clone()),

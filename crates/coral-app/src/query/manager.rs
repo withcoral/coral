@@ -11,6 +11,7 @@ use coral_engine::{
     SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
     SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
+use coral_spec::v4::DiagnosticCode;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
 use serde_json::json;
@@ -533,7 +534,7 @@ impl QueryManager {
                         SourceLoadDiagnosticStage::Query,
                         workspace_name,
                         &source.name,
-                        "SOURCE_LOAD_FAILED",
+                        DiagnosticCode::SourceLoadFailed,
                         &error.to_string(),
                     );
                 }

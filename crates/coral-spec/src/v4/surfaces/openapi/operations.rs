@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value};
 
 use crate::v4::OperationMetadata;
-use crate::v4::diagnostics::Diagnostic;
+use crate::v4::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
     IrOperationNaming, IrScalarType, OutputCardinality, RestExecutionAttachment,
@@ -123,7 +123,7 @@ impl OpenApiImporter<'_> {
             };
             let Some(parameter_obj) = resolved.as_object() else {
                 diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_INVALID",
+                    DiagnosticCode::OpenApiParameterInvalid,
                     format!("operation '{operation_id}' has a parameter that is not an object"),
                     Some(operation_id.to_string()),
                 ));
@@ -131,7 +131,7 @@ impl OpenApiImporter<'_> {
             };
             let Some(name) = parameter_obj.get("name").and_then(Value::as_str) else {
                 diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_INVALID",
+                    DiagnosticCode::OpenApiParameterInvalid,
                     format!("operation '{operation_id}' has a parameter without a string name"),
                     Some(operation_id.to_string()),
                 ));
@@ -143,7 +143,7 @@ impl OpenApiImporter<'_> {
                 .and_then(parse_parameter_location)
             else {
                 diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_SERIALIZATION_UNSUPPORTED",
+                    DiagnosticCode::OpenApiParameterSerializationUnsupported,
                     format!("operation '{operation_id}' has unsupported parameter location"),
                     Some(operation_id.to_string()),
                 ));
@@ -190,7 +190,7 @@ impl OpenApiImporter<'_> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
         let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
             diagnostics.push(Diagnostic::warning(
-                "PROJECTION_INPUT_UNSUPPORTED",
+                DiagnosticCode::ProjectionInputUnsupported,
                 format!(
                     "parameter '{name}' has unsupported schema type '{}'",
                     json_schema_type_display(&resolved)
@@ -223,7 +223,7 @@ impl OpenApiImporter<'_> {
             )
             .unwrap_or_else(|| "json".to_string());
         diagnostics.push(Diagnostic::warning(
-            "OPENAPI_REQUEST_BODY_UNPUBLISHED",
+            DiagnosticCode::OpenApiRequestBodyUnpublished,
             format!("operation '{operation_id}' has a request body and will not be published"),
             Some(operation_id.to_string()),
         ));

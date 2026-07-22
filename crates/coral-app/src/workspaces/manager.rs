@@ -292,6 +292,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
+    use coral_spec::v4::DiagnosticCode;
     use tempfile::TempDir;
 
     use super::WorkspaceManager;
@@ -365,7 +366,7 @@ mod tests {
             SourceLoadDiagnosticStage::Query,
             &workspace_name,
             &source_name,
-            "SOURCE_LOAD_FAILED",
+            DiagnosticCode::SourceLoadFailed,
             "test failure",
         );
         credential_manager
@@ -414,7 +415,7 @@ mod tests {
             &workspace_name,
             &source_name,
             "query-source",
-            "SOURCE_LOAD_FAILED",
+            DiagnosticCode::SourceLoadFailed,
         ));
     }
 
@@ -441,7 +442,7 @@ mod tests {
             SourceLoadDiagnosticStage::Query,
             &workspace_name,
             &source_name,
-            "SOURCE_LOAD_FAILED",
+            DiagnosticCode::SourceLoadFailed,
             "test failure",
         );
 
@@ -454,7 +455,7 @@ mod tests {
             &workspace_name,
             &source_name,
             "query-source",
-            "SOURCE_LOAD_FAILED",
+            DiagnosticCode::SourceLoadFailed,
         ));
     }
 }

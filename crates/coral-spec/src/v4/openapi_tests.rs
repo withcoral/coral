@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::{
     ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
-    parse_source_manifest_yaml,
+    parse_source_manifest_yaml, v4::diagnostics::DiagnosticCode,
 };
 
 fn imported_rest_pagination<'a>(
@@ -104,7 +104,7 @@ paths:
     let diagnostic = ir
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::OpenApiExternalRefUnsupported)
         .expect("unsupported operation ref diagnostic");
     assert!(diagnostic.operation_id.is_none());
     assert!(
@@ -1195,11 +1195,14 @@ paths:
         .operations
         .iter()
         .flat_map(|operation| operation.diagnostics.iter())
-        .map(|diagnostic| diagnostic.code.as_str())
+        .map(|diagnostic| diagnostic.code)
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_REF_NOT_FOUND"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_EXTERNAL_REF_UNSUPPORTED"),
+        codes.contains(&DiagnosticCode::OpenApiRefNotFound),
+        "{codes:?}"
+    );
+    assert!(
+        codes.contains(&DiagnosticCode::OpenApiExternalRefUnsupported),
         "{codes:?}"
     );
     for operation in &ir.operations {
@@ -1255,9 +1258,12 @@ components:
     let codes = operation
         .diagnostics
         .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
+        .map(|diagnostic| diagnostic.code)
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_ALLOF_CONFLICT"), "{codes:?}");
+    assert!(
+        codes.contains(&DiagnosticCode::OpenApiAllOfConflict),
+        "{codes:?}"
+    );
     assert_eq!(operation.output.type_ref, "json");
 }
 
@@ -2000,11 +2006,14 @@ paths:
     let codes = operation
         .diagnostics
         .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
+        .map(|diagnostic| diagnostic.code)
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_PARAMETER_INVALID"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_RESPONSE_SCHEMA_UNRESOLVED"),
+        codes.contains(&DiagnosticCode::OpenApiParameterInvalid),
+        "{codes:?}"
+    );
+    assert!(
+        codes.contains(&DiagnosticCode::OpenApiResponseSchemeUnresolved),
         "{codes:?}"
     );
     assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);

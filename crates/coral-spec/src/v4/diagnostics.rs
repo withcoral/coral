@@ -1,8 +1,42 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Copy, PartialOrd, Eq, Hash, Ord)]
+pub enum DiagnosticCode {
+    DiagnosticsUnavailable,
+    FingerprintHeaderMismatch,
+    FingerprintSurfaceMismatch,
+    FingerprintUnavailable,
+    ManifestFingerprintMismatch,
+    McpInputSchemaCompositionUnsupported,
+    McpInputSchemaConflict,
+    McpInputSchemaDepthExceeded,
+    McpInputSchemaRefNotFound,
+    McpInputSchemaRefUnsupported,
+    McpInputSchemaRequiredPropertyMissing,
+    OpenApiAllOfConflict,
+    OpenApiExternalRefUnsupported,
+    OpenApiParameterInvalid,
+    OpenApiParameterSerializationUnsupported,
+    OpenApiRefNotFound,
+    OpenApiRequestBodyUnpublished,
+    OpenApiResponseSchemeUnresolved,
+    OperationMetadataOverrideFailed,
+    OperationMetadataProvenanceMismatch,
+    OperationMetadataUnavailable,
+    ParameterMetadataOverrideFailed,
+    ProjectionCatalogProvenanceMismatch,
+    ProjectionInputUnsupported,
+    ProjectionNameCollisionResolved,
+    RawDocumentFingerprintMismatch,
+    RawDocumentUnavailable,
+    SemanticIrProvenanceMismatch,
+    SemanticIrUnavailable,
+    SourceLoadFailed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
-    pub code: String,
+    pub code: DiagnosticCode,
     pub severity: DiagnosticSeverity,
     pub message: String,
     pub operation_id: Option<String>,
@@ -10,12 +44,12 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     pub(crate) fn warning(
-        code: &str,
+        code: DiagnosticCode,
         message: impl Into<String>,
         operation_id: Option<String>,
     ) -> Self {
         Self {
-            code: code.to_string(),
+            code,
             severity: DiagnosticSeverity::Warning,
             message: message.into(),
             operation_id,

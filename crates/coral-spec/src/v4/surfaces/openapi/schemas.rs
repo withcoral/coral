@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::v4::diagnostics::Diagnostic;
+use crate::v4::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
@@ -59,7 +59,7 @@ impl OpenApiImporter<'_> {
                     Ok(()) => {}
                     Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
                         diagnostics.push(Diagnostic::warning(
-                            "OPENAPI_ALLOF_CONFLICT",
+                            DiagnosticCode::OpenApiAllOfConflict,
                             format!("allOf property '{property}' conflicts in operation '{operation_id}'"),
                             Some(operation_id.to_string()),
                         ));
@@ -67,7 +67,7 @@ impl OpenApiImporter<'_> {
                     }
                     Err(JsonSchemaComparisonError::DepthExceeded) => {
                         diagnostics.push(Diagnostic::warning(
-                            "OPENAPI_ALLOF_CONFLICT",
+                            DiagnosticCode::OpenApiAllOfConflict,
                             format!("allOf schema exceeds maximum comparison depth in operation '{operation_id}'"),
                             Some(operation_id.to_string()),
                         ));

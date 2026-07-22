@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coral_spec::v4::{
-    Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
-    MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION,
+    Diagnostic, DiagnosticCode, DiagnosticSeverity, Fingerprint, FingerprintSurface,
+    MCP_IMPORTER_VERSION, MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION,
     OPERATION_METADATA_GENERATOR_VERSION, OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION,
     ProjectionCatalog, ProjectionInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
     V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest, ValidatedSurfacePlan,
@@ -43,7 +43,7 @@ pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
 pub(crate) const OPERATION_METADATA_FILENAME: &str = "operation-metadata.yaml";
 
-type ReportedDiagnosticKey = (String, String);
+type ReportedDiagnosticKey = (DiagnosticCode, String);
 type ReportedDiagnosticStateKey = (String, String, String);
 type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<ReportedDiagnosticKey>>;
 type RawDocumentValidationKey = (String, String);
@@ -79,7 +79,7 @@ impl SourceDiagnosticReporter {
         stage: SourceLoadDiagnosticStage,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-        code: &str,
+        code: DiagnosticCode,
         detail: &str,
     ) {
         let diagnostic = materialization_warning(code, detail);
@@ -154,7 +154,7 @@ impl SourceDiagnosticReporter {
         let (diagnostic, cacheable) = match std::fs::read(path) {
             Ok(raw_bytes) if sha256_hex(&raw_bytes) != expected_sha256 => (
                 Some(materialization_warning(
-                    "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH",
+                    DiagnosticCode::RawDocumentFingerprintMismatch,
                     "raw source document hash does not match",
                 )),
                 true,
@@ -162,7 +162,7 @@ impl SourceDiagnosticReporter {
             Ok(_) => (None, true),
             Err(error) => (
                 Some(materialization_warning(
-                    "V4_RAW_DOCUMENT_UNAVAILABLE",
+                    DiagnosticCode::RawDocumentUnavailable,
                     format!(
                         "could not read raw source document '{}' for provenance validation: {error}",
                         path.display()
@@ -201,7 +201,7 @@ impl SourceDiagnosticReporter {
         let diagnostics = diagnostics.into_iter().collect::<Vec<_>>();
         let current = diagnostics
             .iter()
-            .map(|diagnostic| (diagnostic.code.clone(), diagnostic.message.clone()))
+            .map(|diagnostic| (diagnostic.code, diagnostic.message.clone()))
             .collect::<BTreeSet<_>>();
         let mut reported = self
             .reported
@@ -209,12 +209,12 @@ impl SourceDiagnosticReporter {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = reported.get(&state_key).cloned().unwrap_or_default();
         for diagnostic in diagnostics {
-            let key = (diagnostic.code.clone(), diagnostic.message.clone());
+            let key = (diagnostic.code, diagnostic.message.clone());
             if previous.contains(&key) {
                 continue;
             }
             tracing::warn!(
-                diagnostic.code = %diagnostic.code,
+                diagnostic.code = ?diagnostic.code,
                 diagnostic.stage = stage,
                 workspace = %workspace_name,
                 source = %source_name,
@@ -236,7 +236,7 @@ impl SourceDiagnosticReporter {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
         stage: &str,
-        code: &str,
+        code: DiagnosticCode,
     ) -> bool {
         self.reported
             .lock()
@@ -249,7 +249,7 @@ impl SourceDiagnosticReporter {
             .is_some_and(|diagnostics| {
                 diagnostics
                     .iter()
-                    .any(|(diagnostic_code, _message)| diagnostic_code == code)
+                    .any(|(diagnostic_code, _message)| *diagnostic_code == code)
             })
     }
 }
@@ -469,7 +469,7 @@ fn report_materialization_failure(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     load_diagnostics: &mut Vec<Diagnostic>,
-    code: &str,
+    code: DiagnosticCode,
     error: &AppError,
 ) {
     load_diagnostics.push(materialization_warning(code, error.to_string()));
@@ -495,7 +495,7 @@ fn validate_semantic_ir_structure_with_reporter(
             workspace_name,
             source_name,
             load_diagnostics,
-            "V4_SEMANTIC_IR_UNAVAILABLE",
+            DiagnosticCode::SemanticIrUnavailable,
             &error,
         );
         error
@@ -519,7 +519,7 @@ fn read_validated_semantic_ir_with_reporter(
     )?;
     if let Err(error) = validate_semantic_ir(manifest, &semantic_ir) {
         load_diagnostics.push(materialization_warning(
-            "V4_SEMANTIC_IR_PROVENANCE_MISMATCH",
+            DiagnosticCode::SemanticIrProvenanceMismatch,
             error,
         ));
     }
@@ -546,7 +546,7 @@ fn build_validated_plan_with_reporter(
         let (error, code) = match metadata_file.origin {
             V4OperationMetadataOrigin::Materialized => (
                 incompatible_materialization_error(source_name, error.to_string()),
-                "V4_OPERATION_METADATA_UNAVAILABLE",
+                DiagnosticCode::OperationMetadataUnavailable,
             ),
             V4OperationMetadataOrigin::Override => (
                 invalid_operation_metadata_override_error(
@@ -554,7 +554,7 @@ fn build_validated_plan_with_reporter(
                     &metadata_file.path,
                     error.to_string(),
                 ),
-                "V4_OPERATION_METADATA_OVERRIDE_FAILED",
+                DiagnosticCode::OperationMetadataOverrideFailed,
             ),
         };
         report_materialization_failure(
@@ -582,7 +582,7 @@ fn read_semantic_ir_with_reporter(
             workspace_name,
             source_name,
             load_diagnostics,
-            "V4_SEMANTIC_IR_UNAVAILABLE",
+            DiagnosticCode::SemanticIrUnavailable,
             error,
         );
     })
@@ -604,8 +604,12 @@ fn read_operation_metadata_with_reporter(
                 source_name,
                 load_diagnostics,
                 match metadata_file.origin {
-                    V4OperationMetadataOrigin::Materialized => "V4_OPERATION_METADATA_UNAVAILABLE",
-                    V4OperationMetadataOrigin::Override => "V4_OPERATION_METADATA_OVERRIDE_FAILED",
+                    V4OperationMetadataOrigin::Materialized => {
+                        DiagnosticCode::OperationMetadataUnavailable
+                    }
+                    V4OperationMetadataOrigin::Override => {
+                        DiagnosticCode::OperationMetadataOverrideFailed
+                    }
                 },
                 error,
             );
@@ -641,7 +645,7 @@ fn load_optional_fingerprint(
         Ok(fingerprint) => fingerprint,
         Err(error) => {
             diagnostics.push(materialization_warning(
-                "V4_FINGERPRINT_UNAVAILABLE",
+                DiagnosticCode::FingerprintUnavailable,
                 format!(
                     "could not read optional fingerprint '{}': {error}",
                     path.display()
@@ -652,19 +656,19 @@ fn load_optional_fingerprint(
     };
     if let Err(error) = validate_fingerprint_header(manifest, &fingerprint) {
         diagnostics.push(materialization_warning(
-            "V4_FINGERPRINT_HEADER_MISMATCH",
+            DiagnosticCode::FingerprintHeaderMismatch,
             error,
         ));
     }
     if fingerprint.manifest_sha256 != sha256_hex(manifest_yaml.as_bytes()) {
         diagnostics.push(materialization_warning(
-            "V4_MANIFEST_FINGERPRINT_MISMATCH",
+            DiagnosticCode::ManifestFingerprintMismatch,
             "manifest fingerprint does not match installed manifest",
         ));
     }
     if let Err(error) = validate_fingerprint_surface(manifest, &fingerprint) {
         diagnostics.push(materialization_warning(
-            "V4_FINGERPRINT_SURFACE_MISMATCH",
+            DiagnosticCode::FingerprintSurfaceMismatch,
             error,
         ));
     }
@@ -729,7 +733,7 @@ fn load_projection_catalog(
     if let Err(error) = validate_projection_catalog_header(manifest, &projections, projections_file)
     {
         diagnostics.push(materialization_warning(
-            "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH",
+            DiagnosticCode::ProjectionCatalogProvenanceMismatch,
             error,
         ));
     }
@@ -741,7 +745,7 @@ fn load_optional_diagnostics(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> 
         Ok(diagnostics) => diagnostics,
         Err(error) => {
             diagnostics.push(materialization_warning(
-                "V4_DIAGNOSTICS_UNAVAILABLE",
+                DiagnosticCode::DiagnosticsUnavailable,
                 format!(
                     "could not read optional diagnostics '{}': {error}",
                     path.display()
@@ -752,9 +756,9 @@ fn load_optional_diagnostics(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> 
     }
 }
 
-fn materialization_warning(code: &str, message: impl Into<String>) -> Diagnostic {
+fn materialization_warning(code: DiagnosticCode, message: impl Into<String>) -> Diagnostic {
     Diagnostic {
-        code: code.to_string(),
+        code,
         severity: DiagnosticSeverity::Warning,
         message: message.into(),
         operation_id: None,
@@ -821,7 +825,7 @@ fn load_operation_metadata(
     };
     if let Err(error) = validate_operation_metadata_header(manifest, &metadata, metadata_file) {
         diagnostics.push(materialization_warning(
-            "V4_OPERATION_METADATA_PROVENANCE_MISMATCH",
+            DiagnosticCode::OperationMetadataProvenanceMismatch,
             error,
         ));
     }
@@ -1981,7 +1985,7 @@ surface:
             read_yaml(&build.temp_dir.join(DIAGNOSTICS_FILENAME)).expect("read diagnostics");
         let diagnostic = diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
+            .find(|diagnostic| diagnostic.code == DiagnosticCode::OpenApiExternalRefUnsupported)
             .expect("unsupported operation ref diagnostic");
         assert!(
             diagnostic
@@ -2061,7 +2065,7 @@ surface:
             materialized
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "V4_MANIFEST_FINGERPRINT_MISMATCH")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::ManifestFingerprintMismatch)
         );
     }
 
@@ -2088,11 +2092,9 @@ surface:
         )
         .expect("generated projection catalog provenance is advisory");
 
-        assert!(
-            materialized.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH"
-            })
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::ProjectionCatalogProvenanceMismatch
+        }));
     }
 
     #[test]
@@ -2151,11 +2153,9 @@ surface:
         )
         .expect("stale projection generator provenance is advisory");
 
-        assert!(
-            materialized.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH"
-            })
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::ProjectionCatalogProvenanceMismatch
+        }));
     }
 
     #[test]
@@ -2215,7 +2215,7 @@ surface:
             materialized
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "V4_FINGERPRINT_UNAVAILABLE")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::FingerprintUnavailable)
         );
     }
 
@@ -2244,13 +2244,13 @@ surface:
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_FINGERPRINT_UNAVAILABLE",
+            DiagnosticCode::FingerprintUnavailable,
         ));
         assert!(reporter.tracks_diagnostic(
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_SEMANTIC_IR_UNAVAILABLE",
+            DiagnosticCode::SemanticIrUnavailable,
         ));
     }
 
@@ -2287,7 +2287,7 @@ surface:
             materialized
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "V4_FINGERPRINT_HEADER_MISMATCH")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::FingerprintHeaderMismatch)
         );
     }
 
@@ -2543,13 +2543,13 @@ surface:
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_FINGERPRINT_UNAVAILABLE",
+            DiagnosticCode::FingerprintUnavailable,
         ));
         assert!(reporter.tracks_diagnostic(
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_OPERATION_METADATA_OVERRIDE_FAILED",
+            DiagnosticCode::ParameterMetadataOverrideFailed,
         ));
     }
 
@@ -2584,7 +2584,7 @@ surface:
             materialized
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "V4_FINGERPRINT_SURFACE_MISMATCH")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::FingerprintSurfaceMismatch)
         );
     }
 
@@ -2605,12 +2605,9 @@ surface:
         )
         .expect("raw descriptor hash is advisory provenance");
 
-        assert!(
-            materialized
-                .diagnostics
-                .iter()
-                .any(|diagnostic| { diagnostic.code == "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH" })
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::RawDocumentFingerprintMismatch
+        }));
     }
 
     #[cfg(unix)]
@@ -2650,7 +2647,7 @@ surface:
             materialized
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "V4_RAW_DOCUMENT_UNAVAILABLE")
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::RawDocumentUnavailable)
         );
     }
 
