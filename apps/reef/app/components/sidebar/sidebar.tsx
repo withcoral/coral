@@ -51,9 +51,13 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const tracesPath = workspaceNavTarget
     ? routePath('workspaceTraces', { workspaceId: workspaceNavTarget.name })
     : routePath('home')
+  const functionsPath = workspaceNavTarget
+    ? routePath('workspaceFunctions', { workspaceId: workspaceNavTarget.name })
+    : routePath('home')
   const workspaceNavItems = [
     { icon: 'Plug', label: 'Sources', paths: [routePath('home'), sourcesPath], to: sourcesPath },
     { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
+    { icon: 'Braces', label: 'Functions', paths: [functionsPath], to: functionsPath },
     { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
   ] satisfies NavItem[]
   const settingsPath = routePath('settings')

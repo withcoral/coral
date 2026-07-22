@@ -90,7 +90,7 @@ impl FunctionManager {
         runtime_function: &UdfRuntimeDefinition,
     ) -> Result<InstalledFunction, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
-        self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
+        self.install_user_function_artifact(workspace_name, &function_name, raw_sql, false)
     }
 
     pub(crate) fn install_validated_user_function_if_unchanged(
@@ -99,6 +99,7 @@ impl FunctionManager {
         raw_sql: &str,
         runtime_function: &UdfRuntimeDefinition,
         revision: WorkspaceLifecycleRevision,
+        fail_if_exists: bool,
     ) -> Result<ValidatedFunctionInstall, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
         let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged(revision) else {
@@ -108,6 +109,7 @@ impl FunctionManager {
             workspace_name,
             &function_name,
             raw_sql,
+            fail_if_exists,
         )?;
         Ok(ValidatedFunctionInstall::Installed)
     }
@@ -118,12 +120,14 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
+        fail_if_exists: bool,
     ) -> Result<InstalledFunction, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         self.install_user_function_artifact_with_lifecycle_lock(
             workspace_name,
             function_name,
             raw_sql,
+            fail_if_exists,
         )
     }
 
@@ -132,8 +136,21 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
+        fail_if_exists: bool,
     ) -> Result<InstalledFunction, AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
+        if fail_if_exists {
+            match self
+                .config_store
+                .get_function_unlocked(workspace_name, function_name)
+            {
+                Ok(_) => {
+                    return Err(AppError::FunctionAlreadyExists(function_name.to_string()));
+                }
+                Err(AppError::FunctionNotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let installed = InstalledFunction {
             name: function_name.clone(),
         };
@@ -158,6 +175,23 @@ impl FunctionManager {
         }
 
         Ok(installed)
+    }
+
+    pub(crate) fn get_user_function_sql(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<String, AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        self.config_store
+            .get_function_unlocked(workspace_name, function_name)?;
+        self.artifacts
+            .read_function_sql(workspace_name, function_name)?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "installed function '{function_name}' has no SQL artifact; remove and re-add the function"
+                ))
+            })
     }
 
     pub(crate) async fn validate_user_function_sql(

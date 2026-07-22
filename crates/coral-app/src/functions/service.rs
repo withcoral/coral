@@ -4,8 +4,8 @@ use coral_api::v1::function_service_server::FunctionService as FunctionServiceAp
 use coral_api::v1::{
     AddFunctionRequest, AddFunctionResponse, DeleteFunctionRequest, DeleteFunctionResponse,
     Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady,
-    FunctionTableFunctionPublish, ListFunctionsRequest, ListFunctionsResponse,
-    TableFunctionResultColumn, function,
+    FunctionTableFunctionPublish, GetFunctionRequest, GetFunctionResponse, ListFunctionsRequest,
+    ListFunctionsResponse, TableFunctionResultColumn, function,
 };
 use coral_engine::{UdfRuntimeDefinition, UdfRuntimeTableFunctionPublish};
 use tonic::{Request, Response, Status};
@@ -44,7 +44,7 @@ impl FunctionServiceApi for FunctionService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let runtime_function = queries
-                .add_user_function(&workspace_name, &inner.sql)
+                .add_user_function(&workspace_name, &inner.sql, inner.fail_if_exists)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(AddFunctionResponse {
@@ -71,6 +71,25 @@ impl FunctionServiceApi for FunctionService {
                 .map(|listing| function_listing_to_proto(&workspace_name, listing))
                 .collect();
             Ok(Response::new(ListFunctionsResponse { functions }))
+        })
+        .await
+    }
+
+    async fn get_function(
+        &self,
+        request: Request<GetFunctionRequest>,
+    ) -> Result<Response<GetFunctionResponse>, Status> {
+        let span = grpc_span(&request);
+        let queries = self.queries.clone();
+        instrument_grpc(span, async move {
+            let inner = request.into_inner();
+            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let function_name = FunctionName::parse(&inner.name).map_err(app_status)?;
+            let sql = queries
+                .function_manager()
+                .get_user_function_sql(&workspace_name, &function_name)
+                .map_err(app_status)?;
+            Ok(Response::new(GetFunctionResponse { sql }))
         })
         .await
     }

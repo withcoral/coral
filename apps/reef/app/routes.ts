@@ -20,6 +20,7 @@ export default [
       index('routes/schema-empty.tsx'),
       route(':schemaName/:tableName', 'routes/schema-table.tsx'),
     ]),
+    route(routePattern('workspaceFunctions'), 'routes/functions.tsx'),
     route(routePattern('workspaceTraces'), 'routes/traces.tsx', [
       route(':traceId', 'routes/trace-detail.tsx'),
     ]),

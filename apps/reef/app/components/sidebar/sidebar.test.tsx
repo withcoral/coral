@@ -48,6 +48,10 @@ async function renderSidebar(
       },
       {
         element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        path: routePattern('workspaceFunctions'),
+      },
+      {
+        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
         path: routePattern('workspaceTrace'),
       },
       {
@@ -158,6 +162,15 @@ describe('Sidebar', () => {
     await expect
       .element(screen.getByRole('link', { name: 'Schema' }))
       .toHaveAttribute('href', routePath('workspaceSchema', { workspaceId: 'analytics' }))
+  })
+
+  it('keeps function navigation in the active workspace', async () => {
+    const functionsPath = routePath('workspaceFunctions', { workspaceId: 'analytics' })
+    const screen = await renderSidebar(false, functionsPath, WORKSPACES)
+
+    await expect
+      .element(screen.getByRole('link', { name: 'Functions' }))
+      .toHaveAttribute('href', functionsPath)
   })
 
   it('shows the active workspace and lists every local workspace', async () => {

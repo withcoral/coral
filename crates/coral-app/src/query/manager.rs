@@ -753,6 +753,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         raw_sql: &str,
+        fail_if_exists: bool,
     ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
         for _ in 0..2 {
             let revision = self.lifecycle_lock.snapshot().revision();
@@ -779,6 +780,7 @@ impl QueryManager {
                     raw_sql,
                     &runtime_function,
                     revision,
+                    fail_if_exists,
                 )
                 .map_err(QueryManagerError::App)?
             {
@@ -1123,6 +1125,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
+        AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
         AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
@@ -2226,7 +2229,7 @@ select text from function_demo.messages
 
         let error = fixture
             .manager
-            .add_user_function(&workspace_name, function_sql)
+            .add_user_function(&workspace_name, function_sql, false)
             .await
             .expect_err("source change should invalidate the original validation snapshot");
 

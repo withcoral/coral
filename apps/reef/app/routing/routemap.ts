@@ -5,6 +5,7 @@ const HOME_PATH = '/'
 const WORKSPACES_PATH = '/workspaces'
 const WORKSPACE_SCHEMA_PATH = '/workspaces/:workspaceId/schema'
 const WORKSPACE_SCHEMA_TABLE_PATH = '/workspaces/:workspaceId/schema/:schemaName/:tableName'
+const WORKSPACE_FUNCTIONS_PATH = '/workspaces/:workspaceId/functions'
 const WORKSPACE_SOURCE_DISCOVERY_PATH = '/workspaces/:workspaceId/sources/discover'
 const WORKSPACE_SOURCE_INSTALL_PATH = '/workspaces/:workspaceId/sources/install'
 const WORKSPACE_SOURCES_PATH = '/workspaces/:workspaceId/sources'
@@ -25,6 +26,13 @@ export const routeDefinitions = {
   workspaces: {
     path: WORKSPACES_PATH,
     toPath: () => WORKSPACES_PATH,
+  },
+  workspaceFunctions: {
+    path: WORKSPACE_FUNCTIONS_PATH,
+    toPath: (params: { workspaceId: string }) =>
+      generatePath(WORKSPACE_FUNCTIONS_PATH, {
+        workspaceId: params.workspaceId,
+      }),
   },
   workspaceSchema: {
     path: WORKSPACE_SCHEMA_PATH,

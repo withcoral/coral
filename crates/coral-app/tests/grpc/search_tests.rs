@@ -240,6 +240,7 @@ async fn search_and_list_catalog_share_installed_udf_metadata() {
     harness
         .function_client()
         .add_function(Request::new(AddFunctionRequest {
+            fail_if_exists: false,
             workspace: Some(workspace.clone()),
             sql: review_queue_function_sql(),
         }))
@@ -290,6 +291,7 @@ async fn natural_language_review_queue_query_ranks_installed_udf_in_top_three() 
     harness
         .function_client()
         .add_function(Request::new(AddFunctionRequest {
+            fail_if_exists: false,
             workspace: Some(default_workspace()),
             sql: review_queue_function_sql(),
         }))

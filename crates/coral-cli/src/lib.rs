@@ -1157,6 +1157,7 @@ async fn run_function(
             let mut client = app.function_client();
             let function = client
                 .add_function(Request::new(AddFunctionRequest {
+                    fail_if_exists: false,
                     workspace: Some(workspace.clone()),
                     sql,
                 }))
