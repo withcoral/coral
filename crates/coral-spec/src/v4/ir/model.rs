@@ -54,7 +54,6 @@ pub struct IrOperationInput {
 pub struct IrOperationOutput {
     pub cardinality: OutputCardinality,
     pub type_ref: String,
-    pub row_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,7 +197,6 @@ mod tests {
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
                     type_ref: "issue".to_string(),
-                    row_path: Vec::new(),
                 },
                 entity: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
@@ -268,7 +266,6 @@ mod tests {
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
                     type_ref: "item".to_string(),
-                    row_path: Vec::new(),
                 },
                 entity: None,
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {

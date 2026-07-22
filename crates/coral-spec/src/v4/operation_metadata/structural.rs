@@ -201,16 +201,5 @@ fn validate_ir_operation(
             false,
         )?;
     }
-    if operation
-        .output
-        .row_path
-        .iter()
-        .any(|segment| segment.trim().is_empty())
-    {
-        return Err(ManifestError::validation(format!(
-            "operation '{}' output row path contains an empty segment",
-            operation.id
-        )));
-    }
     Ok(())
 }

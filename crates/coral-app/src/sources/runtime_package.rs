@@ -352,7 +352,6 @@ fn mcp_manifest_for_surface(
                 tables.push(mcp_table_spec(
                     projection,
                     mcp,
-                    operation,
                     cursor_pagination.cloned(),
                     offset_pagination.cloned(),
                 ));
@@ -362,7 +361,6 @@ fn mcp_manifest_for_surface(
                     projection,
                     *function_kind,
                     mcp,
-                    operation,
                     cursor_pagination.cloned(),
                     offset_pagination.cloned(),
                 ));
@@ -387,7 +385,6 @@ fn mcp_manifest_for_surface(
 fn mcp_table_spec(
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
-    operation: &coral_spec::v4::IrOperation,
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
     offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableSpec {
@@ -408,7 +405,7 @@ fn mcp_table_spec(
         limit_binding: None,
         pagination,
         offset_pagination,
-        response: mcp_response_for_operation(operation),
+        response: ResponseSpec::default(),
     }
 }
 
@@ -416,7 +413,6 @@ fn mcp_table_function_spec(
     projection: &Projection,
     function_kind: SourceTableFunctionKind,
     mcp: &coral_spec::v4::McpExecutionAttachment,
-    operation: &coral_spec::v4::IrOperation,
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
     offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableFunctionSpec {
@@ -433,17 +429,10 @@ fn mcp_table_function_spec(
             detail_hints: projection.detail_hints.clone(),
             args: mcp_projection_arg_specs(projection),
             request: RequestSpec::default(),
-            response: mcp_response_for_operation(operation),
+            response: ResponseSpec::default(),
             pagination: PaginationSpec::default(),
             columns: projection_column_specs(projection),
         },
-    }
-}
-
-fn mcp_response_for_operation(operation: &coral_spec::v4::IrOperation) -> ResponseSpec {
-    ResponseSpec {
-        rows_path: operation.output.row_path.clone(),
-        ..ResponseSpec::default()
     }
 }
 
@@ -604,7 +593,6 @@ mod tests {
                 output: IrOperationOutput {
                     cardinality: coral_spec::v4::OutputCardinality::List,
                     type_ref: "item".to_string(),
-                    row_path: Vec::new(),
                 },
                 entity: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
@@ -746,7 +734,6 @@ mod tests {
                 output: IrOperationOutput {
                     cardinality: coral_spec::v4::OutputCardinality::List,
                     type_ref: "tool_result".to_string(),
-                    row_path: Vec::new(),
                 },
                 entity: None,
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {

@@ -359,7 +359,6 @@ components:
     .expect("import");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
-    assert!(operation.output.row_path.is_empty());
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -434,7 +433,6 @@ components:
     .expect("import");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
-    assert!(operation.output.row_path.is_empty());
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -514,7 +512,6 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
-    assert!(operation.output.row_path.is_empty());
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -639,7 +636,6 @@ components:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
-    assert!(operation.output.row_path.is_empty());
 
     let row_type = ir
         .types
@@ -720,7 +716,6 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
-    assert!(operation.output.row_path.is_empty());
 }
 
 #[test]
@@ -769,7 +764,6 @@ components:
     .expect("recursive schema imports");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
-    assert!(operation.output.row_path.is_empty());
 
     let types = ir
         .types

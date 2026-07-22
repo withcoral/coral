@@ -934,7 +934,6 @@ surface:
             wrapped_items.output.cardinality,
             OutputCardinality::WrappedList
         );
-        assert_eq!(wrapped_items.output.row_path, vec!["items".to_string()]);
         let wrapped_fields = row_fields(&ir, "wrapped_items_row");
         assert_eq!(field(wrapped_fields, "enabled").type_ref, "mcp_boolean");
 
@@ -989,7 +988,6 @@ surface:
         let ir = import_catalog(&catalog);
         let operation = operation(&ir, "list_items");
         assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
-        assert_eq!(operation.output.row_path, vec!["items".to_string()]);
         let plan = ir.validated_plan().expect("plan");
         let pagination = plan.mcp_pagination("list_items").0.expect("pagination");
         assert_eq!(pagination.cursor_arg, "cursor");
@@ -1155,7 +1153,6 @@ surface:
         let ir = import_catalog(&catalog);
         let operation = operation(&ir, "get_item");
         assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
-        assert!(operation.output.row_path.is_empty());
     }
 
     #[test]
