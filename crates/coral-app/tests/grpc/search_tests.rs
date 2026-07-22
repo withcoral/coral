@@ -434,6 +434,39 @@ async fn search_service_returns_structured_shell_response() {
     assert_no_coverage(native_status);
 }
 
+#[test]
+fn search_completes_with_one_blocking_thread() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("build constrained Tokio runtime");
+    let search = runtime.block_on(async {
+        let harness = GrpcHarness::new().await;
+        let search = tokio::time::timeout(
+            Duration::from_secs(5),
+            harness.search_client().search(Request::new(SearchRequest {
+                workspace: Some(default_workspace()),
+                query: "github issue".to_string(),
+                limit: 10,
+            })),
+        )
+        .await;
+        drop(harness);
+        search
+    });
+    // A failed regression must not leave the test process waiting forever for
+    // a blocked task while Tokio tears down its constrained blocking pool.
+    runtime.shutdown_timeout(Duration::from_secs(1));
+
+    let response = search
+        .expect("search should not starve the blocking pool")
+        .expect("search")
+        .into_inner();
+    assert_eq!(response.provider_statuses.len(), 3);
+}
+
 #[tokio::test]
 async fn search_service_rejects_unknown_workspace() {
     let harness = GrpcHarness::new().await;

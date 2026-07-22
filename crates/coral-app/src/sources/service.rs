@@ -50,7 +50,6 @@ use crate::transport::{
 };
 use crate::workspaces::{WorkspaceManager, WorkspaceName};
 use tokio::sync::mpsc;
-use tokio::task;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
 
@@ -185,10 +184,10 @@ impl SourceServiceApi for SourceService {
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
             let response_workspace_name = workspace_name.clone();
-            let installed = run_blocking_source_operation(move || {
-                sources.create_bundled_source(&workspace_name, &command)
-            })
-            .await?;
+            let installed = sources
+                .create_bundled_source_async(workspace_name, command)
+                .await
+                .map_err(app_status)?;
             Ok(Response::new(CreateBundledSourceResponse {
                 source: Some(installed_source_to_proto(
                     &response_workspace_name,
@@ -259,10 +258,10 @@ impl SourceServiceApi for SourceService {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
                 };
-                let installed = run_blocking_source_operation(move || {
-                    sources.import_source(&workspace_name, &command)
-                })
-                .await?;
+                let installed = sources
+                    .import_source_async(workspace_name, command)
+                    .await
+                    .map_err(app_status)?;
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
                         installed_source_to_proto(&response_workspace_name, installed),
@@ -308,10 +307,10 @@ impl SourceServiceApi for SourceService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            run_blocking_source_operation(move || {
-                sources.delete_source(&workspace_name, &source_name)
-            })
-            .await?;
+            sources
+                .delete_source_async(workspace_name, source_name)
+                .await
+                .map_err(app_status)?;
             Ok(Response::new(DeleteSourceResponse {}))
         })
         .await
@@ -360,18 +359,6 @@ type CreateBundledSourceWithOAuthResponseStreamBox =
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
-
-async fn run_blocking_source_operation<T, F>(operation: F) -> Result<T, Status>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, AppError> + Send + 'static,
-{
-    let span = tracing::Span::current();
-    task::spawn_blocking(move || span.in_scope(operation))
-        .await
-        .map_err(|error| Status::internal(format!("source operation task failed: {error}")))?
-        .map_err(app_status)
-}
 
 fn import_source_response_stream<F, Fut>(
     response_workspace_name: WorkspaceName,

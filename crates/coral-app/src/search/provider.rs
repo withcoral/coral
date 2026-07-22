@@ -16,6 +16,7 @@ use crate::search::observed::provider::ObservedValuesProvider;
 use crate::search::result::{
     ProviderStatus, SearchCandidate, SearchProviderKind, SearchProviderState, SearchRequest,
 };
+use crate::workspaces::WorkspaceLifecycleReadLease;
 
 pub(crate) type ProviderSearchFuture =
     Pin<Box<dyn Future<Output = ProviderSearchOutcome> + Send + 'static>>;
@@ -33,6 +34,10 @@ pub(crate) enum ObservedValuesPolicyInput {
 
 pub(crate) struct SearchExecutionContext {
     pub(crate) request_started_at: Instant,
+    // Keep the workspace lifecycle read lease attached to every provider task.
+    // Search request cancellation detaches spawned provider work, and blocking
+    // provider tasks cannot be cancelled once started.
+    _lifecycle_lease: WorkspaceLifecycleReadLease,
     pub(crate) request: SearchRequest,
     pub(crate) catalog_resolution: Result<CatalogResolution, QueryManagerError>,
     pub(crate) observed_values_policy: ObservedValuesPolicyInput,
@@ -41,12 +46,14 @@ pub(crate) struct SearchExecutionContext {
 impl SearchExecutionContext {
     pub(crate) fn new(
         request_started_at: Instant,
+        lifecycle_lease: WorkspaceLifecycleReadLease,
         request: SearchRequest,
         catalog_resolution: Result<CatalogResolution, QueryManagerError>,
         observed_values_policy: ObservedValuesPolicyInput,
     ) -> Self {
         Self {
             request_started_at,
+            _lifecycle_lease: lifecycle_lease,
             request,
             catalog_resolution,
             observed_values_policy,
@@ -65,7 +72,13 @@ pub(crate) trait SearchProvider: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) struct SearchProviderRegistry {
-    ordered: Arc<[Arc<dyn SearchProvider>]>,
+    ordered: Arc<[SearchProviderRegistration]>,
+}
+
+#[derive(Clone)]
+pub(crate) enum SearchProviderRegistration {
+    Provider(Arc<dyn SearchProvider>),
+    StaticStatus(ProviderStatus),
 }
 
 impl SearchProviderRegistry {
@@ -73,21 +86,34 @@ impl SearchProviderRegistry {
         catalog: CatalogMetadataProvider,
         observed: ObservedValuesProvider,
     ) -> Self {
-        let ordered: Vec<Arc<dyn SearchProvider>> = vec![Arc::new(catalog), Arc::new(observed)];
+        let ordered = vec![
+            SearchProviderRegistration::Provider(Arc::new(catalog)),
+            SearchProviderRegistration::Provider(Arc::new(observed)),
+            SearchProviderRegistration::StaticStatus(native_not_enabled_status()),
+        ];
         Self {
             ordered: ordered.into(),
         }
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<dyn SearchProvider>> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &SearchProviderRegistration> {
         self.ordered.iter()
     }
 
     #[cfg(test)]
-    pub(crate) fn from_ordered(ordered: Vec<Arc<dyn SearchProvider>>) -> Self {
+    pub(crate) fn from_ordered(ordered: Vec<SearchProviderRegistration>) -> Self {
         Self {
             ordered: ordered.into(),
         }
+    }
+}
+
+fn native_not_enabled_status() -> ProviderStatus {
+    ProviderStatus {
+        provider: SearchProviderKind::NativeFanout,
+        state: SearchProviderState::NotEnabled,
+        note: "provider-native fanout is disabled".to_string(),
+        coverage: None,
     }
 }
 

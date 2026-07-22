@@ -34,6 +34,7 @@ use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -307,7 +308,19 @@ impl SourceManager {
         Ok(candidates)
     }
 
-    pub(crate) fn create_bundled_source(
+    pub(crate) async fn create_bundled_source_async(
+        &self,
+        workspace_name: WorkspaceName,
+        command: CreateBundledSourceCommand,
+    ) -> Result<InstalledSource, AppError> {
+        let manager = self.clone();
+        self.run_blocking_lifecycle_write(move || {
+            manager.create_bundled_source_with_lifecycle_lock(&workspace_name, &command)
+        })
+        .await
+    }
+
+    fn create_bundled_source_with_lifecycle_lock(
         &self,
         workspace_name: &WorkspaceName,
         command: &CreateBundledSourceCommand,
@@ -345,7 +358,29 @@ impl SourceManager {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) fn import_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: &ImportSourceCommand,
+    ) -> Result<InstalledSource, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
+        self.import_source_with_lifecycle_lock(workspace_name, command)
+    }
+
+    pub(crate) async fn import_source_async(
+        &self,
+        workspace_name: WorkspaceName,
+        command: ImportSourceCommand,
+    ) -> Result<InstalledSource, AppError> {
+        let manager = self.clone();
+        self.run_blocking_lifecycle_write(move || {
+            manager.import_source_with_lifecycle_lock(&workspace_name, &command)
+        })
+        .await
+    }
+
+    fn import_source_with_lifecycle_lock(
         &self,
         workspace_name: &WorkspaceName,
         command: &ImportSourceCommand,
@@ -402,7 +437,6 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -486,7 +520,7 @@ impl SourceManager {
                 events,
             )
             .await?;
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -527,12 +561,33 @@ impl SourceManager {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn delete_source(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
+        self.delete_source_with_lifecycle_lock(workspace_name, source_name)
+    }
+
+    pub(crate) async fn delete_source_async(
+        &self,
+        workspace_name: WorkspaceName,
+        source_name: SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        let manager = self.clone();
+        self.run_blocking_lifecycle_write(move || {
+            manager.delete_source_with_lifecycle_lock(&workspace_name, &source_name)
+        })
+        .await
+    }
+
+    fn delete_source_with_lifecycle_lock(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
         let credential_guard = self
@@ -1303,6 +1358,21 @@ impl SourceManager {
     ) -> InstalledSource {
         self.populate_source_version(workspace_name, source.clone())
             .unwrap_or(source)
+    }
+
+    async fn run_blocking_lifecycle_write<T, F>(&self, operation: F) -> Result<T, AppError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, AppError> + Send + 'static,
+    {
+        let lifecycle_guard = self.lifecycle_lock.lock_async().await;
+        let span = tracing::Span::current();
+        task::spawn_blocking(move || {
+            let _lifecycle_guard = lifecycle_guard;
+            span.in_scope(operation)
+        })
+        .await
+        .map_err(AppError::from)?
     }
 }
 

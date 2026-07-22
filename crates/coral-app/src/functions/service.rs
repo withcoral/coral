@@ -90,6 +90,7 @@ impl FunctionServiceApi for FunctionService {
             queries
                 .function_manager()
                 .remove_user_function(&workspace_name, &function_name)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(DeleteFunctionResponse {}))
         })

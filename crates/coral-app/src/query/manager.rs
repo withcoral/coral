@@ -783,7 +783,7 @@ impl QueryManager {
         self.require_workspace(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
-        let _lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let _lifecycle_snapshot = self.lifecycle_lock.snapshot_async().await;
         let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
         self.validate_udf_sql_against_snapshot(workspace_name, raw_sql, &loaded_sources, &config)
             .await
@@ -795,12 +795,13 @@ impl QueryManager {
         raw_sql: &str,
     ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
         for _ in 0..2 {
-            let revision = self.lifecycle_lock.snapshot().revision();
+            let revision = self.lifecycle_lock.snapshot_async().await.revision();
             self.require_workspace(workspace_name)
                 .await
                 .map_err(QueryManagerError::App)?;
-            let Some((loaded_sources, config)) =
-                self.function_validation_snapshot_if_unchanged(workspace_name, revision)?
+            let Some((loaded_sources, config)) = self
+                .function_validation_snapshot_if_unchanged(workspace_name, revision)
+                .await?
             else {
                 continue;
             };
@@ -820,6 +821,7 @@ impl QueryManager {
                     &runtime_function,
                     revision,
                 )
+                .await
                 .map_err(QueryManagerError::App)?
             {
                 ValidatedFunctionInstall::Installed => return Ok(runtime_function),
@@ -832,12 +834,12 @@ impl QueryManager {
         )))
     }
 
-    fn function_validation_snapshot_if_unchanged(
+    async fn function_validation_snapshot_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         revision: WorkspaceLifecycleRevision,
     ) -> Result<Option<(Vec<LoadedQuerySource>, AppConfig)>, QueryManagerError> {
-        let lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let lifecycle_snapshot = self.lifecycle_lock.snapshot_async().await;
         if lifecycle_snapshot.revision() != revision {
             return Ok(None);
         }

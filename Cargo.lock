@@ -1231,6 +1231,7 @@ dependencies = [
  "apple-native-keyring-store",
  "arrow",
  "async-trait",
+ "async-lock",
  "axum",
  "base64",
  "chrono",

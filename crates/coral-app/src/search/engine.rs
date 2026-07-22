@@ -4,16 +4,24 @@ use std::sync::Arc;
 
 use crate::search::fusion;
 use crate::search::provider::{
-    ProviderSearchOutcome, SearchExecutionContext, SearchProviderRegistry, provider_error_outcome,
+    ProviderSearchOutcome, SearchExecutionContext, SearchProviderRegistration,
+    SearchProviderRegistry, provider_error_outcome,
 };
 use crate::search::result::{
-    ProviderStatus, SearchProviderKind, SearchProviderState, SearchResponse, SearchResult,
-    SearchTruncation,
+    ProviderStatus, SearchProviderKind, SearchResponse, SearchResult, SearchTruncation,
 };
 
 #[derive(Clone)]
 pub(crate) struct UniversalSearchEngine {
     providers: SearchProviderRegistry,
+}
+
+enum PendingProviderSearch {
+    Provider {
+        kind: SearchProviderKind,
+        task: tokio::task::JoinHandle<ProviderSearchOutcome>,
+    },
+    StaticStatus(ProviderStatus),
 }
 
 impl UniversalSearchEngine {
@@ -35,26 +43,37 @@ impl UniversalSearchEngine {
         let tasks = self
             .providers
             .iter()
-            .map(|provider| {
-                let provider = Arc::clone(provider);
-                let provider_kind = provider.kind();
-                let context = Arc::clone(&context);
-                let task = tokio::spawn(async move { provider.search(context).await });
-                (provider_kind, task)
+            .map(|registration| match registration {
+                SearchProviderRegistration::Provider(provider) => {
+                    let provider = Arc::clone(provider);
+                    let kind = provider.kind();
+                    let context = Arc::clone(&context);
+                    let task = tokio::spawn(async move { provider.search(context).await });
+                    PendingProviderSearch::Provider { kind, task }
+                }
+                SearchProviderRegistration::StaticStatus(status) => {
+                    PendingProviderSearch::StaticStatus(status.clone())
+                }
             })
             .collect::<Vec<_>>();
         let mut outcomes = Vec::with_capacity(tasks.len());
-        for (provider_kind, task) in tasks {
-            let outcome = match task.await {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    tracing::error!(
-                        provider = ?provider_kind,
-                        ?error,
-                        "Universal Search provider future failed"
-                    );
-                    provider_error_outcome(provider_kind)
-                }
+        for pending in tasks {
+            let outcome = match pending {
+                PendingProviderSearch::Provider { kind, task } => match task.await {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        tracing::error!(
+                            provider = ?kind,
+                            ?error,
+                            "Universal Search provider future failed"
+                        );
+                        provider_error_outcome(kind)
+                    }
+                },
+                PendingProviderSearch::StaticStatus(status) => ProviderSearchOutcome {
+                    candidates: Vec::new(),
+                    status,
+                },
             };
             outcomes.push(outcome);
         }
@@ -68,16 +87,10 @@ fn assemble_response(
     mut outcomes: Vec<ProviderSearchOutcome>,
 ) -> SearchResponse {
     let provider_has_more = providers_have_more(&outcomes);
-    let mut provider_statuses = outcomes
+    let provider_statuses = outcomes
         .iter()
         .map(|outcome| outcome.status.clone())
         .collect::<Vec<_>>();
-    if !provider_statuses
-        .iter()
-        .any(|status| status.provider == SearchProviderKind::NativeFanout)
-    {
-        provider_statuses.push(native_not_enabled_status());
-    }
 
     let candidates = fusion::order_candidates(&mut outcomes);
     let total_count = candidates.len();
@@ -103,15 +116,6 @@ fn assemble_response(
             max_results: context.request.limit,
             note: truncation_note(truncated, provider_has_more, total_count, max_results),
         },
-    }
-}
-
-fn native_not_enabled_status() -> ProviderStatus {
-    ProviderStatus {
-        provider: SearchProviderKind::NativeFanout,
-        state: SearchProviderState::NotEnabled,
-        note: "provider-native fanout is not wired yet".to_string(),
-        coverage: None,
     }
 }
 
@@ -144,10 +148,10 @@ fn truncation_note(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, mpsc as std_mpsc};
     use std::time::{Duration, Instant};
 
-    use tokio::sync::Barrier;
+    use tokio::sync::{Barrier, oneshot};
     use tokio::time::timeout;
 
     use super::{UniversalSearchEngine, providers_have_more, truncation_note};
@@ -155,13 +159,14 @@ mod tests {
     use crate::query::manager::QueryManagerError;
     use crate::search::provider::{
         ObservedValuesPolicyInput, ProviderSearchFuture, ProviderSearchOutcome,
-        SearchExecutionContext, SearchProvider, SearchProviderRegistry, provider_error_outcome,
+        SearchExecutionContext, SearchProvider, SearchProviderRegistration, SearchProviderRegistry,
+        provider_error_outcome,
     };
     use crate::search::result::{
         ObservedValueResult, ProviderCoverage, ProviderStatus, SearchCandidate, SearchPayload,
         SearchProviderKind, SearchProviderState, SearchRequest, SearchSurfaceKind,
     };
-    use crate::workspaces::WorkspaceName;
+    use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleReadLease, WorkspaceName};
 
     #[test]
     fn truncation_note_does_not_report_retrieved_count_as_total_when_provider_has_more() {
@@ -202,10 +207,10 @@ mod tests {
     #[tokio::test]
     async fn provider_failure_keeps_other_provider_candidates_and_status_order() {
         let registry = SearchProviderRegistry::from_ordered(vec![
-            Arc::new(PanickingProvider {
+            SearchProviderRegistration::Provider(Arc::new(PanickingProvider {
                 kind: SearchProviderKind::CatalogMetadata,
-            }),
-            Arc::new(StaticProvider {
+            })),
+            SearchProviderRegistration::Provider(Arc::new(StaticProvider {
                 outcome: ProviderSearchOutcome {
                     candidates: vec![observed_candidate("survivor")],
                     status: ProviderStatus {
@@ -215,10 +220,14 @@ mod tests {
                         coverage: None,
                     },
                 },
-            }),
+            })),
+            static_status_registration(
+                SearchProviderKind::NativeFanout,
+                SearchProviderState::NotEnabled,
+            ),
         ]);
         let response = UniversalSearchEngine::new(registry)
-            .search(test_context())
+            .search(test_context().await)
             .await;
 
         assert_eq!(response.results.len(), 1);
@@ -246,20 +255,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_contains_only_registry_owned_statuses() {
+        let registry = SearchProviderRegistry::from_ordered(vec![static_status_registration(
+            SearchProviderKind::ObservedValues,
+            SearchProviderState::NotEnabled,
+        )]);
+
+        let response = UniversalSearchEngine::new(registry)
+            .search(test_context().await)
+            .await;
+
+        assert!(response.results.is_empty());
+        assert_eq!(
+            response
+                .provider_statuses
+                .iter()
+                .map(|status| (status.provider, status.state))
+                .collect::<Vec<_>>(),
+            [(
+                SearchProviderKind::ObservedValues,
+                SearchProviderState::NotEnabled,
+            )]
+        );
+    }
+
+    #[tokio::test]
     async fn providers_start_concurrently_but_keep_registry_response_order() {
         let start_barrier = Arc::new(Barrier::new(3));
         let registry = SearchProviderRegistry::from_ordered(vec![
-            Arc::new(BarrierProvider {
+            SearchProviderRegistration::Provider(Arc::new(BarrierProvider {
                 kind: SearchProviderKind::CatalogMetadata,
                 start_barrier: Arc::clone(&start_barrier),
-            }),
-            Arc::new(BarrierProvider {
+            })),
+            SearchProviderRegistration::Provider(Arc::new(BarrierProvider {
                 kind: SearchProviderKind::ObservedValues,
                 start_barrier: Arc::clone(&start_barrier),
-            }),
+            })),
+            static_status_registration(
+                SearchProviderKind::NativeFanout,
+                SearchProviderState::NotEnabled,
+            ),
         ]);
         let engine = UniversalSearchEngine::new(registry);
-        let search = tokio::spawn(async move { engine.search(test_context()).await });
+        let search = tokio::spawn(async move { engine.search(test_context().await).await });
 
         timeout(Duration::from_secs(1), start_barrier.wait())
             .await
@@ -278,6 +316,58 @@ mod tests {
                 SearchProviderKind::NativeFanout,
             ]
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_search_keeps_lifecycle_lease_until_blocking_provider_finishes() {
+        let lifecycle = WorkspaceLifecycleLock::default();
+        let workspace = WorkspaceName::default();
+        let revision = lifecycle
+            .revision_if_active_async(&workspace)
+            .await
+            .expect("workspace is active");
+        let lifecycle_lease = lifecycle
+            .read_lease_if_unchanged(revision, &workspace)
+            .await
+            .expect("current lifecycle lease");
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let registry =
+            SearchProviderRegistry::from_ordered(vec![SearchProviderRegistration::Provider(
+                Arc::new(PausingBlockingProvider {
+                    kind: SearchProviderKind::CatalogMetadata,
+                    started: Mutex::new(Some(started_tx)),
+                    release: Mutex::new(Some(release_rx)),
+                }),
+            )]);
+        let engine = UniversalSearchEngine::new(registry);
+        let search = tokio::spawn(async move {
+            engine
+                .search(test_context_with_lease(lifecycle_lease))
+                .await
+        });
+
+        started_rx.await.expect("blocking provider should start");
+        search.abort();
+        assert!(
+            search
+                .await
+                .expect_err("search task should be cancelled")
+                .is_cancelled()
+        );
+
+        assert!(
+            timeout(Duration::from_millis(50), lifecycle.lock_async())
+                .await
+                .is_err(),
+            "detached provider work must retain the lifecycle read lease"
+        );
+
+        release_tx.send(()).expect("release blocking provider");
+        let guard = timeout(Duration::from_secs(1), lifecycle.lock_async())
+            .await
+            .expect("lifecycle writer should proceed after provider completion");
+        drop(guard);
     }
 
     struct StaticProvider {
@@ -314,6 +404,44 @@ mod tests {
         start_barrier: Arc<Barrier>,
     }
 
+    struct PausingBlockingProvider {
+        kind: SearchProviderKind,
+        started: Mutex<Option<oneshot::Sender<()>>>,
+        release: Mutex<Option<std_mpsc::Receiver<()>>>,
+    }
+
+    impl SearchProvider for PausingBlockingProvider {
+        fn kind(&self) -> SearchProviderKind {
+            self.kind
+        }
+
+        fn search(&self, context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
+            let kind = self.kind;
+            let started = self
+                .started
+                .lock()
+                .expect("started sender lock")
+                .take()
+                .expect("provider starts once");
+            let release = self
+                .release
+                .lock()
+                .expect("release receiver lock")
+                .take()
+                .expect("provider starts once");
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    started.send(()).expect("signal provider start");
+                    release.recv().expect("wait for provider release");
+                    drop(context);
+                    provider_error_outcome(kind)
+                })
+                .await
+                .expect("blocking provider task")
+            })
+        }
+    }
+
     impl SearchProvider for BarrierProvider {
         fn kind(&self) -> SearchProviderKind {
             self.kind
@@ -329,15 +457,44 @@ mod tests {
         }
     }
 
-    fn test_context() -> SearchExecutionContext {
+    async fn test_context() -> SearchExecutionContext {
+        let lifecycle = WorkspaceLifecycleLock::default();
+        let workspace = WorkspaceName::default();
+        let revision = lifecycle
+            .revision_if_active_async(&workspace)
+            .await
+            .expect("workspace is active");
+        let lifecycle_lease = lifecycle
+            .read_lease_if_unchanged(revision, &workspace)
+            .await
+            .expect("current lifecycle lease");
+        test_context_with_lease(lifecycle_lease)
+    }
+
+    fn test_context_with_lease(
+        lifecycle_lease: WorkspaceLifecycleReadLease,
+    ) -> SearchExecutionContext {
         SearchExecutionContext::new(
             Instant::now(),
+            lifecycle_lease,
             SearchRequest::new(WorkspaceName::default(), "issue", 10).expect("search request"),
             Err(QueryManagerError::App(AppError::Internal(
                 "catalog resolution is unused by test providers".to_string(),
             ))),
             ObservedValuesPolicyInput::Disabled,
         )
+    }
+
+    fn static_status_registration(
+        provider: SearchProviderKind,
+        state: SearchProviderState,
+    ) -> SearchProviderRegistration {
+        SearchProviderRegistration::StaticStatus(ProviderStatus {
+            provider,
+            state,
+            note: String::new(),
+            coverage: None,
+        })
     }
 
     fn observed_candidate(key: &str) -> SearchCandidate {

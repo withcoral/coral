@@ -67,11 +67,6 @@ enum CatalogPreload {
     WorkspaceChanged,
 }
 
-enum SnapshotOperation<T> {
-    Complete(T),
-    WorkspaceChanged,
-}
-
 impl SearchManager {
     #[cfg(test)]
     pub(crate) fn new(
@@ -128,7 +123,6 @@ impl SearchManager {
         attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
         let request_started_at = Instant::now();
-        let runtime = tokio::runtime::Handle::current();
         for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
             let CatalogPreload::Ready {
                 revision,
@@ -139,41 +133,34 @@ impl SearchManager {
             else {
                 continue;
             };
-            let search = self.clone();
-            let request = request.clone();
-            let runtime = runtime.clone();
-            let operation = run_blocking_search_operation(move || {
-                let Some(_snapshot) = search
-                    .lifecycle_lock
-                    .snapshot_if_unchanged(revision, &request.workspace_name)
-                else {
-                    return Ok(SnapshotOperation::WorkspaceChanged);
-                };
-                let observed_values_policy = if search.observed_values_search_enabled {
-                    ObservedValuesPolicyInput::Enabled(
-                        search.observed_retrieval_policy(&request.workspace_name),
-                    )
-                } else {
-                    ObservedValuesPolicyInput::Disabled
-                };
-                let context = SearchExecutionContext::new(
-                    request_started_at,
-                    request,
-                    resolution,
-                    observed_values_policy,
-                );
-                // Keep the non-Send lifecycle snapshot alive until every provider
-                // finishes, so workspace deletion or source changes cannot race
-                // this search. Drive the async engine from this blocking thread
-                // instead of carrying the snapshot guard across an async await.
-                Ok(SnapshotOperation::Complete(
-                    runtime.block_on(search.engine.search(context)),
-                ))
-            })
-            .await?;
-            if let SnapshotOperation::Complete(response) = operation {
-                return Ok(response);
-            }
+            let Some(lifecycle_lease) = self
+                .lifecycle_lock
+                .read_lease_if_unchanged(revision, &request.workspace_name)
+                .await
+            else {
+                continue;
+            };
+            let (observed_values_policy, lifecycle_lease) = if self.observed_values_search_enabled {
+                let search = self.clone();
+                let workspace_name = request.workspace_name.clone();
+                run_blocking_search_operation(move || {
+                    let policy = ObservedValuesPolicyInput::Enabled(
+                        search.observed_retrieval_policy(&workspace_name),
+                    );
+                    Ok((policy, lifecycle_lease))
+                })
+                .await?
+            } else {
+                (ObservedValuesPolicyInput::Disabled, lifecycle_lease)
+            };
+            let context = SearchExecutionContext::new(
+                request_started_at,
+                lifecycle_lease,
+                request.clone(),
+                resolution,
+                observed_values_policy,
+            );
+            return Ok(self.engine.search(context).await);
         }
         Err(workspace_changed_error("searching"))
     }
@@ -202,7 +189,8 @@ impl SearchManager {
             } else {
                 let Some(revision) = self
                     .lifecycle_lock
-                    .revision_if_active(&request.workspace_name)
+                    .revision_if_active_async(&request.workspace_name)
+                    .await
                 else {
                     continue;
                 };
@@ -211,15 +199,17 @@ impl SearchManager {
                     .await?;
                 (revision, None)
             };
+            let Some(lifecycle_lease) = self
+                .lifecycle_lock
+                .read_lease_if_unchanged(revision, &request.workspace_name)
+                .await
+            else {
+                continue;
+            };
             let search = self.clone();
             let request = request.clone();
-            let operation = run_blocking_search_operation(move || {
-                let Some(_snapshot) = search
-                    .lifecycle_lock
-                    .snapshot_if_unchanged(revision, &request.workspace_name)
-                else {
-                    return Ok(SnapshotOperation::WorkspaceChanged);
-                };
+            let response = run_blocking_search_operation(move || {
+                let _lifecycle_lease = lifecycle_lease;
                 let resolution = resolution
                     .map(|resolution| resolution.map_err(catalog_resolution_error))
                     .transpose()?;
@@ -245,14 +235,10 @@ impl SearchManager {
                         search.rebuild_observed_index(&request),
                     ],
                 };
-                Ok(SnapshotOperation::Complete(RebuildSearchIndexResponse {
-                    results,
-                }))
+                Ok(RebuildSearchIndexResponse { results })
             })
             .await?;
-            if let SnapshotOperation::Complete(response) = operation {
-                return Ok(response);
-            }
+            return Ok(response);
         }
         Err(workspace_changed_error("rebuilding the search index"))
     }
@@ -296,30 +282,29 @@ impl SearchManager {
         for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
             let Some(revision) = self
                 .lifecycle_lock
-                .revision_if_active(&request.workspace_name)
+                .revision_if_active_async(&request.workspace_name)
+                .await
             else {
                 continue;
             };
             self.workspaces
                 .require_workspace(&request.workspace_name)
                 .await?;
+            let Some(lifecycle_lease) = self
+                .lifecycle_lock
+                .read_lease_if_unchanged(revision, &request.workspace_name)
+                .await
+            else {
+                continue;
+            };
             let search = self.clone();
             let request = request.clone();
-            let operation = run_blocking_search_operation(move || {
-                let Some(_snapshot) = search
-                    .lifecycle_lock
-                    .snapshot_if_unchanged(revision, &request.workspace_name)
-                else {
-                    return Ok(SnapshotOperation::WorkspaceChanged);
-                };
-                Ok(SnapshotOperation::Complete(
-                    search.clear_data_blocking(&request)?,
-                ))
+            let response = run_blocking_search_operation(move || {
+                let _lifecycle_lease = lifecycle_lease;
+                search.clear_data_blocking(&request)
             })
             .await?;
-            if let SnapshotOperation::Complete(response) = operation {
-                return Ok(response);
-            }
+            return Ok(response);
         }
         Err(workspace_changed_error("clearing search data"))
     }
@@ -472,7 +457,11 @@ impl SearchManager {
         workspace_name: &WorkspaceName,
         attribution: &QueryAttribution,
     ) -> Result<CatalogPreload, SearchManagerError> {
-        let Some(revision) = self.lifecycle_lock.revision_if_active(workspace_name) else {
+        let Some(revision) = self
+            .lifecycle_lock
+            .revision_if_active_async(workspace_name)
+            .await
+        else {
             return Ok(CatalogPreload::WorkspaceChanged);
         };
         self.workspaces.require_workspace(workspace_name).await?;

@@ -93,7 +93,7 @@ impl FunctionManager {
         self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
     }
 
-    pub(crate) fn install_validated_user_function_if_unchanged(
+    pub(crate) async fn install_validated_user_function_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         raw_sql: &str,
@@ -101,7 +101,8 @@ impl FunctionManager {
         revision: WorkspaceLifecycleRevision,
     ) -> Result<ValidatedFunctionInstall, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
-        let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged(revision) else {
+        let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged_async(revision).await
+        else {
             return Ok(ValidatedFunctionInstall::WorkspaceChanged);
         };
         self.install_user_function_artifact_with_lifecycle_lock(
@@ -299,12 +300,12 @@ impl FunctionManager {
             .collect()
     }
 
-    pub(crate) fn remove_user_function(
+    pub(crate) async fn remove_user_function(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
     ) -> Result<(), AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
         let _state_lock = self.config_store.state_lock_exclusive()?;
         self.config_store
             .get_function_unlocked(workspace_name, function_name)?;
@@ -664,6 +665,7 @@ select 1 as id
         assert!(error.contains("declares name 'renamed'"));
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("inventory name remains removable");
     }
 
@@ -710,8 +712,8 @@ select 1 as id
         assert_eq!(runtime_function.result_columns.len(), 1);
     }
 
-    #[test]
-    fn remove_user_function_removes_inventory_and_artifacts() {
+    #[tokio::test]
+    async fn remove_user_function_removes_inventory_and_artifacts() {
         let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
@@ -719,6 +721,7 @@ select 1 as id
 
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("remove function");
 
         assert!(
@@ -733,13 +736,14 @@ select 1 as id
         );
     }
 
-    #[test]
-    fn remove_user_function_reports_typed_missing_function() {
+    #[tokio::test]
+    async fn remove_user_function_reports_typed_missing_function() {
         let (_temp, _layout, _config_store, manager) = fixture();
         let function_name = FunctionName::parse("missing").expect("function name");
 
         let error = manager
             .remove_user_function(&workspace(), &function_name)
+            .await
             .expect_err("missing function should fail");
 
         assert!(matches!(

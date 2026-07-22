@@ -107,6 +107,7 @@ impl WorkspaceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
         let mut tx = self.db.begin().await?;
         if tx
             .workspaces()
@@ -145,6 +146,7 @@ impl WorkspaceManager {
         let deletion_marker = self
             .lifecycle_lock
             .mark_workspace_deleting(workspace_name)
+            .await
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "workspace '{workspace_name}' is already being deleted"
