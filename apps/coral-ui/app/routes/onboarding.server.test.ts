@@ -1,4 +1,5 @@
 import { create } from '@bufbuild/protobuf'
+import { createMemoryRouter, redirect } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
@@ -33,7 +34,7 @@ vi.mock('@/lib/onboarding-query.server', () => ({ loadOnboardingSampleQuery }))
 vi.mock('./sources-loader', () => ({ loadSourcesRouteData }))
 vi.mock('./sources-action', () => ({ runSourcesAction }))
 
-import { authRouteTestArgs } from '@/auth/server-context.test-helper'
+import { authRouteTestArgs, authTestContext } from '@/auth/server-context.test-helper'
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 
 import { action, loader } from './onboarding'
@@ -122,7 +123,7 @@ describe('onboarding route authentication', () => {
 })
 
 describe('onboarding server route', () => {
-  it('redirects completed users before loading onboarding data', async () => {
+  it('replaces completed users directly into the normal app before loading onboarding data', async () => {
     getGuiOnboardingCompleted.mockResolvedValue(true)
     const request = new Request('http://coral-ui.test/onboarding')
 
@@ -130,9 +131,46 @@ describe('onboarding server route', () => {
 
     expect(response).toBeInstanceOf(Response)
     expect((response as Response).status).toBe(302)
-    expect((response as Response).headers.get('Location')).toBe('/')
+    expect((response as Response).headers.get('Location')).toBe('/workspaces/analytics/traces')
+    expect((response as Response).headers.get('X-Remix-Replace')).toBe('true')
+    expect(firstWorkspaceForRequest).toHaveBeenCalledWith(request, null)
     expect(listWorkspacesForRequest).not.toHaveBeenCalled()
     expect(loadSourcesRouteData).not.toHaveBeenCalled()
+  })
+
+  it('does not trap completed users when they navigate back into onboarding history', async () => {
+    getGuiOnboardingCompleted.mockResolvedValue(true)
+    const router = createMemoryRouter(
+      [
+        { path: '/before' },
+        { loader: () => redirect(`/workspaces/${workspace.name}/traces`), path: '/' },
+        { loader, path: '/onboarding' },
+        { path: '/workspaces/:workspaceId/traces' },
+      ],
+      {
+        getContext: () => authTestContext(null),
+        initialEntries: [
+          '/before',
+          '/onboarding?step=query',
+          `/workspaces/${workspace.name}/traces`,
+        ],
+        initialIndex: 2,
+      },
+    )
+
+    try {
+      await router.navigate(-1)
+
+      expect(router.state.location.pathname).toBe(`/workspaces/${workspace.name}/traces`)
+      expect(router.state.historyAction).toBe('REPLACE')
+
+      await router.navigate(-1)
+
+      expect(router.state.location.pathname).toBe('/before')
+      expect(getGuiOnboardingCompleted).toHaveBeenCalledOnce()
+    } finally {
+      router.dispose()
+    }
   })
 
   it('persists completion before redirecting to the normal app', async () => {
