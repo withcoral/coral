@@ -5,6 +5,8 @@ import type { Route } from './+types/app-shell'
 import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
 import { requestAuthContext } from '@/auth/server-context'
+import { rethrowAsCoralUnavailableRouteError } from '@/lib/coral-unavailable.server'
+import { isCoralUnavailableError } from '@/lib/coral-unavailable'
 import { listWorkspacesForRequest } from '@/lib/workspaces.server'
 import { routePath } from '@/routing/routemap'
 import { ToastContainer } from '@/wax/components/toast'
@@ -30,6 +32,10 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     }
   } catch (error) {
     if (error instanceof Response) throw error
+    if (isCoralUnavailableError(error)) {
+      rethrowAsCoralUnavailableRouteError(request, error)
+    }
+
     console.error('Failed to load sidebar workspaces:', error)
     return { auth, workspaces: [] }
   }

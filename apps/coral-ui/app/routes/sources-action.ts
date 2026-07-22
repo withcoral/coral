@@ -84,8 +84,8 @@ export async function runSourcesAction(
   const name = formValue(formData, 'name')
   if (!name) return actionError('install', '', 'Missing source name')
 
-  const sourceClient = sourceClientForRequest(request, accessToken)
   try {
+    const sourceClient = sourceClientForRequest(request, accessToken)
     if (intent === 'install') {
       const info = await getSourceInfo(sourceClient, workspace, name)
       if (info.installed && originLabel(info.origin) !== 'bundled') {
