@@ -4,7 +4,6 @@ mod catalog;
 mod pool_cache;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -35,7 +34,9 @@ use crate::backends::{
     SourceQualifiedName, build_registered_inputs,
 };
 
-const REMOTE_DATABASE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Budget for one remote pool build plus inventory operation. Recovery from a
+/// stale cached pool may use two independent attempts.
+const REMOTE_DATABASE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn compile_manifest(
@@ -58,10 +59,6 @@ struct CompiledDatabaseSource {
 #[async_trait]
 trait DatabaseCatalogStrategy: Send + Sync {
     fn provider_name(&self) -> &'static str;
-
-    fn registration_timeout(&self) -> Option<Duration> {
-        Some(REMOTE_DATABASE_REGISTRATION_TIMEOUT)
-    }
 
     async fn build_catalog(&self, context: &RenderContext<'_>)
     -> DataFusionResult<DatabaseCatalog>;
@@ -101,56 +98,23 @@ impl CompiledBackendSource for CompiledDatabaseSource {
         );
         let context = RenderContext::source_scoped(&resolved_inputs);
         let strategy = database_strategy(&self.manifest.connection);
-        let provider_name = strategy.provider_name();
-        let registration_timeout = strategy.registration_timeout();
-        let registration = async {
-            let database_catalog = strategy.build_catalog(&context).await?;
-            let source = registered_source_for_catalog(
-                &self.manifest.common,
-                &self.manifest.declared_inputs,
-                &self.source_secrets,
-                &self.source_variables,
-                &database_catalog.relations,
-            );
+        let database_catalog = strategy.build_catalog(&context).await?;
+        let source = registered_source_for_catalog(
+            &self.manifest.common,
+            &self.manifest.declared_inputs,
+            &self.source_secrets,
+            &self.source_variables,
+            &database_catalog.relations,
+        );
 
-            Ok(BackendRegistration {
-                schemas: Vec::new(),
-                catalogs: vec![BackendCatalogRegistration {
-                    catalog: database_catalog.provider,
-                    source,
-                }],
-            })
-        };
-
-        match registration_timeout {
-            Some(timeout) => {
-                timed_database_registration(
-                    &self.manifest.common.name,
-                    provider_name,
-                    timeout,
-                    registration,
-                )
-                .await
-            }
-            None => registration.await,
-        }
+        Ok(BackendRegistration {
+            schemas: Vec::new(),
+            catalogs: vec![BackendCatalogRegistration {
+                catalog: database_catalog.provider,
+                source,
+            }],
+        })
     }
-}
-
-async fn timed_database_registration<T>(
-    source_name: &str,
-    provider: &str,
-    timeout: Duration,
-    registration: impl Future<Output = DataFusionResult<T>>,
-) -> DataFusionResult<T> {
-    tokio::time::timeout(timeout, registration)
-        .await
-        .map_err(|_elapsed| {
-            DataFusionError::Execution(format!(
-                "database source '{source_name}' ({provider}) registration timed out after {} seconds",
-                timeout.as_secs()
-            ))
-        })?
 }
 
 #[async_trait]
@@ -264,10 +228,6 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
         "sqlite"
     }
 
-    fn registration_timeout(&self) -> Option<Duration> {
-        None
-    }
-
     async fn build_catalog(
         &self,
         context: &RenderContext<'_>,
@@ -308,11 +268,17 @@ SELECT 'main' AS schema_name,
 FROM sqlite_master
 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
 
-/// Remote database pools cached across query runtime builds. `SQLite` pools are
-/// deliberately not cached: building one is a local file open, and caching
-/// would pin deleted or replaced database files.
-static POSTGRES_POOLS: LazyLock<PoolCache<PostgresConnectionPool>> = LazyLock::new(PoolCache::new);
-static MYSQL_POOLS: LazyLock<PoolCache<MySQLConnectionPool>> = LazyLock::new(PoolCache::new);
+/// Remote database pools cached across query runtime builds. Each provider has
+/// an independent 32-entry bound, and idle entries may retain server-side
+/// connections for up to ten minutes. The process-global caches are safe to
+/// share across workspaces because every connection-affecting resolved
+/// parameter participates in [`PoolKey`]. `SQLite` pools are deliberately not
+/// cached: building one is a local file open, and caching would pin deleted or
+/// replaced database files.
+static POSTGRES_POOLS: LazyLock<PoolCache<PostgresConnectionPool>> =
+    LazyLock::new(|| PoolCache::new("Postgres", REMOTE_DATABASE_ATTEMPT_TIMEOUT));
+static MYSQL_POOLS: LazyLock<PoolCache<MySQLConnectionPool>> =
+    LazyLock::new(|| PoolCache::new("MySQL", REMOTE_DATABASE_ATTEMPT_TIMEOUT));
 
 fn registered_source_for_catalog(
     common: &SourceManifestCommon,
