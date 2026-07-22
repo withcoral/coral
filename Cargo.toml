@@ -96,6 +96,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 schemars = "1.2.1"
 sea-query = { version = "1", default-features = false, features = ["backend-postgres", "backend-sqlite", "derive", "thread-safe"] }
+# Keep SQLx bind support aligned with SeaQuery value variants enabled
+# transitively by datafusion-table-providers.
 sea-query-sqlx = { version = "0.9", default-features = false, features = [
   "postgres-array",
   "sqlx-postgres",
