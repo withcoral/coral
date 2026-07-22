@@ -668,6 +668,15 @@ mod tests {
         assert_eq!(table.catalog_name.as_deref(), Some("coral_db"));
         assert_eq!(table.schema_name, "main");
         assert_eq!(table.table_name, "users");
+        assert_eq!(
+            table
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "name"],
+            "database columns flow through coral.columns"
+        );
 
         let result = CoralQuery::execute_sql(
             &sources,
@@ -699,16 +708,13 @@ mod tests {
         .expect("query coral tables");
         assert_eq!(catalog_result.row_count(), 1);
 
-        let tables = CoralQuery::list_tables(
+        CoralQuery::execute_sql(
             &sources,
             QueryRuntimeConfig::default(),
-            Some("coral_db"),
-            Some("main"),
-            Some("users"),
+            "SELECT * FROM coral._columns_static",
         )
         .await
-        .expect("list tables by catalog and schema");
-        assert_eq!(tables.len(), 1);
+        .expect_err("the internal columns staging table must not be queryable");
 
         let source = sources.first().expect("source");
         CoralQuery::validate_source(source, QueryRuntimeConfig::default(), &[])

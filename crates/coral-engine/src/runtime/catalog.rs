@@ -96,6 +96,9 @@ pub(crate) async fn register(
         .filter_map(|source| source.qualified_name.catalog_name())
         .collect::<Vec<_>>();
     let columns_view = view_table_for_sql(ctx, &columns_view_sql(&catalog_names)).await?;
+    // The view retains its resolved plan; the staging table must not remain a
+    // queryable, undocumented member of the final `coral` schema.
+    let _ = meta_tables.remove(STATIC_COLUMNS_TABLE);
     meta_tables.insert("columns".to_string(), Arc::new(columns_view));
 
     catalog.register_schema(
