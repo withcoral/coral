@@ -2,6 +2,7 @@
 //!
 //! These modules define the normalized manifest shapes consumed by the engine:
 //!
+//! - [`database`] for relational database sources
 //! - [`http`] for HTTP-backed sources
 //! - [`mod@file`] for file-backed sources such as `parquet`, `jsonl`, `json`, and `csv`
 //! - [`mcp`] for Model Context Protocol-backed sources
@@ -10,6 +11,7 @@
 //! [`crate::parse_source_manifest_yaml`] or [`crate::parse_source_manifest_value`]
 //! and then inspect the resulting [`crate::ValidatedSourceManifest`].
 
+pub mod database;
 pub mod file;
 pub mod http;
 pub mod mcp;
