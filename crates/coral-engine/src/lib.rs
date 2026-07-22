@@ -105,37 +105,52 @@ pub struct PreparedQueryRuntime {
 
 impl PreparedQueryRuntime {
     /// Lists queryable tables from this prepared runtime.
-    #[must_use]
-    pub fn list_tables(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if live catalog metadata cannot be collected.
+    pub async fn list_tables(
         &self,
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
-    ) -> Vec<TableInfo> {
-        self.inner
-            .list_tables(catalog_filter, schema_filter, table_filter)
+    ) -> Result<Vec<TableInfo>, CoreError> {
+        Box::pin(
+            self.inner
+                .list_tables(catalog_filter, schema_filter, table_filter),
+        )
+        .await
     }
 
     /// Lists queryable catalog metadata from this prepared runtime.
-    #[must_use]
-    pub fn list_catalog(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if live catalog metadata cannot be collected.
+    pub async fn list_catalog(
         &self,
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
-    ) -> CatalogInfo {
-        self.inner.catalog_info(catalog_filter, schema_filter)
+    ) -> Result<CatalogInfo, CoreError> {
+        Box::pin(self.inner.catalog_info(catalog_filter, schema_filter)).await
     }
 
     /// Describes one table from this prepared runtime.
-    #[must_use]
-    pub fn describe_table(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if live catalog metadata cannot be collected.
+    pub async fn describe_table(
         &self,
         catalog_name: Option<&str>,
         schema_name: &str,
         table_name: &str,
-    ) -> DescribeTableInfo {
-        self.inner
-            .describe_table(catalog_name, schema_name, table_name)
+    ) -> Result<DescribeTableInfo, CoreError> {
+        Box::pin(
+            self.inner
+                .describe_table(catalog_name, schema_name, table_name),
+        )
+        .await
     }
 
     /// Infers typed signatures for multiple UDFs against this runtime.
@@ -264,11 +279,10 @@ impl CoralQuery {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        Ok(Self::prepare(sources, runtime).await?.list_tables(
-            catalog_filter,
-            schema_filter,
-            table_filter,
-        ))
+        Self::prepare(sources, runtime)
+            .await?
+            .list_tables(catalog_filter, schema_filter, table_filter)
+            .await
     }
 
     /// Lists queryable catalog metadata from the provided source set.
@@ -289,9 +303,10 @@ impl CoralQuery {
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, CoreError> {
-        Ok(Self::prepare(sources, runtime)
+        Self::prepare(sources, runtime)
             .await?
-            .list_catalog(catalog_filter, schema_filter))
+            .list_catalog(catalog_filter, schema_filter)
+            .await
     }
 
     /// Describes one table or returns lightweight table metadata for missing-table help.
@@ -311,11 +326,10 @@ impl CoralQuery {
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, CoreError> {
-        Ok(Self::prepare(sources, runtime).await?.describe_table(
-            catalog_name,
-            schema_name,
-            table_name,
-        ))
+        Self::prepare(sources, runtime)
+            .await?
+            .describe_table(catalog_name, schema_name, table_name)
+            .await
     }
 
     /// Executes one `SQL` statement over the provided source set.
@@ -468,7 +482,9 @@ impl CoralQuery {
         let source_name = source.source_name();
         let schema_names = source.schema_names();
         let catalog_names = source.catalog_names();
-        let catalog = query_runtime.catalog_info_for_sources(&schema_names, &catalog_names);
+        let catalog = query_runtime
+            .catalog_info_for_sources(&schema_names, &catalog_names)
+            .await?;
         if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
             if let Some(failure) = query_runtime.registration_failure(source_name) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));

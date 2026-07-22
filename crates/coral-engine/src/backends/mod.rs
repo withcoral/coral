@@ -90,6 +90,7 @@ pub(crate) use common::{
     validate_lookup_key_filter_backend_support,
 };
 
+pub(crate) mod database;
 pub(crate) mod file;
 pub(crate) mod http;
 pub(crate) mod mcp;
@@ -135,6 +136,9 @@ fn compile_component(
     request: &BackendCompileRequest<'_>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     match component {
+        RuntimeSourceComponent::Database(manifest) => {
+            Ok(database::compile_manifest(manifest, request))
+        }
         RuntimeSourceComponent::Http(manifest) => {
             let request_identity_http_authenticator = request
                 .source

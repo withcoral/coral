@@ -59,6 +59,10 @@ datafusion = "54"
 datafusion-datasource = "54"
 datafusion-datasource-json = "54"
 datafusion-functions-json = "0.54"
+# The 0.13 PostgreSQL/MySQL adapters hard-enable native-tls (OpenSSL on Linux)
+# and expose no rustls feature. Accept this for the database MVP and revisit it
+# when upstream provides a rustls-compatible configuration.
+datafusion-table-providers = { version = "0.13.0", default-features = false }
 datafusion-tracing = "54"
 dialoguer = "0.12"
 etcetera = "0.11"
@@ -92,7 +96,15 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 schemars = "1.2.1"
 sea-query = { version = "1", default-features = false, features = ["backend-postgres", "backend-sqlite", "derive", "thread-safe"] }
-sea-query-sqlx = { version = "0.9", default-features = false, features = ["sqlx-postgres", "sqlx-sqlite"] }
+sea-query-sqlx = { version = "0.9", default-features = false, features = [
+  "postgres-array",
+  "sqlx-postgres",
+  "sqlx-sqlite",
+  "with-bigdecimal",
+  "with-chrono",
+  "with-rust_decimal",
+  "with-time",
+] }
 sha2 = "0.10"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "postgres", "runtime-tokio", "sqlite", "tls-rustls"] }
 sqlparser = "0.59.0"

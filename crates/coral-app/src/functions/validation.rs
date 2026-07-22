@@ -69,6 +69,9 @@ fn record_source_component_sql_targets(
     targets: &mut SqlPublishTargets,
 ) {
     match component {
+        RuntimeSourceComponent::Database(_) => {
+            // Database tables are discovered at registration and have no static publish targets.
+        }
         RuntimeSourceComponent::Http(manifest) => {
             for table in &manifest.tables {
                 targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
