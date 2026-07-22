@@ -4,6 +4,7 @@ use std::future::Future;
 
 use coral_api::grpc_response_status_code;
 use coral_client::{DecodedStatusError, decode_status_error};
+use coral_telemetry::record_failure;
 use opentelemetry::trace::Status as OtelStatus;
 use rmcp::{ErrorData, model::ErrorCode};
 use tracing::{Instrument as _, field};
@@ -106,7 +107,7 @@ pub(crate) fn record_protocol_result<T>(span: &tracing::Span, result: &Result<T,
 }
 
 pub(crate) fn record_protocol_error(span: &tracing::Span, error: &ErrorData) {
-    record_error(span, mcp_error_type(error.code), MCP_PROTOCOL_ERROR_MESSAGE);
+    record_failure(span, mcp_error_type(error.code), MCP_PROTOCOL_ERROR_MESSAGE);
 }
 
 pub(crate) fn record_tonic_status(span: &tracing::Span, status: &tonic::Status) {
@@ -114,11 +115,11 @@ pub(crate) fn record_tonic_status(span: &tracing::Span, status: &tonic::Status) 
         DecodedStatusError::Structured(error) => error.reason,
         DecodedStatusError::Plain(_) => grpc_response_status_code(status.code()).to_string(),
     };
-    record_error(span, error_type.as_str(), MCP_TOOL_ERROR_MESSAGE);
+    record_failure(span, error_type.as_str(), MCP_TOOL_ERROR_MESSAGE);
 }
 
 pub(crate) fn record_sql_batch_partial_failure(span: &tracing::Span) {
-    record_error(
+    record_failure(
         span,
         "sql_batch_partial_failure",
         "One or more SQL queries failed",
@@ -132,13 +133,6 @@ pub(crate) fn record_success(span: &tracing::Span) {
 
 pub(crate) fn record_task_id(span: &tracing::Span, task_id: &str) {
     span.record("task.id", task_id);
-}
-
-fn record_error(span: &tracing::Span, error_type: &str, message: &'static str) {
-    span.record("status", "error");
-    span.record("error.type", error_type);
-    span.record("exception.message", message);
-    span.set_status(OtelStatus::error(message));
 }
 
 fn mcp_error_type(code: ErrorCode) -> &'static str {

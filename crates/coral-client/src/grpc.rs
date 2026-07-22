@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use coral_api::grpc_response_status_code;
+use coral_telemetry::{GRPC_REQUEST_ERROR_MESSAGE, record_failure};
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Body, Bytes, Service, StdError, http};
 use tonic::{Code, Status};
@@ -20,7 +21,6 @@ use crate::status_error::{DecodedStatusError, decode_status_error};
 
 const MISSING_GRPC_STATUS_ERROR_TYPE: &str = "MISSING_GRPC_STATUS";
 const MISSING_GRPC_STATUS_MESSAGE: &str = "missing gRPC response status";
-const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
 /// Tonic `Service` wrapper that records one client span per gRPC request.
 #[derive(Clone)]
@@ -135,7 +135,7 @@ impl<B> InstrumentedGrpcBody<B> {
 
     fn record_body_error(&mut self) {
         if !self.status_recorded {
-            record_error(&self.span, "TRANSPORT", "gRPC response body error");
+            record_failure(&self.span, "TRANSPORT", "gRPC response body error");
             self.status_recorded = true;
         }
     }
@@ -268,7 +268,7 @@ fn record_grpc_status(span: &tracing::Span, code: Code, status: &Status) {
         span.set_status(OtelStatus::Ok);
     } else {
         let error_type = grpc_client_error_type(status);
-        record_error(span, error_type.as_str(), GRPC_REQUEST_ERROR_MESSAGE);
+        record_failure(span, error_type.as_str(), GRPC_REQUEST_ERROR_MESSAGE);
     }
 }
 
@@ -281,7 +281,7 @@ fn record_grpc_status_attributes(span: &tracing::Span, code: Code) {
 
 fn record_missing_grpc_status(span: &tracing::Span) {
     record_grpc_status_attributes(span, Code::Unknown);
-    record_error(
+    record_failure(
         span,
         MISSING_GRPC_STATUS_ERROR_TYPE,
         MISSING_GRPC_STATUS_MESSAGE,
@@ -289,14 +289,7 @@ fn record_missing_grpc_status(span: &tracing::Span) {
 }
 
 fn record_transport_error(span: &tracing::Span) {
-    record_error(span, "TRANSPORT", "gRPC transport error");
-}
-
-fn record_error(span: &tracing::Span, error_type: impl AsRef<str>, message: &'static str) {
-    span.record("status", "error");
-    span.record("error.type", error_type.as_ref());
-    span.record("exception.message", message);
-    span.set_status(OtelStatus::error(message));
+    record_failure(span, "TRANSPORT", "gRPC transport error");
 }
 
 fn grpc_client_error_type(status: &Status) -> String {

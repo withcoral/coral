@@ -17,6 +17,7 @@ use coral_api::{
     },
 };
 use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
+use coral_telemetry::{GRPC_REQUEST_ERROR_MESSAGE, record_failure};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Service, http};
@@ -43,7 +44,6 @@ use crate::workspaces::WorkspaceName;
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
 
 const USER_PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
-const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
 #[derive(Clone)]
 struct GrpcServerSpan(tracing::Span);
@@ -326,10 +326,7 @@ fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>)
         span.set_status(OtelStatus::Ok);
     } else {
         let error_type = status.map_or_else(|| response_status_code.to_string(), grpc_error_type);
-        span.record("status", "error");
-        span.record("error.type", error_type.as_str());
-        span.record("exception.message", GRPC_REQUEST_ERROR_MESSAGE);
-        span.set_status(OtelStatus::error(GRPC_REQUEST_ERROR_MESSAGE));
+        record_failure(span, error_type.as_str(), GRPC_REQUEST_ERROR_MESSAGE);
     }
 }
 

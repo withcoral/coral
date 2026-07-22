@@ -6,12 +6,27 @@
 
 use opentelemetry::Context;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};
-use opentelemetry::trace::TraceContextExt as _;
+use opentelemetry::trace::{Status as OtelStatus, TraceContextExt as _};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 const TRACEPARENT_HEADER: &str = "traceparent";
 const TRACESTATE_HEADER: &str = "tracestate";
+
+/// Stable message recorded for failed gRPC requests.
+pub const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
+
+/// Records a categorical failure without accepting caller-controlled message text.
+pub fn record_failure(
+    span: &tracing::Span,
+    error_type: impl AsRef<str>,
+    stable_message: &'static str,
+) {
+    span.record("status", "error");
+    span.record("error.type", error_type.as_ref());
+    span.record("exception.message", stable_message);
+    span.set_status(OtelStatus::error(stable_message));
+}
 
 struct TraceHeaders<'a> {
     traceparent: &'a str,
@@ -97,14 +112,63 @@ fn context_has_valid_span(context: &Context) -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use opentelemetry::trace::{SpanId, TraceContextExt as _, TraceId, TracerProvider as _};
+    use opentelemetry::trace::{
+        SpanId, Status as OtelStatus, TraceContextExt as _, TraceId, TracerProvider as _,
+    };
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use tracing_subscriber::prelude::*;
 
     use super::{
         TRACEPARENT_HEADER, TRACESTATE_HEADER, context_from_extractor, context_from_trace_headers,
-        inject_context, set_parent_from_trace_headers,
+        inject_context, record_failure, set_parent_from_trace_headers,
     };
+
+    #[test]
+    fn record_failure_sets_shared_error_fields() {
+        let memory = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(memory.clone())
+            .build();
+        let tracer = provider.tracer("failure-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "failure",
+                error.type = tracing::field::Empty,
+                exception.message = tracing::field::Empty,
+                status = tracing::field::Empty,
+            );
+            record_failure(&span, "INVALID_ARGUMENT", "request failed");
+            span.in_scope(|| {});
+        });
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let failure = spans
+            .iter()
+            .find(|span| span.name == "failure")
+            .expect("failure span");
+        let string_attribute = |name: &str| {
+            failure
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == name)
+                .map(|attribute| attribute.value.as_str().into_owned())
+        };
+        assert_eq!(string_attribute("status").as_deref(), Some("error"));
+        assert_eq!(
+            string_attribute("error.type").as_deref(),
+            Some("INVALID_ARGUMENT")
+        );
+        assert_eq!(
+            string_attribute("exception.message").as_deref(),
+            Some("request failed")
+        );
+        assert_eq!(failure.status, OtelStatus::error("request failed"));
+        provider.shutdown().expect("provider shutdown");
+    }
 
     #[test]
     fn extracts_valid_traceparent_and_tracestate() {
