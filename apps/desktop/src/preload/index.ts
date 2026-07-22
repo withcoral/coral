@@ -6,4 +6,12 @@ const api: CoralDesktopApi = {
   configureMcp: (clientId: McpClientId) => ipcRenderer.invoke('coral:configure-mcp', clientId),
 }
 
+window.addEventListener(
+  'DOMContentLoaded',
+  () => {
+    document.documentElement.dataset.coralDesktopPlatform = process.platform
+  },
+  { once: true },
+)
+
 contextBridge.exposeInMainWorld('coralDesktop', api)

@@ -84,6 +84,10 @@
   resource routes using `apps/reef/app/lib/coral-request.server.ts`. Do not
   expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
   explicit server route when browser-triggered Coral behavior is needed.
+- Keep native window creation in `apps/desktop`. When native chrome requires
+  renderer cooperation, contain the platform-specific layout and drag regions
+  at Reef's root shell boundary behind a Desktop preload marker; do not spread
+  titlebar behavior through leaf components.
 - The packaged Reef server resolves its external runtime packages from the
   Electron app. Keep every `apps/reef` production dependency represented in
   `apps/desktop` production dependencies; the desktop config tests enforce this

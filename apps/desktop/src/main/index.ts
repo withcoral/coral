@@ -105,6 +105,12 @@ function createMainWindow(): BrowserWindow {
     title: 'Coral',
     icon: currentWindowIconPath(),
     autoHideMenuBar: process.platform !== 'darwin',
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hidden' as const,
+          trafficLightPosition: { x: 14, y: 14 },
+        }
+      : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -146,7 +152,12 @@ function createMainWindow(): BrowserWindow {
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       const escapedMessage = escapeHtml(message)
-      const errorUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<main style="font-family: system-ui; padding: 24px;"><h1>Coral failed to start</h1><p>${escapedMessage}</p></main>`)}`
+      const windowDragRegion =
+        process.platform === 'darwin'
+          ? '<div style="-webkit-app-region: drag; height: 48px; inset: 0 0 auto; position: fixed;"></div>'
+          : ''
+      const errorPadding = process.platform === 'darwin' ? '56px 24px 24px' : '24px'
+      const errorUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`${windowDragRegion}<main style="font-family: system-ui; padding: ${errorPadding};"><h1>Coral failed to start</h1><p>${escapedMessage}</p></main>`)}`
       trustedRendererOrigin = null
       trustedErrorUrl = errorUrl
       console.error(`[coral-renderer] failed to start app renderer: ${message}`)

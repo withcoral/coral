@@ -664,6 +664,46 @@ describe('Architectural Tests', () => {
       expect(stageScript.match(/CORAL_DESKTOP_APP:\s*'1'/g)).toHaveLength(1)
     })
 
+    it('contains native window chrome cooperation at the Desktop and Reef root seam', () => {
+      const desktopIndex = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'index.ts'), 'utf-8')
+      const preload = fs.readFileSync(path.join(DESKTOP_SRC_DIR, 'preload', 'index.ts'), 'utf-8')
+      const root = fs.readFileSync(path.join(APP_SRC, 'root.tsx'), 'utf-8')
+      const desktopWindowStyles = fs.readFileSync(
+        path.join(APP_SRC, 'styles', 'desktop-window.css.ts'),
+        'utf-8',
+      )
+      const sidebar = fs.readFileSync(path.join(COMPONENTS_DIR, 'sidebar', 'sidebar.tsx'), 'utf-8')
+      const leafStyles = [
+        fs.readFileSync(path.join(COMPONENTS_DIR, 'sidebar', 'sidebar.css.ts'), 'utf-8'),
+        fs.readFileSync(
+          path.join(COMPONENTS_DIR, 'content-container', 'content-container.css.ts'),
+          'utf-8',
+        ),
+      ]
+
+      expect(desktopIndex).toMatch(/process\.platform === 'darwin'[\s\S]*titleBarStyle: 'hidden'/)
+      expect(desktopIndex).toContain('trafficLightPosition: { x: 14, y: 14 }')
+      expect(desktopIndex).not.toContain('WebContentsView')
+      expect(desktopIndex).toContain('-webkit-app-region: drag')
+      expect(preload).toContain(
+        'document.documentElement.dataset.coralDesktopPlatform = process.platform',
+      )
+      expect(root).toMatch(
+        /<ThemeBootstrapScript \/>\s*<div aria-hidden className=\{desktopWindowStyles\.dragRegion\} \/>\s*\{children\}/,
+      )
+      expect(desktopWindowStyles).toContain("html[data-coral-desktop-platform='darwin']")
+      expect(desktopWindowStyles).toContain("electronAppRegion('drag')")
+      expect(desktopWindowStyles).toContain("electronAppRegion('no-drag')")
+      expect(desktopWindowStyles).toContain("position: 'fixed'")
+      expect(root).toContain('<main data-coral-window-error>')
+      expect(desktopWindowStyles).toContain('[data-coral-window-error]')
+      expect(sidebar).toContain('data-coral-sidebar-header')
+
+      for (const source of leafStyles) {
+        expect(source).not.toMatch(/titlebar|trafficLight|WebkitAppRegion|coralDesktopPlatform/i)
+      }
+    })
+
     it('does not expose Coral transport through the renderer or Desktop preload', () => {
       const appRenderer = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'app-renderer.ts'), 'utf-8')
       const desktopIndex = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'index.ts'), 'utf-8')

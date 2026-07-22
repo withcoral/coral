@@ -7,6 +7,7 @@ import {
 } from './components/sidebar/sidebar-state'
 import { NavigationProgressBar } from './components/navigation-progress-bar'
 import './styles/globals.css'
+import * as desktopWindowStyles from './styles/desktop-window.css'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
 import { lightTheme } from './wax/theme/theme-light.css'
@@ -52,6 +53,7 @@ function ThemedBody({ children }: { children: React.ReactNode }) {
   return (
     <body className={themeClass} style={{ colorScheme: theme }} suppressHydrationWarning>
       <ThemeBootstrapScript />
+      <div aria-hidden className={desktopWindowStyles.dragRegion} />
       {children}
       <ScrollRestoration />
       <Scripts />
@@ -124,7 +126,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
 
   return (
-    <main>
+    <main data-coral-window-error>
       <h1>{message}</h1>
       <p>{details}</p>
       {stack && (

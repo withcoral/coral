@@ -102,9 +102,10 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
     <nav
       aria-label="Coral"
       className={classNames(styles.sidebar, { [styles.sidebarMinimized]: isMinimized })}
+      data-coral-sidebar
       data-sidebar-minimized={isMinimized}
     >
-      <div className={styles.header}>
+      <div className={styles.header} data-coral-sidebar-header>
         {isMinimized && (
           <div className={styles.toggleButton}>
             <KeyboardShortcut
