@@ -1518,6 +1518,10 @@ async fn list_catalog_surfaces_table_functions() {
         "number"
     );
     assert_eq!(
+        catalog["items"][0]["table_function"]["arguments"][0]["data_type"],
+        "Utf8"
+    );
+    assert_eq!(
         catalog["items"][0]["table_function"]["result_columns"][0]["column_name"],
         "title"
     );

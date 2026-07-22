@@ -599,6 +599,7 @@ struct CatalogTableFunctionValue<'a> {
 #[schemars(deny_unknown_fields)]
 struct TableFunctionArgumentValue<'a> {
     name: &'a str,
+    data_type: &'a str,
     required: bool,
     values: &'a [String],
 }
@@ -607,6 +608,7 @@ impl<'a> From<&'a ProtoTableFunctionArgument> for TableFunctionArgumentValue<'a>
     fn from(argument: &'a ProtoTableFunctionArgument) -> Self {
         Self {
             name: &argument.name,
+            data_type: &argument.data_type,
             required: argument.required,
             values: &argument.values,
         }

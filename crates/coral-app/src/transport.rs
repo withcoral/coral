@@ -445,6 +445,7 @@ pub(crate) fn table_function_to_proto(
             .into_iter()
             .map(|argument| TableFunctionArgument {
                 name: argument.name,
+                data_type: argument.data_type,
                 required: argument.required,
                 values: argument.values,
             })
@@ -949,6 +950,7 @@ mod tests {
             description: "Search demo records".to_string(),
             arguments: vec![coral_engine::TableFunctionArgumentInfo {
                 name: "payload".to_string(),
+                data_type: "Json".to_string(),
                 required: true,
                 values: Vec::new(),
             }],
@@ -965,6 +967,7 @@ mod tests {
         assert_eq!(proto.description, "Search demo records");
         assert_eq!(proto.arguments.len(), 1);
         assert_eq!(proto.arguments[0].name, "payload");
+        assert_eq!(proto.arguments[0].data_type, "Json");
         assert!(proto.arguments[0].required);
         assert!(proto.arguments[0].values.is_empty());
     }

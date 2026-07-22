@@ -117,6 +117,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
     };
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.name, "lookup_issue");
+    assert_eq!(function.arguments[0].data_type, "Utf8");
     let table = match response.items[1].item.as_ref().expect("catalog item") {
         catalog_item::Item::Table(table) => table,
         catalog_item::Item::TableFunction(_) => panic!("expected table"),

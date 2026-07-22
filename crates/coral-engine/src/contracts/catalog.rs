@@ -61,6 +61,8 @@ pub struct DescribeTableInfo {
 pub struct TableFunctionArgumentInfo {
     /// Argument name as used in a named SQL function call.
     pub name: String,
+    /// Data type rendered in `Arrow`/`DataFusion` string form.
+    pub data_type: String,
     /// Whether callers must provide this argument.
     pub required: bool,
     /// Allowed values, if the source declares an enum-like value set.

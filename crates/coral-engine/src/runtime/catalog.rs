@@ -36,6 +36,7 @@ pub(crate) struct CatalogTableFunction {
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogTableFunctionArgument {
     pub(crate) name: String,
+    pub(crate) data_type: String,
     pub(crate) required: bool,
     pub(crate) values: Vec<String>,
 }
@@ -164,6 +165,8 @@ fn search_limits_json(limits: Option<&SearchLimitsSpec>) -> Result<Option<String
 #[derive(Serialize)]
 struct TableFunctionArgumentJson<'a> {
     name: &'a str,
+    #[serde(rename = "type")]
+    data_type: &'a str,
     required: bool,
     values: &'a [String],
 }
@@ -172,6 +175,7 @@ impl<'a> From<&'a CatalogTableFunctionArgument> for TableFunctionArgumentJson<'a
     fn from(argument: &'a CatalogTableFunctionArgument) -> Self {
         Self {
             name: &argument.name,
+            data_type: &argument.data_type,
             required: argument.required,
             values: &argument.values,
         }
@@ -569,6 +573,7 @@ pub(crate) fn collect_table_functions(
                 .into_iter()
                 .map(|argument| TableFunctionArgumentInfo {
                     name: argument.name,
+                    data_type: argument.data_type,
                     required: argument.required,
                     values: argument.values,
                 })
@@ -608,6 +613,7 @@ fn catalog_table_functions(
                         .iter()
                         .map(|argument| CatalogTableFunctionArgument {
                             name: argument.name.clone(),
+                            data_type: argument.data_type.as_manifest_str().to_string(),
                             required: argument.required,
                             values: argument.values.clone(),
                         })
