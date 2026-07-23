@@ -3,7 +3,6 @@ import type React from 'react'
 
 import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
-import { Typography } from '@/wax/components/typography'
 
 import * as styles from './banner.css'
 
@@ -40,8 +39,8 @@ export function Banner({
     >
       <Icon className={styles.icon} color="inherit" name={ICONS[variant]} size="18" />
       <div className={styles.content}>
-        {title ? <Typography.BodySmallStrong>{title}</Typography.BodySmallStrong> : null}
-        <Typography.BodySmall as="div">{children}</Typography.BodySmall>
+        {title ? <span className={styles.title}>{title}</span> : null}
+        <div className={styles.message}>{children}</div>
       </div>
       {action ? <div className={styles.action}>{action}</div> : null}
     </div>
