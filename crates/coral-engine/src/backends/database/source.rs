@@ -19,9 +19,7 @@ use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresC
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
 use datafusion_table_providers::util::secrets::to_secret_map;
 
-use super::catalog::{
-    DatabaseCatalog, DatabaseRelation, boxed_provider_error, build_database_catalog, provider_error,
-};
+use super::catalog::{DatabaseCatalog, DatabaseRelation, build_database_catalog, provider_error};
 use super::columns::{MYSQL_COLUMNS_SQL, POSTGRES_COLUMNS_SQL, SQLITE_COLUMNS_SQL};
 use super::registry::{DatabasePool, DatabasePoolRegistry};
 use crate::backends::shared::template::{RenderContext, render_template};
@@ -291,7 +289,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
         let pool = SqliteConnectionPoolFactory::new(&path, Mode::File, SQLITE_BUSY_TIMEOUT)
             .build()
             .await
-            .map_err(boxed_provider_error)?;
+            .map_err(provider_error)?;
         build_database_catalog(
             Arc::new(pool),
             SQLITE_RELATIONS_SQL,
@@ -509,15 +507,15 @@ mod tests {
         assert_eq!(table.catalog_name.as_deref(), Some("coral_db"));
         assert_eq!(table.schema_name, "main");
         assert_eq!(table.table_name, "users");
-        assert_eq!(
-            table
-                .columns
-                .iter()
-                .map(|column| column.name.as_str())
-                .collect::<Vec<_>>(),
-            ["id", "name"],
-            "database columns flow through coral.columns"
-        );
+        let id = table.columns.first().expect("id column metadata");
+        assert_eq!(id.name, "id");
+        assert_eq!(id.data_type, "INTEGER");
+        assert_eq!(id.ordinal_position, 0);
+        let name = table.columns.get(1).expect("name column metadata");
+        assert_eq!(name.name, "name");
+        assert_eq!(name.data_type, "TEXT");
+        assert!(!name.nullable);
+        assert_eq!(name.ordinal_position, 1);
 
         let result = CoralQuery::execute_sql(
             &sources,

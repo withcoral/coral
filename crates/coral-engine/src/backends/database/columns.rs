@@ -13,7 +13,7 @@ use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion_table_providers::sql::db_connection_pool::dbconnection::query_arrow;
 use futures::TryStreamExt as _;
 
-use super::catalog::{Pool, boxed_provider_error, inventory_column};
+use super::catalog::{Pool, inventory_column, provider_error};
 use crate::backends::{ColumnInventoryFilter, DatabaseColumnFetcher, DatabaseColumnRow};
 
 /// Normalized inventory queries. Every provider projects the same six Utf8
@@ -96,10 +96,10 @@ impl<T: 'static, P: 'static> DatabaseColumnFetcher for PooledColumnFetcher<T, P>
             Field::new("data_type", DataType::Utf8, false),
             Field::new("is_nullable", DataType::Utf8, false),
         ]));
-        let connection = self.pool.connect().await.map_err(boxed_provider_error)?;
+        let connection = self.pool.connect().await.map_err(provider_error)?;
         let batches = query_arrow(connection, sql, Some(schema))
             .await
-            .map_err(|error| DataFusionError::External(Box::new(error)))?
+            .map_err(provider_error)?
             .try_collect::<Vec<_>>()
             .await?;
 
@@ -134,11 +134,17 @@ impl<T: 'static, P: 'static> DatabaseColumnFetcher for PooledColumnFetcher<T, P>
 }
 
 fn parse_ordinal(value: &str) -> DataFusionResult<i32> {
-    value.trim().parse::<i32>().map_err(|_parse_error| {
+    let ordinal = value.trim().parse::<i32>().map_err(|_parse_error| {
         DataFusionError::Execution(format!(
             "database column inventory returned non-integer ordinal_position '{value}'"
         ))
-    })
+    })?;
+    if ordinal < 0 {
+        return Err(DataFusionError::Execution(format!(
+            "database column inventory returned negative ordinal_position '{value}'"
+        )));
+    }
+    Ok(ordinal)
 }
 
 fn filter_matches_nothing(filter: &ColumnInventoryFilter) -> bool {
@@ -202,6 +208,12 @@ mod tests {
     use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
 
     use super::*;
+
+    #[test]
+    fn parse_ordinal_rejects_negative_values() {
+        let error = parse_ordinal("-1").expect_err("negative ordinal must fail");
+        assert!(error.to_string().contains("negative ordinal_position '-1'"));
+    }
 
     #[test]
     fn compose_columns_sql_without_filter_returns_base() {

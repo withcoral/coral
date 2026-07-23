@@ -628,7 +628,7 @@ impl QueryRuntimeAdapter {
     ) -> Result<CatalogInfo, CoreError> {
         let mut tables = Vec::new();
         for schema_name in schema_names {
-            tables.extend(self.list_tables(None, Some(schema_name), None).await?);
+            tables.extend(self.list_tables(Some(""), Some(schema_name), None).await?);
         }
         for catalog_name in catalog_names {
             tables.extend(self.list_tables(Some(catalog_name), None, None).await?);
@@ -696,13 +696,12 @@ impl QueryRuntimeAdapter {
     }
 
     fn qualified_table_reference(table: &TableInfo) -> String {
-        if table.catalog_name.is_empty() {
-            format!("`{}.{}`", table.schema_name, table.table_name)
-        } else {
-            format!(
+        match table.catalog_name.as_deref() {
+            Some(catalog_name) => format!(
                 "`{}.{}.{}`",
-                table.catalog_name, table.schema_name, table.table_name
-            )
+                catalog_name, table.schema_name, table.table_name
+            ),
+            None => format!("`{}.{}`", table.schema_name, table.table_name),
         }
     }
 
@@ -1567,8 +1566,28 @@ mod tests {
         UdfRuntimeTableFunctionPublish,
     };
 
-    async fn adapter_with_table() -> QueryRuntimeAdapter {
-        let active_sources = vec![RegisteredSource {
+    async fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
+        let ctx = Arc::new(SessionContext::new());
+        catalog::register(&ctx, &active_sources, &[], &[]).expect("catalog should register");
+        let tables = catalog::collect_static_tables(&active_sources);
+        QueryRuntimeAdapter {
+            ctx,
+            fallback_runtime: None,
+            memory: QueryMemoryConfig::default(),
+            active_sources,
+            column_fetchers: Vec::new(),
+            source_function_names: HashSet::new(),
+            udfs_installed: false,
+            tables,
+            table_functions: Vec::new(),
+            failures: Vec::new(),
+            name_to_source: HashMap::new(),
+            query_result_observers: Vec::new(),
+        }
+    }
+
+    fn demo_source() -> RegisteredSource {
+        RegisteredSource {
             qualified_name: SourceQualifiedName::Schema("demo".to_string()),
             tables: vec![RegisteredTable {
                 schema_name: None,
@@ -1591,39 +1610,31 @@ mod tests {
             }],
             table_functions: Vec::new(),
             inputs: Vec::new(),
-        }];
-        let ctx = Arc::new(SessionContext::new());
-        catalog::register(&ctx, &active_sources, &[], &[]).expect("catalog should register");
-        let tables = catalog::collect_static_tables(&active_sources);
-        QueryRuntimeAdapter {
-            ctx,
-            fallback_runtime: None,
-            memory: QueryMemoryConfig::default(),
-            active_sources,
-            column_fetchers: Vec::new(),
-            source_function_names: HashSet::new(),
-            udfs_installed: false,
-            tables,
-            table_functions: vec![TableFunctionInfo {
-                schema_name: "demo".to_string(),
-                function_name: "search_events".to_string(),
-                description: "Search events.".to_string(),
+        }
+    }
+
+    fn catalog_source(catalog_name: &str, schema_name: &str) -> RegisteredSource {
+        RegisteredSource {
+            qualified_name: SourceQualifiedName::Catalog(catalog_name.to_string()),
+            tables: vec![RegisteredTable {
+                schema_name: Some(schema_name.to_string()),
+                table_name: "events".to_string(),
+                description: String::new(),
                 guide: String::new(),
                 require_guide_read: false,
-                arguments: Vec::new(),
-                result_columns: Vec::new(),
-                kind: coral_spec::SourceTableFunctionKind::Table,
+                columns: Vec::new(),
+                filters: Vec::new(),
+                required_filters: Vec::new(),
                 search_limits: None,
             }],
-            failures: Vec::new(),
-            name_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
-            query_result_observers: Vec::new(),
+            table_functions: Vec::new(),
+            inputs: Vec::new(),
         }
     }
 
     #[tokio::test]
     async fn describe_table_hit_returns_full_table_without_missing_context() {
-        let result = adapter_with_table()
+        let result = adapter_with_sources(vec![demo_source()])
             .await
             .describe_table(None, "demo", "events")
             .await
@@ -1636,7 +1647,7 @@ mod tests {
 
     #[tokio::test]
     async fn describe_table_miss_returns_columnless_context_tables() {
-        let result = adapter_with_table()
+        let result = adapter_with_sources(vec![demo_source()])
             .await
             .describe_table(None, "demo", "missing")
             .await
@@ -1654,7 +1665,16 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_datafusion_catalog_filters_schema_metadata() {
-        let adapter = adapter_with_table().await;
+        let mut adapter = adapter_with_sources(vec![demo_source()]).await;
+        adapter.table_functions.push(TableFunctionInfo {
+            schema_name: "demo".to_string(),
+            function_name: "search_events".to_string(),
+            description: "Search events.".to_string(),
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
+        });
 
         let tables = adapter
             .list_tables(
@@ -1675,6 +1695,52 @@ mod tests {
             .expect("catalog info");
         assert_eq!(catalog.tables.len(), 1);
         assert_eq!(catalog.table_functions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn describe_table_rejects_ambiguous_catalog_wildcard() {
+        let error = adapter_with_sources(vec![
+            catalog_source("analytics", "public"),
+            catalog_source("warehouse", "public"),
+        ])
+        .await
+        .describe_table(None, "public", "events")
+        .await
+        .expect_err("wildcard reference spanning catalogs must be ambiguous");
+        let CoreError::InvalidInput(detail) = error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(detail.contains("`analytics.public.events`"));
+        assert!(detail.contains("`warehouse.public.events`"));
+    }
+
+    #[tokio::test]
+    async fn catalog_info_for_source_schema_excludes_database_internal_schema() {
+        let schema_source = RegisteredSource {
+            qualified_name: SourceQualifiedName::Schema("public".to_string()),
+            tables: vec![RegisteredTable {
+                schema_name: None,
+                table_name: "events".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                columns: Vec::new(),
+                filters: Vec::new(),
+                required_filters: Vec::new(),
+                search_limits: None,
+            }],
+            table_functions: Vec::new(),
+            inputs: Vec::new(),
+        };
+        let catalog =
+            adapter_with_sources(vec![schema_source, catalog_source("warehouse", "public")])
+                .await
+                .catalog_info_for_sources(&["public"], &[])
+                .await
+                .expect("source-scoped catalog info");
+
+        assert_eq!(catalog.tables.len(), 1);
+        assert!(catalog.tables[0].catalog_name.is_none());
+        assert_eq!(catalog.tables[0].schema_name, "public");
     }
 
     #[test]

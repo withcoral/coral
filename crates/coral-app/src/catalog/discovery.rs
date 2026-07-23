@@ -669,21 +669,16 @@ fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool 
 
 /// An omitted catalog is a wildcard, matching the engine's catalog-filter
 /// semantics and `describe_table`'s behavior; a supplied catalog is strict.
-/// A dotted schema with no catalog also matches its `catalog.schema` reading,
-/// so the compound names advertised in miss-hints replay verbatim. Callers
-/// that resolve a single table reject wildcard matches spanning more than one
-/// catalog instead of guessing.
+/// Callers that resolve a single table reject wildcard matches spanning more
+/// than one catalog instead of guessing. Catalog and schema must be supplied
+/// separately; the service boundary rejects compound `catalog.schema` values.
 fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
     match table_ref.catalog_name {
         Some(catalog_name) => {
             table.catalog_name.as_deref() == Some(catalog_name)
                 && table.schema_name == table_ref.schema_name
         }
-        None => {
-            table.schema_name == table_ref.schema_name
-                || (table.catalog_name.is_some()
-                    && table_addressable_schema_name(table) == table_ref.schema_name)
-        }
+        None => table.schema_name == table_ref.schema_name,
     }
 }
 
@@ -792,11 +787,11 @@ mod tests {
             "an omitted catalog is a wildcard, matching describe_table"
         );
         assert!(
-            table_matches_ref(
+            !table_matches_ref(
                 main_table,
                 CatalogTableRef::new(None, "coral_db.main", "users")
             ),
-            "advertised compound schema hints must replay verbatim"
+            "a compound schema must not be reinterpreted as catalog.schema"
         );
         assert!(!table_matches_ref(
             main_table,
