@@ -9,7 +9,9 @@ use crate::bootstrap::AppError;
 use crate::state::db::schema::IdentitySpecs;
 use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
-use coral_spec::validate_identity_spec_name;
+use coral_spec::{
+    IdentityManifest, IdentitySpecType, parse_identity_manifest_yaml, validate_identity_spec_name,
+};
 use uuid::{Uuid, Variant, Version};
 
 /// Opaque database identity for one persisted identity spec.
@@ -148,43 +150,6 @@ pub(crate) struct IdentitySpecRecord {
     pub(crate) updated_at_unix_nanos: i64,
 }
 
-/// Validated authored fields used to insert or replace an identity spec.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct IdentitySpecWrite {
-    version: String,
-    description: String,
-    issuer: String,
-    identity_type: String,
-    manifest_yaml: String,
-}
-
-impl IdentitySpecWrite {
-    /// Validate authored fields before they can reach the database repository.
-    pub(crate) fn new(
-        version: impl Into<String>,
-        description: impl Into<String>,
-        issuer: impl Into<String>,
-        identity_type: impl Into<String>,
-        manifest_yaml: impl Into<String>,
-    ) -> Result<Self, AppError> {
-        let write = Self {
-            version: version.into(),
-            description: description.into(),
-            issuer: issuer.into(),
-            identity_type: identity_type.into(),
-            manifest_yaml: manifest_yaml.into(),
-        };
-        validate_identity_spec_fields([
-            &write.version,
-            &write.issuer,
-            &write.identity_type,
-            &write.manifest_yaml,
-        ])
-        .map_err(AppError::InvalidInput)?;
-        Ok(write)
-    }
-}
-
 #[derive(Debug, sqlx::FromRow)]
 struct IdentitySpecRow {
     id: String,
@@ -284,9 +249,11 @@ impl IdentitySpecsRepo<'_, CoralTx<'_>> {
     pub(crate) async fn upsert(
         &mut self,
         key: &IdentitySpecKey,
-        spec: &IdentitySpecWrite,
+        manifest: &IdentityManifest,
+        manifest_yaml: &str,
         now_unix_nanos: i64,
     ) -> Result<IdentitySpecRecord, AppError> {
+        validate_identity_spec_write(key, manifest, manifest_yaml)?;
         validate_write_timestamp(now_unix_nanos)?;
         let current_updated_at =
             Expr::col((IdentitySpecs::Table, IdentitySpecs::UpdatedAtUnixNanos));
@@ -328,11 +295,11 @@ impl IdentitySpecsRepo<'_, CoralTx<'_>> {
                 Expr::val(id.as_str()),
                 Expr::val(key.scope.workspace_id().map(ToString::to_string)),
                 Expr::val(key.name.clone()),
-                Expr::val(spec.version.clone()),
-                Expr::val(spec.description.clone()),
-                Expr::val(spec.issuer.clone()),
-                Expr::val(spec.identity_type.clone()),
-                Expr::val(spec.manifest_yaml.clone()),
+                Expr::val(manifest.version.clone()),
+                Expr::val(manifest.description.clone()),
+                Expr::val(manifest.issuer.clone()),
+                Expr::val(identity_spec_type_label(manifest.identity_type)),
+                Expr::val(manifest_yaml),
                 Expr::val(now_unix_nanos),
                 Expr::val(now_unix_nanos),
             ])
@@ -389,6 +356,42 @@ fn validate_identity_spec_fields(fields: [&str; 4]) -> Result<(), String> {
         return Err("identity spec has an empty required field".to_string());
     }
     Ok(())
+}
+
+fn validate_identity_spec_write(
+    key: &IdentitySpecKey,
+    manifest: &IdentityManifest,
+    manifest_yaml: &str,
+) -> Result<(), AppError> {
+    if key.name() != manifest.name {
+        return Err(AppError::InvalidInput(format!(
+            "identity spec key name '{}' does not match manifest name '{}'",
+            key.name(),
+            manifest.name
+        )));
+    }
+    validate_identity_spec_fields([
+        &manifest.version,
+        &manifest.issuer,
+        identity_spec_type_label(manifest.identity_type),
+        manifest_yaml,
+    ])
+    .map_err(AppError::InvalidInput)?;
+    let parsed_manifest = parse_identity_manifest_yaml(manifest_yaml)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    if &parsed_manifest != manifest {
+        return Err(AppError::InvalidInput(
+            "identity spec manifest YAML does not match the validated manifest".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+const fn identity_spec_type_label(identity_type: IdentitySpecType) -> &'static str {
+    match identity_type {
+        IdentitySpecType::OAuth => "oauth",
+        IdentitySpecType::FixedToken => "fixed_token",
+    }
 }
 
 fn validate_write_timestamp(now_unix_nanos: i64) -> Result<(), AppError> {
@@ -476,13 +479,14 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        IdentitySpecId, IdentitySpecKey, IdentitySpecRecord, IdentitySpecWrite,
-        identity_spec_columns,
+        IdentitySpecId, IdentitySpecKey, IdentitySpecRecord, identity_spec_columns,
+        validate_identity_spec_write,
     };
     use crate::bootstrap::AppError;
     use crate::state::db::schema::IdentitySpecs;
     use crate::state::db::{CoralDb, CoralTx, DbError, DbRepos, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
+    use coral_spec::{IdentityManifest, parse_identity_manifest_yaml};
 
     #[derive(Clone, Copy)]
     struct SpecSeed {
@@ -561,20 +565,44 @@ mod tests {
     }
 
     #[test]
-    fn identity_spec_writes_validate_required_fields() {
-        for (version, issuer, identity_type, manifest_yaml) in [
-            ("", "github", "oauth", "kind: identity"),
-            ("1.0.0", " ", "oauth", "kind: identity"),
-            ("1.0.0", "github", "", "kind: identity"),
-            ("1.0.0", "github", "oauth", "\n"),
-        ] {
-            assert!(matches!(
-                IdentitySpecWrite::new(version, "", issuer, identity_type, manifest_yaml),
-                Err(AppError::InvalidInput(_))
-            ));
-        }
-        IdentitySpecWrite::new("1.0.0", "", "github", "oauth", "kind: identity")
+    fn identity_spec_write_inputs_validate_repository_invariants() {
+        let key = IdentitySpecKey::global("github").expect("key");
+        let (other_manifest, other_yaml) = valid_manifest("other", "1.0.0");
+        assert!(matches!(
+            validate_identity_spec_write(&key, &other_manifest, &other_yaml),
+            Err(AppError::InvalidInput(_))
+        ));
+
+        let (mut manifest, manifest_yaml) = valid_manifest(key.name(), "1.0.0");
+        manifest.version.clear();
+        assert!(matches!(
+            validate_identity_spec_write(&key, &manifest, &manifest_yaml),
+            Err(AppError::InvalidInput(_))
+        ));
+
+        let blank_description_yaml = format!(
+            "kind: identity\nspec_version: 1\nname: {}\nversion: 1.0.0\ndescription: ''\nissuer: github\ntype: fixed_token\naudience:\n  host: api.github.com\n",
+            key.name()
+        );
+        let blank_description_manifest = parse_identity_manifest_yaml(&blank_description_yaml)
+            .expect("valid manifest with blank description");
+        validate_identity_spec_write(&key, &blank_description_manifest, &blank_description_yaml)
             .expect("blank descriptions are valid");
+        assert!(matches!(
+            validate_identity_spec_write(&key, &blank_description_manifest, "\n"),
+            Err(AppError::InvalidInput(_))
+        ));
+
+        let (manifest, _) = valid_manifest(key.name(), "1.0.0");
+        let (_, mismatched_yaml) = valid_manifest(key.name(), "2.0.0");
+        assert!(matches!(
+            validate_identity_spec_write(&key, &manifest, &mismatched_yaml),
+            Err(AppError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            validate_identity_spec_write(&key, &manifest, "not: [valid"),
+            Err(AppError::InvalidInput(_))
+        ));
     }
 
     #[tokio::test]
@@ -739,26 +767,26 @@ mod tests {
         let (_temp, db) = open_sqlite().await;
         let global = IdentitySpecKey::global("github").expect("global key");
         let mut tx = db.begin().await.expect("begin mutation transaction");
+        let (manifest, manifest_yaml) = valid_manifest(global.name(), "1.0.0");
         let inserted = tx
             .identity_specs()
-            .upsert(&global, &valid_write("1.0.0"), 10)
+            .upsert(&global, &manifest, &manifest_yaml, 10)
             .await
             .expect("insert global spec");
         assert_eq!(
             (
                 inserted.version.as_str(),
+                inserted.identity_type.as_str(),
                 inserted.created_at_unix_nanos,
                 inserted.updated_at_unix_nanos,
             ),
-            ("1.0.0", 10, 10)
+            ("1.0.0", "fixed_token", 10, 10)
         );
-        tx.identity_specs()
-            .upsert(&global, &valid_write("2.0.0"), 30)
+        assert_eq!(inserted.manifest_yaml, manifest_yaml);
+        upsert_spec(&mut tx, &global, "2.0.0", 30)
             .await
             .expect("replace global spec");
-        let stale_clock_update = tx
-            .identity_specs()
-            .upsert(&global, &valid_write("3.0.0"), 20)
+        let stale_clock_update = upsert_spec(&mut tx, &global, "3.0.0", 20)
             .await
             .expect("replace without timestamp regression");
         assert_eq!(
@@ -792,17 +820,14 @@ mod tests {
         let negative_timestamp = IdentitySpecKey::global("negative_timestamp").expect("key");
         let mut tx = db.begin().await.expect("begin validation transaction");
         assert!(matches!(
-            tx.identity_specs()
-                .upsert(&negative_timestamp, &valid_write("1.0.0"), -1)
-                .await,
+            upsert_spec(&mut tx, &negative_timestamp, "1.0.0", -1).await,
             Err(AppError::InvalidInput(_))
         ));
         tx.commit().await.expect("commit validation transaction");
 
         let rolled_back = IdentitySpecKey::global("rolled_back").expect("key");
         let mut tx = db.begin().await.expect("begin rollback transaction");
-        tx.identity_specs()
-            .upsert(&rolled_back, &valid_write("1.0.0"), 40)
+        upsert_spec(&mut tx, &rolled_back, "1.0.0", 40)
             .await
             .expect("insert rolled-back spec");
         assert!(
@@ -818,9 +843,7 @@ mod tests {
             IdentitySpecKey::workspace(missing_workspace, "github").expect("key");
         let mut tx = db.begin().await.expect("begin foreign-key transaction");
         assert!(matches!(
-            tx.identity_specs()
-                .upsert(&missing_workspace_key, &valid_write("1.0.0"), 50)
-                .await,
+            upsert_spec(&mut tx, &missing_workspace_key, "1.0.0", 50).await,
             Err(AppError::Database(_))
         ));
         tx.rollback().await.expect("rollback failed upsert");
@@ -870,12 +893,10 @@ mod tests {
             .ensure(workspace.as_str(), 1)
             .await
             .expect("create workspace");
-        tx.identity_specs()
-            .upsert(&global, &valid_write("global"), 10)
+        upsert_spec(&mut tx, &global, "global", 10)
             .await
             .expect("insert global spec");
-        tx.identity_specs()
-            .upsert(&workspace_key, &valid_write("workspace"), 12)
+        upsert_spec(&mut tx, &workspace_key, "workspace", 12)
             .await
             .expect("insert workspace spec");
         tx.commit().await.expect("commit seed transaction");
@@ -944,14 +965,24 @@ mod tests {
         records.iter().map(|record| record.key.name()).collect()
     }
 
-    fn valid_write(version: &str) -> IdentitySpecWrite {
-        IdentitySpecWrite::new(
-            version,
-            "test identity spec",
-            "github",
-            "oauth",
-            "kind: identity\nname: github\n",
-        )
-        .expect("valid identity spec write")
+    async fn upsert_spec(
+        tx: &mut CoralTx<'_>,
+        key: &IdentitySpecKey,
+        version: &str,
+        now_unix_nanos: i64,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        let (manifest, manifest_yaml) = valid_manifest(key.name(), version);
+        tx.identity_specs()
+            .upsert(key, &manifest, &manifest_yaml, now_unix_nanos)
+            .await
+    }
+
+    fn valid_manifest(name: &str, version: &str) -> (IdentityManifest, String) {
+        let manifest_yaml = format!(
+            "kind: identity\nspec_version: 1\nname: {name}\nversion: {version}\ndescription: Test identity spec\nissuer: github\ntype: fixed_token\naudience:\n  host: api.github.com\n"
+        );
+        let manifest =
+            parse_identity_manifest_yaml(&manifest_yaml).expect("valid identity manifest");
+        (manifest, manifest_yaml)
     }
 }
