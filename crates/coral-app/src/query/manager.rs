@@ -1814,7 +1814,7 @@ mod tests {
     use crate::task::store::TaskStore;
 
     struct QueryManagerFixture {
-        _temp: TempDir,
+        temp: TempDir,
         manager: QueryManager,
         db: Arc<CoralDb>,
     }
@@ -1845,11 +1845,7 @@ mod tests {
             layout,
             providers,
         );
-        QueryManagerFixture {
-            _temp: temp,
-            manager,
-            db,
-        }
+        QueryManagerFixture { temp, manager, db }
     }
 
     async fn query_manager_with_unavailable_keychain() -> QueryManagerFixture {
@@ -1879,11 +1875,7 @@ mod tests {
             layout,
             Vec::new(),
         );
-        QueryManagerFixture {
-            _temp: temp,
-            manager,
-            db,
-        }
+        QueryManagerFixture { temp, manager, db }
     }
 
     fn install_keychain_github_source(config_store: &ConfigStore, workspace_name: &WorkspaceName) {
@@ -3967,7 +3959,7 @@ tables:
         reason = "one OpenAPI fixture keeps all selected-only cases on the same installed source"
     )]
     fn selected_http_manifest(fixture: &QueryManagerFixture, server_uri: &str) -> String {
-        let openapi_file = fixture._temp.path().join("selected-http-openapi.yaml");
+        let openapi_file = fixture.temp.path().join("selected-http-openapi.yaml");
         std::fs::write(
             &openapi_file,
             format!(
@@ -4596,10 +4588,10 @@ surface:
             .manager
             .execute_sql(
                 &WorkspaceName::default(),
-                r#"SELECT title FROM selected_http.search_default_ignored(
+                r"SELECT title FROM selected_http.search_default_ignored(
                     q => 'ordinary',
                     exact => false
-                ) LIMIT 1"#,
+                ) LIMIT 1",
                 &QueryAttribution::default(),
             )
             .await
