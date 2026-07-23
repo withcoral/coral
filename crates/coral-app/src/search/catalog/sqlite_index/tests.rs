@@ -676,6 +676,33 @@ fn fts_ranking_weights_qualified_name_before_title_inside_limit() {
 }
 
 #[test]
+fn parent_and_column_lanes_have_independent_fts_limits() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let snapshot = split_lane_snapshot();
+    store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh");
+
+    let hits = store
+        .search_catalog(&["needle".to_string()], 1)
+        .expect("search");
+
+    assert!(
+        hits.hits
+            .iter()
+            .any(|hit| hit.doc_kind == CatalogIndexDocumentKind::CatalogTable
+                && hit.surface_name == "target")
+    );
+    assert!(
+        hits.hits
+            .iter()
+            .any(|hit| hit.doc_kind == CatalogIndexDocumentKind::ColumnHint)
+    );
+    assert!(hits.retrieval_limited);
+}
+
+#[test]
 fn exact_identifier_is_retained_before_prefix_limit() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
@@ -956,6 +983,44 @@ fn fts_weight_snapshot() -> CatalogIndexSnapshot {
                 searchable_text: "",
             }),
         ],
+    }
+}
+
+fn split_lane_snapshot() -> CatalogIndexSnapshot {
+    let mut documents = vec![document(DocumentInput {
+        doc_id: "catalog:table:fixture.target",
+        doc_kind: CatalogIndexDocumentKind::CatalogTable,
+        source_name: "fixture",
+        surface_kind: "table",
+        surface_name: "target",
+        field_name: "",
+        field_role: "",
+        qualified_name: "fixture.target",
+        title: "target",
+        description: "",
+        searchable_text: "needle",
+    })];
+    for (doc_id, field_name) in [
+        ("column:fixture.target:first", "first"),
+        ("column:fixture.target:second", "second"),
+    ] {
+        documents.push(document(DocumentInput {
+            doc_id,
+            doc_kind: CatalogIndexDocumentKind::ColumnHint,
+            source_name: "fixture",
+            surface_kind: "table",
+            surface_name: "target",
+            field_name,
+            field_role: "table_column",
+            qualified_name: "fixture.target.column",
+            title: field_name,
+            description: "",
+            searchable_text: "needle",
+        }));
+    }
+    CatalogIndexSnapshot {
+        fingerprint: "split-lane-fixture-v1".to_string(),
+        documents,
     }
 }
 

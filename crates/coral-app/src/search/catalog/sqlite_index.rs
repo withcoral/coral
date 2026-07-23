@@ -129,9 +129,18 @@ impl SqliteCatalogIndex {
         let mut retrieval_limited = false;
 
         if let Some(match_query) = fts_match_query(&terms) {
-            let mut fts_hits = fts_search(connection, workspace_name, &match_query, &terms, limit)?;
-            retrieval_limited |= truncate_probe_hits(&mut fts_hits, limit);
-            merge_hits(&mut hits, fts_hits);
+            for lane in CatalogRetrievalLane::ALL {
+                let mut fts_hits = fts_search(
+                    connection,
+                    workspace_name,
+                    &match_query,
+                    &terms,
+                    lane,
+                    limit,
+                )?;
+                retrieval_limited |= truncate_probe_hits(&mut fts_hits, limit);
+                merge_hits(&mut hits, fts_hits);
+            }
         }
 
         let exact_hits = exact_prefix_search(
@@ -236,6 +245,20 @@ pub(crate) enum CatalogIndexDocumentKind {
     CatalogTable,
     CatalogTableFunction,
     ColumnHint,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CatalogRetrievalLane {
+    Parent,
+    ColumnHint,
+}
+
+impl CatalogRetrievalLane {
+    const ALL: [Self; 2] = [Self::Parent, Self::ColumnHint];
+
+    fn is_column_hint(self) -> bool {
+        matches!(self, Self::ColumnHint)
+    }
 }
 
 impl CatalogIndexDocumentKind {
@@ -612,6 +635,7 @@ fn fts_search(
     workspace_name: &WorkspaceName,
     match_query: &str,
     terms: &[String],
+    lane: CatalogRetrievalLane,
     limit: usize,
 ) -> Result<Vec<CatalogSearchHit>, SqliteSearchError> {
     let mut statement = connection.prepare(
@@ -634,17 +658,20 @@ fn fts_search(
         FROM catalog_documents_fts f
         JOIN catalog_documents d
             ON d.workspace = f.workspace AND d.doc_id = f.doc_id
-        WHERE f.workspace = ?1 AND catalog_documents_fts MATCH ?2
+        WHERE f.workspace = ?1
+            AND catalog_documents_fts MATCH ?2
+            AND ?3 = (d.doc_kind = 'column_hint')
         ORDER BY bm25(catalog_documents_fts, 1.0, 1.0, 6.0, 8.0, 2.0, 1.0) ASC,
             d.doc_kind ASC,
             d.doc_id ASC
-        LIMIT ?3
+        LIMIT ?4
         ",
     )?;
     let rows = statement.query_map(
         params![
             workspace_name.as_str(),
             match_query,
+            lane.is_column_hint(),
             i64::try_from(probe_limit(limit)).unwrap_or(i64::MAX),
         ],
         |row| hit_from_row(row, terms, 2_000),
@@ -681,6 +708,7 @@ fn exact_prefix_search(
             d.searchable_text
         FROM catalog_documents d
         WHERE d.workspace = ?1
+            AND ?4 = (d.doc_kind = 'column_hint')
             AND (
                 lower(d.title) = ?2
                 OR lower(d.qualified_name) = ?2
@@ -707,23 +735,26 @@ fn exact_prefix_search(
             END,
             d.doc_kind ASC,
             d.doc_id ASC
-        LIMIT ?4
+        LIMIT ?5
         ",
     )?;
     for term in terms {
         let prefix = like_prefix_pattern(term);
-        let rows = statement.query_map(
-            params![
-                workspace_name.as_str(),
-                term,
-                prefix,
-                i64::try_from(per_term_limit).unwrap_or(i64::MAX),
-            ],
-            |row| hit_from_row(row, terms, 5_000),
-        )?;
-        let mut term_hits = collect_hits(rows)?;
-        *retrieval_limited |= truncate_probe_hits(&mut term_hits, limit);
-        hits.extend(term_hits);
+        for lane in CatalogRetrievalLane::ALL {
+            let rows = statement.query_map(
+                params![
+                    workspace_name.as_str(),
+                    term,
+                    prefix,
+                    lane.is_column_hint(),
+                    i64::try_from(per_term_limit).unwrap_or(i64::MAX),
+                ],
+                |row| hit_from_row(row, terms, 5_000),
+            )?;
+            let mut term_hits = collect_hits(rows)?;
+            *retrieval_limited |= truncate_probe_hits(&mut term_hits, limit);
+            hits.extend(term_hits);
+        }
     }
     Ok(hits)
 }
