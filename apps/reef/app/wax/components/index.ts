@@ -1,5 +1,7 @@
 import * as Card from './card'
 
+export { Banner } from './banner'
+export type { BannerProps, BannerVariant } from './banner'
 export * as Button from './button'
 export * as Combobox from './combobox'
 export * as DatePicker from './date-picker'
