@@ -43,7 +43,9 @@ pub fn parse_manifest_bundle_yaml(raw: &str) -> Result<ManifestBundle> {
     let mut identity_names = HashSet::new();
 
     for (index, document) in serde_yaml::Deserializer::from_str(raw).enumerate() {
-        let value = Value::deserialize(document).map_err(ManifestError::parse_yaml)?;
+        let yaml_value =
+            serde_yaml::Value::deserialize(document).map_err(ManifestError::parse_yaml)?;
+        let value: Value = serde_yaml::from_value(yaml_value).map_err(ManifestError::parse_yaml)?;
         if value.is_null() {
             continue;
         }
@@ -239,6 +241,44 @@ mod tests {
                 .to_string()
                 .contains("manifest bundle must contain exactly one source manifest document"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_yaml_mapping_keys_in_bundled_source_manifest() {
+        let raw = format!(
+            "{}---\n{}",
+            identity_yaml("github_oauth"),
+            r"
+name: demo
+dsl_version: 4
+universal_search:
+  routes:
+    issue_search:
+      execute: false
+      target:
+        operation_id: search_issues
+    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+"
+        );
+
+        let error = parse_manifest_bundle_yaml(&raw)
+            .expect_err("a bundled duplicate route key must not override an earlier policy");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate entry with key \"issue_search\""),
+            "unexpected duplicate-key error: {error}"
         );
     }
 
