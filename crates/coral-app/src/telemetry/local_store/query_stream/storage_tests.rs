@@ -5,11 +5,91 @@ use std::time::{Duration, SystemTime};
 use serde_json::json;
 
 use super::super::{StoredTraceStatus, TraceListSpanRecord, unix_nanos};
-use super::QueryStreamProjector;
 use super::test_support::{TraceFiles, span};
+use super::{QueryStreamProjector, query_stream_root_is_visible};
 
 #[test]
-fn query_stream_resolves_equal_mtime_files_as_one_bucket() {
+fn query_stream_search_detail_stops_before_unrelated_older_files() {
+    let files = TraceFiles::new();
+    let base_time = SystemTime::now() - Duration::from_secs(20);
+    let root_start = base_time + Duration::from_secs(5);
+    let root_end = base_time + Duration::from_secs(8);
+
+    let root = span("bounded-detail-trace", "selected-tool")
+        .named("coral.mcp.call_tool")
+        .remote_root()
+        .entry("tool", "search", "alpha")
+        .attrs(json!({
+            "mcp.method": "tools/call",
+            "mcp.tool.name": "search",
+        }))
+        .times(unix_nanos(root_start), unix_nanos(root_end))
+        .build();
+    let child = span("bounded-detail-trace", "selected-search")
+        .named("coral.search")
+        .child_of(&root)
+        .entry("search", "search", "alpha")
+        .attrs(json!({"coral.local.search.query": "bounded search phrase"}))
+        .times(
+            unix_nanos(root_start + Duration::from_secs(1)),
+            unix_nanos(root_start + Duration::from_secs(2)),
+        )
+        .build();
+    files.write_records_at(&[child, root], root_end);
+
+    // This trace-shaped directory fails if opened as JSONL. Its conservative
+    // end bound is before the selected root, so detail must not touch it.
+    files.write_directory_at("spans-unrelated-old.jsonl", base_time);
+
+    let detail = files
+        .get("bounded-detail-trace", "selected-tool", Some("alpha"))
+        .expect("get bounded detail without opening unrelated older file");
+    assert_eq!(detail.summary.root_span_id, "selected-tool");
+    assert_eq!(detail.summary.query, "bounded search phrase");
+    assert!(!detail.summary.row_count_recorded);
+    assert_eq!(detail.spans.len(), 2);
+}
+
+#[test]
+fn query_stream_remote_parent_visibility_stops_before_unrelated_newer_files() {
+    let files = TraceFiles::new();
+    let base_time = SystemTime::now() - Duration::from_secs(20);
+    let root_end = base_time + Duration::from_secs(5);
+    let newer_time = base_time + Duration::from_secs(10);
+
+    let root = span("forward-bounded-trace", "selected-tool")
+        .named("coral.mcp.call_tool")
+        .remote_root()
+        .entry("tool", "sql", "alpha")
+        .attrs(json!({
+            "mcp.method": "tools/call",
+            "mcp.tool.name": "sql",
+        }))
+        .times(1, unix_nanos(root_end))
+        .build();
+    files.write_at(&root, root_end);
+
+    // Root discovery has already selected `root`; its remote parent must stop
+    // the forward ancestry scan before this unreadable trace-shaped directory.
+    files.write_directory_at("spans-unrelated-new.jsonl", newer_time);
+
+    let store = files.store();
+    let trace_files = store
+        .jsonl_files_by_modified()
+        .expect("list trace store files");
+    let root_path = files.timestamped_path(root_end);
+    let root_file_index = trace_files
+        .iter()
+        .position(|file| file.path == root_path)
+        .expect("root file index");
+    assert!(
+        query_stream_root_is_visible(&trace_files, root_file_index, &root)
+            .expect("check remote-parent visibility")
+    );
+}
+
+#[test]
+fn query_stream_list_and_detail_resolve_equal_mtime_files_as_one_bucket() {
     let files = TraceFiles::new();
     let base_time = SystemTime::now() - Duration::from_secs(10);
     let common_modified = base_time + Duration::from_secs(1);
@@ -52,7 +132,7 @@ fn query_stream_resolves_equal_mtime_files_as_one_bucket() {
         files.write_named_at(name, span, common_modified);
     }
 
-    let summaries = files.list(10, 0, Some("alpha"));
+    let summaries = files.list_with_detail(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("equal-mtime summary");
     assert_eq!(summary.root_span_id, "selected-tool");
@@ -60,6 +140,19 @@ fn query_stream_resolves_equal_mtime_files_as_one_bucket() {
     assert_eq!(summary.row_count, 1);
     assert!(summary.row_count_recorded);
     assert_eq!(summary.span_count, 2);
+
+    let detail = files
+        .get("equal-mtime-trace", "selected-tool", Some("alpha"))
+        .expect("get equal-mtime operation detail");
+    assert_eq!(detail.summary, *summary);
+    assert_eq!(
+        detail
+            .spans
+            .iter()
+            .map(|span| span.span_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["selected-tool", "nested-query"]
+    );
 }
 
 #[test]
@@ -149,7 +242,7 @@ fn query_stream_offset_page_reads_enough_recent_files_then_stops() {
     files.write_at(&second, second_time);
     files.write_invalid_at(unreadable_time);
 
-    let summaries = files.list(1, 1, Some("alpha"));
+    let summaries = files.list_with_detail(1, 1, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("offset summary").root_span_id,
@@ -187,7 +280,7 @@ fn query_stream_completes_returned_operations_from_older_files() {
     files.write_at(&child, child_end);
     files.write_at(&root, operation_end);
 
-    let summaries = files.list(1, 0, Some("alpha"));
+    let summaries = files.list_with_detail(1, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("completed operation summary");
     assert_eq!(summary.root_span_id, "tool-root");
@@ -268,7 +361,7 @@ fn query_stream_keeps_newer_duplicate_span_across_files() {
         .build();
     files.write_at(&newer, newer_modified);
 
-    let summaries = files.list(1, 0, Some("alpha"));
+    let summaries = files.list_with_detail(1, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("newer duplicate summary").query,

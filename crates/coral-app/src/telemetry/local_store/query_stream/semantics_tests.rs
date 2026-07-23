@@ -34,7 +34,7 @@ fn query_stream_projects_outer_operations_and_selects_details_by_span() {
         .build();
 
     let files = TraceFiles::with_records(&[sql_tool, nested_query]);
-    let summaries = files.list(10, 0, None);
+    let summaries = files.list_with_detail(10, 0, None);
     assert_eq!(summaries.len(), 1);
     let sql_summary = summaries.first().expect("SQL summary");
     assert_eq!(sql_summary.root_span_id, "sql-tool");
@@ -90,7 +90,8 @@ fn query_stream_projects_search_text_for_tool_operation() {
         .times(12, 15)
         .build();
 
-    let summaries = project(&[tool, search, internal_query], Some("beta"));
+    let files = TraceFiles::with_records(&[tool, search, internal_query]);
+    let summaries = files.list_with_detail(10, 0, Some("beta"));
     let summary = summaries.first().expect("tool search summary");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summary.root_span_id, "search-tool");
@@ -109,7 +110,8 @@ fn query_stream_projects_search_text_for_direct_operation() {
         .attrs(json!({"coral.local.search.query": "direct search phrase"}))
         .build();
 
-    let summaries = project(&[search], Some("gamma"));
+    let files = TraceFiles::with_records(&[search]);
+    let summaries = files.list_with_detail(10, 0, Some("gamma"));
     let summary = summaries.first().expect("direct search summary");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summary.root_span_id, "direct-search");
@@ -183,7 +185,7 @@ fn query_stream_hides_entries_with_unfinished_local_parents() {
     .to_string();
 
     let files = TraceFiles::with_records(&[unfinished_child, remote_root]);
-    let summaries = files.list(10, 0, Some("alpha"));
+    let summaries = files.list_with_detail(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("remote summary").root_span_id,
@@ -266,7 +268,7 @@ fn query_stream_detail_excludes_nested_visible_operations() {
     nested_child.name = "coral.future.child".to_string();
 
     let files = TraceFiles::with_records(&[outer, nested, nested_child]);
-    let summaries = files.list(10, 0, None);
+    let summaries = files.list_with_detail(10, 0, None);
     assert_eq!(summaries.len(), 2);
 
     let detail = files
@@ -283,6 +285,8 @@ fn query_stream_detail_excludes_nested_visible_operations() {
         vec!["outer-query"]
     );
 }
+
+// LIST projection, pagination, and streaming behavior.
 
 #[test]
 fn query_stream_projects_many_operations_from_one_distributed_trace() {
@@ -357,7 +361,8 @@ fn query_stream_suppresses_protocol_descendants_without_method_enumeration() {
     direct_future.start_time_unix_nanos = 10;
     direct_future.end_time_unix_nanos = 11;
 
-    let summaries = project(&[protocol, protocol_child, direct_future], Some("alpha"));
+    let files = TraceFiles::with_records(&[protocol, protocol_child, direct_future]);
+    let summaries = files.list_with_detail(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("future summary");
     assert_eq!(summary.root_span_id, "direct-future");
@@ -419,7 +424,7 @@ fn query_stream_supports_legacy_operations_and_protocol_suppression() {
         search,
         search_catalog_query,
     ]);
-    let summaries = files.list(10, 0, Some("alpha"));
+    let summaries = files.list_with_detail(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 2);
     let search_summary = summaries.first().expect("legacy search summary");
     assert_eq!(search_summary.root_span_id, "legacy-search-tool");
@@ -479,7 +484,7 @@ fn query_stream_detail_uses_search_text_without_inheriting_internal_query() {
         .build();
 
     let files = TraceFiles::with_records(&[tool, search, query]);
-    let summaries = files.list(10, 0, Some("alpha"));
+    let summaries = files.list_with_detail(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("search tool summary");
     assert_eq!(summary.root_span_id, "search-tool");
@@ -531,8 +536,9 @@ fn query_stream_legacy_tool_requires_consistent_descendant_workspace() {
     beta.end_time_unix_nanos = 21;
 
     let records = [tool, alpha, beta];
-    assert!(project(&records, Some("alpha")).is_empty());
-    let global = project(&records, None);
+    let files = TraceFiles::with_records(&records);
+    assert!(files.list(10, 0, Some("alpha")).is_empty());
+    let global = files.list_with_detail(10, 0, None);
     assert_eq!(global.len(), 1);
     assert_eq!(
         global.first().expect("legacy tool").operation_name,

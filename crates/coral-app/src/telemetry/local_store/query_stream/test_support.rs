@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, FileTimes};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use serde_json::{Map, Value, json};
@@ -122,7 +123,13 @@ impl TraceFiles {
     }
 
     pub(super) fn write_at(&self, record: &TraceSpanRecord, modified: SystemTime) {
-        self.write_named_at(&timestamped_jsonl_path(modified), record, modified);
+        self.write_records_at(std::slice::from_ref(record), modified);
+    }
+
+    pub(super) fn write_records_at(&self, records: &[TraceSpanRecord], modified: SystemTime) {
+        let path = self.path(&timestamped_jsonl_path(modified));
+        write_record_file_lines(&path, records);
+        set_modified_time(&path, modified);
     }
 
     pub(super) fn write_named_at(
@@ -131,9 +138,18 @@ impl TraceFiles {
         record: &TraceSpanRecord,
         modified: SystemTime,
     ) {
-        let path = self.temp.path().join(name);
+        let path = self.path(name);
         write_record_file(&path, record);
         set_modified_time(&path, modified);
+    }
+
+    pub(super) fn write_directory_at(&self, name: &str, modified: SystemTime) {
+        let path = self.path(name);
+        fs::create_dir(&path).expect("trace-shaped directory");
+        fs::File::open(&path)
+            .expect("open trace-shaped directory")
+            .set_times(FileTimes::new().set_modified(modified))
+            .expect("set trace-shaped directory modified time");
     }
 
     pub(super) fn write_invalid_at(&self, modified: SystemTime) {
@@ -148,9 +164,18 @@ impl TraceFiles {
         offset: usize,
         workspace_name: Option<&str>,
     ) -> Vec<TraceSummaryRecord> {
-        TraceStore::new(self.temp.path().to_path_buf())
+        self.store()
             .list_query_stream_sync(limit, offset, workspace_name)
             .expect("list query stream")
+    }
+
+    pub(super) fn list_with_detail(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: Option<&str>,
+    ) -> Vec<TraceSummaryRecord> {
+        super::assert_query_stream_list_detail_parity(&self.store(), limit, offset, workspace_name)
     }
 
     pub(super) fn get(
@@ -159,10 +184,19 @@ impl TraceFiles {
         root_span_id: &str,
         workspace_name: Option<&str>,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
-        TraceStore::new(self.temp.path().to_path_buf()).get_query_stream_entry_sync(
-            trace_id,
-            root_span_id,
-            workspace_name,
-        )
+        self.store()
+            .get_query_stream_entry_sync(trace_id, root_span_id, workspace_name)
+    }
+
+    pub(super) fn store(&self) -> TraceStore {
+        TraceStore::new(self.temp.path().to_path_buf())
+    }
+
+    pub(super) fn path(&self, name: &str) -> PathBuf {
+        self.temp.path().join(name)
+    }
+
+    pub(super) fn timestamped_path(&self, modified: SystemTime) -> PathBuf {
+        self.path(&timestamped_jsonl_path(modified))
     }
 }
