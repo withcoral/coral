@@ -55,8 +55,7 @@ impl SearchCapabilities {
 /// credentials, URLs, or provider-authored errors are exposed.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SearchRouteIdentity {
-    pub(crate) installed_source_name: String,
-    pub(crate) schema_name: String,
+    pub(crate) source_name: String,
     pub(crate) function_name: String,
     pub(crate) authored_route_id: Option<String>,
 }
@@ -64,8 +63,7 @@ pub(crate) struct SearchRouteIdentity {
 impl From<crate::sources::universal_search::ResolvedUniversalSearchRoute> for SearchRouteIdentity {
     fn from(route: crate::sources::universal_search::ResolvedUniversalSearchRoute) -> Self {
         Self {
-            installed_source_name: route.owner_source_name,
-            schema_name: route.locator.schema_name,
+            source_name: route.source_name,
             function_name: route.locator.function_name,
             authored_route_id: route.authored_route_id,
         }
@@ -89,14 +87,14 @@ mod tests {
         let mut resolution = UniversalSearchResolution::empty(source);
         resolution.eligible_routes = (0..route_count)
             .map(|index| ResolvedUniversalSearchRoute {
-                owner_source_name: source.to_string(),
+                source_name: source.to_string(),
                 installation_revision: Uuid::nil(),
                 authored_route_id: Some(format!("route-{index:02}")),
                 target: ResolvedUniversalSearchTarget {
                     operation_id: format!("search_{index:02}"),
                 },
                 locator: UniversalSearchFunctionLocator {
-                    schema_name: format!("schema_{source}"),
+                    schema_name: source.to_string(),
                     function_name: format!("search_{index:02}"),
                 },
                 query_argument: ResolvedUniversalSearchArgument {
@@ -145,14 +143,14 @@ mod tests {
             capabilities
                 .eligible_routes
                 .first()
-                .map(|route| route.installed_source_name.as_str()),
+                .map(|route| route.source_name.as_str()),
             Some("alpha")
         );
         assert_eq!(
             capabilities
                 .eligible_routes
                 .last()
-                .map(|route| route.installed_source_name.as_str()),
+                .map(|route| route.source_name.as_str()),
             Some("zulu")
         );
     }

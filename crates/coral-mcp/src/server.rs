@@ -124,8 +124,7 @@ fn search_provider_fanout_from_capabilities(
         .into_iter()
         .map(|route| {
             SearchProviderRouteIdentity::new(
-                route.installed_source_name,
-                route.schema_name,
+                route.source_name,
                 route.function_name,
                 route.authored_route_id,
             )
@@ -1358,8 +1357,7 @@ mod startup_context_tests {
         let state = search_provider_fanout_from_capabilities(SearchCapabilities {
             provider_fanout_enabled: true,
             eligible_routes: vec![ClientSearchRouteIdentity {
-                installed_source_name: "github".to_string(),
-                schema_name: "github".to_string(),
+                source_name: "github".to_string(),
                 function_name: "search_issues".to_string(),
                 authored_route_id: Some("issues".to_string()),
             }],
@@ -1371,7 +1369,6 @@ mod startup_context_tests {
             state,
             SearchProviderFanoutState::Enabled {
                 routes: vec![SearchProviderRouteIdentity::new(
-                    "github",
                     "github",
                     "search_issues",
                     Some("issues".to_string()),
@@ -1386,8 +1383,7 @@ mod startup_context_tests {
         let state = search_provider_fanout_from_capabilities(SearchCapabilities {
             provider_fanout_enabled: false,
             eligible_routes: vec![ClientSearchRouteIdentity {
-                installed_source_name: "should-not-leak".to_string(),
-                schema_name: "hidden".to_string(),
+                source_name: "should-not-leak".to_string(),
                 function_name: "search".to_string(),
                 authored_route_id: None,
             }],

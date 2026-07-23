@@ -34,10 +34,8 @@ pub struct SearchCapabilities {
 /// Safe identity of one source-authorised DSL v4 Universal Search route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRouteIdentity {
-    /// Installed source that owns the route.
-    pub installed_source_name: String,
-    /// Query-visible schema containing the resolved function.
-    pub schema_name: String,
+    /// Source that owns the route and its query-visible function.
+    pub source_name: String,
     /// Query-visible function generated for the authorised DSL v4 operation.
     pub function_name: String,
     /// Authored route identifier when this route was explicit.
@@ -86,8 +84,7 @@ pub fn decode_search_capabilities_response(
 
 fn search_route_identity_from_proto(route: ProtoSearchRouteIdentity) -> SearchRouteIdentity {
     SearchRouteIdentity {
-        installed_source_name: route.installed_source_name,
-        schema_name: route.schema_name,
+        source_name: route.source_name,
         function_name: route.function_name,
         authored_route_id: route.authored_route_id,
     }
@@ -1197,8 +1194,7 @@ mod tests {
             provider_fanout_enabled: true,
             eligible_routes: (0..20)
                 .map(|index| ProtoSearchRouteIdentity {
-                    installed_source_name: "source".to_string(),
-                    schema_name: "schema".to_string(),
+                    source_name: "source".to_string(),
                     function_name: format!("search_{index:02}"),
                     authored_route_id: Some(format!("route-{index:02}")),
                 })
@@ -1213,6 +1209,8 @@ mod tests {
         assert_eq!(capabilities.eligible_routes.len(), 16);
         assert!(capabilities.truncated);
         assert_eq!(capabilities.omitted_route_count, 6);
+        assert_eq!(capabilities.eligible_routes[0].source_name, "source");
+        assert_eq!(capabilities.eligible_routes[0].function_name, "search_00");
         assert_eq!(
             capabilities.eligible_routes[15]
                 .authored_route_id
@@ -1226,8 +1224,7 @@ mod tests {
         let capabilities = decode_search_capabilities_response(GetSearchCapabilitiesResponse {
             provider_fanout_enabled: false,
             eligible_routes: vec![ProtoSearchRouteIdentity {
-                installed_source_name: "source".to_string(),
-                schema_name: "schema".to_string(),
+                source_name: "source".to_string(),
                 function_name: "search".to_string(),
                 authored_route_id: None,
             }],

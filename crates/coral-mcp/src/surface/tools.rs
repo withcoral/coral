@@ -167,12 +167,7 @@ mod tests {
     fn search_tool_description_and_annotations_follow_capabilities() {
         let context = ToolDescriptionContext::new(1, 0, vec!["github".to_string()]);
         let route = || {
-            SearchProviderRouteIdentity::new(
-                "github",
-                "github",
-                "search_issues",
-                Some("issues".to_string()),
-            )
+            SearchProviderRouteIdentity::new("github", "search_issues", Some("issues".to_string()))
         };
         let cases = [
             (

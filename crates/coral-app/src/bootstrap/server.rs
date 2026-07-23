@@ -1347,8 +1347,7 @@ functions:
         assert!(capabilities.provider_fanout_enabled);
         assert_eq!(capabilities.eligible_routes.len(), 1);
         let route = &capabilities.eligible_routes[0];
-        assert_eq!(route.installed_source_name, "tickets");
-        assert_eq!(route.schema_name, "tickets");
+        assert_eq!(route.source_name, "tickets");
         assert_eq!(route.function_name, "search_tickets");
         assert_eq!(route.authored_route_id.as_deref(), Some("primary"));
         assert!(!capabilities.truncated);

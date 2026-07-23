@@ -636,7 +636,6 @@ WHERE title LIKE '%bug%'",
             SearchProviderFanoutState::enabled(
                 vec![SearchProviderRouteIdentity::new(
                     "github",
-                    "github",
                     "search_issues",
                     Some("issues".to_string()),
                 )],

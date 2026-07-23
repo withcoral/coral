@@ -50,10 +50,10 @@ message GetSearchCapabilitiesResponse {
 
 // Safe identity of one resolved, source-authorised DSL v4 Universal Search route.
 message SearchRouteIdentity {
-  // Installed source that owns the route.
-  string installed_source_name = 1;
-  // Query-visible schema that owns the resolved function.
-  string schema_name = 2;
+  // Source that owns the route and its query-visible function.
+  string source_name = 1;
+  reserved 2;
+  reserved "installed_source_name", "schema_name";
   // Query-visible function generated for the authorised DSL v4 operation.
   string function_name = 3;
   // Authored route identifier when the source declared an explicit route.

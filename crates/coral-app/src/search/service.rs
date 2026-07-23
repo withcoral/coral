@@ -202,8 +202,7 @@ fn search_capabilities_to_proto(
             .eligible_routes
             .into_iter()
             .map(|route| ProtoSearchRouteIdentity {
-                installed_source_name: route.installed_source_name,
-                schema_name: route.schema_name,
+                source_name: route.source_name,
                 function_name: route.function_name,
                 authored_route_id: route.authored_route_id,
             })
@@ -710,14 +709,19 @@ mod tests {
         NativeSearchDiagnosticReason as ProtoNativeSearchDiagnosticReason,
         NativeSearchDiagnosticState as ProtoNativeSearchDiagnosticState,
         SearchClearTarget as ProtoSearchClearTarget,
-        SearchProviderState as ProtoSearchProviderState, search_clear_target,
+        SearchProviderState as ProtoSearchProviderState,
+        SearchRouteIdentity as ProtoSearchRouteIdentity, search_clear_target,
     };
     use prost::Message as _;
     use tonic::Code;
 
     use super::{
         Payload, clear_target_from_proto, native_diagnostic_reason_to_proto,
-        native_diagnostic_state_to_proto, provider_status_to_proto, search_payload_to_proto,
+        native_diagnostic_state_to_proto, provider_status_to_proto, search_capabilities_to_proto,
+        search_payload_to_proto,
+    };
+    use crate::search::capabilities::{
+        SearchCapabilities, SearchRouteIdentity as DomainSearchRouteIdentity,
     };
     use crate::search::maintenance::SearchClearTarget;
     use crate::search::result::{
@@ -756,6 +760,27 @@ mod tests {
             proto.coverage.is_none(),
             "skipped provider coverage should be absent"
         );
+    }
+
+    #[test]
+    fn capability_route_mapping_exposes_one_source_identity() {
+        let response = search_capabilities_to_proto(SearchCapabilities {
+            provider_fanout_enabled: true,
+            eligible_routes: vec![DomainSearchRouteIdentity {
+                source_name: "github".to_string(),
+                function_name: "search_issues".to_string(),
+                authored_route_id: Some("issues".to_string()),
+            }],
+            truncated: false,
+            omitted_route_count: 0,
+        });
+        let route = response.eligible_routes.first().expect("capability route");
+        let route = ProtoSearchRouteIdentity::decode(route.encode_to_vec().as_slice())
+            .expect("capability route protobuf round trip");
+
+        assert_eq!(route.source_name, "github");
+        assert_eq!(route.function_name, "search_issues");
+        assert_eq!(route.authored_route_id.as_deref(), Some("issues"));
     }
 
     #[test]
