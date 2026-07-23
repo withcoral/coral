@@ -19,7 +19,7 @@ use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 4;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 5;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -45,6 +45,10 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
     SearchSqliteMigration {
         version: 4,
         sql: include_str!("migrations/0004_catalog_source_ownership.sql"),
+    },
+    SearchSqliteMigration {
+        version: 5,
+        sql: include_str!("migrations/0005_catalog_searchable_text.sql"),
     },
 ];
 
@@ -617,7 +621,14 @@ fn apply_migration(
     let transaction = connection.transaction()?;
     let initializes_catalog_source_ownership =
         migration.version == 4 && !tables_exist(&transaction, &["catalog_source_owners"])?;
-    transaction.execute_batch(migration.sql)?;
+    let adds_catalog_searchable_text = migration.version == 5
+        && !schema_query_is_valid(
+            &transaction,
+            "SELECT searchable_text FROM catalog_documents LIMIT 0",
+        )?;
+    if migration.version != 5 || adds_catalog_searchable_text {
+        transaction.execute_batch(migration.sql)?;
+    }
     if initializes_catalog_source_ownership {
         // Existing catalog rows predate durable installed-owner identity. They
         // are disposable and cannot be safely backfilled for multi-component
@@ -685,6 +696,7 @@ fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSear
             qualified_name,
             title,
             description,
+            searchable_text,
             payload_json,
             snapshot_fingerprint,
             updated_at
@@ -987,6 +999,31 @@ mod tests {
             &connection,
             "idx_catalog_source_owners_workspace_owner"
         ));
+    }
+
+    #[test]
+    fn opening_v4_rebuilds_catalog_searchable_text_without_dropping_observed_data() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let mut connection = Connection::open(&path).expect("raw v4 connection");
+        for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(4) {
+            super::apply_migration(&mut connection, migration).expect("apply v4 history");
+        }
+        seed_catalog_document(&connection);
+        seed_observed_queue_job(&connection);
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+
+        assert_eq!(catalog_document_count(&connection), 0);
+        assert_eq!(observed_queue_job_count(&connection), 1);
+        assert!(
+            super::schema_query_is_valid(
+                &connection,
+                "SELECT searchable_text FROM catalog_documents LIMIT 0"
+            )
+            .expect("validate searchable text column")
+        );
     }
 
     #[test]

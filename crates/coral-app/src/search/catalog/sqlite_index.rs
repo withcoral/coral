@@ -293,6 +293,7 @@ pub(crate) struct CatalogSearchHit {
     pub(crate) field_name: String,
     pub(crate) field_role: String,
     pub(crate) description: String,
+    pub(crate) searchable_text: String,
     pub(crate) matched_fields: Vec<String>,
     pub(crate) retrieval_score: u32,
 }
@@ -376,10 +377,10 @@ fn insert_catalog_snapshot_documents(
         "
         INSERT INTO catalog_documents (
             workspace, doc_id, doc_kind, source_name, surface_kind, surface_name,
-            field_name, field_role, qualified_name, title, description, payload_json,
-            snapshot_fingerprint, updated_at
+            field_name, field_role, qualified_name, title, description, searchable_text,
+            payload_json, snapshot_fingerprint, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         ",
     )?;
@@ -406,6 +407,7 @@ fn insert_catalog_snapshot_documents(
             &document.qualified_name,
             &document.title,
             &document.description,
+            &searchable_text,
             &document.payload_json,
             &snapshot.fingerprint,
         ])?;
@@ -676,7 +678,7 @@ fn exact_prefix_search(
             d.title,
             d.qualified_name,
             d.description,
-            ''
+            d.searchable_text
         FROM catalog_documents d
         WHERE d.workspace = ?1
             AND (
@@ -789,6 +791,7 @@ fn hit_from_row(
         field_name,
         field_role,
         description: row.get(9)?,
+        searchable_text,
         matched_fields,
         retrieval_score: base_score,
     })

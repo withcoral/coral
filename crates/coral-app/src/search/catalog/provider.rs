@@ -966,6 +966,7 @@ mod tests {
             field_name: String::new(),
             field_role: String::new(),
             description: "Payments".to_string(),
+            searchable_text: "fixture payments alpha alpha_5".to_string(),
             matched_fields: vec!["searchable_text".to_string()],
             retrieval_score: 1,
         });
@@ -1054,6 +1055,7 @@ mod tests {
                 field_name: "name".to_string(),
                 field_role: "table_function_result_column".to_string(),
                 description: "Template name".to_string(),
+                searchable_text: "notion search templates name".to_string(),
                 matched_fields: vec!["field_name".to_string()],
                 retrieval_score: 1,
             },
@@ -1211,6 +1213,7 @@ mod tests {
                 field_name: format!("alpha_{index}"),
                 field_role: "table_column".to_string(),
                 description: format!("Alpha {index}"),
+                searchable_text: format!("fixture payments alpha_{index} Alpha {index}"),
                 matched_fields: vec!["field_name".to_string()],
                 retrieval_score: 1,
             })

@@ -142,7 +142,7 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
     };
     let qualified_name = qualified_name(hit);
     let description = hit.description.to_lowercase();
-    let searchable_text = searchable_text(hit, &description);
+    let searchable_text = hit.searchable_text.to_lowercase();
     let mut score = doc_kind_boost(hit.doc_kind);
     let required_term_count = terms
         .iter()
@@ -225,14 +225,6 @@ fn qualified_name(hit: &CatalogSearchHit) -> String {
         )
         .to_lowercase()
     }
-}
-
-fn searchable_text(hit: &CatalogSearchHit, description: &str) -> String {
-    format!(
-        "{} {} {} {} {}",
-        hit.source_name, hit.surface_name, hit.field_name, hit.surface_kind, description
-    )
-    .to_lowercase()
 }
 
 fn identifier_token_matches(value: &str, term: &str) -> bool {
@@ -572,6 +564,14 @@ mod tests {
             field_name: input.field_name.to_string(),
             field_role: input.field_role.to_string(),
             description: input.description.to_string(),
+            searchable_text: format!(
+                "{} {} {} {} {}",
+                input.source_name,
+                input.surface_name,
+                input.field_name,
+                input.surface_kind,
+                input.description
+            ),
             matched_fields: input
                 .matched_fields
                 .into_iter()

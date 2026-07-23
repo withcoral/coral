@@ -533,7 +533,12 @@ fn short_identifiers_match_without_trigram_fts() {
         .search_catalog(&["q".to_string()], 10)
         .expect("short search");
 
-    assert!(hits.hits.iter().any(|hit| hit.field_name == "q"));
+    let hit = hits
+        .hits
+        .iter()
+        .find(|hit| hit.field_name == "q")
+        .expect("q field hit");
+    assert!(hit.searchable_text.contains("table function argument"));
 }
 
 #[test]
