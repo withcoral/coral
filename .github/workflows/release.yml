@@ -347,7 +347,7 @@ jobs:
             "$RUNNER_TEMP/unsigned-macos/macos-unsigned-x86_64-apple-darwin/coral" \
             "$RUNNER_TEMP/unsigned-macos/macos-unsigned-aarch64-apple-darwin/coral" \
             -output "$RUNNER_TEMP/coral-universal"
-          lipo -verify_arch x86_64 arm64 "$RUNNER_TEMP/coral-universal"
+          lipo "$RUNNER_TEMP/coral-universal" -verify_arch x86_64 arm64
 
       - name: Install Rust toolchain
         run: rustup show
