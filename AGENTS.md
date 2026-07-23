@@ -139,10 +139,10 @@
 - Keep `xtask` organized by workflow: docs generation lives under
   `xtask/src/docs/`, shared source-manifest discovery lives in
   `xtask/src/sources.rs`, command-latency checks live in `xtask/src/perf.rs`,
-  representation-efficiency benchmarks live under `xtask/src/benchmarks/`,
-  and skill export lives in `xtask/src/skills.rs`. Release signing and
-  notarization automation lives in `xtask/src/release.rs`. Keep benchmark
-  fixtures under `xtask/fixtures/benchmarks/<benchmark>/`.
+  representation-efficiency benchmark dispatch lives under
+  `xtask/src/benchmarks/`, and the isolated benchmark package and fixtures live
+  under `xtask/benchmarks/`. Skill export lives in `xtask/src/skills.rs`.
+  Release signing and notarization automation lives in `xtask/src/release.rs`.
 - Use `cargo run --locked -p xtask -- benchmark list-columns` to compare object
   and field-once `list_columns` JSON with the checked-in `github.issues` page
   fixture and the `o200k_base` tokenizer. The benchmark must call the real MCP

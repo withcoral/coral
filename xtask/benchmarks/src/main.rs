@@ -1,7 +1,15 @@
 //! Token-efficiency benchmark for the MCP `list_columns` result.
 
+#![allow(
+    clippy::print_stderr,
+    clippy::print_stdout,
+    reason = "benchmark binary intentionally writes results and errors"
+)]
+
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result, ensure};
 use coral_api::v1::{ImportSourceRequest, SourceSecret, import_source_response};
@@ -34,21 +42,34 @@ struct Fixture {
     limit: u32,
 }
 
-pub(crate) fn run() -> Result<bool> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("coral-benchmarks: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
+    ensure!(
+        env::args().nth(1).as_deref() == Some("list-columns"),
+        "usage: coral-benchmarks list-columns"
+    );
     tokio::runtime::Runtime::new()
         .context("creating benchmark runtime")?
-        .block_on(run_benchmark())?;
-    Ok(true)
+        .block_on(run_benchmark())
 }
 
 async fn run_benchmark() -> Result<()> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("xtask is inside the workspace");
-    let fixture: Fixture = serde_json::from_str(include_str!(
-        "../../fixtures/benchmarks/list-columns/github-issues.json"
-    ))
-    .context("parsing list_columns benchmark fixture")?;
+        .and_then(Path::parent)
+        .expect("benchmark package is inside xtask");
+    let fixture: Fixture =
+        serde_json::from_str(include_str!("../fixtures/list-columns/github-issues.json"))
+            .context("parsing list_columns benchmark fixture")?;
     let manifest_path = workspace_root.join(&fixture.manifest);
     let manifest_yaml = benchmark_manifest(&manifest_path)?;
 

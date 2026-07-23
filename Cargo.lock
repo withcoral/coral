@@ -1291,6 +1291,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-benchmarks"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "coral-api",
+ "coral-client",
+ "coral-mcp",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tiktoken-rs",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "coral-cli"
 version = "0.7.1"
 dependencies = [
@@ -7030,23 +7048,16 @@ dependencies = [
  "assert_cmd",
  "base64",
  "clap",
- "coral-api",
- "coral-client",
- "coral-mcp",
  "coral-spec",
  "insta",
  "jsonschema",
  "pulldown-cmark",
  "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror",
- "tiktoken-rs",
- "tokio",
- "tonic",
  "url",
  "urlencoding",
  "uuid",
