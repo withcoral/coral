@@ -629,7 +629,9 @@ paths:
             projection.diagnostics.iter().any(|diagnostic| {
                 diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
                     && diagnostic.message.contains(dropped)
-                    && diagnostic.message.contains("not sent by generated requests")
+                    && diagnostic
+                        .message
+                        .contains("not sent by generated requests")
             }),
             "dropped optional {dropped} must be diagnosed: {:?}",
             projection.diagnostics

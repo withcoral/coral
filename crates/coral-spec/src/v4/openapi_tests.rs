@@ -1544,7 +1544,11 @@ paths:
         .as_bytes(),
     )
     .expect("string pagination import");
-    for operation_id in ["string_page_list", "string_offset_list", "string_limit_list"] {
+    for operation_id in [
+        "string_page_list",
+        "string_offset_list",
+        "string_limit_list",
+    ] {
         assert_eq!(
             imported_rest_pagination(&ir, operation_id).mode,
             PaginationMode::None,
