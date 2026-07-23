@@ -8,6 +8,9 @@ const outputDir = resolve(desktopRoot, 'resources', 'coral')
 const binaryName = process.platform === 'win32' ? 'coral.exe' : 'coral'
 const targetBinary = resolve(repoRoot, 'target', 'release', binaryName)
 const universalMacBinary = resolve(repoRoot, 'target', 'release', 'coral-universal')
+const prebuiltBinaryPath = process.env.CORAL_DESKTOP_CLI_PATH?.trim()
+const prebuiltBinary = prebuiltBinaryPath ? resolve(repoRoot, prebuiltBinaryPath) : undefined
+const needsCliBuild = prebuiltBinary === undefined
 const universalMac = process.env.CORAL_DESKTOP_UNIVERSAL === '1'
 const macTargets = ['x86_64-apple-darwin', 'aarch64-apple-darwin']
 
@@ -30,8 +33,11 @@ function run(command, args, options = {}) {
   })
 }
 
-await run('npm', ['ci', '--prefix', 'apps/ui'])
-await run('npm', ['run', 'build', '--prefix', 'apps/ui'])
+// apps/ui is embedded only when this script builds coral-cli locally.
+if (needsCliBuild) {
+  await run('npm', ['ci', '--prefix', 'apps/ui'])
+  await run('npm', ['run', 'build', '--prefix', 'apps/ui'])
+}
 await run('npm', ['ci', '--prefix', 'apps/reef'])
 await run('npm', ['run', 'build', '--prefix', 'apps/reef'], {
   env: {
@@ -63,14 +69,14 @@ async function buildCoralCli() {
   return universalMacBinary
 }
 
-const builtBinary = await buildCoralCli()
+const sourceBinary = prebuiltBinary ?? (await buildCoralCli())
 
 await rm(outputDir, { recursive: true, force: true })
 await mkdir(outputDir, { recursive: true })
-await copyFile(builtBinary, join(outputDir, binaryName))
+await copyFile(sourceBinary, join(outputDir, binaryName))
 
 if (process.platform !== 'win32') {
   await chmod(join(outputDir, binaryName), 0o755)
 }
 
-console.log(`[stage-coral] staged ${builtBinary} -> ${join(outputDir, binaryName)}`)
+console.log(`[stage-coral] staged ${sourceBinary} -> ${join(outputDir, binaryName)}`)

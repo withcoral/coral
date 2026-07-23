@@ -323,6 +323,7 @@ jobs:
   build-desktop-macos:
     needs:
       - validate-release-ref
+      - build
     environment: release
     runs-on: blacksmith-6vcpu-macos-26
     env:
@@ -332,6 +333,21 @@ jobs:
         with:
           ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           persist-credentials: false
+
+      - name: Download unsigned macOS binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: macos-unsigned-*-apple-darwin
+          path: ${{ runner.temp }}/unsigned-macos
+          merge-multiple: false
+
+      - name: Create universal Coral binary
+        run: |
+          lipo -create \
+            "$RUNNER_TEMP/unsigned-macos/macos-unsigned-x86_64-apple-darwin/coral" \
+            "$RUNNER_TEMP/unsigned-macos/macos-unsigned-aarch64-apple-darwin/coral" \
+            -output "$RUNNER_TEMP/coral-universal"
+          lipo -verify_arch x86_64 arm64 "$RUNNER_TEMP/coral-universal"
 
       - name: Install Rust toolchain
         run: rustup show
@@ -348,14 +364,15 @@ jobs:
       - name: Build xtask
         run: cargo build --locked -p xtask
 
-      # Build before Apple credentials enter the environment: the desktop
-      # build installs UI and Reef dependencies and executes Rust build scripts.
+      # Build before Apple credentials enter the environment: dependency
+      # installation and build scripts run here, while the reused CLI artifacts
+      # were also built without credentials.
       # The release flag is compiled into the main process to enable updates;
       # signing and notarization still happen only in the credentialed step.
       - name: Build universal desktop inputs
         env:
+          CORAL_DESKTOP_CLI_PATH: ${{ runner.temp }}/coral-universal
           CORAL_DESKTOP_RELEASE: "1"
-          CORAL_DESKTOP_UNIVERSAL: "1"
         run: npm run build --prefix apps/desktop
 
       - name: Verify release updater bundle
