@@ -27,6 +27,16 @@ use super::values::{MissingTableSummaryValue, format_schema_table_equivalent};
 
 const DEFAULT_IGNORE_CASE: bool = true;
 const DEFAULT_REQUIRED_ONLY: bool = false;
+const LIST_COLUMNS_FIELDS: [&str; 8] = [
+    "column_name",
+    "data_type",
+    "is_nullable",
+    "is_virtual",
+    "is_required_filter",
+    "description",
+    "ordinal_position",
+    "matched_fields",
+];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -122,7 +132,7 @@ pub(crate) fn describe_table_tool() -> Tool {
 pub(crate) fn list_columns_tool() -> Tool {
     Tool::new(
         ToolName::ListColumns.as_str(),
-        "List columns for one database table with optional regex and required-filter narrowing.",
+        "List columns for one database table as positional rows with field names returned once. Supports optional regex and required-filter narrowing.",
         tool_input_schema::<ListColumnsArguments>(),
     )
     .with_raw_output_schema(list_columns_output_schema())
@@ -307,15 +317,15 @@ pub(crate) fn list_columns_value(
     response: &ListColumnsResponse,
 ) -> Value {
     let pagination = response.pagination.unwrap_or_default();
-    let columns = response
+    let rows = response
         .columns
         .iter()
-        .filter_map(column_search_result_value)
+        .filter_map(column_search_result_row)
         .collect::<Vec<_>>();
     serde_json::to_value(ListColumnsOutput::Page(ListColumnsPageValue::new(
         schema,
         table,
-        columns,
+        rows,
         &pagination,
     )))
     .expect("list columns page value serializes")
@@ -325,19 +335,18 @@ pub(crate) fn list_columns_output_schema() -> Arc<Map<String, Value>> {
     tool_output_schema::<ListColumnsOutput<'static>>()
 }
 
-fn column_search_result_value(result: &ColumnSearchResult) -> Option<ColumnSearchValue<'_>> {
+fn column_search_result_row(result: &ColumnSearchResult) -> Option<ColumnSearchRowValue<'_>> {
     let column = result.column.as_ref()?;
-    Some(ColumnSearchValue {
-        column_name: &column.name,
-        data_type: &column.data_type,
-        is_nullable: column.nullable,
-        is_virtual: column.is_virtual,
-        is_required_filter: column.is_required_filter,
-        description: &column.description,
-        ordinal_position: column.ordinal_position,
-        matched_fields: (!result.matched_fields.is_empty())
-            .then_some(result.matched_fields.as_slice()),
-    })
+    Some(ColumnSearchRowValue(
+        &column.name,
+        &column.data_type,
+        column.nullable,
+        column.is_virtual,
+        column.is_required_filter,
+        &column.description,
+        column.ordinal_position,
+        (!result.matched_fields.is_empty()).then_some(result.matched_fields.as_slice()),
+    ))
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -390,7 +399,8 @@ impl<'a> CatalogPageValue<'a> {
 struct ListColumnsPageValue<'a> {
     schema_name: &'a str,
     table_name: &'a str,
-    columns: Vec<ColumnSearchValue<'a>>,
+    fields: &'static [&'static str; LIST_COLUMNS_FIELDS.len()],
+    rows: Vec<ColumnSearchRowValue<'a>>,
     #[schemars(range(min = 0))]
     total: u32,
     #[schemars(range(min = 1))]
@@ -406,13 +416,14 @@ impl<'a> ListColumnsPageValue<'a> {
     fn new(
         schema_name: &'a str,
         table_name: &'a str,
-        columns: Vec<ColumnSearchValue<'a>>,
+        rows: Vec<ColumnSearchRowValue<'a>>,
         pagination: &PaginationResponse,
     ) -> Self {
         Self {
             schema_name,
             table_name,
-            columns,
+            fields: &LIST_COLUMNS_FIELDS,
+            rows,
             total: pagination.total_count,
             limit: pagination.limit,
             offset: pagination.offset,
@@ -634,26 +645,25 @@ impl<'a> From<&'a ProtoTableFunctionResultColumn> for TableFunctionResultColumnV
 }
 
 #[derive(Serialize, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-struct ColumnSearchValue<'a> {
-    column_name: &'a str,
-    data_type: &'a str,
-    is_nullable: bool,
-    is_virtual: bool,
-    is_required_filter: bool,
-    description: &'a str,
-    #[schemars(range(min = 0))]
-    ordinal_position: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    matched_fields: Option<&'a [String]>,
-}
+struct ColumnSearchRowValue<'a>(
+    &'a str,
+    &'a str,
+    bool,
+    bool,
+    bool,
+    &'a str,
+    #[schemars(range(min = 0))] u32,
+    Option<&'a [String]>,
+);
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Map, Value};
+    use coral_api::v1::{Column, ColumnSearchResult, ListColumnsResponse, PaginationResponse};
+    use serde_json::{Map, Value, json};
 
     use super::{
         DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, list_catalog_arguments, list_columns_arguments,
+        list_columns_value,
     };
     use crate::surface::discovery::{DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET};
 
@@ -694,5 +704,65 @@ mod tests {
         assert_eq!(list_columns.required_only, DEFAULT_REQUIRED_ONLY);
         assert_eq!(list_columns.pagination.limit, DEFAULT_PAGINATION_LIMIT);
         assert_eq!(list_columns.pagination.offset, DEFAULT_PAGINATION_OFFSET);
+    }
+
+    #[test]
+    fn list_columns_fields_match_row_positions() {
+        let response = ListColumnsResponse {
+            columns: vec![ColumnSearchResult {
+                column: Some(Column {
+                    name: "issue_id".to_string(),
+                    data_type: "Int64".to_string(),
+                    nullable: true,
+                    is_virtual: true,
+                    is_required_filter: true,
+                    description: "Stable issue identifier.".to_string(),
+                    ordinal_position: 7,
+                }),
+                matched_fields: vec!["column_name".to_string()],
+            }],
+            pagination: Some(PaginationResponse {
+                total_count: 1,
+                limit: 50,
+                offset: 0,
+                has_more: false,
+                next_offset: 0,
+            }),
+        };
+
+        let value = list_columns_value("github", "issues", &response);
+        let fields = value.get("fields").expect("fields");
+        let first_row = value
+            .get("rows")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .expect("first row");
+
+        assert_eq!(
+            fields,
+            &json!([
+                "column_name",
+                "data_type",
+                "is_nullable",
+                "is_virtual",
+                "is_required_filter",
+                "description",
+                "ordinal_position",
+                "matched_fields"
+            ])
+        );
+        assert_eq!(
+            first_row,
+            &json!([
+                "issue_id",
+                "Int64",
+                true,
+                true,
+                true,
+                "Stable issue identifier.",
+                7,
+                ["column_name"]
+            ])
+        );
     }
 }

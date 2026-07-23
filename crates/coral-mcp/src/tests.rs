@@ -984,7 +984,7 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         .structured_content
         .expect("structured columns");
     assert_eq!(columns["total"], 6);
-    assert_eq!(columns["columns"][0]["column_name"], "schema_name");
+    assert_eq!(columns["rows"][0][0], "schema_name");
 
     session.shutdown().await;
 }
@@ -1344,8 +1344,21 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(columns["limit"], 2);
     assert_eq!(columns["has_more"], true);
     assert_eq!(columns["next_offset"], 2);
-    assert_eq!(columns["columns"][0]["column_name"], "type");
-    assert_eq!(columns["columns"][0]["data_type"], "Utf8");
+    assert_eq!(
+        columns["fields"],
+        json!([
+            "column_name",
+            "data_type",
+            "is_nullable",
+            "is_virtual",
+            "is_required_filter",
+            "description",
+            "ordinal_position",
+            "matched_fields"
+        ])
+    );
+    assert_eq!(columns["rows"][0][0], "type");
+    assert_eq!(columns["rows"][0][1], "Utf8");
     assert_matches_output_schema(list_columns_tool, &columns);
 
     let required_columns = client
@@ -1378,9 +1391,9 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .structured_content
         .expect("structured content");
     assert_eq!(filtered_columns["total"], 1);
-    assert_eq!(filtered_columns["columns"][0]["column_name"], "sessionId");
+    assert_eq!(filtered_columns["rows"][0][0], "sessionId");
     assert!(
-        filtered_columns["columns"][0]["matched_fields"]
+        filtered_columns["rows"][0][7]
             .as_array()
             .expect("matched fields")
             .iter()
@@ -1406,9 +1419,9 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(empty_column_filter["table_name"], "messages");
     assert_eq!(empty_column_filter["total"], 0);
     assert!(
-        empty_column_filter["columns"]
+        empty_column_filter["rows"]
             .as_array()
-            .expect("columns")
+            .expect("rows")
             .is_empty()
     );
     assert_matches_output_schema(list_columns_tool, &empty_column_filter);

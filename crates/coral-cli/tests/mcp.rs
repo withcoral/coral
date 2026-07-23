@@ -1365,8 +1365,21 @@ async fn assert_list_columns_tool(
     )
     .await?;
     assert_eq!(columns["total"], 2);
-    assert_eq!(columns["columns"][0]["column_name"], "owner");
-    assert_eq!(columns["columns"][1]["column_name"], "repo");
+    assert_eq!(
+        columns["fields"],
+        json!([
+            "column_name",
+            "data_type",
+            "is_nullable",
+            "is_virtual",
+            "is_required_filter",
+            "description",
+            "ordinal_position",
+            "matched_fields"
+        ])
+    );
+    assert_eq!(columns["rows"][0][0], "owner");
+    assert_eq!(columns["rows"][1][0], "repo");
 
     let filtered_columns = structured_tool_content(
         client,
@@ -1378,7 +1391,7 @@ async fn assert_list_columns_tool(
     )
     .await?;
     assert_eq!(filtered_columns["total"], 1);
-    assert_eq!(filtered_columns["columns"][0]["column_name"], "text");
+    assert_eq!(filtered_columns["rows"][0][0], "text");
     Ok(())
 }
 
