@@ -14,11 +14,11 @@ pub(crate) struct Args {
 #[derive(Debug, Subcommand)]
 enum Benchmark {
     /// Compare verbose and positional `list_columns` JSON token counts.
-    ListColumns(list_columns::Args),
+    ListColumns,
 }
 
 pub(crate) fn run(args: &Args) -> Result<bool> {
     match &args.benchmark {
-        Benchmark::ListColumns(args) => list_columns::run(args),
+        Benchmark::ListColumns => list_columns::run(),
     }
 }

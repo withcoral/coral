@@ -650,12 +650,29 @@ struct ColumnSearchValue<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use coral_api::v1::{Column, ColumnSearchResult, ListColumnsResponse, PaginationResponse};
+    use serde::{Deserialize, Serialize};
     use serde_json::{Map, Value};
+    use tiktoken_rs::o200k_base_singleton;
 
     use super::{
         DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, list_catalog_arguments, list_columns_arguments,
+        list_columns_value,
     };
     use crate::surface::discovery::{DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET};
+
+    const COLUMN_FIELDS: [&str; 7] = [
+        "column_name",
+        "data_type",
+        "is_nullable",
+        "is_virtual",
+        "is_required_filter",
+        "description",
+        "ordinal_position",
+    ];
 
     #[test]
     fn catalog_kind_argument_accepts_null_as_all_kinds() {
@@ -694,5 +711,162 @@ mod tests {
         assert_eq!(list_columns.required_only, DEFAULT_REQUIRED_ONLY);
         assert_eq!(list_columns.pagination.limit, DEFAULT_PAGINATION_LIMIT);
         assert_eq!(list_columns.pagination.offset, DEFAULT_PAGINATION_OFFSET);
+    }
+
+    #[test]
+    #[expect(
+        clippy::print_stdout,
+        reason = "xtask runs this test as a human-readable benchmark"
+    )]
+    fn list_columns_token_efficiency_benchmark() {
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../xtask/fixtures/benchmarks/list-columns/github-issues.json");
+        let raw = fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
+        let fixture: ListColumnsFixture =
+            serde_json::from_str(&raw).expect("parse list_columns fixture");
+        fixture.validate();
+
+        let current_json = serde_json::to_string(&list_columns_value(
+            &fixture.schema_name,
+            &fixture.table_name,
+            &fixture.response(),
+        ))
+        .expect("serialize current list_columns output");
+        let field_once_json =
+            serde_json::to_string(&fixture.field_once()).expect("serialize field-once candidate");
+        let current = measure_json(&current_json);
+        let field_once = measure_json(&field_once_json);
+
+        println!(
+            "list_columns {}.{} ({} of {} columns, o200k_base)",
+            fixture.schema_name,
+            fixture.table_name,
+            fixture.rows.len(),
+            fixture.total
+        );
+        println!(
+            "current:    {:>6} bytes  {:>6} tokens",
+            current.bytes, current.tokens
+        );
+        println!(
+            "field-once: {:>6} bytes  {:>6} tokens",
+            field_once.bytes, field_once.tokens
+        );
+        println!(
+            "saved:      {:>6} bytes  {:>6} tokens",
+            percent_saved(current.bytes, field_once.bytes),
+            percent_saved(current.tokens, field_once.tokens)
+        );
+
+        assert!(field_once.tokens < current.tokens);
+    }
+
+    type ColumnRow = (String, String, bool, bool, bool, String, u32);
+
+    #[derive(Debug, Deserialize)]
+    struct ListColumnsFixture {
+        #[serde(rename = "source")]
+        _source: String,
+        schema_name: String,
+        table_name: String,
+        fields: [String; COLUMN_FIELDS.len()],
+        rows: Vec<ColumnRow>,
+        total: u32,
+        limit: u32,
+        offset: u32,
+        has_more: bool,
+        next_offset: u32,
+    }
+
+    impl ListColumnsFixture {
+        fn validate(&self) {
+            assert!(self.fields.iter().map(String::as_str).eq(COLUMN_FIELDS));
+            assert_eq!(self.rows.len(), self.limit as usize);
+            assert!(self.rows.iter().enumerate().all(|(index, row)| {
+                u32::try_from(index)
+                    .ok()
+                    .and_then(|index| self.offset.checked_add(index))
+                    .is_some_and(|ordinal| row.6 == ordinal)
+            }));
+        }
+
+        fn response(&self) -> ListColumnsResponse {
+            ListColumnsResponse {
+                columns: self
+                    .rows
+                    .iter()
+                    .map(|row| ColumnSearchResult {
+                        column: Some(Column {
+                            name: row.0.clone(),
+                            data_type: row.1.clone(),
+                            nullable: row.2,
+                            is_virtual: row.3,
+                            is_required_filter: row.4,
+                            description: row.5.clone(),
+                            ordinal_position: row.6,
+                        }),
+                        matched_fields: Vec::new(),
+                    })
+                    .collect(),
+                pagination: Some(PaginationResponse {
+                    total_count: self.total,
+                    limit: self.limit,
+                    offset: self.offset,
+                    has_more: self.has_more,
+                    next_offset: self.next_offset,
+                }),
+            }
+        }
+
+        fn field_once(&self) -> FieldOncePage<'_> {
+            FieldOncePage {
+                schema_name: &self.schema_name,
+                table_name: &self.table_name,
+                fields: &self.fields,
+                rows: &self.rows,
+                total: self.total,
+                limit: self.limit,
+                offset: self.offset,
+                has_more: self.has_more,
+                next_offset: self.has_more.then_some(self.next_offset),
+            }
+        }
+    }
+
+    #[derive(Serialize)]
+    struct FieldOncePage<'a> {
+        schema_name: &'a str,
+        table_name: &'a str,
+        fields: &'a [String; COLUMN_FIELDS.len()],
+        rows: &'a [ColumnRow],
+        total: u32,
+        limit: u32,
+        offset: u32,
+        has_more: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_offset: Option<u32>,
+    }
+
+    struct JsonMeasurement {
+        bytes: usize,
+        tokens: usize,
+    }
+
+    fn measure_json(json: &str) -> JsonMeasurement {
+        JsonMeasurement {
+            bytes: json.len(),
+            tokens: o200k_base_singleton().encode_ordinary(json).len(),
+        }
+    }
+
+    fn percent_saved(before: usize, after: usize) -> String {
+        let tenths = before
+            .saturating_sub(after)
+            .saturating_mul(1_000)
+            .saturating_add(before / 2)
+            .checked_div(before)
+            .unwrap_or_default();
+        format!("{}.{:01}%", tenths / 10, tenths % 10)
     }
 }
