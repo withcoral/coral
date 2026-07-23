@@ -19,14 +19,26 @@ const DISCOVERY: SuccessfulDiscovery = {
   url: 'https://weather.example/openapi.yaml',
 }
 
-function RoutedSourceCreateDialog() {
+function RoutedSourceCreateDialog({
+  fetchOAuthImport,
+  onOAuthImportComplete,
+  openAuthorization,
+}: {
+  fetchOAuthImport?: typeof fetch
+  onOAuthImportComplete?: (name: string) => Promise<void> | void
+  openAuthorization?: (url: string) => unknown
+}) {
   const navigate = useNavigate()
   const actionData = useActionData<SourcesActionData>()
   return (
     <SourceCreateDialog
       actionData={actionData}
       discoveryPath="/workspaces/analytics/sources/discover"
+      fetchOAuthImport={fetchOAuthImport}
+      oauthImportPath="/workspaces/analytics/sources/oauth-import"
+      onOAuthImportComplete={onOAuthImportComplete}
       open
+      openAuthorization={openAuthorization}
       onOpenChange={(open) => {
         if (!open) navigate('/workspaces/analytics/sources')
       }}
@@ -37,12 +49,17 @@ function RoutedSourceCreateDialog() {
 async function renderSourceCreate(
   discovery: SuccessfulDiscovery = DISCOVERY,
   action?: () => Promise<SourcesActionData>,
+  options: {
+    fetchOAuthImport?: typeof fetch
+    onOAuthImportComplete?: (name: string) => Promise<void> | void
+    openAuthorization?: (url: string) => unknown
+  } = {},
 ) {
   const router = createMemoryRouter(
     [
       {
         action,
-        element: <RoutedSourceCreateDialog />,
+        element: <RoutedSourceCreateDialog {...options} />,
         path: '/workspaces/:workspaceId/sources/install',
       },
       {
@@ -268,6 +285,104 @@ describe('SourceCreateDialog', () => {
     expect(manifest).toContain('\ninputs:\n  API_TOKEN:\n    kind: secret\n')
     expect(manifest).toContain('\nsurface:\n  type: openapi\n')
     expect(manifest).not.toContain('\nsurfaces:\n')
+  })
+
+  it('creates a device-flow manifest and streams OAuth progress', async () => {
+    const openAuthorization = vi.fn()
+    let submittedForm: FormData | undefined
+    let releaseSource: (() => void) | undefined
+    const sourceReady = new Promise<void>((resolve) => {
+      releaseSource = resolve
+    })
+    const fetchOAuthImport = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      submittedForm = init?.body as FormData
+      const encoder = new TextEncoder()
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                JSON.stringify({
+                  type: 'oauthAuthorization',
+                  authorizationUrl: 'https://github.com/login/device',
+                  expiresInSeconds: '900',
+                  inputKey: 'API_TOKEN',
+                  userCode: 'ABCD-1234',
+                  verificationUri: 'https://github.com/login/device',
+                  verificationUriComplete: '',
+                }) + '\n',
+              ),
+            )
+            await sourceReady
+            controller.enqueue(
+              encoder.encode(
+                JSON.stringify({ type: 'source', name: 'github_custom', version: '' }) + '\n',
+              ),
+            )
+            controller.close()
+          },
+        }),
+      )
+    })
+    const onOAuthImportComplete = vi.fn()
+    const githubUrl =
+      'https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml'
+    const { screen } = await renderSourceCreate(
+      {
+        auth: { kind: 'unknown', label: '' },
+        description: '',
+        format: 'unknown',
+        name: 'github_custom',
+        status: 'success',
+        url: githubUrl,
+        warning: 'The source document is larger than 2 MB',
+      },
+      undefined,
+      { fetchOAuthImport, onOAuthImportComplete, openAuthorization },
+    )
+
+    await screen.getByLabelText('Source URL').fill(githubUrl)
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await screen.getByRole('radio', { name: 'OAuth device flow' }).click()
+
+    await screen
+      .getByLabelText('Device authorization URL')
+      .fill('https://github.com/login/device/code')
+    await screen.getByLabelText('Token URL').fill('https://github.com/login/oauth/access_token')
+    await screen.getByLabelText('Client ID').fill('Iv23liJHis6Bs8NO1DAI')
+    await screen.getByLabelText('Scopes').fill('repo read:org read:user user:email')
+    await screen.getByRole('button', { name: 'Create source' }).click()
+
+    await expect.element(screen.getByText('ABCD-1234')).toBeVisible()
+    const hint = screen.getByText('Optional, separated by spaces.').element()
+    const progress = screen
+      .getByText('Waiting for Api token authorization in your browser…')
+      .element().parentElement?.parentElement
+    if (!progress) throw new Error('OAuth progress box not found')
+    expect(progress.getBoundingClientRect().top - hint.getBoundingClientRect().bottom).toBe(14)
+    await expect
+      .element(
+        screen
+          .getByRole('dialog', { name: 'Create source Step 3/3' })
+          .getByRole('button', { name: 'Cancel' }),
+      )
+      .toBeEnabled()
+    expect(openAuthorization).toHaveBeenCalledWith('https://github.com/login/device')
+    expect(fetchOAuthImport).toHaveBeenCalledWith(
+      '/workspaces/analytics/sources/oauth-import',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    const manifest = String(submittedForm?.get('manifest_yaml'))
+    expect(manifest).toContain('type: device_code')
+    expect(manifest).toContain('device_authorization_url: "https://github.com/login/device/code"')
+    expect(manifest).toContain('token_url: "https://github.com/login/oauth/access_token"')
+    expect(manifest).toContain('default: "Iv23liJHis6Bs8NO1DAI"')
+    expect(submittedForm?.get('secret_value')).toBeNull()
+
+    releaseSource?.()
+    await expect.poll(() => onOAuthImportComplete.mock.calls.length).toBe(1)
+    expect(onOAuthImportComplete).toHaveBeenCalledWith('github_custom')
   })
 
   it('keeps the credentials dialog height stable across authentication choices', async () => {

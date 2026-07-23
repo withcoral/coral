@@ -7,6 +7,7 @@ export default [
   // same-origin fetch. It intentionally sits outside the app shell and does not
   // render a page.
   route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts'),
+  route(routePattern('workspaceSourceOAuthImport'), 'routes/source-oauth-import.ts'),
   route('onboarding', 'routes/onboarding.tsx'),
   layout('routes/app-shell.tsx', [
     index('routes/index.tsx'),

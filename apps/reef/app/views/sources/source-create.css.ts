@@ -42,3 +42,7 @@ export const authPanelHidden = style({
 export const importError = style({
   marginBlockStart: 14,
 })
+
+export const oauthProgress = style({
+  marginBlockStart: 14,
+})

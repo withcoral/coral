@@ -351,6 +351,9 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain(
         "route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts')",
       )
+      expect(routeConfig).toContain(
+        "route(routePattern('workspaceSourceOAuthImport'), 'routes/source-oauth-import.ts')",
+      )
       // Onboarding is a hidden, manually visited flow outside the normal app chrome.
       expect(routeConfig).toContain("route('onboarding', 'routes/onboarding.tsx')")
       expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
@@ -379,7 +382,7 @@ describe('Architectural Tests', () => {
       // outside the app shell, while canonical workspace routes and settings
       // stay inside it.
       expect(routeConfig).toMatch(
-        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*route\('onboarding', 'routes\/onboarding\.tsx'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
+        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*route\(routePattern\('workspaceSourceOAuthImport'\), 'routes\/source-oauth-import\.ts'\),\s*route\('onboarding', 'routes\/onboarding\.tsx'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
       )
     })
 
