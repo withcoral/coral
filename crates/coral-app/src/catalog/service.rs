@@ -58,6 +58,7 @@ impl CatalogServiceApi for CatalogService {
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
+            validate_catalog_schema(catalog_name, schema_name).map_err(app_status)?;
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let catalog_page = catalog
                 .list_catalog(
@@ -108,6 +109,7 @@ impl CatalogServiceApi for CatalogService {
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
+            validate_catalog_schema(catalog_name, schema_name).map_err(app_status)?;
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let pagination = search_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
@@ -160,6 +162,7 @@ impl CatalogServiceApi for CatalogService {
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
             let table_name = required_trimmed(&request.table_name, "table_name")?;
+            validate_catalog_schema(catalog_name, Some(&schema_name)).map_err(app_status)?;
             let result = catalog
                 .describe_table(
                     &workspace_name,
@@ -191,6 +194,7 @@ impl CatalogServiceApi for CatalogService {
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
             let table_name = required_trimmed(&request.table_name, "table_name")?;
+            validate_catalog_schema(catalog_name, Some(&schema_name)).map_err(app_status)?;
             let pagination = column_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
             let page = catalog
@@ -269,6 +273,28 @@ fn optional_trimmed(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+fn validate_catalog_schema(
+    catalog_name: Option<&str>,
+    schema_name: Option<&str>,
+) -> Result<(), crate::bootstrap::AppError> {
+    if catalog_name.is_some() {
+        return Ok(());
+    }
+    let Some(schema_name) = schema_name else {
+        return Ok(());
+    };
+    let Some((catalog, schema)) = schema_name.split_once('.') else {
+        return Ok(());
+    };
+    if catalog.is_empty() || schema.is_empty() {
+        return Ok(());
+    }
+    Err(crate::bootstrap::AppError::InvalidInput(format!(
+        "schema_name '{schema_name}' combines a catalog and schema; pass catalog_name '{catalog}' \
+         and schema_name '{schema}' separately"
+    )))
+}
+
 fn required_trimmed(value: &str, field: &str) -> Result<String, Status> {
     let value = value.trim();
     if value.is_empty() {
@@ -277,4 +303,22 @@ fn required_trimmed(value: &str, field: &str) -> Result<String, Status> {
         )));
     }
     Ok(value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_catalog_schema;
+
+    #[test]
+    fn compound_schema_requires_separate_catalog_argument() {
+        let error = validate_catalog_schema(None, Some("warehouse.public"))
+            .expect_err("compound schema must be rejected");
+        let detail = error.to_string();
+        assert!(detail.contains("catalog_name 'warehouse'"));
+        assert!(detail.contains("schema_name 'public'"));
+
+        validate_catalog_schema(Some("warehouse"), Some("public"))
+            .expect("separate catalog and schema are valid");
+        validate_catalog_schema(None, Some("public")).expect("plain schema is valid");
+    }
 }

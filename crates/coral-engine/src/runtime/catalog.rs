@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_spec::{ManifestInputKind, SearchLimitsSpec, SourceTableFunctionKind};
@@ -30,6 +31,11 @@ use crate::{
 
 /// Schema name for source metadata tables such as `coral.tables`.
 pub(crate) const SYSTEM_SCHEMA: &str = "coral";
+
+/// Per-source budget for query-time database column inventory. Fetches run
+/// concurrently, so total scan latency is bounded by this duration rather than
+/// multiplying by the number of database sources.
+const DATABASE_COLUMN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Catalog-only metadata for one SQL table-function surface.
 #[derive(Debug, Clone)]
@@ -693,7 +699,7 @@ fn append_catalog_filter(
         predicates.push(format!("catalog_name = {}", sql_string_literal(value)));
     }
     if let Some(value) = schema_filter {
-        predicates.push(schema_filter_predicate(catalog_filter, value));
+        predicates.push(format!("schema_name = {}", sql_string_literal(value)));
     }
     if let Some(value) = table_filter {
         predicates.push(format!("table_name = {}", sql_string_literal(value)));
@@ -702,17 +708,6 @@ fn append_catalog_filter(
         sql.push_str(" WHERE ");
         sql.push_str(&predicates.join(" AND "));
     }
-}
-
-fn schema_filter_predicate(catalog_filter: Option<&str>, schema_filter: &str) -> String {
-    let literal = sql_string_literal(schema_filter);
-    if catalog_filter.is_some() || !schema_filter.contains('.') {
-        return format!("schema_name = {literal}");
-    }
-    format!(
-        "(schema_name = {literal} OR (catalog_name <> '' AND \
-         catalog_name || '.' || schema_name = {literal}))"
-    )
 }
 
 fn collect_table_infos_from_batches(batches: &[RecordBatch]) -> Result<Vec<TableInfo>> {
@@ -1260,6 +1255,7 @@ fn build_columns_table(
         schema,
         static_batch,
         fetchers: column_fetchers.to_vec(),
+        fetch_timeout: DATABASE_COLUMN_FETCH_TIMEOUT,
     })
 }
 
@@ -1268,6 +1264,7 @@ struct CoralColumnsTable {
     schema: Arc<Schema>,
     static_batch: RecordBatch,
     fetchers: Vec<CatalogColumnFetcher>,
+    fetch_timeout: Duration,
 }
 
 #[async_trait]
@@ -1310,15 +1307,23 @@ impl TableProvider for CoralColumnsTable {
             .iter()
             .filter(|fetcher| {
                 pins.includes_catalog(&fetcher.catalog_name)
-                    && pins.intersects_schemas(&fetcher.schema_names)
-                    && pins.intersects_tables(&fetcher.table_names)
+                    && ColumnPins::pin_intersects(pins.schemas.as_ref(), &fetcher.schema_names)
+                    && ColumnPins::pin_intersects(pins.tables.as_ref(), &fetcher.table_names)
             })
             .collect::<Vec<_>>();
-        let outcomes = join_all(
-            relevant
-                .iter()
-                .map(|fetcher| fetcher.fetcher.fetch_columns(&inventory_filter)),
-        )
+        let outcomes = join_all(relevant.iter().map(|fetcher| async {
+            tokio::time::timeout(
+                self.fetch_timeout,
+                fetcher.fetcher.fetch_columns(&inventory_filter),
+            )
+            .await
+            .map_err(|_elapsed| {
+                DataFusionError::Execution(format!(
+                    "database column metadata fetch timed out after {:?}",
+                    self.fetch_timeout
+                ))
+            })?
+        }))
         .await;
 
         let mut batches = vec![self.static_batch.clone()];
@@ -1398,14 +1403,6 @@ impl ColumnPins {
         self.catalogs
             .as_ref()
             .is_none_or(|catalogs| catalogs.contains(catalog_name))
-    }
-
-    fn intersects_schemas(&self, known: &BTreeSet<String>) -> bool {
-        Self::pin_intersects(self.schemas.as_ref(), known)
-    }
-
-    fn intersects_tables(&self, known: &BTreeSet<String>) -> bool {
-        Self::pin_intersects(self.tables.as_ref(), known)
     }
 
     fn pin_intersects(pinned: Option<&BTreeSet<String>>, known: &BTreeSet<String>) -> bool {
@@ -1621,22 +1618,218 @@ fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
+    use async_trait::async_trait;
     use coral_spec::ManifestInputKind;
+    use datafusion::datasource::TableProvider as _;
+    use datafusion::error::DataFusionError;
+    use datafusion::prelude::{SessionContext, col, lit};
 
     use crate::backends::common::{
         RegisteredColumn, RegisteredFilter, test_support::StubSourceFunctionFactory,
     };
     use crate::backends::{
+        CatalogColumnFetcher, ColumnInventoryFilter, DatabaseColumnFetcher, DatabaseColumnRow,
         RegisteredInput, RegisteredSource, RegisteredTable, RegisteredTableFunction,
         SourceQualifiedName,
     };
 
     use super::{
-        catalog_filter_rows, catalog_input_rows, collect_static_tables, collect_table_functions,
-        source_catalog_column_rows,
+        ColumnPins, PinColumn, build_columns_table, catalog_filter_rows, catalog_input_rows,
+        collect_static_tables, collect_table_functions, column_pin, source_catalog_column_rows,
     };
+
+    #[derive(Clone, Debug)]
+    enum FetchOutcome {
+        Rows(Vec<DatabaseColumnRow>),
+        Error,
+        Pending,
+    }
+
+    #[derive(Debug)]
+    struct RecordingFetcher {
+        calls: Mutex<Vec<ColumnInventoryFilter>>,
+        outcome: FetchOutcome,
+    }
+
+    impl RecordingFetcher {
+        fn new(outcome: FetchOutcome) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                outcome,
+            })
+        }
+
+        fn calls(&self) -> Vec<ColumnInventoryFilter> {
+            self.calls.lock().expect("fetch calls lock").clone()
+        }
+    }
+
+    #[async_trait]
+    impl DatabaseColumnFetcher for RecordingFetcher {
+        async fn fetch_columns(
+            &self,
+            filter: &ColumnInventoryFilter,
+        ) -> datafusion::error::Result<Vec<DatabaseColumnRow>> {
+            self.calls
+                .lock()
+                .expect("fetch calls lock")
+                .push(filter.clone());
+            match &self.outcome {
+                FetchOutcome::Rows(rows) => Ok(rows.clone()),
+                FetchOutcome::Error => Err(DataFusionError::Execution(
+                    "column inventory failed".to_string(),
+                )),
+                FetchOutcome::Pending => std::future::pending().await,
+            }
+        }
+    }
+
+    fn column_fetcher(
+        catalog_name: &str,
+        schema_names: &[&str],
+        table_names: &[&str],
+        fetcher: Arc<RecordingFetcher>,
+    ) -> CatalogColumnFetcher {
+        CatalogColumnFetcher {
+            catalog_name: catalog_name.to_string(),
+            schema_names: schema_names
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            table_names: table_names
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            fetcher,
+        }
+    }
+
+    fn strings(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn column_pin_recognizes_only_safe_pruning_shapes() {
+        assert_eq!(
+            column_pin(&col("catalog_name").eq(lit("warehouse"))),
+            Some((PinColumn::Catalog, strings(&["warehouse"])))
+        );
+        assert_eq!(
+            column_pin(&lit("warehouse").eq(col("catalog_name"))),
+            Some((PinColumn::Catalog, strings(&["warehouse"])))
+        );
+        assert_eq!(
+            column_pin(&col("schema_name").in_list(vec![lit("public"), lit("analytics")], false,)),
+            Some((PinColumn::Schema, strings(&["analytics", "public"])))
+        );
+        assert_eq!(
+            column_pin(
+                &col("table_name")
+                    .eq(lit("orders"))
+                    .or(col("table_name").eq(lit("users")))
+            ),
+            Some((PinColumn::Table, strings(&["orders", "users"])))
+        );
+        assert!(
+            column_pin(
+                &col("schema_name")
+                    .eq(lit("public"))
+                    .or(col("table_name").eq(lit("orders")))
+            )
+            .is_none(),
+            "a mixed-column OR cannot safely prune either dimension"
+        );
+        assert!(
+            column_pin(&col("schema_name").in_list(vec![lit("public")], true)).is_none(),
+            "NOT IN cannot be used as an inventory inclusion filter"
+        );
+    }
+
+    #[test]
+    fn column_pins_intersect_conjuncts() {
+        let filters = vec![
+            col("schema_name").in_list(vec![lit("public"), lit("analytics")], false),
+            col("schema_name").eq(lit("public")),
+            col("table_name").eq(lit("orders")),
+        ];
+        let pins = ColumnPins::from_filters(&filters);
+        assert_eq!(pins.schemas, Some(strings(&["public"])));
+        assert_eq!(pins.tables, Some(strings(&["orders"])));
+
+        let impossible = ColumnPins::from_filters(&[
+            col("schema_name").eq(lit("public")),
+            col("schema_name").eq(lit("analytics")),
+        ]);
+        assert_eq!(impossible.schemas, Some(BTreeSet::new()));
+    }
+
+    #[tokio::test]
+    async fn columns_scan_invokes_only_relevant_fetchers_with_pruned_filters() {
+        let warehouse = RecordingFetcher::new(FetchOutcome::Rows(Vec::new()));
+        let analytics = RecordingFetcher::new(FetchOutcome::Rows(Vec::new()));
+        let fetchers = [
+            column_fetcher(
+                "warehouse",
+                &["public"],
+                &["orders"],
+                Arc::clone(&warehouse),
+            ),
+            column_fetcher(
+                "analytics",
+                &["metrics"],
+                &["events"],
+                Arc::clone(&analytics),
+            ),
+        ];
+        let table = build_columns_table(&[], &fetchers).expect("columns table");
+        let filters = vec![
+            col("catalog_name").eq(lit("warehouse")),
+            col("schema_name").eq(lit("public")),
+            col("table_name").eq(lit("orders")),
+        ];
+        let state = SessionContext::new().state();
+        table
+            .scan(&state, None, &filters, None)
+            .await
+            .expect("metadata scan");
+
+        let calls = warehouse.calls();
+        assert_eq!(calls.len(), 1);
+        let filter = calls.first().expect("warehouse filter");
+        assert_eq!(
+            filter.schemas.as_deref(),
+            Some(["public".to_string()].as_slice())
+        );
+        assert_eq!(
+            filter.tables.as_deref(),
+            Some(["orders".to_string()].as_slice())
+        );
+        assert!(analytics.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn columns_scan_omits_failed_and_timed_out_fetchers() {
+        let failed = RecordingFetcher::new(FetchOutcome::Error);
+        let stalled = RecordingFetcher::new(FetchOutcome::Pending);
+        let fetchers = [
+            column_fetcher("failed", &["public"], &["orders"], Arc::clone(&failed)),
+            column_fetcher("stalled", &["public"], &["users"], Arc::clone(&stalled)),
+        ];
+        let mut table = build_columns_table(&[], &fetchers).expect("columns table");
+        table.fetch_timeout = Duration::from_millis(20);
+        let state = SessionContext::new().state();
+        table
+            .scan(&state, None, &[], None)
+            .await
+            .expect("failed sources are omitted from metadata");
+
+        assert_eq!(failed.calls().len(), 1);
+        assert_eq!(stalled.calls().len(), 1);
+    }
 
     fn catalog_source() -> RegisteredSource {
         RegisteredSource {

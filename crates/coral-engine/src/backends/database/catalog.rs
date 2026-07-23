@@ -88,7 +88,7 @@ async fn load_database_inventory<T: 'static, P: 'static>(
         Field::new("table_name", DataType::Utf8, false),
         Field::new("relation_type", DataType::Utf8, false),
     ]));
-    let connection = pool.connect().await.map_err(boxed_provider_error)?;
+    let connection = pool.connect().await.map_err(provider_error)?;
     let batches = query_arrow(connection, inventory_sql.to_string(), Some(schema))
         .await
         .map_err(provider_error)?
@@ -186,13 +186,7 @@ impl<T: 'static, P: 'static> SchemaProvider for LazyDatabaseSchemaProvider<T, P>
 }
 
 pub(super) fn provider_error(
-    error: impl std::error::Error + Send + Sync + 'static,
+    error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
 ) -> DataFusionError {
-    DataFusionError::External(Box::new(error))
-}
-
-pub(super) fn boxed_provider_error(
-    error: Box<dyn std::error::Error + Send + Sync>,
-) -> DataFusionError {
-    DataFusionError::External(error)
+    DataFusionError::External(error.into())
 }
