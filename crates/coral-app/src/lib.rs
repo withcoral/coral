@@ -62,7 +62,7 @@ mod transport;
 mod workspaces;
 
 pub use bootstrap::{
-    AppError, McpHttpServePlan, RunningServer, ServerBuilder, ServerMode, StaticAsset,
+    AppError, McpHttpServeConfig, RunningServer, ServerBuilder, ServerMode, StaticAsset,
     StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
