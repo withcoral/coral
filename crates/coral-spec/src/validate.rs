@@ -1175,7 +1175,7 @@ mod tests {
         })
     }
 
-    fn function_default_manifest(data_type: &str, default: Value, values: Vec<&str>) -> Value {
+    fn function_default_manifest(data_type: &str, default: &Value, values: &[&str]) -> Value {
         json!({
             "name": "demo",
             "version": "0.1.0",
@@ -1202,12 +1202,9 @@ mod tests {
 
     #[test]
     fn http_function_argument_defaults_are_type_and_enum_checked() {
-        let type_error = parse_source_manifest_value(function_default_manifest(
-            "Int64",
-            json!("one"),
-            Vec::new(),
-        ))
-        .expect_err("string default must not satisfy an Int64 argument");
+        let type_error =
+            parse_source_manifest_value(function_default_manifest("Int64", &json!("one"), &[]))
+                .expect_err("string default must not satisfy an Int64 argument");
         assert!(
             type_error
                 .to_string()
@@ -1217,8 +1214,8 @@ mod tests {
 
         let enum_error = parse_source_manifest_value(function_default_manifest(
             "Boolean",
-            json!(true),
-            vec!["false"],
+            &json!(true),
+            &["false"],
         ))
         .expect_err("default must belong to the declared values");
         assert!(
@@ -1228,7 +1225,7 @@ mod tests {
             "unexpected enum error: {enum_error}"
         );
 
-        parse_source_manifest_value(function_default_manifest("Float64", json!(1.0), vec!["1"]))
+        parse_source_manifest_value(function_default_manifest("Float64", &json!(1.0), &["1"]))
             .expect("integral-looking float default should match its rendered enum value");
     }
 
