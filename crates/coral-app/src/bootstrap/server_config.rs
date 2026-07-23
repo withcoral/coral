@@ -3,170 +3,140 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::Deserialize;
-use url::{Host, Url};
+use serde::de::DeserializeOwned;
 
 use super::AppError;
 use crate::state::AppStateLayout;
 
-const DEFAULT_MCP_SCOPE: &str = "coral:mcp";
-
 #[derive(Debug, Default, Deserialize)]
-struct ConfigFile {
+struct GrpcConfigFile {
     #[serde(default)]
     server: ServerSettings,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct McpHttpConfigFile {
+    #[serde(default)]
+    server: McpHttpServerSettings,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RemovedAuthConfigFile {
+    #[serde(default)]
+    server: RemovedAuthServerSettings,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RemovedAuthServerSettings {
+    #[serde(rename = "auth")]
+    removed_auth: Option<toml::Value>,
+}
+
 /// Settings loaded from the top-level `[server]` section of `config.toml`.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub(crate) struct ServerSettings {
     pub(crate) bind_addr: SocketAddr,
-    mcp_http: ServerMcpHttpSettings,
+    #[serde(rename = "auth")]
+    removed_auth: Option<toml::Value>,
 }
 
 impl Default for ServerSettings {
     fn default() -> Self {
         Self {
             bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            mcp_http: ServerMcpHttpSettings::default(),
+            removed_auth: None,
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct McpHttpServerSettings {
+    mcp_http: RawMcpHttpSettings,
+    #[serde(rename = "auth")]
+    removed_auth: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-struct ServerMcpHttpSettings {
+struct RawMcpHttpSettings {
     enabled: bool,
     bind: SocketAddr,
-    allow_insecure_remote_http_bind: bool,
-    resource_url: Option<String>,
-    authorization_server: Option<String>,
-    scope: String,
 }
 
-impl Default for ServerMcpHttpSettings {
+impl Default for RawMcpHttpSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             bind: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            allow_insecure_remote_http_bind: false,
-            resource_url: None,
-            authorization_server: None,
-            scope: DEFAULT_MCP_SCOPE.to_string(),
         }
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum ResolvedMcpHttpSettings {
-    AuthDisabled {
-        bind: SocketAddr,
-    },
-    Authenticated {
-        bind: SocketAddr,
-        resource_url: String,
-        authorization_server: String,
-        scope: String,
-    },
+/// Resolved settings for the auth-disabled MCP HTTP listener.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct McpHttpServeConfig {
+    bind_addr: SocketAddr,
 }
 
-impl ServerSettings {
-    /// Loads only the `[server]` section, leaving other config ownership intact.
-    pub(crate) fn load(layout: &AppStateLayout) -> Result<Self, AppError> {
-        if !layout.config_file().try_exists()? {
-            return Ok(Self::default());
-        }
-        let raw = std::fs::read_to_string(layout.config_file())?;
-        Ok(toml::from_str::<ConfigFile>(&raw)?.server)
+impl McpHttpServeConfig {
+    /// Returns the configured MCP HTTP bind address.
+    #[must_use]
+    pub fn bind_addr(&self) -> SocketAddr {
+        self.bind_addr
     }
 
-    pub(crate) fn mcp_http(
-        &self,
-        authenticated: bool,
-    ) -> Result<Option<ResolvedMcpHttpSettings>, AppError> {
-        if !self.mcp_http.enabled {
+    pub(crate) fn load(layout: &AppStateLayout) -> Result<Option<Self>, AppError> {
+        let settings = load_config::<McpHttpConfigFile>(layout)?.server;
+        reject_removed_auth(settings.removed_auth.as_ref())?;
+        if !settings.mcp_http.enabled {
             return Ok(None);
         }
-
-        let settings = &self.mcp_http;
-        if !authenticated {
-            if !is_loopback(settings.bind.ip()) {
-                return Err(AppError::FailedPrecondition(
-                    "auth-disabled server.mcp_http.bind must be loopback".to_string(),
-                ));
-            }
-            if settings.resource_url.is_some() || settings.authorization_server.is_some() {
-                return Err(AppError::FailedPrecondition(
-                    "auth-disabled server.mcp_http must not advertise OAuth metadata".to_string(),
-                ));
-            }
-            return Ok(Some(ResolvedMcpHttpSettings::AuthDisabled {
-                bind: settings.bind,
-            }));
-        }
-
-        if !is_loopback(settings.bind.ip()) && !settings.allow_insecure_remote_http_bind {
+        if !is_loopback(settings.mcp_http.bind.ip()) {
             return Err(AppError::FailedPrecondition(
-                "non-loopback server.mcp_http.bind serves cleartext authenticated endpoints and requires server.mcp_http.allow_insecure_remote_http_bind = true"
-                    .to_string(),
+                "auth-disabled server.mcp_http.bind must be loopback".to_string(),
             ));
         }
-        let resource_url = required_oauth_url(
-            "server.mcp_http.resource_url",
-            settings.resource_url.as_deref(),
-        )?;
-        let authorization_server = required_oauth_url(
-            "server.mcp_http.authorization_server",
-            settings.authorization_server.as_deref(),
-        )?;
-        let scope = settings.scope.as_str();
-        if scope.is_empty()
-            || !scope
-                .bytes()
-                .all(|byte| matches!(byte, 33 | 35..=91 | 93..=126))
-        {
-            return Err(AppError::FailedPrecondition(
-                "server.mcp_http.scope must be one printable OAuth scope token".to_string(),
-            ));
-        }
-
-        Ok(Some(ResolvedMcpHttpSettings::Authenticated {
-            bind: settings.bind,
-            resource_url,
-            authorization_server,
-            scope: scope.to_string(),
+        Ok(Some(Self {
+            bind_addr: settings.mcp_http.bind,
         }))
     }
 }
 
-fn required_oauth_url(label: &str, value: Option<&str>) -> Result<String, AppError> {
-    let Some(value) = value.filter(|value| !value.is_empty()) else {
-        return Err(AppError::FailedPrecondition(format!(
-            "authenticated MCP HTTP requires {label}"
-        )));
-    };
-    let url = Url::parse(value).map_err(|_error| unsafe_oauth_url(label))?;
-    let loopback = match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => is_loopback(IpAddr::V6(ip)),
-        None => false,
-    };
-    if !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || (url.scheme() != "https" && !(url.scheme() == "http" && loopback))
-    {
-        return Err(unsafe_oauth_url(label));
+impl ServerSettings {
+    /// Loads only the gRPC-owned fields from `[server]`.
+    pub(crate) fn load(layout: &AppStateLayout) -> Result<Self, AppError> {
+        let settings = load_config::<GrpcConfigFile>(layout)?.server;
+        reject_removed_auth(settings.removed_auth.as_ref())?;
+        Ok(settings)
     }
-    Ok(url.to_string())
+
+    pub(crate) fn reject_removed_auth(layout: &AppStateLayout) -> Result<(), AppError> {
+        let settings = load_config::<RemovedAuthConfigFile>(layout)?.server;
+        reject_removed_auth(settings.removed_auth.as_ref())
+    }
 }
 
-fn unsafe_oauth_url(label: &str) -> AppError {
-    AppError::FailedPrecondition(format!(
-        "{label} must be an absolute HTTPS or loopback HTTP URL without credentials, query, or fragment"
-    ))
+fn load_config<T>(layout: &AppStateLayout) -> Result<T, AppError>
+where
+    T: DeserializeOwned + Default,
+{
+    if !layout.config_file().try_exists()? {
+        return Ok(T::default());
+    }
+    let raw = std::fs::read_to_string(layout.config_file())?;
+    Ok(toml::from_str(&raw)?)
+}
+
+fn reject_removed_auth(value: Option<&toml::Value>) -> Result<(), AppError> {
+    if value.is_some() {
+        return Err(AppError::FailedPrecondition(
+            "[server.auth] is no longer supported".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn is_loopback(ip: IpAddr) -> bool {
@@ -181,7 +151,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{ResolvedMcpHttpSettings, ServerSettings};
+    use super::{McpHttpServeConfig, ServerSettings};
     use crate::state::AppStateLayout;
 
     #[test]
@@ -195,7 +165,11 @@ mod tests {
             settings.bind_addr,
             SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
         );
-        assert!(settings.mcp_http(false).expect("MCP config").is_none());
+        assert!(
+            McpHttpServeConfig::load(&layout)
+                .expect("MCP HTTP config")
+                .is_none()
+        );
     }
 
     #[test]
@@ -205,7 +179,7 @@ mod tests {
         layout.ensure().expect("config dir");
         fs::write(
             layout.config_file(),
-            "[server]\nbind_addr = '127.0.0.2:14555'\n\n[future]\nvalue = true\n",
+            "[server]\nbind_addr = '127.0.0.2:14555'\n\n[server.mcp_http]\nenabled = true\nbind = 'invalid'\n\n[future]\nvalue = true\n",
         )
         .expect("config file");
 
@@ -239,17 +213,18 @@ mod tests {
         layout.ensure().expect("config dir");
         fs::write(
             layout.config_file(),
-            "[server.mcp_http]\nenabled = true\nbind = '[::1]:14556'\n",
+            "[server]\nbind_addr = 'not-an-address'\n\n[server.mcp_http]\nenabled = true\nbind = '[::1]:14556'\n",
         )
         .expect("config file");
 
-        let settings = ServerSettings::load(&layout).expect("server settings");
-        let Some(ResolvedMcpHttpSettings::AuthDisabled { bind }) =
-            settings.mcp_http(false).expect("MCP config")
-        else {
-            panic!("loopback MCP must be explicitly auth-disabled");
-        };
-        assert_eq!(bind, SocketAddr::from((Ipv6Addr::LOCALHOST, 14556)));
+        let settings = McpHttpServeConfig::load(&layout)
+            .expect("MCP HTTP config")
+            .expect("enabled MCP HTTP config");
+
+        assert_eq!(
+            settings.bind_addr(),
+            SocketAddr::from((Ipv6Addr::LOCALHOST, 14556))
+        );
     }
 
     #[test]
@@ -263,10 +238,9 @@ mod tests {
         )
         .expect("config file");
 
-        let settings = ServerSettings::load(&layout).expect("server settings");
-        let error = settings
-            .mcp_http(false)
-            .expect_err("public auth-disabled bind must fail");
+        let error =
+            McpHttpServeConfig::load(&layout).expect_err("public auth-disabled bind must fail");
+
         assert!(error.to_string().contains("must be loopback"));
     }
 
@@ -281,82 +255,12 @@ mod tests {
         )
         .expect("config file");
 
-        let settings = ServerSettings::load(&layout).expect("server settings");
-        let error = settings
-            .mcp_http(false)
-            .expect_err("auth-disabled MCP must not advertise OAuth metadata");
-        assert!(error.to_string().contains("must not advertise"));
+        McpHttpServeConfig::load(&layout)
+            .expect_err("unsupported authenticated MCP metadata must fail");
     }
 
     #[test]
-    fn authenticated_mcp_http_requires_acknowledgement_for_public_bind() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-        layout.ensure().expect("config dir");
-        fs::write(
-            layout.config_file(),
-            r"
-[server.mcp_http]
-enabled = true
-bind = '0.0.0.0:14556'
-resource_url = 'https://coral.example/mcp'
-authorization_server = 'https://auth.example'
-scope = 'coral:mcp'
-",
-        )
-        .expect("config file");
-
-        let mut settings = ServerSettings::load(&layout).expect("server settings");
-        let error = settings
-            .mcp_http(true)
-            .expect_err("public cleartext bind must require acknowledgement");
-        assert!(
-            error
-                .to_string()
-                .contains("allow_insecure_remote_http_bind")
-        );
-        settings.mcp_http.allow_insecure_remote_http_bind = true;
-        let Some(ResolvedMcpHttpSettings::Authenticated {
-            bind,
-            resource_url,
-            authorization_server,
-            scope,
-        }) = settings.mcp_http(true).expect("MCP config")
-        else {
-            panic!("authenticated MCP settings must resolve");
-        };
-        assert_eq!(bind, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14556)));
-        assert_eq!(resource_url, "https://coral.example/mcp");
-        assert_eq!(authorization_server, "https://auth.example/");
-        assert_eq!(scope, "coral:mcp");
-    }
-
-    #[test]
-    fn authenticated_mcp_http_rejects_unsafe_metadata_urls_and_scopes() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-        layout.ensure().expect("config dir");
-        fs::write(
-            layout.config_file(),
-            r"
-[server.mcp_http]
-enabled = true
-resource_url = 'http://coral.example/mcp'
-authorization_server = 'https://auth.example'
-scope = 'two scopes'
-",
-        )
-        .expect("config file");
-
-        let settings = ServerSettings::load(&layout).expect("server settings");
-        let error = settings
-            .mcp_http(true)
-            .expect_err("public HTTP OAuth metadata must fail");
-        assert!(error.to_string().contains("absolute HTTPS"));
-    }
-
-    #[test]
-    fn stale_static_auth_config_is_rejected() {
+    fn stale_static_auth_config_is_rejected_by_both_resolvers() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
         layout.ensure().expect("config dir");
@@ -366,6 +270,7 @@ scope = 'two scopes'
         )
         .expect("config file");
 
-        ServerSettings::load(&layout).expect_err("removed static auth config must fail closed");
+        ServerSettings::load(&layout).expect_err("removed static auth config must fail");
+        McpHttpServeConfig::load(&layout).expect_err("removed static auth config must fail");
     }
 }
