@@ -16,8 +16,8 @@ use tokio::net::TcpStream;
 use tower::ServiceExt as _;
 
 use super::{
-    McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, auth_disabled_router,
-    readiness_status, start_auth_disabled,
+    McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, SHUTDOWN_GRACE_PERIOD,
+    auth_disabled_router, readiness_status, start_auth_disabled,
 };
 
 async fn local_app() -> (TempDir, coral_client::local::RunningServer, AppClient) {
@@ -236,6 +236,31 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
     .expect("server-owned state must be released");
 
     let _cancel_result = client.cancel().await;
+}
+
+#[tokio::test]
+async fn shutdown_timeout_matches_one_second_contract() {
+    assert_eq!(SHUTDOWN_GRACE_PERIOD, Duration::from_secs(1));
+
+    let (_temp, app_server, app) = local_app().await;
+    let config =
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+    let server = start_auth_disabled(config, app, McpOptions::default())
+        .await
+        .expect("start MCP HTTP server");
+    let requests = server.state.requests.clone();
+    let request = requests.read().await;
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        server.shutdown_with_grace_period(Duration::ZERO),
+    )
+    .await
+    .expect("zero-grace shutdown must be bounded");
+    assert!(matches!(result, Err(McpHttpError::ShutdownTimedOut)));
+
+    drop(request);
+    app_server.shutdown().await.expect("shutdown app server");
 }
 
 #[tokio::test]
