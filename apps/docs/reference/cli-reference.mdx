@@ -562,10 +562,10 @@ When `observed_values_search` is disabled, observed values are omitted from the
 advertised local scope. Enable observed-value search for one MCP server process
 with `coral --enable-observed-values-search mcp-stdio`.
 
-When `search_provider_fanout` is enabled but no route is eligible, the
-description says that Search does not call source-authored search functions;
-otherwise it names a capped inventory of connected-source routes that Search
-may call. Enable fanout for one MCP server process with
+When `search_provider_fanout` is enabled but no DSL v4 route is eligible, the
+description says that Search does not execute DSL v4 connected-source routes;
+otherwise it names a capped inventory of eligible DSL v4 routes that Search may
+call. Enable fanout for one MCP server process with
 `coral --enable-search-provider-fanout mcp-stdio`. See [Use Coral over
 MCP](/guides/use-coral-over-mcp#search-behavior) for dynamic descriptions and
 annotations.

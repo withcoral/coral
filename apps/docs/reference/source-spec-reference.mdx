@@ -674,13 +674,18 @@ query. Values must be positive. `default_top_k` and `max_top_k` are capped at
 
 ### Universal Search authorization
 
-Universal Search fan-out is available only for DSL v4 sources. DSL v3 sources
-cannot author `functions[].universal_search` and do not participate in native
-fan-out. To make a provider available, define a DSL v4 imported-surface source.
-Universal Search authorization is source-authored policy for a `kind: search`
-route. It does not replace `kind` or `search_limits`, and result display
-metadata does not grant authorization. Authorize only an upstream operation
-that you have verified is retrieval-only and idempotent.
+Provider fanout is available only for DSL v4 sources. DSL v3 sources remain
+queryable through SQL and discoverable through local catalog and observed-value
+search, but Search never executes their functions as fanout routes. DSL v3
+sources cannot author `functions[].universal_search`. To make a provider
+eligible for fanout, migrate the source to DSL v4 and author a top-level
+`universal_search` route over an imported operation.
+
+Universal Search authorization is source-authored policy over an imported DSL
+v4 operation. It does not replace the imported operation's generated search
+classification or limits, and result display metadata does not grant
+authorization. Authorize only an upstream operation that you have verified is
+retrieval-only and idempotent.
 
 Authorization only makes a route eligible. Coral executes eligible routes from
 Search only when the experimental `search_provider_fanout` [runtime
