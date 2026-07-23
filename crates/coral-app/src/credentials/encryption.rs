@@ -32,6 +32,7 @@ use tracing::warn;
 use zeroize::{Zeroize as _, Zeroizing};
 
 use super::CredentialsError;
+use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::fs as storage_fs;
@@ -47,6 +48,8 @@ const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 
 static LOCAL_KEY_FILE_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) type EncryptedCredentialDocument = EncryptedEnvelopeDocument;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CredentialEncryptionKey {
@@ -201,17 +204,6 @@ impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EncryptedCredentialDocument {
-    pub(crate) ciphertext: Vec<u8>,
-    pub(crate) nonce: Vec<u8>,
-    pub(crate) wrapped_dek: Vec<u8>,
-    pub(crate) wrapped_dek_nonce: Vec<u8>,
-    pub(crate) key_id: String,
-    pub(crate) algorithm: String,
-    pub(crate) aad_version: i64,
-}
-
 #[derive(serde::Serialize)]
 struct PlaintextCredentialDocument<'a> {
     version: u32,
@@ -258,15 +250,16 @@ pub(crate) fn encrypt_credential_values(
         &mut wrapped_dek,
     )?;
 
-    Ok(EncryptedCredentialDocument {
-        ciphertext: std::mem::take(&mut *document_bytes),
-        nonce: nonce.to_vec(),
-        wrapped_dek: std::mem::take(&mut *wrapped_dek),
-        wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
-        key_id: kek.key_id.clone(),
-        algorithm: CREDENTIAL_DOCUMENT_ALGORITHM.to_string(),
-        aad_version: CREDENTIAL_DOCUMENT_AAD_VERSION,
-    })
+    EncryptedCredentialDocument::new(
+        std::mem::take(&mut *document_bytes),
+        nonce.to_vec(),
+        std::mem::take(&mut *wrapped_dek),
+        wrapped_dek_nonce.to_vec(),
+        kek.key_id.clone(),
+        CREDENTIAL_DOCUMENT_ALGORITHM,
+        CREDENTIAL_DOCUMENT_AAD_VERSION,
+    )
+    .map_err(|error| CredentialsError::Crypto(error.to_string()))
 }
 
 pub(crate) fn decrypt_credential_values(
@@ -329,15 +322,17 @@ pub(crate) fn rewrap_credential_document(
         &mut wrapped_dek,
     )?;
 
-    Ok(Some(EncryptedCredentialDocument {
-        ciphertext: document.ciphertext.clone(),
-        nonce: document.nonce.clone(),
-        wrapped_dek: std::mem::take(&mut *wrapped_dek),
-        wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
-        key_id: active_kek.key_id.clone(),
-        algorithm: document.algorithm.clone(),
-        aad_version: document.aad_version,
-    }))
+    EncryptedCredentialDocument::new(
+        document.ciphertext.clone(),
+        document.nonce.clone(),
+        std::mem::take(&mut *wrapped_dek),
+        wrapped_dek_nonce.to_vec(),
+        active_kek.key_id.clone(),
+        document.algorithm.clone(),
+        document.binding_version,
+    )
+    .map(Some)
+    .map_err(|error| CredentialsError::Crypto(error.to_string()))
 }
 
 fn decrypt_credential_document_bytes(
@@ -417,16 +412,19 @@ fn validate_dek_plaintext(
 fn validate_document_metadata(
     document: &EncryptedCredentialDocument,
 ) -> Result<(), CredentialsError> {
+    document
+        .validate()
+        .map_err(|error| CredentialsError::Crypto(error.to_string()))?;
     if document.algorithm != CREDENTIAL_DOCUMENT_ALGORITHM {
         return Err(CredentialsError::Crypto(format!(
             "unsupported credential encryption algorithm '{}'",
             document.algorithm
         )));
     }
-    if document.aad_version != CREDENTIAL_DOCUMENT_AAD_VERSION {
+    if document.binding_version != CREDENTIAL_DOCUMENT_AAD_VERSION {
         return Err(CredentialsError::Crypto(format!(
             "unsupported credential AAD version {}",
-            document.aad_version
+            document.binding_version
         )));
     }
     Ok(())

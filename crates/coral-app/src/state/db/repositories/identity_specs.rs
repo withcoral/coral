@@ -9,6 +9,7 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::bootstrap::AppError;
+use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::state::db::schema::{IdentitySpecDocuments, IdentitySpecs};
 use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
@@ -206,70 +207,12 @@ pub(crate) struct IdentitySpecDocumentRecord {
     pub(crate) identity_spec_id: IdentitySpecId,
     /// Monotonic storage version incremented on each replacement.
     pub(crate) document_version: i64,
-    /// Opaque encrypted setup-input bytes.
-    pub(crate) ciphertext: Vec<u8>,
-    /// Nonce paired with the encrypted setup-input bytes.
-    pub(crate) nonce: Vec<u8>,
-    /// Opaque wrapped data-encryption-key bytes.
-    pub(crate) wrapped_dek: Vec<u8>,
-    /// Nonce paired with the wrapped data-encryption key.
-    pub(crate) wrapped_dek_nonce: Vec<u8>,
-    /// Identifier of the key-encryption key used for the envelope.
-    pub(crate) key_id: String,
-    /// Authored envelope algorithm identifier.
-    pub(crate) algorithm: String,
-    /// Authored AAD encoding version, interpreted by the crypto layer.
-    pub(crate) aad_version: i64,
+    /// Opaque encrypted setup-input envelope.
+    pub(crate) envelope: EncryptedEnvelopeDocument,
     /// Creation timestamp in Unix nanoseconds.
     pub(crate) created_at_unix_nanos: i64,
     /// Last update timestamp in Unix nanoseconds.
     pub(crate) updated_at_unix_nanos: i64,
-}
-
-/// Validated opaque envelope fields used to insert or replace a document.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct IdentitySpecDocumentWrite {
-    ciphertext: Vec<u8>,
-    nonce: Vec<u8>,
-    wrapped_dek: Vec<u8>,
-    wrapped_dek_nonce: Vec<u8>,
-    key_id: String,
-    algorithm: String,
-    aad_version: i64,
-}
-
-impl IdentitySpecDocumentWrite {
-    /// Validate opaque envelope shape without interpreting crypto policy.
-    pub(crate) fn new(
-        ciphertext: Vec<u8>,
-        nonce: Vec<u8>,
-        wrapped_dek: Vec<u8>,
-        wrapped_dek_nonce: Vec<u8>,
-        key_id: impl Into<String>,
-        algorithm: impl Into<String>,
-        aad_version: i64,
-    ) -> Result<Self, AppError> {
-        let write = Self {
-            ciphertext,
-            nonce,
-            wrapped_dek,
-            wrapped_dek_nonce,
-            key_id: key_id.into(),
-            algorithm: algorithm.into(),
-            aad_version,
-        };
-        validate_identity_spec_document_fields(
-            &write.ciphertext,
-            &write.nonce,
-            &write.wrapped_dek,
-            &write.wrapped_dek_nonce,
-            &write.key_id,
-            &write.algorithm,
-            write.aad_version,
-        )
-        .map_err(AppError::InvalidInput)?;
-        Ok(write)
-    }
 }
 
 impl std::fmt::Debug for IdentitySpecDocumentRecord {
@@ -278,22 +221,7 @@ impl std::fmt::Debug for IdentitySpecDocumentRecord {
             .debug_struct("IdentitySpecDocumentRecord")
             .field("identity_spec_id", &self.identity_spec_id)
             .field("document_version", &self.document_version)
-            .field("ciphertext_len", &self.ciphertext.len())
-            .field("nonce_len", &self.nonce.len())
-            .field("wrapped_dek_len", &self.wrapped_dek.len())
-            .field("wrapped_dek_nonce_len", &self.wrapped_dek_nonce.len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl std::fmt::Debug for IdentitySpecDocumentWrite {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("IdentitySpecDocumentWrite")
-            .field("ciphertext_len", &self.ciphertext.len())
-            .field("nonce_len", &self.nonce.len())
-            .field("wrapped_dek_len", &self.wrapped_dek.len())
-            .field("wrapped_dek_nonce_len", &self.wrapped_dek_nonce.len())
+            .field("envelope", &self.envelope)
             .finish_non_exhaustive()
     }
 }
@@ -308,7 +236,7 @@ struct IdentitySpecDocumentRow {
     wrapped_dek_nonce: Vec<u8>,
     key_id: String,
     algorithm: String,
-    aad_version: i64,
+    binding_version: i64,
     created_at_unix_nanos: i64,
     updated_at_unix_nanos: i64,
 }
@@ -323,26 +251,20 @@ impl IdentitySpecDocumentRow {
                 "identity spec document row has invalid version or timestamps".to_string(),
             ));
         }
-        validate_identity_spec_document_fields(
-            &self.ciphertext,
-            &self.nonce,
-            &self.wrapped_dek,
-            &self.wrapped_dek_nonce,
-            &self.key_id,
-            &self.algorithm,
-            self.aad_version,
+        let envelope = EncryptedEnvelopeDocument::new(
+            self.ciphertext,
+            self.nonce,
+            self.wrapped_dek,
+            self.wrapped_dek_nonce,
+            self.key_id,
+            self.algorithm,
+            self.binding_version,
         )
-        .map_err(DbError::CorruptData)?;
+        .map_err(|error| DbError::CorruptData(error.to_string()))?;
         Ok(IdentitySpecDocumentRecord {
             identity_spec_id: IdentitySpecId::from_storage(self.identity_spec_id)?,
             document_version: self.document_version,
-            ciphertext: self.ciphertext,
-            nonce: self.nonce,
-            wrapped_dek: self.wrapped_dek,
-            wrapped_dek_nonce: self.wrapped_dek_nonce,
-            key_id: self.key_id,
-            algorithm: self.algorithm,
-            aad_version: self.aad_version,
+            envelope,
             created_at_unix_nanos: self.created_at_unix_nanos,
             updated_at_unix_nanos: self.updated_at_unix_nanos,
         })
@@ -522,9 +444,12 @@ impl IdentitySpecDocumentsRepo<'_, CoralTx<'_>> {
     pub(crate) async fn upsert(
         &mut self,
         identity_spec_id: &IdentitySpecId,
-        document: &IdentitySpecDocumentWrite,
+        document: &EncryptedEnvelopeDocument,
         now_unix_nanos: i64,
     ) -> Result<IdentitySpecDocumentRecord, AppError> {
+        document
+            .validate()
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         validate_write_timestamp(now_unix_nanos)?;
         let current_version = Expr::col((
             IdentitySpecDocuments::Table,
@@ -546,7 +471,7 @@ impl IdentitySpecDocumentsRepo<'_, CoralTx<'_>> {
                 Expr::val(document.wrapped_dek_nonce.clone()),
                 Expr::val(document.key_id.clone()),
                 Expr::val(document.algorithm.clone()),
-                Expr::val(document.aad_version),
+                Expr::val(document.binding_version),
                 Expr::val(now_unix_nanos),
                 Expr::val(now_unix_nanos),
             ])
@@ -563,7 +488,7 @@ impl IdentitySpecDocumentsRepo<'_, CoralTx<'_>> {
                         IdentitySpecDocuments::WrappedDekNonce,
                         IdentitySpecDocuments::KeyId,
                         IdentitySpecDocuments::Algorithm,
-                        IdentitySpecDocuments::AadVersion,
+                        IdentitySpecDocuments::BindingVersion,
                     ])
                     .value(
                         IdentitySpecDocuments::UpdatedAtUnixNanos,
@@ -662,28 +587,6 @@ const fn identity_spec_type_label(identity_type: IdentitySpecType) -> &'static s
     }
 }
 
-fn validate_identity_spec_document_fields(
-    ciphertext: &[u8],
-    nonce: &[u8],
-    wrapped_dek: &[u8],
-    wrapped_dek_nonce: &[u8],
-    key_id: &str,
-    algorithm: &str,
-    aad_version: i64,
-) -> Result<(), String> {
-    if ciphertext.is_empty()
-        || nonce.is_empty()
-        || wrapped_dek.is_empty()
-        || wrapped_dek_nonce.is_empty()
-    {
-        return Err("identity spec document has an empty encrypted byte field".to_string());
-    }
-    if key_id.trim().is_empty() || algorithm.trim().is_empty() || aad_version < 1 {
-        return Err("identity spec document has invalid envelope metadata".to_string());
-    }
-    Ok(())
-}
-
 fn validate_write_timestamp(now_unix_nanos: i64) -> Result<(), AppError> {
     match now_unix_nanos {
         0.. => Ok(()),
@@ -759,7 +662,7 @@ fn identity_spec_document_columns() -> [IdentitySpecDocuments; 11] {
         IdentitySpecDocuments::WrappedDekNonce,
         IdentitySpecDocuments::KeyId,
         IdentitySpecDocuments::Algorithm,
-        IdentitySpecDocuments::AadVersion,
+        IdentitySpecDocuments::BindingVersion,
         IdentitySpecDocuments::CreatedAtUnixNanos,
         IdentitySpecDocuments::UpdatedAtUnixNanos,
     ]
@@ -789,10 +692,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        IdentitySpecDocumentWrite, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
-        identity_spec_columns, validate_identity_spec_write,
+        IdentitySpecId, IdentitySpecKey, IdentitySpecRecord, identity_spec_columns,
+        validate_identity_spec_write,
     };
     use crate::bootstrap::{self, AppError};
+    use crate::encrypted_document::EncryptedEnvelopeDocument;
     use crate::state::db::schema::IdentitySpecs;
     use crate::state::db::{CoralDb, CoralTx, DbError, DbRepos, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
@@ -913,69 +817,6 @@ mod tests {
             validate_identity_spec_write(&key, &manifest, "not: [valid"),
             Err(AppError::InvalidInput(_))
         ));
-    }
-
-    #[test]
-    fn document_writes_validate_shape_without_exposing_envelope_data() {
-        let present = || vec![1];
-        for (bytes, key_id, algorithm, aad_version) in [
-            (
-                [Vec::new(), present(), present(), present()],
-                "key",
-                "alg",
-                1,
-            ),
-            (
-                [present(), Vec::new(), present(), present()],
-                "key",
-                "alg",
-                1,
-            ),
-            (
-                [present(), present(), Vec::new(), present()],
-                "key",
-                "alg",
-                1,
-            ),
-            (
-                [present(), present(), present(), Vec::new()],
-                "key",
-                "alg",
-                1,
-            ),
-            ([present(), present(), present(), present()], " ", "alg", 1),
-            ([present(), present(), present(), present()], "key", "", 1),
-            (
-                [present(), present(), present(), present()],
-                "key",
-                "alg",
-                0,
-            ),
-        ] {
-            let [ciphertext, nonce, wrapped_dek, wrapped_dek_nonce] = bytes;
-            let result = IdentitySpecDocumentWrite::new(
-                ciphertext,
-                nonce,
-                wrapped_dek,
-                wrapped_dek_nonce,
-                key_id,
-                algorithm,
-                aad_version,
-            );
-            assert!(matches!(result, Err(AppError::InvalidInput(_))));
-        }
-
-        let write = IdentitySpecDocumentWrite::new(
-            b"sentinel-secret".to_vec(),
-            b"sentinel-nonce".to_vec(),
-            b"sentinel-wrapped".to_vec(),
-            b"sentinel-wrap-nonce".to_vec(),
-            "sentinel-key",
-            "sentinel-algorithm",
-            99,
-        )
-        .expect("opaque positive AAD versions are storage-valid");
-        assert!(!format!("{write:?}").contains("sentinel"));
     }
 
     #[tokio::test]
@@ -1297,6 +1138,14 @@ mod tests {
         let (_temp, db) = open_sqlite().await;
         let (global, workspace) = seed_scoped_specs(&db, "sqlite").await;
         let mut tx = db.begin().await.expect("begin document transaction");
+        let mut invalid = valid_document(1, 1);
+        invalid.binding_version = 0;
+        assert!(matches!(
+            tx.identity_spec_documents()
+                .upsert(&global.id, &invalid, 50)
+                .await,
+            Err(AppError::InvalidInput(_))
+        ));
         let first = tx
             .identity_spec_documents()
             .upsert(&global.id, &valid_document(1, 1), 50)
@@ -1319,13 +1168,13 @@ mod tests {
             ),
             (50, 50)
         );
-        assert_eq!(replaced.ciphertext, [10]);
-        assert_eq!(replaced.nonce, [11]);
-        assert_eq!(replaced.wrapped_dek, [12]);
-        assert_eq!(replaced.wrapped_dek_nonce, [13]);
-        assert_eq!(replaced.key_id, "key-10");
-        assert_eq!(replaced.algorithm, "alg-10");
-        assert_eq!(replaced.aad_version, 99);
+        assert_eq!(replaced.envelope.ciphertext, [10]);
+        assert_eq!(replaced.envelope.nonce, [11]);
+        assert_eq!(replaced.envelope.wrapped_dek, [12]);
+        assert_eq!(replaced.envelope.wrapped_dek_nonce, [13]);
+        assert_eq!(replaced.envelope.key_id, "key-10");
+        assert_eq!(replaced.envelope.algorithm, "alg-10");
+        assert_eq!(replaced.envelope.binding_version, 99);
         assert!(!format!("{replaced:?}").contains("key-10"));
         assert!(
             tx.identity_spec_documents()
@@ -1487,15 +1336,15 @@ mod tests {
         (manifest, manifest_yaml)
     }
 
-    fn valid_document(marker: u8, aad_version: i64) -> IdentitySpecDocumentWrite {
-        IdentitySpecDocumentWrite::new(
+    fn valid_document(marker: u8, binding_version: i64) -> EncryptedEnvelopeDocument {
+        EncryptedEnvelopeDocument::new(
             vec![marker],
             vec![marker + 1],
             vec![marker + 2],
             vec![marker + 3],
             format!("key-{marker}"),
             format!("alg-{marker}"),
-            aad_version,
+            binding_version,
         )
         .expect("valid identity spec document write")
     }
