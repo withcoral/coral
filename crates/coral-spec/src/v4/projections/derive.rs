@@ -98,6 +98,21 @@ fn generate_projection(
                     ),
                     Some(operation.id.clone()),
                 ));
+            } else if matches!(
+                input.location,
+                IrInputLocation::Header | IrInputLocation::Cookie
+            ) {
+                // Request lowering only renders path and query parameters, so
+                // an optional header or cookie is omitted from every generated
+                // request; the projection stays usable but must say so.
+                projection_diagnostics.push(Diagnostic::warning(
+                    "PROJECTION_INPUT_UNSUPPORTED",
+                    format!(
+                        "optional {:?} input '{}' is not sent by generated requests",
+                        input.location, input.name
+                    ),
+                    Some(operation.id.clone()),
+                ));
             }
             ProjectionInput {
                 name: projection_input_name(

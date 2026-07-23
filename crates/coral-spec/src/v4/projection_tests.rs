@@ -588,6 +588,56 @@ paths:
 }
 
 #[test]
+fn optional_header_and_cookie_inputs_stay_published_with_dropped_input_diagnostics() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: items_api
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let spec = r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: list_items
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+        - {name: X-Api-Version, in: header, schema: {type: string}}
+        - {name: session, in: cookie, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+";
+    let ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
+    let plan = ir.validated_plan().expect("plan");
+    let catalog = generate_projection_catalog(v4, &plan).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("projection");
+
+    assert_eq!(projection.visibility, ProjectionVisibility::Published);
+    for dropped in ["Header input 'X-Api-Version'", "Cookie input 'session'"] {
+        assert!(
+            projection.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
+                    && diagnostic.message.contains(dropped)
+                    && diagnostic.message.contains("not sent by generated requests")
+            }),
+            "dropped optional {dropped} must be diagnosed: {:?}",
+            projection.diagnostics
+        );
+    }
+}
+
+#[test]
 fn projection_generation_keeps_link_header_page_inputs_internal() {
     let manifest = parse_source_manifest_yaml(
         r"
