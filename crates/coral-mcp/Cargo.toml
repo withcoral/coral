@@ -32,6 +32,5 @@ coral-app.workspace = true
 jsonschema.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
-tiktoken-rs.workspace = true
 tonic-types.workspace = true
 tracing-subscriber.workspace = true

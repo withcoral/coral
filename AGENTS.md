@@ -145,8 +145,8 @@
   fixtures under `xtask/fixtures/benchmarks/<benchmark>/`.
 - Use `cargo run --locked -p xtask -- benchmark list-columns` to compare object
   and field-once `list_columns` JSON with the checked-in `github.issues` page
-  fixture and the `o200k_base` tokenizer. The benchmark must call the private
-  Coral MCP formatter used by the real `list_columns` tool path.
+  fixture and the `o200k_base` tokenizer. The benchmark must call the real MCP
+  tool in-process and keep benchmark-only code out of production crates.
 - The Electron desktop app version is tied to the CLI release version through
   release-please. The release workflow builds the macOS desktop app from
   `apps/desktop`, uploads its DMG/ZIP/update metadata to the same GitHub

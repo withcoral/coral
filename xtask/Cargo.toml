@@ -18,10 +18,15 @@ anyhow.workspace = true
 base64.workspace = true
 clap.workspace = true
 pulldown-cmark = { version = "0.13", default-features = false }
+rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
+tiktoken-rs.workspace = true
+tokio.workspace = true
+tonic.workspace = true
 url.workspace = true
 urlencoding.workspace = true
 uuid.workspace = true
@@ -30,9 +35,11 @@ walkdir.workspace = true
 jsonschema.workspace = true
 reqwest.workspace = true
 
+coral-api.workspace = true
+coral-client.workspace = true
+coral-mcp.workspace = true
 coral-spec.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
 insta = "1"
-tempfile.workspace = true
