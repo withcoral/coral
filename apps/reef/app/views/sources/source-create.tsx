@@ -23,6 +23,15 @@ import * as styles from './source-create.css'
 import { formatFieldName, SourceError, SourceField, SourceHeader } from './source-presentation'
 
 const SECRET_KEY = 'API_TOKEN'
+const GITHUB_OAUTH_CLIENT_ID = 'Iv23liJHis6Bs8NO1DAI'
+const GITHUB_DEVICE_AUTHORIZATION_URL = 'https://github.com/login/device/code'
+const GITHUB_OAUTH_TOKEN_URL = 'https://github.com/login/oauth/access_token'
+const GITHUB_OAUTH_SCOPES = 'repo read:org read:user user:email'
+const SENTRY_OPENAPI_PATH = '/getsentry/sentry-api-schema/refs/heads/main/openapi-derefed.json'
+const SENTRY_DEVICE_AUTHORIZATION_URL = 'https://sentry.io/oauth/device/code/'
+const SENTRY_OAUTH_TOKEN_URL = 'https://sentry.io/oauth/token/'
+const SENTRY_OAUTH_SCOPES =
+  'org:read event:read member:read project:read project:releases team:read'
 const NAME_PATTERN = /^[a-z][a-z0-9_]*$/
 const RESERVED_SOURCE_NAMES = new Set(['coral', 'coral_admin', 'public'])
 
@@ -573,7 +582,9 @@ function CredentialsStep({
         <Radio.Group
           aria-label="Authentication"
           value={draft.auth}
-          onValueChange={(auth) => update({ auth })}
+          onValueChange={(auth) =>
+            update(auth === 'oauthDevice' ? oauthDeviceDraft(draft) : { auth })
+          }
         >
           {authChoices.map((choice) => (
             <Radio.Item key={choice.key} value={choice.key}>
@@ -700,6 +711,56 @@ function CredentialsStep({
       </div>
     </div>
   )
+}
+
+function oauthDeviceDraft(draft: Draft): Partial<Draft> {
+  const preset = oauthDevicePreset(draft.url)
+  return {
+    auth: 'oauthDevice',
+    oauthClientId: draft.oauthClientId || preset?.clientId || '',
+    oauthDeviceAuthorizationUrl:
+      draft.oauthDeviceAuthorizationUrl || preset?.deviceAuthorizationUrl || '',
+    oauthScopes: draft.oauthScopes || preset?.scopes || '',
+    oauthTokenUrl: draft.oauthTokenUrl || preset?.tokenUrl || '',
+  }
+}
+
+function oauthDevicePreset(url: string):
+  | {
+      clientId: string
+      deviceAuthorizationUrl: string
+      scopes: string
+      tokenUrl: string
+    }
+  | undefined {
+  try {
+    const parsed = new URL(url)
+    if (
+      parsed.hostname === 'raw.githubusercontent.com' &&
+      parsed.pathname.startsWith('/github/rest-api-description/')
+    ) {
+      return {
+        clientId: GITHUB_OAUTH_CLIENT_ID,
+        deviceAuthorizationUrl: GITHUB_DEVICE_AUTHORIZATION_URL,
+        scopes: GITHUB_OAUTH_SCOPES,
+        tokenUrl: GITHUB_OAUTH_TOKEN_URL,
+      }
+    }
+    if (
+      parsed.hostname === 'raw.githubusercontent.com' &&
+      parsed.pathname === SENTRY_OPENAPI_PATH
+    ) {
+      return {
+        clientId: '',
+        deviceAuthorizationUrl: SENTRY_DEVICE_AUTHORIZATION_URL,
+        scopes: SENTRY_OAUTH_SCOPES,
+        tokenUrl: SENTRY_OAUTH_TOKEN_URL,
+      }
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }
 
 function authChoiceFromDiscovery(auth: SourceDetectedAuth): AuthChoice | null {
