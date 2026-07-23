@@ -9,6 +9,7 @@
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
+//!   - `benchmark` runs representation-efficiency benchmarks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
 //!     artifacts.
@@ -31,6 +32,7 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use assert_cmd as _;
 
+mod benchmarks;
 mod detect;
 mod docs;
 mod env;
@@ -61,6 +63,8 @@ enum Command {
     ExportSkills(ExportSkillsArgs),
     /// Run command-level performance regression checks.
     PerfCheck(perf::Args),
+    /// Run representation-efficiency benchmarks.
+    Benchmark(benchmarks::Args),
     /// Regenerate checked-in generated JSON schemas.
     GenerateSchemas(schemas::Args),
     /// Sign, package, and notarize one macOS release binary.
@@ -116,6 +120,7 @@ fn run(command: &Command) -> Result<bool> {
         }
         Command::ExportSkills(args) => skills::export(&args.dest),
         Command::PerfCheck(args) => perf::run(args),
+        Command::Benchmark(args) => benchmarks::run(args),
         Command::GenerateSchemas(args) => schemas::run(args),
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
         Command::ReleaseDesktopMacosPackage(args) => release::desktop_macos_package(args),

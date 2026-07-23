@@ -97,6 +97,7 @@ sqlx = { version = "0.9", default-features = false, features = ["macros", "migra
 sqlparser = "0.59.0"
 strsim = "0.11"
 thiserror = "2"
+tiktoken-rs = "0.12"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 toml = "0.9"
