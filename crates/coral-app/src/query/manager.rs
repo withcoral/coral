@@ -3964,16 +3964,136 @@ tables:
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one manifest keeps all selected-only and limit cases on the same installed source"
+        reason = "one OpenAPI fixture keeps all selected-only cases on the same installed source"
     )]
-    fn selected_http_manifest(server_uri: &str) -> String {
+    fn selected_http_manifest(fixture: &QueryManagerFixture, server_uri: &str) -> String {
+        let openapi_file = fixture._temp.path().join("selected-http-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            format!(
+                r"
+openapi: 3.0.3
+info:
+  title: Selected HTTP
+  version: 1.0.0
+servers:
+  - url: {server_uri}
+paths:
+  /search/default:
+    get:
+      tags:
+        - search
+      operationId: default_ignored
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: exact
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 2
+      responses:
+        '200':
+          $ref: '#/components/responses/SearchResults'
+  /search/route-cap:
+    get:
+      tags:
+        - search
+      operationId: route_cap
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 2
+      responses:
+        '200':
+          $ref: '#/components/responses/SearchResults'
+  /search/global-cap:
+    get:
+      tags:
+        - search
+      operationId: global_cap
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 2
+      responses:
+        '200':
+          $ref: '#/components/responses/SearchResults'
+  /search/not-selected:
+    get:
+      tags:
+        - search
+      operationId: not_selected
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/SearchResults'
+components:
+  responses:
+    SearchResults:
+      description: Search results
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              type: object
+              properties:
+                title:
+                  type: string
+              required:
+                - title
+"
+            ),
+        )
+        .expect("write selected HTTP OpenAPI fixture");
+
         format!(
             r"
 name: selected_http
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: {server_uri}
+dsl_version: 4
 inputs:
   API_TOKEN:
     kind: secret
@@ -3992,142 +4112,41 @@ inputs:
             client:
               id:
                 default: selected-client
-functions:
-  - name: search_default_ignored
-    kind: search
-    universal_search:
-      id: default_ignored
+universal_search:
+  routes:
+    default_ignored:
       execute: true
-      query_arg: q
-    search_limits:
-      default_top_k: 2
-      max_top_k: 50
-      max_calls_per_query: 1
-    args:
-      - name: q
-        required: true
-        bind: {{arg: q}}
-      - name: exact
-        type: Boolean
-        default: false
-        bind: {{arg: exact}}
-      - name: options
-        type: Json
-        default: {{sort: recent, tags: [bug, docs]}}
-        bind: {{arg: options}}
-    request:
-      method: GET
-      path: /search/default
-      query:
-        - name: q
-          from: arg
-          key: q
-        - name: exact
-          from: arg_bool
-          key: exact
-        - name: options
-          from: arg
-          key: options
-    pagination:
-      mode: page
-      page_param: page
-      page_start: 1
-      page_size:
-        default: 2
-        max: 50
-        query_param: per_page
-    columns:
-      - name: title
-        type: Utf8
-  - name: search_route_cap
-    kind: search
-    universal_search:
-      id: route_cap
+      target:
+        operation_id: default_ignored
+      query_input:
+        location: query
+        name: q
+    route_cap:
       execute: true
-      query_arg: q
-    search_limits:
-      default_top_k: 2
-      max_top_k: 3
-      max_calls_per_query: 1
-    args:
-      - name: q
-        required: true
-        bind: {{arg: q}}
-    request:
-      method: GET
-      path: /search/route-cap
-      query:
-        - name: q
-          from: arg
-          key: q
-    pagination:
-      mode: page
-      page_param: page
-      page_start: 1
-      page_size:
-        default: 2
-        max: 50
-        query_param: per_page
-    columns:
-      - name: title
-        type: Utf8
-  - name: search_global_cap
-    kind: search
-    universal_search:
-      id: global_cap
+      target:
+        operation_id: route_cap
+      query_input:
+        location: query
+        name: q
+    global_cap:
       execute: true
-      query_arg: q
-    search_limits:
-      default_top_k: 10
-      max_top_k: 50
-      max_calls_per_query: 1
-    args:
-      - name: q
-        required: true
-        bind: {{arg: q}}
-    request:
-      method: GET
-      path: /search/global-cap
-      query:
-        - name: q
-          from: arg
-          key: q
-    pagination:
-      mode: page
-      page_param: page
-      page_start: 1
-      page_size:
-        default: 2
-        max: 50
-        query_param: per_page
-    columns:
-      - name: title
-        type: Utf8
-  - name: search_not_selected
-    kind: search
-    universal_search:
-      id: not_selected
+      target:
+        operation_id: global_cap
+      query_input:
+        location: query
+        name: q
+    not_selected:
       execute: true
-      query_arg: q
-    search_limits:
-      default_top_k: 2
-      max_top_k: 50
-      max_calls_per_query: 1
-    args:
-      - name: q
-        required: true
-        bind: {{arg: q}}
-    request:
-      method: GET
-      path: /search/not-selected
-      query:
-        - name: q
-          from: arg
-          key: q
-    columns:
-      - name: title
-        type: Utf8
-"
+      target:
+        operation_id: not_selected
+      query_input:
+        location: query
+        name: q
+surface:
+  type: openapi
+  file: {}
+",
+            openapi_file.display()
         )
     }
 
@@ -4145,7 +4164,7 @@ functions:
             .import_source(
                 &workspace,
                 &ImportSourceCommand {
-                    manifest_yaml: selected_http_manifest(server_uri),
+                    manifest_yaml: selected_http_manifest(fixture, server_uri),
                     bindings: SourceBindings::default(),
                 },
             )
@@ -4258,7 +4277,7 @@ functions:
     }
 
     #[tokio::test]
-    async fn selected_http_execution_calls_only_chosen_function_and_preserves_limits_and_types() {
+    async fn selected_http_execution_calls_only_chosen_function_and_preserves_types_and_limits() {
         let server = MockServer::start().await;
         for endpoint in ["default", "route-cap", "global-cap", "not-selected"] {
             Mock::given(method("GET"))
@@ -4275,7 +4294,7 @@ functions:
 
         for (function, requested_rows) in [
             ("search_default_ignored", 5),
-            ("search_route_cap", 8),
+            ("search_route_cap", 3),
             ("search_global_cap", 20),
         ] {
             let selected = execute_selected_route(
@@ -4320,10 +4339,6 @@ functions:
         assert_eq!(
             request_query_value(typed_request, "exact").as_deref(),
             Some("false")
-        );
-        assert_eq!(
-            request_query_value(typed_request, "options").as_deref(),
-            Some(r#"{"sort":"recent","tags":["bug","docs"]}"#)
         );
     }
 
@@ -4449,7 +4464,7 @@ functions:
             .import_source(
                 &workspace,
                 &ImportSourceCommand {
-                    manifest_yaml: selected_http_manifest(&server.uri()),
+                    manifest_yaml: selected_http_manifest(&fixture, &server.uri()),
                     bindings: SourceBindings::default(),
                 },
             )
@@ -4487,8 +4502,8 @@ functions:
             "search_default_ignored",
         );
         let mut stale_target = current.clone();
-        stale_target.target = ResolvedUniversalSearchTarget::V3 {
-            function_name: "search_not_selected".to_string(),
+        stale_target.target = ResolvedUniversalSearchTarget {
+            operation_id: "not_selected".to_string(),
         };
         let mut stale_fingerprint = current;
         stale_fingerprint.runtime_contract_fingerprint =
@@ -4583,8 +4598,7 @@ functions:
                 &WorkspaceName::default(),
                 r#"SELECT title FROM selected_http.search_default_ignored(
                     q => 'ordinary',
-                    exact => false,
-                    options => '{"sort":"recent","tags":["bug","docs"]}'
+                    exact => false
                 ) LIMIT 1"#,
                 &QueryAttribution::default(),
             )
@@ -4601,127 +4615,6 @@ functions:
         assert_eq!(
             request_query_value(request, "per_page").as_deref(),
             Some("1")
-        );
-    }
-
-    #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "v4 materialization and selected execution form one end-to-end contract test"
-    )]
-    async fn selected_v4_rest_route_executes_its_materialized_function() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/search/items"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"title": "v4 result"}])))
-            .mount(&server)
-            .await;
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
-        let openapi_file = descriptor_temp.path().join("selected-v4-openapi.yaml");
-        std::fs::write(
-            &openapi_file,
-            format!(
-                r"
-openapi: 3.0.3
-info:
-  title: Selected v4
-  version: 1.0.0
-servers:
-  - url: {}
-paths:
-  /search/items:
-    get:
-      operationId: search_items
-      parameters:
-        - name: q
-          in: query
-          required: true
-          schema: {{type: string}}
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    title: {{type: string}}
-                  required: [title]
-",
-                server.uri()
-            ),
-        )
-        .expect("write v4 OpenAPI fixture");
-        let source_manager = SourceManager::new_for_tests(
-            fixture.manager.config_store.clone(),
-            fixture.manager.credential_manager.clone(),
-            fixture.manager.layout.clone(),
-        );
-        let workspace = WorkspaceName::default();
-        source_manager
-            .import_source(
-                &workspace,
-                &ImportSourceCommand {
-                    manifest_yaml: format!(
-                        r"
-name: selected_v4
-dsl_version: 4
-universal_search:
-  routes:
-    primary:
-      execute: true
-      target:
-        operation_id: search_items
-      query_input:
-        location: query
-        name: q
-surface:
-  type: openapi
-  file: {}
-",
-                        openapi_file.display()
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import selected v4 source");
-        let (loaded, _config) = fixture
-            .manager
-            .load_query_sources(&workspace)
-            .await
-            .expect("load selected v4 source");
-        let route = loaded
-            .loaded
-            .into_iter()
-            .find(|source| source.source.name.as_str() == "selected_v4")
-            .expect("selected v4 source")
-            .universal_search_resolution
-            .eligible_routes
-            .into_iter()
-            .next()
-            .expect("selected v4 route");
-        assert!(matches!(
-            &route.target,
-            ResolvedUniversalSearchTarget::V4 { .. }
-        ));
-
-        let execution = execute_selected_route(&fixture.manager, route, "v4 needle", 5)
-            .await
-            .expect("execute selected v4 route");
-
-        assert_eq!(
-            execution_to_rows(&execution.execution),
-            vec![json!({"title": "v4 result"})]
-        );
-        assert!(execution.upstream_started);
-        let requests = server.received_requests().await.expect("record requests");
-        assert_eq!(requests.len(), 1);
-        let request = requests.first().expect("selected v4 request");
-        assert_eq!(
-            request_query_value(request, "q").as_deref(),
-            Some("v4 needle")
         );
     }
 
@@ -4779,8 +4672,8 @@ surface:
             owner_source_name: "selected_source".to_string(),
             installation_revision: uuid::Uuid::new_v4(),
             authored_route_id: Some("selected-route".to_string()),
-            target: ResolvedUniversalSearchTarget::V3 {
-                function_name: "search\"records".to_string(),
+            target: ResolvedUniversalSearchTarget {
+                operation_id: "search_records".to_string(),
             },
             locator: UniversalSearchFunctionLocator {
                 schema_name: "selected\"schema".to_string(),

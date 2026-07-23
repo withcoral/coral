@@ -998,6 +998,7 @@ functions:
         .expect("ordinary DSL v3 search function");
         let resolution = resolve_universal_search(
             "legacy_search",
+            Uuid::nil(),
             &manifest,
             None,
             &RuntimeContractFingerprint::for_test("v1:dsl-v3"),
