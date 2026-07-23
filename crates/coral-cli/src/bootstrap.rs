@@ -1,10 +1,14 @@
 use std::sync::Arc;
 
-use coral_app::{AwsEngineExtensionsProvider, features::FeatureOverrides};
+use coral_app::{
+    AwsEngineExtensionsProvider,
+    features::{Feature, FeatureOverrides, FeatureStore},
+};
 use coral_client::{
     AppClient, ClientError,
     local::{LocalServerError, RunningServer as AppRunningServer, ServerBuilder},
 };
+use coral_mcp::McpOptions;
 
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
@@ -32,7 +36,7 @@ pub(crate) enum BootstrapError {
     #[error(transparent)]
     Connect(#[from] ClientError),
     #[error(transparent)]
-    Serve(#[from] coral_serve::ServeError),
+    Serve(#[from] crate::serve::ServeError),
 }
 
 pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, BootstrapError> {
@@ -72,7 +76,14 @@ pub(crate) async fn start_ui_server(
 
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
-) -> Result<coral_serve::RunningServer, BootstrapError> {
+) -> Result<crate::serve::RunningServer, BootstrapError> {
+    let features = FeatureStore::discover(None)?.load_with_overrides(&feature_overrides)?;
+    let mcp_options = McpOptions {
+        feedback_enabled: features.enabled(Feature::Feedback),
+        observed_values_search_enabled: features.enabled(Feature::ObservedValuesSearch),
+        tasks_enabled: features.enabled(Feature::Tasks),
+        ..McpOptions::default()
+    };
     let builder = configure_server_builder(
         ServerBuilder::configured_standalone_grpc(),
         BootstrapOptions {
@@ -80,7 +91,7 @@ pub(crate) async fn start_standalone_server(
             ..BootstrapOptions::default()
         },
     );
-    coral_serve::start(builder, coral_mcp::McpOptions::default())
+    crate::serve::start(builder, mcp_options)
         .await
         .map_err(Into::into)
 }

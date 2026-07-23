@@ -15,6 +15,7 @@ mod embedded_ui;
 pub mod env;
 mod onboard;
 mod query_error;
+mod serve;
 mod source_ops;
 
 use std::borrow::Cow;

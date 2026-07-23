@@ -125,7 +125,6 @@ coral-cli = { path = "crates/coral-cli" }
 coral-client = { path = "crates/coral-client" }
 coral-engine = { path = "crates/coral-engine" }
 coral-mcp = { path = "crates/coral-mcp" }
-coral-serve = { path = "crates/coral-serve" }
 coral-spec = { path = "crates/coral-spec" }
 coral-telemetry = { path = "crates/coral-telemetry" }
 

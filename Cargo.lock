@@ -1326,7 +1326,6 @@ dependencies = [
  "coral-app",
  "coral-client",
  "coral-mcp",
- "coral-serve",
  "coral-spec",
  "crossterm",
  "dialoguer",
@@ -1441,19 +1440,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "coral-serve"
-version = "0.7.1"
-dependencies = [
- "coral-app",
- "coral-client",
- "coral-mcp",
- "rmcp",
- "tempfile",
- "thiserror",
- "tokio",
 ]
 
 [[package]]

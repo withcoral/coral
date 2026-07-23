@@ -1,25 +1,18 @@
-//! Composite gRPC and MCP HTTP lifecycle integration tests.
+use std::net::TcpListener;
 
-#![expect(
-    unused_crate_dependencies,
-    reason = "integration tests inherit the package's production dependency set"
-)]
-
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-
-use coral_app::ServerBuilder;
-use coral_mcp::McpOptions;
 use rmcp::ServiceExt as _;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use tempfile::TempDir;
 
+use super::*;
+
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
 }
 
-fn grpc_addr(server: &coral_serve::RunningServer) -> SocketAddr {
+fn grpc_addr(server: &RunningServer) -> SocketAddr {
     server
         .endpoint_uri()
         .strip_prefix("http://")
@@ -42,6 +35,39 @@ async fn assert_catalog_tool(endpoint: String) {
     client.cancel().await.expect("stop MCP client");
 }
 
+async fn assert_task_tools(endpoint: String) {
+    let config = StreamableHttpClientTransportConfig::with_uri(endpoint);
+    let client =
+        ().serve(StreamableHttpClientTransport::from_config(config))
+            .await
+            .expect("initialize MCP client");
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    assert!(tools.iter().any(|tool| tool.name == "start_task"));
+    assert!(tools.iter().any(|tool| tool.name == "end_task"));
+    client.cancel().await.expect("stop MCP client");
+}
+
+#[test]
+fn loopback_grpc_endpoint_maps_wildcards_and_rejects_public_addresses() {
+    assert_eq!(
+        loopback_grpc_endpoint_uri(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14555)))
+            .expect("IPv4 wildcard"),
+        "http://127.0.0.1:14555"
+    );
+    assert_eq!(
+        loopback_grpc_endpoint_uri(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 14555)))
+            .expect("IPv6 wildcard"),
+        "http://[::1]:14555"
+    );
+    loopback_grpc_endpoint_uri(SocketAddr::from(([192, 0, 2, 1], 14555)))
+        .expect_err("public address must be rejected");
+    loopback_grpc_endpoint_uri(SocketAddr::new(
+        Ipv4Addr::LOCALHOST.to_ipv6_mapped().into(),
+        14555,
+    ))
+    .expect_err("IPv4-mapped IPv6 address must be rejected");
+}
+
 #[tokio::test]
 async fn auth_disabled_companion_serves_and_shuts_down() {
     let temp = TempDir::new().expect("temp dir");
@@ -49,7 +75,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
         &temp,
         "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
     );
-    let server = coral_serve::start(
+    let server = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
@@ -67,6 +93,29 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
 }
 
 #[tokio::test]
+async fn companion_uses_supplied_mcp_feature_options() {
+    let temp = TempDir::new().expect("temp dir");
+    write_config(
+        &temp,
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
+    );
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions {
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await
+    .expect("start composite server");
+    let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
+    assert_task_tools(format!("http://{mcp_addr}/mcp")).await;
+    server.shutdown().await.expect("shutdown composite server");
+}
+
+#[tokio::test]
 async fn mcp_start_failure_releases_the_started_grpc_listener() {
     let grpc_probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve gRPC port");
     let grpc_addr = grpc_probe.local_addr().expect("gRPC address");
@@ -81,7 +130,7 @@ async fn mcp_start_failure_releases_the_started_grpc_listener() {
         ),
     );
 
-    let result = coral_serve::start(
+    let result = start(
         ServerBuilder::standalone_grpc(grpc_addr)
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
