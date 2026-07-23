@@ -82,9 +82,10 @@ These checks should be based on the authoritative API docs for the API the sourc
   `execute: false` is final; a denied DSL v4 route keeps its target and omits
   `query_input`.
 - If any Universal Search policy is authored, flag attempts to infer unlisted
-  routes. Missing or duplicate targets, ambiguous inputs, invalid defaults,
-  unsafe operations, and unresolved mappings must fail closed instead of
-  falling back to a guessed operation.
+  routes. Missing or duplicate targets, ambiguous inputs, missing or
+  type-incompatible defaults imported from the DSL v4 surface, unsafe
+  operations, and unresolved mappings must fail closed instead of falling back
+  to a guessed operation.
 - Check optional result mapping separately from authorization. DSL v4 fields
   are RFC 6901 JSON Pointers that must be syntactically valid in the manifest
   and resolve exactly once during route resolution. Identity and display fields

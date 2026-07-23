@@ -558,10 +558,6 @@ Function args accept an optional `type` field using Coral manifest data type
 names. It defaults to `Utf8`; set it when the provider argument is numeric,
 boolean, timestamp-shaped, or JSON-shaped.
 
-Function args also accept an optional typed `default`. Coral preserves the
-YAML/JSON value type rather than converting every default to text. The default
-must match the argument `type` and any declared `values`.
-
 ```yaml
 functions:
   - name: search_issues
@@ -583,7 +579,6 @@ functions:
       - name: mode
         type: Utf8
         values: [lexical, semantic, hybrid]
-        default: lexical
         bind:
           arg: search_type
     request:
@@ -710,6 +705,12 @@ function names are not authorization identities. `query_input.location` must
 be `path`, `query`, or `tool_arg`;
 header, cookie, and body inputs cannot be selected.
 
+Coral derives route arguments and defaults from the imported OpenAPI or MCP
+operation. The selected query input must lower to an exposed `Utf8` argument
+with no default. Every other exposed input must have a type-compatible default
+in the imported operation; these defaults are imported surface facts, not
+fields authored in the DSL v4 manifest.
+
 DSL v4 result fields are RFC 6901 JSON Pointers rooted at the imported result
 row. Use escapes `~0` for `~` and `~1` for `/`. Manifest validation checks the
 pointer syntax; during route resolution, every pointer must resolve to exactly
@@ -732,10 +733,11 @@ Authorization fails closed:
 
 - Any authored DSL v4 `universal_search` policy puts the source in explicit mode;
   unlisted routes are not inferred.
-- Without authored policy, only one unambiguous, safe `kind: search` route can
-  be inferred. Legacy `mode: search` filters never qualify.
-- Duplicate or missing targets, ambiguous query inputs, invalid defaults, and
-  unresolved result fields do not fall back to a guessed operation.
+- Without authored policy, only one unambiguous, safe generated search route
+  can be inferred.
+- Duplicate or missing targets, ambiguous query inputs, missing or
+  type-incompatible imported defaults, and unresolved result fields do not fall
+  back to a guessed operation.
 - `execute: true` is the source author's assertion that the target is
   retrieval-only and idempotent. Verify that assertion against the upstream
   API. Inference is stricter: HTTP operations must use a safe retrieval method,

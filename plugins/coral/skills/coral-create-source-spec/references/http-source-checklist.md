@@ -100,10 +100,10 @@ Additional hint guidance:
 - For an allowed DSL v4 route, select the original imported input with
   `query_input.location` (`path`, `query`, or `tool_arg`) and
   `query_input.name`. Never authorize a generated projection or function name.
-- The allowed query argument must have type `Utf8` and no default.
-  Give every other exposed argument a type-correct typed `default`; preserve
-  booleans, numbers, arrays, and objects as their YAML/JSON types instead of
-  flattening them into strings.
+- The selected DSL v4 query input must import as an exposed `Utf8` argument
+  with no default. Every other exposed input must already have a
+  type-compatible default in the imported OpenAPI or MCP operation. These
+  defaults are imported facts, not fields authored in the DSL v4 manifest.
 - Use optional `result` mapping only for identity and display. DSL v4 mappings
   use RFC 6901 JSON Pointers to original imported output fields. Pointers must
   be syntactically valid in the manifest and resolve exactly once during route
@@ -113,9 +113,9 @@ Additional hint guidance:
   policy, treat unlisted routes as unauthorized.
 - Verify every explicit allow is retrieval-only and idempotent upstream. Do not
   infer authorization from legacy `mode: search`, a mutating HTTP method, or an
-  unannotated MCP tool. Missing targets, ambiguous inputs, invalid defaults,
-  duplicate targets, and unresolved result fields must fail closed rather than
-  retargeting another operation.
+  unannotated MCP tool. Missing targets, ambiguous inputs, missing or
+  type-incompatible imported defaults, duplicate targets, and unresolved
+  result fields must fail closed rather than retargeting another operation.
 
 ## Response Extraction
 

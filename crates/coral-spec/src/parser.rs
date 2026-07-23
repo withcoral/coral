@@ -270,6 +270,8 @@ fn parse_source_backend(value: &Value) -> Result<SourceBackend> {
 #[cfg(test)]
 mod tests {
     use super::parse_source_manifest_yaml;
+    use crate::backends::{http::HttpSourceManifest, mcp::McpSourceManifest};
+    use serde_json::json;
 
     #[test]
     fn parse_source_manifest_preserves_test_query_order() {
@@ -402,6 +404,144 @@ functions:
                     "/functions/0: Additional properties are not allowed ('universal_search' was unexpected)"
                 ),
                 "unexpected {backend} schema error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_v3_table_function_defaults() {
+        let manifests = [
+            (
+                "HTTP",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_items
+    args:
+      - name: exact
+        type: Boolean
+        default: false
+        bind:
+          arg: exact
+    request:
+      path: /search
+      query:
+        - name: exact
+          from: arg
+          key: exact
+    columns:
+      - name: id
+        type: Utf8
+",
+            ),
+            (
+                "MCP",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: demo-mcp-server
+functions:
+  - name: search_items
+    tool: search_items
+    args:
+      - name: exact
+        type: Boolean
+        default: false
+        bind:
+          arg: exact
+    columns:
+      - name: id
+        type: Utf8
+",
+            ),
+        ];
+
+        for (backend, manifest) in manifests {
+            let error = parse_source_manifest_yaml(manifest)
+                .expect_err("DSL v3 table-function defaults must be rejected");
+            let message = error.to_string();
+
+            assert!(
+                message.contains("/functions/0/args/0")
+                    && message.contains("'default' was unexpected"),
+                "unexpected {backend} schema error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn backend_parsers_reject_v3_table_function_defaults() {
+        let errors = [
+            (
+                "HTTP",
+                HttpSourceManifest::parse_manifest_value(json!({
+                    "name": "demo",
+                    "version": "1.0.0",
+                    "dsl_version": 3,
+                    "backend": "http",
+                    "base_url": "https://example.com",
+                    "functions": [{
+                        "name": "search_items",
+                        "args": [{
+                            "name": "exact",
+                            "type": "Boolean",
+                            "default": false,
+                            "bind": { "arg": "exact" }
+                        }],
+                        "request": {
+                            "path": "/search",
+                            "query": [{
+                                "name": "exact",
+                                "from": "arg",
+                                "key": "exact"
+                            }]
+                        },
+                        "columns": [{ "name": "id", "type": "Utf8" }]
+                    }]
+                }))
+                .expect_err("the HTTP backend parser must reject DSL v3 defaults"),
+            ),
+            (
+                "MCP",
+                McpSourceManifest::parse_manifest_value(json!({
+                    "name": "demo",
+                    "version": "1.0.0",
+                    "dsl_version": 3,
+                    "backend": "mcp",
+                    "server": {
+                        "transport": "stdio",
+                        "command": "demo-mcp-server"
+                    },
+                    "functions": [{
+                        "name": "search_items",
+                        "tool": "search_items",
+                        "args": [{
+                            "name": "exact",
+                            "type": "Boolean",
+                            "default": false,
+                            "bind": { "arg": "exact" }
+                        }],
+                        "columns": [{ "name": "id", "type": "Utf8" }]
+                    }]
+                }))
+                .expect_err("the MCP backend parser must reject DSL v3 defaults"),
+            ),
+        ];
+
+        for (backend, error) in errors {
+            let message = error.to_string();
+            assert!(
+                message.contains("DSL v3 function 'search_items' argument 'exact'")
+                    && message.contains("defaults are imported only from DSL v4 surfaces"),
+                "unexpected {backend} validation error: {error}"
             );
         }
     }

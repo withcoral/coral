@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::common::{
     BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
-    ManifestDataType, PaginationSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec,
-    SourceTableFunctionKind, SourceTableFunctionSpec, ValueSourceSpec,
+    PaginationSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+    SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -217,7 +217,7 @@ pub(crate) fn validate_http_function(
                 function.name, arg.name
             ),
         )?;
-        validate_table_function_arg_default(source_name, &function.name, arg)?;
+        reject_dsl_v3_table_function_arg_default(source_name, &function.name, arg)?;
         validate_function_binding(
             source_name,
             &function.name,
@@ -254,60 +254,19 @@ pub(crate) fn validate_http_function(
     Ok(())
 }
 
-pub(crate) fn validate_table_function_arg_default(
+pub(crate) fn reject_dsl_v3_table_function_arg_default(
     source_name: &str,
     function_name: &str,
     arg: &crate::TableFunctionArgSpec,
 ) -> Result<()> {
-    let Some(default) = arg.default.as_ref() else {
+    if arg.default.is_none() {
         return Ok(());
-    };
-    let value = default.value();
-    let type_matches = match arg.data_type {
-        ManifestDataType::Utf8 | ManifestDataType::Timestamp => value.is_string(),
-        ManifestDataType::Int64 => value.as_i64().is_some(),
-        ManifestDataType::Boolean => value.is_boolean(),
-        ManifestDataType::Float64 => value.is_number(),
-        ManifestDataType::Json => true,
-    };
-    if !type_matches {
-        return Err(ManifestError::validation(format!(
-            "source '{source_name}' function '{function_name}' argument '{}' default must match type {}",
-            arg.name, arg.data_type
-        )));
     }
-    if !arg.values.is_empty() {
-        let rendered_default = match arg.data_type {
-            ManifestDataType::Utf8 | ManifestDataType::Timestamp => value
-                .as_str()
-                .expect("string-like defaults were type checked above")
-                .to_string(),
-            ManifestDataType::Int64 => value
-                .as_i64()
-                .expect("integer defaults were type checked above")
-                .to_string(),
-            ManifestDataType::Boolean => value
-                .as_bool()
-                .expect("boolean defaults were type checked above")
-                .to_string(),
-            ManifestDataType::Float64 => value
-                .as_f64()
-                .expect("floating-point defaults were type checked above")
-                .to_string(),
-            ManifestDataType::Json => value.to_string(),
-        };
-        if !arg
-            .values
-            .iter()
-            .any(|candidate| candidate == &rendered_default)
-        {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' function '{function_name}' argument '{}' default is not one of its declared values",
-                arg.name
-            )));
-        }
-    }
-    Ok(())
+
+    Err(ManifestError::validation(format!(
+        "source '{source_name}' DSL v3 function '{function_name}' argument '{}' cannot declare a default; defaults are imported only from DSL v4 surfaces",
+        arg.name
+    )))
 }
 
 pub(crate) fn validate_filters_and_column_exprs(
@@ -1173,60 +1132,6 @@ mod tests {
                 "columns": [{ "name": "id", "type": "Utf8" }]
             }]
         })
-    }
-
-    fn function_default_manifest(data_type: &str, default: &Value, values: &[&str]) -> Value {
-        json!({
-            "name": "demo",
-            "version": "0.1.0",
-            "dsl_version": 3,
-            "backend": "http",
-            "base_url": "https://example.com",
-            "functions": [{
-                "name": "lookup",
-                "args": [{
-                    "name": "option",
-                    "type": data_type,
-                    "values": values,
-                    "default": default,
-                    "bind": { "arg": "option" }
-                }],
-                "request": {
-                    "path": "/lookup",
-                    "query": [{ "name": "option", "from": "arg", "key": "option" }]
-                },
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        })
-    }
-
-    #[test]
-    fn http_function_argument_defaults_are_type_and_enum_checked() {
-        let type_error =
-            parse_source_manifest_value(function_default_manifest("Int64", &json!("one"), &[]))
-                .expect_err("string default must not satisfy an Int64 argument");
-        assert!(
-            type_error
-                .to_string()
-                .contains("argument 'option' default must match type Int64"),
-            "unexpected type error: {type_error}"
-        );
-
-        let enum_error = parse_source_manifest_value(function_default_manifest(
-            "Boolean",
-            &json!(true),
-            &["false"],
-        ))
-        .expect_err("default must belong to the declared values");
-        assert!(
-            enum_error
-                .to_string()
-                .contains("argument 'option' default is not one of its declared values"),
-            "unexpected enum error: {enum_error}"
-        );
-
-        parse_source_manifest_value(function_default_manifest("Float64", &json!(1.0), &["1"]))
-            .expect("integral-looking float default should match its rendered enum value");
     }
 
     fn validate_test_http_table(

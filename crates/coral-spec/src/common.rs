@@ -421,8 +421,11 @@ pub struct TableFunctionArgSpec {
     pub required: bool,
     #[serde(default)]
     pub values: Vec<String>,
-    /// An authored JSON default. The outer option records whether the field
-    /// was present, so `default: null` remains distinct from no default.
+    /// A typed runtime default imported for a generated DSL v4 argument.
+    ///
+    /// DSL v3 manifests cannot author this field. The outer option records
+    /// whether an imported default was present, so an explicit JSON `null`
+    /// remains distinct from no default.
     #[serde(
         default,
         deserialize_with = "deserialize_declared_default",
@@ -432,7 +435,7 @@ pub struct TableFunctionArgSpec {
     pub bind: FunctionArgBinding,
 }
 
-/// A type-preserving authored table-function argument default.
+/// A type-preserving imported DSL v4 table-function argument default.
 ///
 /// This wrapper deliberately preserves JSON `null`: using `Option<Value>`
 /// directly would collapse an explicit null into the same state as a missing
@@ -1278,22 +1281,23 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn table_function_arg_default_distinguishes_missing_from_explicit_null() {
-        let missing = serde_json::from_value::<TableFunctionArgSpec>(serde_json::json!({
-            "name": "options",
-            "type": "Json",
-            "bind": { "arg": "options" }
-        }))
-        .expect("argument without a default");
+    fn runtime_table_function_arg_default_distinguishes_missing_from_explicit_null() {
+        let missing = TableFunctionArgSpec {
+            name: "options".to_string(),
+            data_type: ManifestDataType::Json,
+            required: false,
+            values: Vec::new(),
+            default: None,
+            bind: FunctionArgBinding {
+                arg: "options".to_string(),
+            },
+        };
         assert!(missing.default.is_none());
 
-        let explicit_null = serde_json::from_value::<TableFunctionArgSpec>(serde_json::json!({
-            "name": "options",
-            "type": "Json",
-            "default": null,
-            "bind": { "arg": "options" }
-        }))
-        .expect("argument with an explicit null default");
+        let explicit_null = TableFunctionArgSpec {
+            default: Some(DeclaredDefaultValue::new(serde_json::Value::Null)),
+            ..missing
+        };
         assert_eq!(
             explicit_null
                 .default
@@ -1301,10 +1305,14 @@ mod tests {
                 .map(DeclaredDefaultValue::value),
             Some(&serde_json::Value::Null)
         );
+        let encoded =
+            serde_json::to_value(explicit_null).expect("serialize explicit null runtime default");
+        assert_eq!(encoded.get("default"), Some(&serde_json::Value::Null));
+
+        let decoded = serde_json::from_value::<TableFunctionArgSpec>(encoded)
+            .expect("deserialize explicit null runtime default");
         assert_eq!(
-            serde_json::to_value(explicit_null)
-                .expect("serialize explicit null default")
-                .get("default"),
+            decoded.default.as_ref().map(DeclaredDefaultValue::value),
             Some(&serde_json::Value::Null)
         );
     }

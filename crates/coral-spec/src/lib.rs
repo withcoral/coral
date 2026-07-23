@@ -137,8 +137,8 @@ pub use udf::{
 };
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
-    validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
+    reject_dsl_v3_table_function_arg_default, validate_columns,
+    validate_declared_relation_namespace, validate_detail_hint_references,
     validate_filters_and_column_exprs, validate_http_function, validate_http_table,
-    validate_identifier, validate_required_guide, validate_table_function_arg_default,
-    validate_unique_values,
+    validate_identifier, validate_required_guide, validate_unique_values,
 };
