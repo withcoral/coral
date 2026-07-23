@@ -84,12 +84,12 @@ value and the surface and column where Coral saw it. Use those clues with
 
 Experimental connected-source fanout is disabled by default. When
 `search_provider_fanout` is enabled and a source authorizes an eligible
-`kind: search` route, Search may make bounded, read-only upstream calls. It
-starts at most four functions in one wave, requests at most five rows from
-each, applies a 750 ms fanout cutoff and 600 ms per-call timeout, and does not
-retry or paginate. Local matches survive native failures, and status fields
-report partial, skipped, timed-out, or failed work without returning raw
-provider errors.
+top-level DSL v4 `universal_search` route, Search may make bounded, read-only
+upstream calls. It starts at most four routes in one wave, requests at most five
+rows from each, applies a 750 ms fanout cutoff and 600 ms per-call timeout, and
+does not retry or paginate. DSL v3 functions are never fanout routes. Local
+matches survive native failures, and status fields report partial, skipped,
+timed-out, or failed work without returning raw provider errors.
 
 Observed-value collection, retrieval, and maintenance are disabled by default.
 Enable them persistently using Coral [runtime features](/reference/configuration#runtime-features).

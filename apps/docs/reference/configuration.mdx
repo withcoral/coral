@@ -124,12 +124,13 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 | ------- | ------- | ----------- |
 | `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
 | `observed_values_search` | `false` | Experimental. Collects, indexes, retrieves, and maintains values observed during earlier queries. |
-| `search_provider_fanout` | `false` | Experimental. Allows Search to make bounded, read-only calls to eligible connected-source search routes. |
+| `search_provider_fanout` | `false` | Experimental. Allows Search to make bounded, read-only calls to eligible DSL v4 connected-source search routes. |
 
 Provider fanout requires two independent gates: the effective
 `search_provider_fanout` feature must be enabled, and the source must authorize
-an eligible `kind: search` route. Enabling the feature does not authorize a
-source by itself.
+an eligible top-level DSL v4 `universal_search` route. Enabling the feature does
+not authorize a source by itself. DSL v3 functions are never provider-fanout
+routes.
 
 ```shellscript
 coral features enable search_provider_fanout

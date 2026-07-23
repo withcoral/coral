@@ -92,8 +92,8 @@ mod tests {
                 owner_source_name: source.to_string(),
                 installation_revision: Uuid::nil(),
                 authored_route_id: Some(format!("route-{index:02}")),
-                target: ResolvedUniversalSearchTarget::V3 {
-                    function_name: format!("search_{index:02}"),
+                target: ResolvedUniversalSearchTarget {
+                    operation_id: format!("search_{index:02}"),
                 },
                 locator: UniversalSearchFunctionLocator {
                     schema_name: format!("schema_{source}"),

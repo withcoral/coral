@@ -22,7 +22,8 @@ const MAX_SEARCH_CAPABILITY_ROUTES: usize = 16;
 pub struct SearchCapabilities {
     /// Whether bounded provider fanout is effective for this process.
     pub provider_fanout_enabled: bool,
-    /// Bounded identities of source-authorised routes visible in the workspace.
+    /// Bounded identities of source-authorised DSL v4 routes visible in the
+    /// workspace.
     pub eligible_routes: Vec<SearchRouteIdentity>,
     /// Whether the complete eligible route inventory was truncated.
     pub truncated: bool,
@@ -30,14 +31,14 @@ pub struct SearchCapabilities {
     pub omitted_route_count: u32,
 }
 
-/// Safe identity of one source-authorised Universal Search route.
+/// Safe identity of one source-authorised DSL v4 Universal Search route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRouteIdentity {
     /// Installed source that owns the route.
     pub installed_source_name: String,
     /// Query-visible schema containing the resolved function.
     pub schema_name: String,
-    /// Query-visible function authorised for Universal Search.
+    /// Query-visible function generated for the authorised DSL v4 operation.
     pub function_name: String,
     /// Authored route identifier when this route was explicit.
     pub authored_route_id: Option<String>,

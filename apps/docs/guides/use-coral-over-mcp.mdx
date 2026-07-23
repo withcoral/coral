@@ -208,7 +208,7 @@ Coral gives your agent a read-only SQL view over the sources you have installed 
 
 - inspect the available sources, tables, columns, filters, and table functions
 - search local catalog metadata and values Coral observed during earlier queries
-- optionally search authorized connected-source retrieval routes when experimental provider fanout is enabled
+- optionally search authorized DSL v4 connected-source retrieval routes when experimental provider fanout is enabled
 - query connected sources without configuring a separate MCP server for each provider
 - join and aggregate across sources when the question needs more than one API call
 - use the same local credentials and workspace state as the Coral CLI
@@ -229,11 +229,11 @@ When your agent has many tools available, name Coral explicitly:
 
 > "Use Coral to find where `payments-api` appeared, then query the matching data."
 
-When the right table or table function is not obvious, ask the agent to [search with Coral](/guides/search-with-coral). The `search` tool always searches local catalog metadata and can optionally search locally observed values. With experimental provider fanout enabled and an eligible source-authorized route, it can also make bounded, read-only calls to connected sources.
+When the right table or table function is not obvious, ask the agent to [search with Coral](/guides/search-with-coral). The `search` tool always searches local catalog metadata and can optionally search locally observed values. With experimental provider fanout enabled and an eligible source-authorized DSL v4 route, it can also make bounded, read-only calls to connected sources.
 
 ### Search behavior
 
-Coral asks the app for Search capabilities before MCP initialization and refreshes them when the client lists tools or reads dynamic guide resources. Tool descriptions say that no source-authored search function is called when fanout is disabled or no route is eligible. When fanout can run, they name a bounded set of eligible source surfaces and say that Search may call them. If capability lookup fails while fanout may be enabled, the description conservatively says the capability is unknown and connected-source calls may occur.
+Coral asks the app for Search capabilities before MCP initialization and refreshes them when the client lists tools or reads dynamic guide resources. Tool descriptions say that no DSL v4 connected-source route is executed when fanout is disabled or no route is eligible. When fanout can run, they name a bounded set of eligible DSL v4 source surfaces and say that Search may call them. If capability lookup fails while fanout may be enabled, the description conservatively says the capability is unknown and calls through eligible DSL v4 source routes may occur.
 
 Fanout-enabled Search is annotated as open-world. If observed-value collection is disabled, authorized upstream search operations remain read-only and idempotent. When `observed_values_search` is also enabled, successful source batches can enqueue new local observations, so Search is not annotated as read-only or idempotent. These observations can become searchable only on a later request.
 

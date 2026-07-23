@@ -1089,49 +1089,15 @@ enabled = false
             .is_some()
     }
 
-    async fn import_authorized_search_source(
+    async fn import_search_source_manifest(
         source_client: &mut SourceServiceClient<tonic::transport::Channel>,
-        base_url: &str,
+        manifest_yaml: String,
+        expected_name: &str,
     ) {
         let mut import_stream = source_client
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
-                manifest_yaml: format!(
-                    r"
-name: tickets
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: {base_url}
-functions:
-  - name: search_tickets
-    kind: search
-    search_limits:
-      default_top_k: 5
-      max_top_k: 5
-      max_calls_per_query: 1
-    universal_search:
-      id: primary
-      execute: true
-      query_arg: query
-      result:
-        title: title
-    args:
-      - name: query
-        required: true
-        bind: {{arg: query}}
-    request:
-      method: GET
-      path: /search
-      query:
-        - name: q
-          from: arg
-          key: query
-    columns:
-      - name: title
-        type: Utf8
-"
-                ),
+                manifest_yaml,
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
@@ -1148,7 +1114,119 @@ functions:
                 _ => None,
             })
             .expect("import source response");
-        assert_eq!(imported.name, "tickets");
+        assert_eq!(imported.name, expected_name);
+    }
+
+    async fn import_authorized_search_source(
+        source_client: &mut SourceServiceClient<tonic::transport::Channel>,
+        base_url: &str,
+    ) {
+        let descriptor_dir = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_dir.path().join("tickets-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            r"
+openapi: 3.0.3
+info:
+  title: Tickets
+  version: 1.0.0
+paths:
+  /search:
+    get:
+      tags:
+        - search
+      operationId: tickets
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    title:
+                      type: string
+                  required:
+                    - title
+",
+        )
+        .expect("write v4 Search descriptor");
+        import_search_source_manifest(
+            source_client,
+            format!(
+                r"
+name: tickets
+dsl_version: 4
+universal_search:
+  routes:
+    primary:
+      execute: true
+      target:
+        operation_id: tickets
+      query_input:
+        location: query
+        name: q
+      result:
+        title: /title
+surface:
+  type: openapi
+  file: {}
+  base_url: {base_url}
+",
+                openapi_file.display()
+            ),
+            "tickets",
+        )
+        .await;
+    }
+
+    async fn import_legacy_v3_search_source(
+        source_client: &mut SourceServiceClient<tonic::transport::Channel>,
+        base_url: &str,
+    ) {
+        import_search_source_manifest(
+            source_client,
+            format!(
+                r"
+name: legacy_tickets
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: {base_url}
+functions:
+  - name: search_legacy_tickets
+    kind: search
+    search_limits:
+      default_top_k: 5
+      max_top_k: 5
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind: {{arg: query}}
+    request:
+      method: GET
+      path: /legacy-search
+      query:
+        - name: q
+          from: arg
+          key: query
+    columns:
+      - name: title
+        type: Utf8
+"
+            ),
+            "legacy_tickets",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1256,6 +1334,7 @@ functions:
         let mut source_client = SourceServiceClient::new(channel.clone());
         let mut search_client = SearchServiceClient::new(channel);
         import_authorized_search_source(&mut source_client, &upstream.uri()).await;
+        import_legacy_v3_search_source(&mut source_client, &upstream.uri()).await;
 
         let capabilities = search_client
             .get_search_capabilities(Request::new(GetSearchCapabilitiesRequest {
@@ -1302,14 +1381,23 @@ functions:
             })
             .expect("native Search result");
         assert_eq!(native_result.title.as_deref(), Some("Payment outage"));
+        let requests = upstream
+            .received_requests()
+            .await
+            .expect("record upstream requests");
         assert_eq!(
-            upstream
-                .received_requests()
-                .await
-                .expect("record upstream requests")
-                .len(),
+            requests
+                .iter()
+                .filter(|request| request.url.path() == "/search")
+                .count(),
             1,
-            "enabled bootstrap should execute exactly one selected route"
+            "enabled bootstrap should execute exactly one selected DSL v4 route"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.url.path() != "/legacy-search"),
+            "DSL v3 search functions must never be used as provider-fanout routes"
         );
         server.shutdown().await.expect("shutdown");
     }

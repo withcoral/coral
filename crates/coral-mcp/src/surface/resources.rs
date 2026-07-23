@@ -647,7 +647,7 @@ WHERE title LIKE '%bug%'",
         let instructions = initial_instructions("default", &[], &[], &behavior);
         assert!(instructions.contains("bounded read-only calls"));
         assert!(instructions.contains("function=\"github.search_issues\""));
-        assert!(instructions.contains("plus 3 additional eligible route(s)"));
+        assert!(instructions.contains("plus 3 additional eligible DSL v4 route(s)"));
         assert!(instructions.contains("may be stored locally as observations"));
 
         let guide = guide_resource_content(&[], &[], &[], &behavior);
@@ -661,8 +661,11 @@ WHERE title LIKE '%bug%'",
         let guide = guide_resource_content(&[], &[], &[], behavior);
 
         assert!(guide.contains("capability is currently unknown"));
-        assert!(guide.contains("may make bounded read-only calls to connected sources"));
-        assert!(!guide.contains("does not call source-authored search functions"));
+        assert!(
+            guide
+                .contains("may make bounded read-only calls through eligible DSL v4 source routes")
+        );
+        assert!(!guide.contains("does not execute DSL v4 connected-source routes"));
     }
 
     #[test]

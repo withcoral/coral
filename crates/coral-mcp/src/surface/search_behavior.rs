@@ -101,7 +101,7 @@ impl SearchProviderFanoutState {
         if *omitted_route_count > 0 {
             write!(
                 inventory,
-                "; plus {omitted_route_count} additional eligible route(s) omitted from this capped inventory"
+                "; plus {omitted_route_count} additional eligible DSL v4 route(s) omitted from this capped inventory"
             )
             .expect("writing to String is infallible");
         }
@@ -145,16 +145,16 @@ impl SearchBehavior {
                 omitted_route_count,
             } if !routes.is_empty() || *omitted_route_count > 0 => {
                 if self.observed_values_search_enabled {
-                    "Natural language text for finding relevant Coral catalog entries or values observed during earlier queries, and for searching eligible connected-source functions."
+                    "Natural language text for finding relevant Coral catalog entries or values observed during earlier queries, and for searching eligible DSL v4 connected-source routes."
                 } else {
-                    "Natural language text for finding relevant Coral catalog entries and for searching eligible connected-source functions."
+                    "Natural language text for finding relevant Coral catalog entries and for searching eligible DSL v4 connected-source routes."
                 }
             }
             SearchProviderFanoutState::UnknownMayCall => {
                 if self.observed_values_search_enabled {
-                    "Natural language text for finding relevant Coral catalog entries or values observed during earlier queries. Connected-source capability is unknown, so this text may also be sent to eligible connected-source search functions."
+                    "Natural language text for finding relevant Coral catalog entries or values observed during earlier queries. Connected-source capability is unknown, so this text may also be sent to eligible DSL v4 connected-source routes."
                 } else {
-                    "Natural language text for finding relevant Coral catalog entries. Connected-source capability is unknown, so this text may also be sent to eligible connected-source search functions."
+                    "Natural language text for finding relevant Coral catalog entries. Connected-source capability is unknown, so this text may also be sent to eligible DSL v4 connected-source routes."
                 }
             }
             SearchProviderFanoutState::Disabled | SearchProviderFanoutState::Enabled { .. } => {
@@ -178,20 +178,20 @@ impl SearchBehavior {
     pub(crate) fn provider_behavior_sentence(&self) -> String {
         match &self.provider_fanout {
             SearchProviderFanoutState::Disabled => {
-                "Connected-source Search-route fanout is disabled, so Search does not call source-authored search functions.".to_string()
+                "Connected-source Search-route fanout is disabled, so Search does not execute DSL v4 connected-source routes.".to_string()
             }
             SearchProviderFanoutState::Enabled {
                 routes,
                 omitted_route_count: 0,
             } if routes.is_empty() => {
-                "No eligible connected-source Search routes are currently resolved, so Search does not call source-authored search functions.".to_string()
+                "No eligible DSL v4 connected-source Search routes are currently resolved, so Search does not execute DSL v4 connected-source routes.".to_string()
             }
             SearchProviderFanoutState::Enabled {
                 routes,
                 omitted_route_count,
             } if routes.is_empty() => {
                 let mut sentence = format!(
-                    "Search may make bounded read-only calls to connected sources; the capability response omitted all {omitted_route_count} eligible routes from its capped identity inventory."
+                    "Search may make bounded read-only calls to connected sources; the capability response omitted all {omitted_route_count} eligible DSL v4 routes from its capped identity inventory."
                 );
                 if self.observed_values_search_enabled {
                     sentence.push_str(
@@ -206,7 +206,7 @@ impl SearchBehavior {
                     .route_inventory()
                     .expect("non-empty enabled routes have an inventory");
                 let mut sentence = format!(
-                    "Search may make bounded read-only calls to these eligible connected-source surfaces: {inventory}."
+                    "Search may make bounded read-only calls to these eligible DSL v4 connected-source surfaces: {inventory}."
                 );
                 if self.observed_values_search_enabled {
                     sentence.push_str(
@@ -216,7 +216,7 @@ impl SearchBehavior {
                 sentence
             }
             SearchProviderFanoutState::UnknownMayCall => {
-                let mut sentence = "Connected-source Search capability is currently unknown; Search may make bounded read-only calls to connected sources.".to_string();
+                let mut sentence = "Connected-source Search capability is currently unknown; Search may make bounded read-only calls through eligible DSL v4 source routes.".to_string();
                 if self.observed_values_search_enabled {
                     sentence.push_str(
                         " Returned provider rows may be stored locally as observations for later searches.",
@@ -306,7 +306,7 @@ mod tests {
         assert!(!sentence.contains('\n'));
         assert!(!sentence.contains('\u{2028}'));
         assert_eq!(sentence.matches("function=").count(), MAX_DISPLAYED_ROUTES);
-        assert!(sentence.contains("plus 4 additional eligible route(s)"));
+        assert!(sentence.contains("plus 4 additional eligible DSL v4 route(s)"));
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
         assert!(
             behavior
                 .provider_behavior_sentence()
-                .contains("does not call source-authored search functions")
+                .contains("does not execute DSL v4 connected-source routes")
         );
         assert_eq!(behavior.annotations().open_world_hint, Some(true));
     }

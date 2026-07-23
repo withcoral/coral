@@ -215,46 +215,64 @@ fn raw_json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
 
-fn eligible_provider_manifest_yaml() -> String {
-    r"
-name: searchable
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: http://127.0.0.1:1
-functions:
-  - name: search_messages
-    kind: search
-    description: Search messages
-    universal_search:
-      id: message_search
-      execute: true
-      query_arg: query
-      result:
-        title: title
-    args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-    request:
-      method: GET
-      path: /messages
-      query:
+fn eligible_provider_manifest_yaml(root: &Path) -> String {
+    let openapi_file = root.join("eligible-provider-openapi.yaml");
+    fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+info:
+  title: Searchable messages
+  version: 0.1.0
+paths:
+  /messages:
+    get:
+      operationId: search_messages
+      parameters:
         - name: q
-          from: arg
-          key: query
-    response:
-      rows_path: [items]
-    columns:
-      - name: title
-        type: Utf8
-    search_limits:
-      default_top_k: 5
-      max_top_k: 20
-      max_calls_per_query: 2
-"
-    .to_string()
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    title:
+                      type: string
+                  required:
+                    - title
+",
+    )
+    .expect("write eligible provider OpenAPI descriptor");
+    format!(
+        r"
+name: searchable
+dsl_version: 4
+universal_search:
+  routes:
+    message_search:
+      execute: true
+      target:
+        operation_id: search_messages
+      query_input:
+        location: query
+        name: q
+      result:
+        title: /title
+surface:
+  type: openapi
+  file: {}
+  base_url: http://127.0.0.1:1
+",
+        openapi_file.display()
+    )
 }
 
 async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
@@ -532,9 +550,9 @@ async fn capability_rpc_failure_uses_truthful_hint_specific_surfaces() {
             assert_eq!(annotations.idempotent_hint, Some(false));
             assert_eq!(annotations.open_world_hint, Some(true));
         } else {
-            assert!(instructions.contains("does not call source-authored search functions"));
-            assert!(description.contains("does not call source-authored search functions"));
-            assert!(guide.contains("does not call source-authored search functions"));
+            assert!(instructions.contains("does not execute DSL v4 connected-source routes"));
+            assert!(description.contains("does not execute DSL v4 connected-source routes"));
+            assert!(guide.contains("does not execute DSL v4 connected-source routes"));
             assert_eq!(annotations.read_only_hint, Some(true));
             assert_eq!(annotations.idempotent_hint, Some(true));
             assert_eq!(annotations.open_world_hint, Some(false));
@@ -548,7 +566,7 @@ async fn capability_rpc_failure_uses_truthful_hint_specific_surfaces() {
 #[tokio::test]
 async fn provider_capabilities_refresh_after_install_remove_and_reimport() {
     let temp = TempDir::new().expect("temp dir");
-    let manifest = eligible_provider_manifest_yaml();
+    let manifest = eligible_provider_manifest_yaml(temp.path());
     let mut feature_overrides = FeatureOverrides::default();
     feature_overrides.set(Feature::SearchProviderFanout, true);
     let mut session = start_session_with_options_and_feature_overrides(
@@ -566,7 +584,7 @@ async fn provider_capabilities_refresh_after_install_remove_and_reimport() {
         .instructions
         .as_deref()
         .expect("initialize instructions");
-    assert!(initial_instructions.contains("does not call source-authored search functions"));
+    assert!(initial_instructions.contains("does not execute DSL v4 connected-source routes"));
     let initial_tools = session
         .client
         .list_all_tools()
@@ -578,7 +596,7 @@ async fn provider_capabilities_refresh_after_install_remove_and_reimport() {
             .description
             .as_deref()
             .expect("search description")
-            .contains("does not call source-authored search functions")
+            .contains("does not execute DSL v4 connected-source routes")
     );
     let initial_annotations = initial_search
         .annotations
@@ -598,7 +616,10 @@ async fn provider_capabilities_refresh_after_install_remove_and_reimport() {
         .description
         .as_deref()
         .expect("installed search description");
-    assert!(installed_description.contains("function=\"searchable.search_messages\""));
+    assert!(
+        installed_description.contains("function=\"searchable.search_messages\""),
+        "installed Search description: {installed_description}"
+    );
     assert!(installed_description.contains("route=\"message_search\""));
 
     session
@@ -615,7 +636,7 @@ async fn provider_capabilities_refresh_after_install_remove_and_reimport() {
         .await
         .expect("guide after source removal");
     assert!(
-        text_content(&removed_guide).contains("does not call source-authored search functions")
+        text_content(&removed_guide).contains("does not execute DSL v4 connected-source routes")
     );
     assert!(!text_content(&removed_guide).contains("searchable.search_messages"));
 

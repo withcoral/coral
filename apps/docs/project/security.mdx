@@ -34,7 +34,8 @@ whether a value is configured.
 
 Search reads local catalog metadata by default. Its experimental provider
 fanout is disabled by default and can make upstream calls only when both the
-runtime feature and source-authored route policy allow them.
+runtime feature and a source-authored DSL v4 route policy allow them. DSL v3
+functions are never provider-fanout routes.
 
 ## What Coral protects against
 
@@ -63,11 +64,11 @@ trust boundary:
 ## Provider fanout boundaries
 
 When `search_provider_fanout` is enabled, one Search request can start at most
-four authorized, retrieval-only and idempotent source functions in one wave.
-Coral requests at most five rows per function, applies a 750 ms fanout cutoff
-and a 600 ms per-call timeout, and does not retry or paginate. A source policy
-is a separate gate: enabling the runtime feature does not authorize a route,
-and invalid or ambiguous routes fail closed.
+four authorized, retrieval-only and idempotent DSL v4 source routes in one
+wave. Coral requests at most five rows per route, applies a 750 ms fanout cutoff
+and a 600 ms per-call timeout, and does not retry or paginate. A DSL v4 source
+policy is a separate gate: enabling the runtime feature does not authorize a
+route, and invalid or ambiguous routes fail closed.
 
 Search returns only bounded, sanitized display fields from connected-source
 results, not raw rows or provider response bodies. It removes credential-like

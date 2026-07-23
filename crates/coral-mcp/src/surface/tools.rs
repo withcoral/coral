@@ -177,12 +177,12 @@ mod tests {
         let cases = [
             (
                 SearchBehavior::local_only(false),
-                "does not call source-authored search functions",
+                "does not execute DSL v4 connected-source routes",
                 (Some(true), Some(true), Some(false)),
             ),
             (
                 SearchBehavior::local_only(true),
-                "does not call source-authored search functions",
+                "does not execute DSL v4 connected-source routes",
                 (Some(true), Some(true), Some(false)),
             ),
             (

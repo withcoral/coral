@@ -18,8 +18,8 @@ pub enum Feature {
     /// Enable observed-value collection, storage, retrieval, and maintenance
     /// for Universal Search.
     ObservedValuesSearch,
-    /// Permit Universal Search to call source-authorised provider search
-    /// functions under the bounded native fanout policy.
+    /// Permit Universal Search to call source-authorised DSL v4 provider
+    /// routes under the bounded native fanout policy.
     SearchProviderFanout,
 }
 
@@ -92,7 +92,7 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         feature: Feature::SearchProviderFanout,
         key: "search_provider_fanout",
         default_enabled: false,
-        description: "Enables bounded, read-only Universal Search calls to source-authorised provider search functions. Off by default.",
+        description: "Enables bounded, read-only Universal Search calls to source-authorised DSL v4 provider routes. Off by default.",
         enable_flag: "enable-search-provider-fanout",
         disable_flag: "disable-search-provider-fanout",
     },
