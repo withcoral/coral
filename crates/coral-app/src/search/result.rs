@@ -213,8 +213,7 @@ pub(crate) struct NativeSearchAttribute {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeSearchDiagnostic {
-    pub(crate) installed_source_name: String,
-    pub(crate) schema_name: Option<String>,
+    pub(crate) source_name: String,
     pub(crate) function_name: Option<String>,
     pub(crate) authored_route_id: Option<String>,
     pub(crate) state: NativeSearchDiagnosticState,

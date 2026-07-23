@@ -526,8 +526,7 @@ fn provider_status_to_proto(status: ProviderStatus) -> SearchProviderStatus {
 
 fn native_diagnostic_to_proto(diagnostic: NativeSearchDiagnostic) -> ProtoNativeSearchDiagnostic {
     ProtoNativeSearchDiagnostic {
-        installed_source_name: diagnostic.installed_source_name,
-        schema_name: diagnostic.schema_name,
+        source_name: diagnostic.source_name,
         function_name: diagnostic.function_name,
         authored_route_id: diagnostic.authored_route_id,
         state: native_diagnostic_state_to_proto(diagnostic.state) as i32,
@@ -953,6 +952,20 @@ mod tests {
     }
 
     #[test]
+    fn native_diagnostic_tag_one_decodes_as_source_and_retired_tag_two_is_ignored() {
+        let diagnostic =
+            ProtoNativeSearchDiagnostic::decode(b"\x0a\x06github\x12\x06github".as_slice())
+                .expect("decode source name plus retired schema field");
+
+        assert_eq!(diagnostic.source_name, "github");
+        assert_eq!(
+            diagnostic.encode_to_vec(),
+            b"\x0a\x06github",
+            "prost should discard the retired tag-2 schema field"
+        );
+    }
+
+    #[test]
     fn native_diagnostics_preserve_resolution_absence_and_elapsed_width() {
         let proto = provider_status_to_proto(ProviderStatus {
             provider: SearchProviderKind::NativeFanout,
@@ -960,8 +973,7 @@ mod tests {
             note: "one route was unresolved".to_string(),
             coverage: Some(ProviderCoverage::default()),
             diagnostics: vec![NativeSearchDiagnostic {
-                installed_source_name: "github".to_string(),
-                schema_name: None,
+                source_name: "github".to_string(),
                 function_name: None,
                 authored_route_id: Some("issues".to_string()),
                 state: NativeSearchDiagnosticState::Skipped,
@@ -975,7 +987,7 @@ mod tests {
         });
 
         let diagnostic = proto.diagnostics.first().expect("diagnostic");
-        assert_eq!(diagnostic.schema_name, None);
+        assert_eq!(diagnostic.source_name, "github");
         assert_eq!(diagnostic.function_name, None);
         assert_eq!(diagnostic.authored_route_id.as_deref(), Some("issues"));
         assert_eq!(diagnostic.elapsed_ms, u64::MAX);

@@ -1324,10 +1324,11 @@ async fn mcp_search_returns_native_result_and_diagnostic_contracts()
             .get("snippet")
             .is_none()
     );
-    assert_eq!(
-        search["provider_statuses"][0]["diagnostics"][0]["reason"],
-        "fanout_limit_reached"
-    );
+    let diagnostic = &search["provider_statuses"][0]["diagnostics"][0];
+    assert_eq!(diagnostic["source_name"], "github");
+    assert!(diagnostic.get("installed_source_name").is_none());
+    assert!(diagnostic.get("schema_name").is_none());
+    assert_eq!(diagnostic["reason"], "fanout_limit_reached");
     assert_eq!(
         search["provider_statuses"][0]["omitted_diagnostic_count"],
         2

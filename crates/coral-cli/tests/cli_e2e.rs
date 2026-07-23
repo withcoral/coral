@@ -1075,15 +1075,21 @@ async fn search_command_renders_native_results_and_bounded_diagnostics() {
     assert_eq!(result["native_result"]["attributes"][0]["name"], "state");
     assert_eq!(result["native_result"]["attributes"][1]["name"], "author");
     let status = &response["provider_statuses"][0];
-    assert_eq!(status["diagnostics"][0]["state"], "skipped");
-    assert_eq!(status["diagnostics"][0]["reason"], "fanout_limit_reached");
-    assert_eq!(status["diagnostics"][0]["elapsed_ms"], 0);
+    let diagnostic = &status["diagnostics"][0];
+    assert_eq!(diagnostic["source_name"], "github");
+    assert!(diagnostic.get("installed_source_name").is_none());
+    assert!(diagnostic.get("schema_name").is_none());
+    assert_eq!(diagnostic["state"], "skipped");
+    assert_eq!(diagnostic["reason"], "fanout_limit_reached");
+    assert_eq!(diagnostic["elapsed_ms"], 0);
     assert_eq!(status["omitted_diagnostic_count"], 2);
 
     let text_assert = server.cmd().args(["search", "native"]).assert().success();
     let text = String::from_utf8_lossy(&text_assert.get_output().stdout);
     assert!(text.contains("native result github.search_issues row 0"));
     assert!(text.contains("Attributes: state=open, author=octocat"));
+    assert!(text.contains("github.search_pull_requests: skipped/fanout_limit_reached"));
+    assert!(!text.contains("github (github.search_pull_requests)"));
     assert!(text.contains("skipped/fanout_limit_reached (0 ms, 0 candidate(s))"));
     assert!(text.contains("Diagnostics truncated: 2 omitted"));
 

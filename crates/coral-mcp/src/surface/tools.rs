@@ -192,7 +192,7 @@ mod tests {
                 "note": "one route skipped",
                 "coverage": null,
                 "diagnostics": [{
-                    "installed_source_name": "github",
+                    "source_name": "github",
                     "authored_route_id": "issues",
                     "state": "skipped",
                     "reason": "fanout_limit_reached",
@@ -208,6 +208,29 @@ mod tests {
         assert!(
             validator.is_valid(&native),
             "native response should match MCP output schema"
+        );
+
+        let mut retired_installed_source = native.clone();
+        let retired_diagnostic = retired_installed_source
+            .pointer_mut("/provider_statuses/0/diagnostics/0")
+            .and_then(Value::as_object_mut)
+            .expect("native diagnostic object");
+        retired_diagnostic.remove("source_name");
+        retired_diagnostic.insert("installed_source_name".to_string(), json!("github"));
+        assert!(
+            !validator.is_valid(&retired_installed_source),
+            "retired installed_source_name must not match the MCP output schema"
+        );
+
+        let mut duplicated_schema = native.clone();
+        duplicated_schema
+            .pointer_mut("/provider_statuses/0/diagnostics/0")
+            .and_then(Value::as_object_mut)
+            .expect("native diagnostic object")
+            .insert("schema_name".to_string(), json!("github"));
+        assert!(
+            !validator.is_valid(&duplicated_schema),
+            "native diagnostics must not duplicate source_name as schema_name"
         );
 
         let feature_off = json!({

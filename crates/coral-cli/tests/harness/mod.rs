@@ -511,8 +511,7 @@ pub(crate) fn mock_native_search_response() -> SearchResponse {
                 stale_index: false,
             }),
             diagnostics: vec![NativeSearchDiagnostic {
-                installed_source_name: "github".to_string(),
-                schema_name: Some("github".to_string()),
+                source_name: "github".to_string(),
                 function_name: Some("search_pull_requests".to_string()),
                 authored_route_id: None,
                 state: NativeSearchDiagnosticState::Skipped as i32,

@@ -256,10 +256,10 @@ message SearchProviderStatus {
 
 // One bounded native fanout diagnostic.
 message NativeSearchDiagnostic {
-  // Installed source that owns the route.
-  string installed_source_name = 1;
-  // Query-visible schema when the route resolved to a runtime function.
-  optional string schema_name = 2;
+  // Source that owns the route and its query-visible function.
+  string source_name = 1;
+  reserved 2;
+  reserved "installed_source_name", "schema_name";
   // Query-visible function when the route resolved to a runtime function.
   optional string function_name = 3;
   // Source-authored route identifier when the source declared one.

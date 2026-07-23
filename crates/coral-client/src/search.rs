@@ -530,9 +530,7 @@ impl<'a> From<&'a coral_api::v1::SearchProviderStatus> for SearchProviderStatusV
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct NativeSearchDiagnosticValue<'a> {
-    installed_source_name: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    schema_name: Option<&'a str>,
+    source_name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -547,8 +545,7 @@ struct NativeSearchDiagnosticValue<'a> {
 impl<'a> From<&'a NativeSearchDiagnostic> for NativeSearchDiagnosticValue<'a> {
     fn from(diagnostic: &'a NativeSearchDiagnostic) -> Self {
         Self {
-            installed_source_name: &diagnostic.installed_source_name,
-            schema_name: diagnostic.schema_name.as_deref(),
+            source_name: &diagnostic.source_name,
             function_name: diagnostic.function_name.as_deref(),
             authored_route_id: diagnostic.authored_route_id.as_deref(),
             state: native_diagnostic_state_name(diagnostic.state),
@@ -910,15 +907,10 @@ fn provider_status_text(status: &coral_api::v1::SearchProviderStatus) -> String 
 }
 
 fn diagnostic_identity_text(diagnostic: &NativeSearchDiagnostic) -> String {
-    match (
-        diagnostic.schema_name.as_deref(),
-        diagnostic.function_name.as_deref(),
-    ) {
-        (Some(schema), Some(function)) => {
-            format!("{} ({schema}.{function})", diagnostic.installed_source_name)
-        }
-        _ => diagnostic.installed_source_name.clone(),
-    }
+    diagnostic.function_name.as_deref().map_or_else(
+        || diagnostic.source_name.clone(),
+        |function| format!("{}.{function}", diagnostic.source_name),
+    )
 }
 
 fn push_optional_fields_line(lines: &mut Vec<String>, label: &str, fields: &[String]) {
@@ -1153,8 +1145,7 @@ mod tests {
                 note: "one route was skipped".to_string(),
                 coverage: None,
                 diagnostics: vec![NativeSearchDiagnostic {
-                    installed_source_name: "github".to_string(),
-                    schema_name: None,
+                    source_name: "github".to_string(),
                     function_name: None,
                     authored_route_id: Some("issues".to_string()),
                     state: NativeSearchDiagnosticState::Skipped as i32,
@@ -1242,6 +1233,8 @@ mod tests {
         assert_eq!(result["attributes"][1]["name"], "author");
 
         let diagnostic = &json["provider_statuses"][0]["diagnostics"][0];
+        assert_eq!(diagnostic["source_name"], "github");
+        assert!(diagnostic.get("installed_source_name").is_none());
         assert!(diagnostic.get("schema_name").is_none());
         assert!(diagnostic.get("function_name").is_none());
         assert_eq!(diagnostic["authored_route_id"], "issues");
@@ -1267,6 +1260,21 @@ mod tests {
             )
         );
         assert!(text.contains("Diagnostics truncated: 3 omitted"));
+    }
+
+    #[test]
+    fn native_text_renders_resolved_diagnostic_as_source_and_function() {
+        let mut response = native_response();
+        response.provider_statuses[0].diagnostics[0].function_name =
+            Some("search_pull_requests".to_string());
+
+        let text = format_search_response_text(&response);
+
+        assert!(text.contains(
+            "github.search_pull_requests: skipped/insufficient_budget \
+             (19 ms, 0 candidate(s), route issues)"
+        ));
+        assert!(!text.contains("github (github."));
     }
 
     #[test]
