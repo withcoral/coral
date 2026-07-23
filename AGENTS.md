@@ -26,15 +26,17 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
-- For Postgres-backed database changes, run `make postgres-tests`. This starts
-  a local Docker Postgres, sets `CORAL_TEST_POSTGRES_URL` for the ignored
-  Postgres tests, and runs the repository harness plus server startup coverage.
-  Docker chooses an available localhost port by default, and each test run uses
-  a fresh database inside the reusable container; use `make postgres-url` to
-  print the server URL or `LOCAL_POSTGRES_PORT=55432 make postgres-start` when
-  you need a stable port. Use `make postgres-start` when you only need the
-  server, `make postgres-stop` when finished, and `make postgres-clean` to
-  remove the reusable container.
+- For Postgres-backed database changes, run `make postgres-tests`. Keep this as
+  the single entry point for local and CI Postgres coverage; do not duplicate
+  its Cargo test invocations in workflows or contributor instructions. The
+  target uses `CORAL_TEST_POSTGRES_URL` when supplied. Otherwise it starts a
+  local Docker Postgres and creates a fresh database inside the reusable
+  container. Docker chooses an available localhost port by default; use
+  `make postgres-url` to print the server URL or
+  `LOCAL_POSTGRES_PORT=55432 make postgres-start` when you need a stable port.
+  Use `make postgres-start` when you only need the server,
+  `make postgres-stop` when finished, and `make postgres-clean` to remove the
+  reusable container.
 - Run `make schema-check` before submitting PRs that touch generated manifest
   schemas or the Rust helpers that generate them. Use
   `make schema-generate` to refresh generated schema files. The Validate
