@@ -32,7 +32,7 @@ pub(crate) enum BootstrapError {
     #[error(transparent)]
     Connect(#[from] ClientError),
     #[error(transparent)]
-    Serve(#[from] coral_serve::ServeError),
+    Serve(#[from] crate::serve::ServeError),
 }
 
 pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, BootstrapError> {
@@ -72,7 +72,7 @@ pub(crate) async fn start_ui_server(
 
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
-) -> Result<coral_serve::RunningServer, BootstrapError> {
+) -> Result<crate::serve::RunningServer, BootstrapError> {
     let builder = configure_server_builder(
         ServerBuilder::configured_standalone_grpc(),
         BootstrapOptions {
@@ -80,9 +80,7 @@ pub(crate) async fn start_standalone_server(
             ..BootstrapOptions::default()
         },
     );
-    coral_serve::start(builder, coral_mcp::McpOptions::default())
-        .await
-        .map_err(Into::into)
+    crate::serve::start(builder).await.map_err(Into::into)
 }
 
 fn configure_server_builder(builder: ServerBuilder, options: BootstrapOptions) -> ServerBuilder {

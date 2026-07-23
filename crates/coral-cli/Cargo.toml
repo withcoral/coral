@@ -36,7 +36,7 @@ coral-api.workspace = true
 coral-app.workspace = true
 coral-client.workspace = true
 coral-mcp.workspace = true
-coral-serve.workspace = true
+coral-mcp-http.workspace = true
 coral-spec.workspace = true
 
 [dev-dependencies]

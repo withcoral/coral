@@ -7,6 +7,7 @@
 ## Owns
 
 - argument parsing and command routing
+- server orchestration used only by CLI commands
 - interactive prompting for source install/import from `coral-spec`
 - terminal rendering
 
@@ -20,6 +21,11 @@
 ## Invariants
 
 - Keep the CLI thin over `coral-client` and app/query internals.
+- Keep server orchestration internal to this crate while CLI commands are its
+  only consumers (see the root `AGENTS.md` for when it may move to a shared
+  crate).
+- Server and transport lifecycles remain in their owning crates (`coral-app`
+  for gRPC, `coral-mcp-http` for MCP HTTP).
 - Keep CLI-owned process environment access purpose-specific and locally
   justified with a targeted Clippy allow. Fixed CLI env contracts may live in
   `src/env.rs`, but avoid generic helpers that let arbitrary command code read
