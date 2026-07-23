@@ -106,7 +106,7 @@ pub use common::{
     RequestRouteSpec, RequestSpec, ResponseBodyFormat, ResponseSpec, RowStrategy, SearchLimitsSpec,
     SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
     TableCommon, TableFunctionArgSpec, TimestampInput, UniversalSearchResultMappingSpec,
-    UniversalSearchSpec, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub(crate) use common::{
     validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
@@ -139,6 +139,6 @@ pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
     validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
     validate_filters_and_column_exprs, validate_http_function, validate_http_table,
-    validate_identifier, validate_required_guide, validate_table_function_search_contract,
-    validate_unique_values, validate_universal_search_route_ids,
+    validate_identifier, validate_required_guide, validate_table_function_arg_default,
+    validate_unique_values,
 };

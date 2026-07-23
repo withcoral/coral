@@ -586,17 +586,6 @@ functions:
         default: lexical
         bind:
           arg: search_type
-    universal_search:
-      id: issue_search
-      execute: true
-      query_arg: q
-      result:
-        entity_type: issue
-        identity_fields: [id]
-        provider_id: id
-        title: title
-        url: html_url
-        attributes: [score]
     request:
       method: GET
       path: /search/issues
@@ -681,26 +670,11 @@ query. Values must be positive. `default_top_k` and `max_top_k` are capped at
 
 ### Universal Search authorization
 
-Universal Search authorization is source-authored policy for a `kind: search`
-route. It does not replace `kind` or `search_limits`, and result display
-metadata does not grant authorization.
+Universal Search fan-out is available only for DSL v4 sources. DSL v3 sources
+cannot author `functions[].universal_search` and do not participate in native
+fan-out. To make a provider available, define a DSL v4 imported-surface source.
 
-In DSL v3, put `universal_search` on the authored table function, as in the
-`search_issues` example above:
-
-- `id` is a source-stable route identifier, must match
-  `[a-z][a-z0-9_]*`, and must be unique within the source.
-- `execute: true` explicitly allows the route when the rest of the route
-  validates. `execute: false` explicitly denies it.
-- `query_arg` names the one exposed query argument, whose type must be exactly
-  `Utf8`. An allowed query argument cannot have a default.
-- Every other exposed argument on an allowed route must have a type-correct
-  `default`.
-- Optional `result` fields name authored result columns. `identity_fields` is
-  ordered; `provider_id`, `title`, `url`, and `snippet` name scalar columns;
-  `attributes` lists explicitly selected display fields.
-
-DSL v4 table functions are generated from one imported surface, so author routes
+DSL v4 table functions are generated from one imported surface. Author routes
 at the top level and bind them to the original imported operation identity:
 
 ```yaml
@@ -756,7 +730,7 @@ universal_search:
 
 Authorization fails closed:
 
-- Any authored `universal_search` policy puts the source in explicit mode;
+- Any authored DSL v4 `universal_search` policy puts the source in explicit mode;
   unlisted routes are not inferred.
 - Without authored policy, only one unambiguous, safe `kind: search` route can
   be inferred. Legacy `mode: search` filters never qualify.

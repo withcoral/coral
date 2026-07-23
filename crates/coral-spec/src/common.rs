@@ -399,11 +399,6 @@ pub struct SourceTableFunctionSpec {
     pub search_limits: Option<SearchLimitsSpec>,
     #[serde(default)]
     pub detail_hints: Vec<DetailHintSpec>,
-    /// Source-authored permission for Universal Search to execute this
-    /// function. Absence leaves the function available only for canonical
-    /// inference; the runtime feature gate remains separate.
-    #[serde(default)]
-    pub universal_search: Option<UniversalSearchSpec>,
     #[serde(default)]
     pub args: Vec<TableFunctionArgSpec>,
     #[serde(default)]
@@ -472,21 +467,8 @@ where
     Value::deserialize(deserializer).map(|value| Some(DeclaredDefaultValue::new(value)))
 }
 
-/// Source-authored permission and result mapping for one DSL v3 table
-/// function.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct UniversalSearchSpec {
-    pub id: String,
-    pub execute: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub query_arg: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<UniversalSearchResultMappingSpec>,
-}
-
-/// Common result-display and entity-identity mapping shared by DSL v3 and
-/// DSL v4 Universal Search routes.
+/// Result-display and entity-identity mapping for a DSL v4 Universal Search
+/// route.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UniversalSearchResultMappingSpec {

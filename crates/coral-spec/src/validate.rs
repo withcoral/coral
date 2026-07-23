@@ -5,8 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::common::{
     BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
     ManifestDataType, PaginationSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec,
-    SourceTableFunctionKind, SourceTableFunctionSpec, UniversalSearchResultMappingSpec,
-    ValueSourceSpec,
+    SourceTableFunctionKind, SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -218,6 +217,7 @@ pub(crate) fn validate_http_function(
                 function.name, arg.name
             ),
         )?;
+        validate_table_function_arg_default(source_name, &function.name, arg)?;
         validate_function_binding(
             source_name,
             &function.name,
@@ -238,22 +238,6 @@ pub(crate) fn validate_http_function(
         source_name,
         &format!("function '{}'", function.name),
     )?;
-    validate_table_function_search_contract(source_name, function)?;
-    validate_function_request_bindings(source_name, function, &request_arg_names)?;
-    function
-        .pagination
-        .validate(source_name, &format!("function '{}'", function.name))?;
-
-    Ok(())
-}
-
-pub(crate) fn validate_table_function_search_contract(
-    source_name: &str,
-    function: &SourceTableFunctionSpec,
-) -> Result<()> {
-    for arg in &function.args {
-        validate_table_function_arg_default(source_name, &function.name, arg)?;
-    }
     validate_search_metadata(
         source_name,
         &format!("function '{}'", function.name),
@@ -262,126 +246,15 @@ pub(crate) fn validate_table_function_search_contract(
         &function.detail_hints,
         &function.columns,
     )?;
-    validate_universal_search_contract(source_name, function)
-}
+    validate_function_request_bindings(source_name, function, &request_arg_names)?;
+    function
+        .pagination
+        .validate(source_name, &format!("function '{}'", function.name))?;
 
-pub(crate) fn validate_universal_search_route_ids(
-    source_name: &str,
-    functions: &[SourceTableFunctionSpec],
-) -> Result<()> {
-    let mut route_ids = HashSet::new();
-    for function in functions {
-        let Some(route) = function.universal_search.as_ref() else {
-            continue;
-        };
-        validate_universal_search_route_id(
-            &route.id,
-            &format!(
-                "source '{source_name}' function '{}' universal_search.id",
-                function.name
-            ),
-        )?;
-        if !route_ids.insert(route.id.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' Universal Search route id '{}' is declared more than once",
-                route.id
-            )));
-        }
-    }
     Ok(())
 }
 
-fn validate_universal_search_contract(
-    source_name: &str,
-    function: &SourceTableFunctionSpec,
-) -> Result<()> {
-    let Some(route) = function.universal_search.as_ref() else {
-        return Ok(());
-    };
-    let context = format!(
-        "source '{source_name}' function '{}' universal_search",
-        function.name
-    );
-    validate_universal_search_route_id(&route.id, &format!("{context}.id"))?;
-
-    if !route.execute {
-        if route.query_arg.is_some() {
-            return Err(ManifestError::validation(format!(
-                "{context} has execute=false and must not declare query_arg"
-            )));
-        }
-        if let Some(result) = route.result.as_ref() {
-            validate_v3_result_mapping(source_name, function, result)?;
-        }
-        return Ok(());
-    }
-
-    if function.kind != SourceTableFunctionKind::Search {
-        return Err(ManifestError::validation(format!(
-            "{context} has execute=true but the function is not kind=search"
-        )));
-    }
-    if function.search_limits.is_none() {
-        return Err(ManifestError::validation(format!(
-            "{context} has execute=true but the function does not define search_limits"
-        )));
-    }
-    let query_arg_name = route.query_arg.as_deref().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "{context} has execute=true and must declare query_arg"
-        ))
-    })?;
-    let query_arg = function
-        .args
-        .iter()
-        .find(|arg| arg.name == query_arg_name)
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "{context}.query_arg references unknown argument '{query_arg_name}'"
-            ))
-        })?;
-    if query_arg.data_type != ManifestDataType::Utf8 {
-        return Err(ManifestError::validation(format!(
-            "{context}.query_arg '{query_arg_name}' must have type Utf8"
-        )));
-    }
-    if query_arg.default.is_some() {
-        return Err(ManifestError::validation(format!(
-            "{context}.query_arg '{query_arg_name}' must not declare a default"
-        )));
-    }
-    for arg in function
-        .args
-        .iter()
-        .filter(|arg| arg.name != query_arg_name)
-    {
-        if arg.default.is_none() {
-            return Err(ManifestError::validation(format!(
-                "{context} argument '{}' must declare a typed default",
-                arg.name
-            )));
-        }
-    }
-    if let Some(result) = route.result.as_ref() {
-        validate_v3_result_mapping(source_name, function, result)?;
-    }
-    Ok(())
-}
-
-fn validate_universal_search_route_id(id: &str, context: &str) -> Result<()> {
-    let mut chars = id.chars();
-    let valid = matches!(chars.next(), Some(ch) if ch.is_ascii_lowercase())
-        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
-    if valid {
-        Ok(())
-    } else {
-        Err(ManifestError::validation(format!(
-            "{context} '{id}' must match [a-z][a-z0-9_]*"
-        )))
-    }
-}
-
-fn validate_table_function_arg_default(
+pub(crate) fn validate_table_function_arg_default(
     source_name: &str,
     function_name: &str,
     arg: &crate::TableFunctionArgSpec,
@@ -431,91 +304,6 @@ fn validate_table_function_arg_default(
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' function '{function_name}' argument '{}' default is not one of its declared values",
                 arg.name
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_v3_result_mapping(
-    source_name: &str,
-    function: &SourceTableFunctionSpec,
-    mapping: &UniversalSearchResultMappingSpec,
-) -> Result<()> {
-    let context = format!(
-        "source '{source_name}' function '{}' universal_search.result",
-        function.name
-    );
-    if mapping
-        .entity_type
-        .as_deref()
-        .is_some_and(|entity_type| entity_type.trim().is_empty())
-    {
-        return Err(ManifestError::validation(format!(
-            "{context}.entity_type must not be empty"
-        )));
-    }
-    validate_unique_mapping_fields(
-        &mapping.identity_fields,
-        &format!("{context}.identity_fields"),
-    )?;
-    validate_unique_mapping_fields(&mapping.attributes, &format!("{context}.attributes"))?;
-
-    for (field_kind, field_name) in mapping
-        .identity_fields
-        .iter()
-        .map(|field| ("identity_fields", field.as_str()))
-        .chain(
-            mapping
-                .provider_id
-                .as_deref()
-                .map(|field| ("provider_id", field)),
-        )
-        .chain(mapping.title.as_deref().map(|field| ("title", field)))
-        .chain(mapping.url.as_deref().map(|field| ("url", field)))
-        .chain(mapping.snippet.as_deref().map(|field| ("snippet", field)))
-    {
-        let column = resolve_mapping_column(function, field_name, &context, field_kind)?;
-        if column.data_type == ManifestDataType::Json {
-            return Err(ManifestError::validation(format!(
-                "{context}.{field_kind} references structured Json column '{field_name}'; identity and display fields must be scalar"
-            )));
-        }
-    }
-    for field_name in &mapping.attributes {
-        resolve_mapping_column(function, field_name, &context, "attributes")?;
-    }
-    Ok(())
-}
-
-fn resolve_mapping_column<'a>(
-    function: &'a SourceTableFunctionSpec,
-    field_name: &str,
-    context: &str,
-    field_kind: &str,
-) -> Result<&'a ColumnSpec> {
-    if field_name.trim().is_empty() {
-        return Err(ManifestError::validation(format!(
-            "{context}.{field_kind} must not contain an empty field name"
-        )));
-    }
-    function
-        .columns
-        .iter()
-        .find(|column| column.name == field_name)
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "{context}.{field_kind} references unknown result column '{field_name}'"
-            ))
-        })
-}
-
-fn validate_unique_mapping_fields(fields: &[String], context: &str) -> Result<()> {
-    let mut seen = HashSet::new();
-    for field in fields {
-        if !seen.insert(field.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "{context} contains duplicate field '{field}'"
             )));
         }
     }
@@ -1416,7 +1204,6 @@ mod tests {
             fetch_limit_default: None,
             search_limits: None,
             detail_hints: Vec::new(),
-            universal_search: None,
             args: vec![TableFunctionArgSpec {
                 name: "query".to_string(),
                 data_type: ManifestDataType::Utf8,

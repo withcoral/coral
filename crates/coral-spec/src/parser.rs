@@ -333,6 +333,47 @@ surface:
     }
 
     #[test]
+    fn parse_source_manifest_rejects_v3_universal_search_authoring() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_items
+    kind: search
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    universal_search:
+      id: item_search
+      execute: true
+      query_arg: query
+    args:
+      - name: query
+        bind:
+          arg: query
+    request:
+      path: /search
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("DSL v3 Universal Search authoring must be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "/functions/0: Additional properties are not allowed ('universal_search' was unexpected)"
+            ),
+            "unexpected schema error: {error}"
+        );
+    }
+
+    #[test]
     fn parse_source_manifest_preserves_do_not_index_policy() {
         let manifest = parse_source_manifest_yaml(
             r"

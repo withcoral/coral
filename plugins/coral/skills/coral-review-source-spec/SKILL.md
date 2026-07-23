@@ -68,10 +68,9 @@ These checks should be based on the authoritative API docs for the API the sourc
 - Treat `kind: search` and valid `search_limits` as prerequisites, not as
   authorization by themselves. Legacy `mode: search` filters never authorize a
   route.
-- For DSL v3, verify each function-level `universal_search.id` matches
-  `[a-z][a-z0-9_]*` and is unique, an allowed `query_arg` names exactly one
-  exposed argument of type `Utf8` with no default, and every other exposed
-  argument has a type-correct typed default.
+- Universal Search fan-out is DSL v4-only. Flag
+  `functions[].universal_search` in a DSL v3 source as unsupported; DSL v3
+  sources do not participate in native fan-out.
 - For DSL v4, verify each top-level route map key matches `[a-z][a-z0-9_]*` and
   is the stable authored ID, targets one exact `operation_id` on the source's
   singular surface, and selects the original input by allowed location plus
@@ -86,11 +85,11 @@ These checks should be based on the authoritative API docs for the API the sourc
   routes. Missing or duplicate targets, ambiguous inputs, invalid defaults,
   unsafe operations, and unresolved mappings must fail closed instead of
   falling back to a guessed operation.
-- Check optional result mapping separately from authorization. DSL v3 fields
-  name authored result columns; DSL v4 fields are RFC 6901 JSON Pointers that
-  must be syntactically valid in the manifest and resolve exactly once during
-  route resolution. Identity and display fields are scalar, while a structured
-  attribute must be explicitly selected and schema-compatible.
+- Check optional result mapping separately from authorization. DSL v4 fields
+  are RFC 6901 JSON Pointers that must be syntactically valid in the manifest
+  and resolve exactly once during route resolution. Identity and display fields
+  are scalar, while a structured attribute must be explicitly selected and
+  schema-compatible.
 
 ### HTTP and API Semantics
 
