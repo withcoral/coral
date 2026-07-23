@@ -15,11 +15,11 @@ type Story = StoryObj<typeof meta>
 
 export const Variants: Story = {
   args: {
-    children: 'Banner',
+    children: 'New data will appear here when it is available.',
   },
-  render: () => (
+  render: ({ children }) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 720 }}>
-      <Banner title="Sync in progress">New data will appear here when it is available.</Banner>
+      <Banner title="Sync in progress">{children}</Banner>
       <Banner title="Could not load sources" variant="error">
         Try again after the local Coral runtime is ready.
       </Banner>
