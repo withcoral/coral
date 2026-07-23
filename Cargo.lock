@@ -1299,13 +1299,12 @@ dependencies = [
  "coral-client",
  "coral-mcp",
  "rmcp",
- "serde",
  "serde_json",
- "serde_yaml",
  "tempfile",
  "tiktoken-rs",
  "tokio",
  "tonic",
+ "url",
 ]
 
 [[package]]

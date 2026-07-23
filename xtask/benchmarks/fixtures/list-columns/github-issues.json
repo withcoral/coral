@@ -1,6 +1,0 @@
-{
-  "manifest": "sources/core/github/manifest.yaml",
-  "schema": "github",
-  "table": "issues",
-  "limit": 50
-}

@@ -14,7 +14,7 @@ pub(crate) struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Benchmark {
-    /// Compare verbose and positional `list_columns` JSON token counts.
+    /// Measure the token cost of the current `list_columns` response.
     ListColumns,
 }
 
