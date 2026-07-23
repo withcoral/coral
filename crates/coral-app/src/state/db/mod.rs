@@ -21,7 +21,7 @@ pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
 #[expect(
     unused_imports,
-    reason = "identity persistence types land before B2 wires production consumers"
+    reason = "identity persistence types are not yet wired to production consumers"
 )]
 pub(crate) use repositories::identity_specs::{
     IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
