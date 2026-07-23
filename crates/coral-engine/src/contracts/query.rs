@@ -648,6 +648,11 @@ impl QueryParameterValue {
 pub struct QueryRuntimeConfig {
     /// Non-secret runtime inputs owned by the application layer.
     pub context: QueryRuntimeContext,
+    /// Database connection pools reused by runtimes in the caller-defined scope.
+    ///
+    /// Applications serving multiple workspaces should provide a distinct
+    /// registry per workspace. The default creates an isolated registry.
+    pub database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     /// Optional engine extensions for this runtime build.
     pub extensions: EngineExtensions,
     /// Engine-wide query memory policy.
@@ -669,6 +674,7 @@ impl QueryRuntimeConfig {
     pub fn new(context: QueryRuntimeContext, extensions: EngineExtensions) -> Self {
         Self {
             context,
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             extensions,
             memory: QueryMemoryConfig::default(),
             request_identity_selector: None,

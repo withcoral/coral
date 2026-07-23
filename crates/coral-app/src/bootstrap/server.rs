@@ -71,7 +71,9 @@ use crate::task::store::TaskStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcRequestContextLayer;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
+use crate::workspaces::{
+    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistries, WorkspaceService,
+};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -416,6 +418,7 @@ impl ServerBuilder {
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
+        let workspace_pool_registries = Arc::new(WorkspacePoolRegistries::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
@@ -432,7 +435,8 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             Arc::clone(&coral_db),
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registries(Arc::clone(&workspace_pool_registries));
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
@@ -452,6 +456,7 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
+            workspace_pool_registries,
         );
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =

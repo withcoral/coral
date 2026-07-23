@@ -183,6 +183,7 @@ pub(crate) struct BackendCatalogRegistration {
 pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source: &'a QuerySource,
     pub(crate) runtime_context: &'a QueryRuntimeContext,
+    pub(crate) database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,

@@ -68,6 +68,7 @@ pub mod contracts;
 mod runtime;
 mod types;
 
+pub use backends::database::DatabasePoolRegistry;
 pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
     BoundRequestIdentityHttpAuthenticator, EngineExtensions, QueryResultObserver,

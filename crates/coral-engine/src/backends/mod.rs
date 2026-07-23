@@ -99,6 +99,7 @@ pub(crate) mod shared;
 pub(crate) fn compile_query_source(
     source: &QuerySource,
     runtime_context: &crate::QueryRuntimeContext,
+    database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_observation_publishers: &[Arc<dyn SourceObservationPublisher>],
@@ -113,6 +114,7 @@ pub(crate) fn compile_query_source(
     let request = BackendCompileRequest {
         source,
         runtime_context,
+        database_pool_registry,
         source_secrets: source.secrets().clone(),
         source_variables: source.variables().clone(),
         request_authenticators,
@@ -185,6 +187,7 @@ pub(crate) fn compile_source_manifest(
         &BackendCompileRequest {
             source: &source,
             runtime_context,
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             source_secrets,
             source_variables,
             request_authenticators: &request_authenticators,

@@ -33,6 +33,9 @@ registration, and query execution.
 - Runtime components are the app-to-engine package boundary. Do not add a
   backend that reaches back into DSL v4 materialization or authored-manifest
   types when `coral-app` can assemble existing backend-ready component specs.
+- Reuse database connection pools only through an explicit
+  `DatabasePoolRegistry` supplied by the caller. Keep pool implementation in
+  this crate; do not introduce process-global or cross-workspace pool state.
 - Keep this crate transport-neutral. Arrow IPC, CLI formatting, and MCP-facing
   shaping belong outside `coral-engine`.
 

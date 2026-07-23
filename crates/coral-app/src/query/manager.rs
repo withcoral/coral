@@ -44,6 +44,7 @@ use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
+    WorkspacePoolRegistries,
 };
 
 #[derive(Debug)]
@@ -179,6 +180,7 @@ pub(crate) struct QueryManager {
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
+    pool_registries: Arc<WorkspacePoolRegistries>,
 }
 
 impl QueryManager {
@@ -221,6 +223,7 @@ impl QueryManager {
             lifecycle_lock,
             engine_extensions_providers,
             SourceDiagnosticReporter::default(),
+            Arc::new(WorkspacePoolRegistries::default()),
         )
     }
 
@@ -237,6 +240,7 @@ impl QueryManager {
         lifecycle_lock: WorkspaceLifecycleLock,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
         diagnostic_reporter: SourceDiagnosticReporter,
+        pool_registries: Arc<WorkspacePoolRegistries>,
     ) -> Self {
         let function_manager =
             FunctionManager::new(config_store.clone(), &layout, lifecycle_lock.clone());
@@ -251,6 +255,7 @@ impl QueryManager {
             engine_extensions_providers,
             diagnostic_reporter,
             search_observations: None,
+            pool_registries,
         }
     }
 
@@ -778,6 +783,7 @@ impl QueryManager {
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
         let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
+        runtime.database_pool_registry = self.pool_registries.for_workspace(workspace_name);
         let selected_source_names = selected_sources
             .iter()
             .map(|source| source.query_source.source_name().to_string())

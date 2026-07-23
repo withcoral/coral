@@ -110,6 +110,7 @@ struct RuntimeExtensionHooks {
 struct FallbackRuntimeConfig {
     sources: Vec<QuerySource>,
     runtime_context: QueryRuntimeContext,
+    database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
     udfs: Vec<UdfRuntimeDefinition>,
@@ -129,6 +130,7 @@ struct RegisteredRuntime {
 struct RuntimeBuildInputs<'a> {
     sources: &'a [QuerySource],
     runtime_context: &'a QueryRuntimeContext,
+    database_pool_registry: &'a Arc<crate::DatabasePoolRegistry>,
     extension_hooks: &'a RuntimeExtensionHooks,
     request_identity_http_authenticators: &'a BoundRequestIdentityHttpAuthenticators,
     source_decorators: &'a mut [Box<dyn SourceDecorator>],
@@ -157,6 +159,7 @@ async fn build_runtime_inner(
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let QueryRuntimeConfig {
         context: runtime_context,
+        database_pool_registry,
         memory,
         dependent_join,
         mut extensions,
@@ -187,6 +190,7 @@ async fn build_runtime_inner(
         FallbackRuntime::new(FallbackRuntimeConfig {
             sources: sources.to_vec(),
             runtime_context: runtime_context.clone(),
+            database_pool_registry: Arc::clone(&database_pool_registry),
             dependent_join: dependent_join.clone(),
             memory: memory.clone(),
             udfs: udfs.clone(),
@@ -198,6 +202,7 @@ async fn build_runtime_inner(
     let primary = build_registered_runtime(RuntimeBuildInputs {
         sources,
         runtime_context: &runtime_context,
+        database_pool_registry: &database_pool_registry,
         extension_hooks: &extension_hooks,
         request_identity_http_authenticators: &request_identity_http_authenticators,
         source_decorators: extensions.source_decorators.as_mut_slice(),
@@ -328,6 +333,7 @@ async fn build_registered_runtime(
         &ctx,
         config.sources,
         config.runtime_context,
+        config.database_pool_registry,
         config.extension_hooks,
         config.request_identity_http_authenticators,
         config.source_decorators,
@@ -471,6 +477,7 @@ async fn register_runtime_sources(
     ctx: &SessionContext,
     sources: &[QuerySource],
     runtime_context: &QueryRuntimeContext,
+    database_pool_registry: &Arc<crate::DatabasePoolRegistry>,
     extension_hooks: &RuntimeExtensionHooks,
     request_identity_http_authenticators: &BoundRequestIdentityHttpAuthenticators,
     source_decorators: &mut [Box<dyn SourceDecorator>],
@@ -480,6 +487,7 @@ async fn register_runtime_sources(
         match compile_query_source(
             source,
             runtime_context,
+            Arc::clone(database_pool_registry),
             &extension_hooks.request_authenticators,
             extension_hooks.source_input_resolver.clone(),
             &extension_hooks.source_observation_publishers,
@@ -1373,6 +1381,7 @@ impl FallbackRuntimeConfig {
         build_registered_runtime(RuntimeBuildInputs {
             sources: &self.sources,
             runtime_context: &self.runtime_context,
+            database_pool_registry: &self.database_pool_registry,
             extension_hooks: &self.extension_hooks,
             request_identity_http_authenticators: &self.request_identity_http_authenticators,
             source_decorators: source_decorators.as_mut_slice(),
@@ -1668,6 +1677,7 @@ mod tests {
         let fallback = FallbackRuntimeConfig {
             sources: Vec::new(),
             runtime_context: QueryRuntimeContext::default(),
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             dependent_join: DependentJoinConfig::default(),
             memory: QueryMemoryConfig {
                 limit: Some(MemorySize::from_str("1Ki").unwrap()),
