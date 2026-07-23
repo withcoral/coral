@@ -669,6 +669,20 @@ impl TraceStore {
         .map_err(|source| TraceStoreError::Worker { source })?
     }
 
+    pub(crate) async fn get_query_stream_entry(
+        &self,
+        trace_id: String,
+        root_span_id: String,
+        workspace_name: Option<String>,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || {
+            traces.get_query_stream_entry_sync(&trace_id, &root_span_id, workspace_name.as_deref())
+        })
+        .await
+        .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
     pub(crate) async fn delete_traces_for_workspace(
         &self,
         workspace_name: String,
@@ -817,6 +831,15 @@ impl TraceStore {
         } else {
             Err(TraceStoreError::NotFound(trace_id.to_string()))
         }
+    }
+
+    fn get_query_stream_entry_sync(
+        &self,
+        trace_id: &str,
+        root_span_id: &str,
+        workspace_name: Option<&str>,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        query_stream::get(self, trace_id, root_span_id, workspace_name)
     }
 
     pub(crate) fn list_query_history_sync(

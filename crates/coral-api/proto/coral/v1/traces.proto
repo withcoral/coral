@@ -104,6 +104,10 @@ message GetTraceRequest {
   // Optional workspace that the trace must belong to. Omit for the global
   // trace lookup.
   Workspace workspace = 2;
+  // Optional operation span selected from a multi-operation distributed trace.
+  // When set, the response is scoped to that Query Stream operation and the
+  // descendant spans it owns.
+  string root_span_id = 3;
 }
 
 // One stored trace span.

@@ -1,19 +1,20 @@
-//! Query Stream LIST projection over locally captured JSONL spans.
+//! Query Stream projection over locally captured JSONL spans.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod classification;
 
 use classification::{
     QueryStreamMetadata, QueryStreamPrimaryOperation, QueryStreamWorkspaceEvidence,
-    is_unmarked_mcp_protocol_attributes, operation_text_from_attributes,
-    operation_text_is_semantic, query_stream_metadata,
+    is_unmarked_mcp_protocol_attributes, is_unmarked_mcp_protocol_span,
+    operation_text_from_attributes, operation_text_is_semantic, query_stream_metadata,
+    query_stream_metadata_from_attributes, query_stream_summaries,
 };
 
 use super::{
-    StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord, TraceStore, TraceStoreError,
-    TraceStoreFile, TraceSummaryRecord, attr_string, attr_u64, parse_attributes,
-    read_list_spans_file, status_from_attributes, usize_to_u32,
+    StoredTraceOperationKind, StoredTraceStatus, TraceDetailRecord, TraceListSpanRecord,
+    TraceSpanRecord, TraceStore, TraceStoreError, TraceStoreFile, TraceSummaryRecord, attr_string,
+    attr_u64, parse_attributes, read_list_spans_file, status_from_attributes, usize_to_u32,
 };
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
@@ -81,6 +82,41 @@ fn equal_mtime_file_bucket(
     start..end
 }
 
+pub(super) fn get(
+    store: &TraceStore,
+    trace_id: &str,
+    root_span_id: &str,
+    workspace_name: Option<&str>,
+) -> Result<TraceDetailRecord, TraceStoreError> {
+    let trace = store.get_trace_sync(trace_id)?;
+    let spans_by_id = trace
+        .spans
+        .iter()
+        .map(|span| (span.span_id.as_str(), span))
+        .collect::<HashMap<_, _>>();
+    let root = spans_by_id
+        .get(root_span_id)
+        .copied()
+        .ok_or_else(|| TraceStoreError::NotFound(trace_id.to_string()))?;
+    if query_stream_metadata(root).is_none() || !query_stream_root_is_visible(root, &spans_by_id) {
+        return Err(TraceStoreError::NotFound(trace_id.to_string()));
+    }
+
+    let mut spans = collect_query_stream_operation_spans(trace.spans, trace_id, root_span_id)?;
+    let span_refs = spans.iter().collect::<Vec<_>>();
+    let summary = query_stream_summaries(&span_refs, workspace_name)
+        .into_iter()
+        .find(|summary| summary.root_span_id == root_span_id)
+        .ok_or_else(|| TraceStoreError::NotFound(trace_id.to_string()))?;
+    spans.sort_by(|left, right| {
+        left.start_time_unix_nanos
+            .cmp(&right.start_time_unix_nanos)
+            .then_with(|| left.span_id.cmp(&right.span_id))
+    });
+    debug_assert_eq!(spans.len(), summary.span_count as usize);
+    Ok(TraceDetailRecord { summary, spans })
+}
+
 // LIST projection. This section owns bounded JSONL scanning, completion
 // watermarks, pagination, and streaming aggregation.
 
@@ -116,7 +152,7 @@ struct ProjectedQueryStreamSpan {
 impl ProjectedQueryStreamSpan {
     fn from_record(span: TraceListSpanRecord) -> Self {
         let attributes = parse_attributes(&span.attributes_json);
-        let metadata = query_stream_metadata(&span, attributes.as_ref());
+        let metadata = query_stream_metadata_from_attributes(&span, attributes.as_ref());
         let protocol = attributes
             .as_ref()
             .is_some_and(is_unmarked_mcp_protocol_attributes);
@@ -527,6 +563,114 @@ fn take_indexed_values_after<T>(index: &mut BTreeMap<i64, Vec<T>>, watermark: i6
         return Vec::new();
     };
     index.split_off(&split_at).into_values().flatten().collect()
+}
+
+// Selected-operation DETAIL. This layer applies operation ownership semantics
+// to a complete locally stored trace. A later stack layer narrows the file
+// reads without changing the selection result.
+
+fn query_stream_root_is_visible(
+    root: &TraceSpanRecord,
+    spans_by_id: &HashMap<&str, &TraceSpanRecord>,
+) -> bool {
+    let mut parent_span_id = root.parent_span_id.as_deref();
+    let mut parent_span_is_remote = root.parent_span_is_remote;
+    let mut visited = HashSet::new();
+    while let Some(current_parent_span_id) = parent_span_id {
+        if parent_span_is_remote {
+            return true;
+        }
+        if !visited.insert(current_parent_span_id) {
+            return false;
+        }
+        let Some(parent) = spans_by_id.get(current_parent_span_id).copied() else {
+            return false;
+        };
+        if query_stream_metadata(parent).is_some_and(|metadata| metadata.explicit)
+            || is_unmarked_mcp_protocol_span(parent)
+        {
+            return false;
+        }
+        parent_span_id = parent.parent_span_id.as_deref();
+        parent_span_is_remote = parent.parent_span_is_remote;
+    }
+    true
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SelectedOperationNodeState {
+    suppresses_entries: bool,
+}
+
+fn collect_query_stream_operation_spans(
+    spans: Vec<TraceSpanRecord>,
+    trace_id: &str,
+    root_span_id: &str,
+) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
+    let mut candidates = spans
+        .into_iter()
+        .map(|span| (span.span_id.clone(), span))
+        .collect::<HashMap<_, _>>();
+    let root = candidates
+        .remove(root_span_id)
+        .ok_or_else(|| TraceStoreError::NotFound(trace_id.to_string()))?;
+    let root_metadata = query_stream_metadata(&root)
+        .expect("query stream root metadata was validated before collecting descendants");
+    let root_state = SelectedOperationNodeState {
+        suppresses_entries: root_metadata.explicit || is_unmarked_mcp_protocol_span(&root),
+    };
+    let mut node_states = HashMap::from([(root_span_id.to_string(), root_state)]);
+    let mut selected = HashMap::from([(root_span_id.to_string(), root)]);
+    let mut children_by_parent = HashMap::<String, Vec<TraceSpanRecord>>::new();
+    for span in candidates.into_values() {
+        let Some(parent_span_id) = span.parent_span_id.as_deref() else {
+            continue;
+        };
+        children_by_parent
+            .entry(parent_span_id.to_string())
+            .or_default()
+            .push(span);
+    }
+    let mut ready = children_by_parent.remove(root_span_id).unwrap_or_default();
+
+    while let Some(span) = ready.pop() {
+        if node_states.contains_key(&span.span_id) {
+            continue;
+        }
+        let Some(parent) = span
+            .parent_span_id
+            .as_deref()
+            .and_then(|parent_span_id| node_states.get(parent_span_id))
+            .copied()
+        else {
+            continue;
+        };
+        let metadata = query_stream_metadata(&span);
+        let starts_nested_visible_operation = metadata.is_some() && !parent.suppresses_entries;
+        if starts_nested_visible_operation {
+            // This is the root of a separate visible operation. Prune its
+            // branch instead of retaining false ownership state for it.
+            continue;
+        }
+        let state = SelectedOperationNodeState {
+            suppresses_entries: parent.suppresses_entries
+                || is_unmarked_mcp_protocol_span(&span)
+                || metadata.as_ref().is_some_and(|metadata| metadata.explicit),
+        };
+        let span_id = span.span_id.clone();
+        node_states.insert(span_id.clone(), state);
+        selected.insert(span_id.clone(), span);
+        if let Some(children) = children_by_parent.remove(&span_id) {
+            ready.extend(children);
+        }
+    }
+
+    debug_assert_eq!(
+        node_states.len(),
+        selected.len(),
+        "detail projection must not retain state for pruned operation branches"
+    );
+    Ok(selected.into_values().collect())
 }
 
 #[cfg(test)]

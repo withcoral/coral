@@ -13,7 +13,8 @@ use crate::telemetry::local_store::{
     TraceSummaryRecord,
 };
 use crate::telemetry::manager::{
-    GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError,
+    GetTraceQuery, ListTracesQuery, TraceDetailSelection, TraceListView, TraceManager,
+    TraceManagerError,
 };
 use crate::transport::{grpc_span, instrument_grpc};
 use crate::workspaces::WorkspaceName;
@@ -86,10 +87,12 @@ impl TraceServiceApi for TraceService {
                 ));
             }
             let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let selection = trace_detail_selection_from_proto(&request.root_span_id);
             let trace = traces
                 .get_trace(GetTraceQuery {
                     trace_id: request.trace_id,
                     workspace,
+                    selection,
                 })
                 .await
                 .map_err(trace_manager_status)?;
@@ -138,6 +141,17 @@ fn workspace_filter_from_proto(
     workspace
         .map(|workspace| WorkspaceName::parse(&workspace.name).map_err(app_status))
         .transpose()
+}
+
+fn trace_detail_selection_from_proto(root_span_id: &str) -> TraceDetailSelection {
+    let root_span_id = root_span_id.trim();
+    if root_span_id.is_empty() {
+        TraceDetailSelection::Full
+    } else {
+        TraceDetailSelection::QueryStreamOperation {
+            root_span_id: root_span_id.to_string(),
+        }
+    }
 }
 
 fn trace_manager_status(error: TraceManagerError) -> Status {
@@ -299,6 +313,7 @@ mod tests {
             Request::new(GetTraceRequest {
                 trace_id: "alpha-trace".to_string(),
                 workspace: Some(workspace("alpha")),
+                root_span_id: String::new(),
             }),
         )
         .await
@@ -311,6 +326,7 @@ mod tests {
             Request::new(GetTraceRequest {
                 trace_id: "beta-trace".to_string(),
                 workspace: Some(workspace("alpha")),
+                root_span_id: String::new(),
             }),
         )
         .await
@@ -319,7 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trace_service_projects_query_stream_entries() {
+    async fn trace_service_projects_and_selects_query_stream_entries() {
         let temp = TempDir::new().expect("temp dir");
         let trace_store = temp.path().join("trace-store");
         std::fs::create_dir_all(&trace_store).expect("trace store dir");
@@ -346,6 +362,34 @@ mod tests {
         assert_eq!(summary.query, "SELECT 42");
         assert_eq!(summary.start_time_unix_nanos, 10);
         assert_eq!(summary.end_time_unix_nanos, 40);
+
+        let detail = TraceServiceApi::get_trace(
+            &service,
+            Request::new(GetTraceRequest {
+                trace_id: "shared-trace".to_string(),
+                workspace: Some(workspace("alpha")),
+                root_span_id: "tool-span".to_string(),
+            }),
+        )
+        .await
+        .expect("get selected query stream entry")
+        .into_inner();
+        assert_eq!(
+            detail.summary.expect("selected summary").root_span_id,
+            "tool-span"
+        );
+
+        let internal_status = TraceServiceApi::get_trace(
+            &service,
+            Request::new(GetTraceRequest {
+                trace_id: "shared-trace".to_string(),
+                workspace: Some(workspace("alpha")),
+                root_span_id: "nested-query".to_string(),
+            }),
+        )
+        .await
+        .expect_err("collapsed nested entry is not addressable");
+        assert_eq!(internal_status.code(), Code::NotFound);
 
         let unknown_view = TraceServiceApi::list_traces(
             &service,

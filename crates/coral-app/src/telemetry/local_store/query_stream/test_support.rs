@@ -8,7 +8,10 @@ use super::super::tests::{
     set_modified_time, timestamped_jsonl_path, trace_record, write_record_file,
     write_record_file_lines,
 };
-use super::super::{StoredTraceStatus, TraceSpanRecord, TraceStore, TraceSummaryRecord};
+use super::super::{
+    StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
+    TraceSummaryRecord,
+};
 
 pub(super) fn span(trace_id: &str, span_id: &str) -> TestSpan {
     TestSpan {
@@ -108,6 +111,12 @@ impl TraceFiles {
         }
     }
 
+    pub(super) fn with_records(records: &[TraceSpanRecord]) -> Self {
+        let files = Self::new();
+        files.write("spans-test.jsonl", records);
+        files
+    }
+
     pub(super) fn write(&self, name: &str, records: &[TraceSpanRecord]) {
         write_record_file_lines(&self.temp.path().join(name), records);
     }
@@ -142,5 +151,18 @@ impl TraceFiles {
         TraceStore::new(self.temp.path().to_path_buf())
             .list_query_stream_sync(limit, offset, workspace_name)
             .expect("list query stream")
+    }
+
+    pub(super) fn get(
+        &self,
+        trace_id: &str,
+        root_span_id: &str,
+        workspace_name: Option<&str>,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        TraceStore::new(self.temp.path().to_path_buf()).get_query_stream_entry_sync(
+            trace_id,
+            root_span_id,
+            workspace_name,
+        )
     }
 }

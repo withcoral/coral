@@ -27,9 +27,16 @@ pub(crate) struct TraceListPage {
 }
 
 #[derive(Debug)]
+pub(crate) enum TraceDetailSelection {
+    Full,
+    QueryStreamOperation { root_span_id: String },
+}
+
+#[derive(Debug)]
 pub(crate) struct GetTraceQuery {
     pub(crate) trace_id: String,
     pub(crate) workspace: Option<WorkspaceName>,
+    pub(crate) selection: TraceDetailSelection,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -105,14 +112,23 @@ impl TraceManager {
         let GetTraceQuery {
             trace_id,
             workspace,
+            selection,
         } = query;
-        match workspace {
-            Some(workspace) => {
+        let workspace = workspace.map(|workspace| workspace.as_str().to_string());
+        match selection {
+            TraceDetailSelection::Full => match workspace {
+                Some(workspace) => {
+                    self.traces
+                        .get_trace_for_workspace(trace_id, workspace)
+                        .await
+                }
+                None => self.traces.get_trace(trace_id).await,
+            },
+            TraceDetailSelection::QueryStreamOperation { root_span_id } => {
                 self.traces
-                    .get_trace_for_workspace(trace_id, workspace.as_str().to_string())
+                    .get_query_stream_entry(trace_id, root_span_id, workspace)
                     .await
             }
-            None => self.traces.get_trace(trace_id).await,
         }
         .map_err(TraceManagerError::from)
     }
@@ -125,7 +141,10 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError};
+    use super::{
+        GetTraceQuery, ListTracesQuery, TraceDetailSelection, TraceListView, TraceManager,
+        TraceManagerError,
+    };
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
@@ -174,6 +193,7 @@ mod tests {
             .get_trace(GetTraceQuery {
                 trace_id: "beta".to_string(),
                 workspace: None,
+                selection: TraceDetailSelection::Full,
             })
             .await
             .expect("unscoped beta trace");
@@ -183,6 +203,7 @@ mod tests {
             .get_trace(GetTraceQuery {
                 trace_id: "beta".to_string(),
                 workspace: Some(WorkspaceName::parse("alpha").expect("alpha workspace")),
+                selection: TraceDetailSelection::Full,
             })
             .await
             .expect_err("beta trace must not match alpha workspace");
@@ -190,6 +211,18 @@ mod tests {
             error,
             TraceManagerError::NotFound { trace_id } if trace_id == "beta"
         ));
+
+        let detail = manager
+            .get_trace(GetTraceQuery {
+                trace_id: "alpha-new".to_string(),
+                workspace: Some(WorkspaceName::parse("alpha").expect("alpha workspace")),
+                selection: TraceDetailSelection::QueryStreamOperation {
+                    root_span_id: "alpha-new-span".to_string(),
+                },
+            })
+            .await
+            .expect("selected alpha operation");
+        assert_eq!(detail.summary.root_span_id, "alpha-new-span");
     }
 
     fn trace_manager_fixture() -> (TempDir, TraceManager) {

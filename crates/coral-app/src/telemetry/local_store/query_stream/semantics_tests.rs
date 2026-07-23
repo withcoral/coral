@@ -3,17 +3,17 @@ use std::collections::HashSet;
 use serde_json::json;
 
 use super::super::tests::trace_record;
-use super::super::{StoredTraceOperationKind, StoredTraceStatus};
+use super::super::{StoredTraceOperationKind, StoredTraceStatus, TraceStoreError};
 use super::classification::{
     MAX_LEGACY_TOOL_OPERATION_NAME_LEN, UNKNOWN_TOOL_OPERATION_NAME,
-    privacy_safe_legacy_tool_operation_name,
+    privacy_safe_legacy_tool_operation_name, query_stream_summaries,
 };
-use super::test_support::{project, project_page, span};
+use super::test_support::{TraceFiles, project, project_page, span};
 
 // Shared classification and ownership behavior.
 
 #[test]
-fn query_stream_projects_outer_operations() {
+fn query_stream_projects_outer_operations_and_selects_details_by_span() {
     let sql_tool = span("shared-trace", "sql-tool")
         .named("coral.mcp.call_tool")
         .remote_root()
@@ -33,7 +33,8 @@ fn query_stream_projects_outer_operations() {
         .times(20, 30)
         .build();
 
-    let summaries = project(&[sql_tool, nested_query], None);
+    let files = TraceFiles::with_records(&[sql_tool, nested_query]);
+    let summaries = files.list(10, 0, None);
     assert_eq!(summaries.len(), 1);
     let sql_summary = summaries.first().expect("SQL summary");
     assert_eq!(sql_summary.root_span_id, "sql-tool");
@@ -47,6 +48,20 @@ fn query_stream_projects_outer_operations() {
     assert_eq!(sql_summary.end_time_unix_nanos, 40);
     assert_eq!(sql_summary.duration_nanos, 30);
     assert_eq!(sql_summary.span_count, 2);
+
+    let detail = files
+        .get("shared-trace", "sql-tool", Some("alpha"))
+        .expect("get selected operation");
+    assert_eq!(detail.summary, *sql_summary);
+    assert_eq!(detail.spans.len(), 2);
+    assert!(
+        files.get("shared-trace", "nested-query", None).is_err(),
+        "a collapsed nested entry is not independently addressable"
+    );
+    assert!(
+        files.get("shared-trace", "sql-tool", Some("beta")).is_err(),
+        "workspace filtering applies to the selected operation"
+    );
 }
 
 #[test]
@@ -167,11 +182,105 @@ fn query_stream_hides_entries_with_unfinished_local_parents() {
     })
     .to_string();
 
-    let summaries = project(&[unfinished_child, remote_root], Some("alpha"));
+    let files = TraceFiles::with_records(&[unfinished_child, remote_root]);
+    let summaries = files.list(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("remote summary").root_span_id,
         "remote-query"
+    );
+
+    assert!(matches!(
+        files.get("unfinished-trace", "unfinished-query", Some("alpha")),
+        Err(TraceStoreError::NotFound(_))
+    ));
+    assert!(
+        files
+            .get("remote-root-trace", "remote-query", Some("alpha"))
+            .is_ok(),
+        "a missing remote parent is a valid local operation root"
+    );
+}
+
+#[test]
+fn query_stream_hides_malformed_parent_cycles_in_list_and_detail() {
+    let mut entry = trace_record("cyclic-trace", "cyclic-query");
+    entry.parent_span_id = Some("cyclic-parent".to_string());
+    entry.parent_span_is_remote = false;
+    entry.name = "coral.query".to_string();
+    entry.attributes_json = json!({
+        "workspace": "alpha",
+        "operation": "sql",
+        "sql": "SELECT 'cycle'",
+    })
+    .to_string();
+
+    let mut parent = trace_record("cyclic-trace", "cyclic-parent");
+    parent.parent_span_id = Some(entry.span_id.clone());
+    parent.parent_span_is_remote = false;
+    parent.name = "internal.cycle".to_string();
+    parent.attributes_json = json!({"workspace": "alpha"}).to_string();
+
+    let span_refs = [&entry, &parent];
+    assert!(
+        query_stream_summaries(&span_refs, Some("alpha")).is_empty(),
+        "batch projection hides malformed cycles"
+    );
+
+    let files = TraceFiles::with_records(&[entry, parent]);
+    assert!(
+        files.list(10, 0, Some("alpha")).is_empty(),
+        "streaming projection hides malformed cycles"
+    );
+    assert!(matches!(
+        files.get("cyclic-trace", "cyclic-query", Some("alpha")),
+        Err(TraceStoreError::NotFound(_))
+    ));
+}
+
+#[test]
+fn query_stream_detail_excludes_nested_visible_operations() {
+    let mut outer = trace_record("nested-trace", "outer-query");
+    outer.parent_span_id = Some("remote-parent".to_string());
+    outer.parent_span_is_remote = true;
+    outer.attributes_json = json!({
+        "workspace": "alpha",
+        "operation": "sql",
+        "sql": "SELECT 1",
+    })
+    .to_string();
+
+    let mut nested = trace_record("nested-trace", "nested-operation");
+    nested.parent_span_id = Some(outer.span_id.clone());
+    nested.name = "coral.future.operation".to_string();
+    nested.attributes_json = json!({
+        "coral.stream.entry": true,
+        "coral.stream.kind": "future_kind",
+        "coral.stream.name": "future_operation",
+        "workspace": "beta",
+    })
+    .to_string();
+
+    let mut nested_child = trace_record("nested-trace", "nested-child");
+    nested_child.parent_span_id = Some(nested.span_id.clone());
+    nested_child.name = "coral.future.child".to_string();
+
+    let files = TraceFiles::with_records(&[outer, nested, nested_child]);
+    let summaries = files.list(10, 0, None);
+    assert_eq!(summaries.len(), 2);
+
+    let detail = files
+        .get("nested-trace", "outer-query", Some("alpha"))
+        .expect("get outer operation");
+    assert_eq!(detail.summary.root_span_id, "outer-query");
+    assert_eq!(detail.spans.len(), detail.summary.span_count as usize);
+    assert_eq!(
+        detail
+            .spans
+            .iter()
+            .map(|span| span.span_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["outer-query"]
     );
 }
 
@@ -301,18 +410,16 @@ fn query_stream_supports_legacy_operations_and_protocol_suppression() {
     search_catalog_query.start_time_unix_nanos = 22;
     search_catalog_query.end_time_unix_nanos = 23;
 
-    let summaries = project(
-        &[
-            protocol,
-            hidden_query,
-            legacy_tool,
-            visible_query,
-            search_tool,
-            search,
-            search_catalog_query,
-        ],
-        Some("alpha"),
-    );
+    let files = TraceFiles::with_records(&[
+        protocol,
+        hidden_query,
+        legacy_tool,
+        visible_query,
+        search_tool,
+        search,
+        search_catalog_query,
+    ]);
+    let summaries = files.list(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 2);
     let search_summary = summaries.first().expect("legacy search summary");
     assert_eq!(search_summary.root_span_id, "legacy-search-tool");
@@ -327,6 +434,77 @@ fn query_stream_supports_legacy_operations_and_protocol_suppression() {
     assert_eq!(tool_summary.operation_kind, StoredTraceOperationKind::Tool);
     assert_eq!(tool_summary.operation_name, "list_catalog");
     assert_eq!(tool_summary.query, "LIST CATALOG");
+
+    let search_detail = files
+        .get("search-trace", "legacy-search-tool", Some("alpha"))
+        .expect("get legacy search entry");
+    assert_eq!(search_detail.summary, *search_summary);
+    assert!(
+        search_detail
+            .spans
+            .iter()
+            .any(|span| span.span_id == "legacy-search-catalog-query"),
+        "the internal catalog query remains available in detail spans"
+    );
+    assert!(
+        search_detail.summary.query.is_empty(),
+        "Tool -> Search -> Query must not present internal SQL as the Tool query"
+    );
+}
+
+#[test]
+fn query_stream_detail_uses_search_text_without_inheriting_internal_query() {
+    let tool = span("marked-search-trace", "search-tool")
+        .named("coral.mcp.call_tool")
+        .remote_root()
+        .entry("tool", "search", "alpha")
+        .attrs(json!({
+            "mcp.method": "tools/call",
+            "mcp.tool.name": "search",
+        }))
+        .times(10, 40)
+        .build();
+    let search = span("marked-search-trace", "search-operation")
+        .named("coral.search")
+        .child_of(&tool)
+        .entry("search", "search", "alpha")
+        .attrs(json!({"coral.local.search.query": "find customer churn"}))
+        .times(15, 35)
+        .build();
+    let query = span("marked-search-trace", "catalog-query")
+        .child_of(&search)
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "LIST CATALOG", "row_count": 7}))
+        .times(20, 30)
+        .build();
+
+    let files = TraceFiles::with_records(&[tool, search, query]);
+    let summaries = files.list(10, 0, Some("alpha"));
+    assert_eq!(summaries.len(), 1);
+    let summary = summaries.first().expect("search tool summary");
+    assert_eq!(summary.root_span_id, "search-tool");
+    assert_eq!(summary.query, "find customer churn");
+    assert_ne!(summary.query, "LIST CATALOG");
+    assert!(!summary.row_count_recorded);
+    assert_eq!(summary.row_count, 0);
+
+    let detail = files
+        .get("marked-search-trace", "search-tool", Some("alpha"))
+        .expect("get marked search tool detail");
+    assert_eq!(detail.summary, *summary);
+    assert_eq!(detail.spans.len(), 3);
+    assert!(
+        detail
+            .spans
+            .iter()
+            .any(|span| span.span_id == "catalog-query")
+    );
+    for hidden_span_id in ["search-operation", "catalog-query"] {
+        assert!(matches!(
+            files.get("marked-search-trace", hidden_span_id, Some("alpha")),
+            Err(TraceStoreError::NotFound(_))
+        ));
+    }
 }
 
 #[test]
