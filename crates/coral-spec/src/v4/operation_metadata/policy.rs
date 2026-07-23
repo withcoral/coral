@@ -282,6 +282,14 @@ fn validate_mcp_pagination(
     }
     if let Some(offset) = &pagination.offset {
         validate_max_pages(operation, offset.max_pages)?;
+        // Discovery pagination must request the initial page; a nonzero start
+        // would silently skip rows on every fetch.
+        if offset.offset_start != 0 {
+            return Err(ManifestError::validation(format!(
+                "operation '{}' MCP offset pagination offset_start must be 0",
+                operation.id
+            )));
+        }
         if offset.default_limit == 0
             || offset.max_limit == 0
             || offset.default_limit > offset.max_limit

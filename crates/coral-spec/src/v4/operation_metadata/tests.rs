@@ -131,6 +131,62 @@ fn plan_rejects_mcp_operation_with_non_tool_arg_input() {
 }
 
 #[test]
+fn plan_rejects_mcp_offset_pagination_starting_past_first_page() {
+    let mut imported = imported_mcp();
+    let operation = imported
+        .semantic_ir
+        .operations
+        .first_mut()
+        .expect("operation");
+    for name in ["limit", "offset"] {
+        operation.inputs.push(IrOperationInput {
+            name: name.to_string(),
+            location: IrInputLocation::ToolArg,
+            required: false,
+            data_type: IrScalarType::Integer,
+            default_value: None,
+            description: String::new(),
+        });
+    }
+    let operation_id = operation.id.clone();
+    let metadata_with_offset_start = |offset_start| OperationMetadata::Mcp {
+        pagination: crate::v4::McpOperationPagination {
+            cursor: None,
+            offset: Some(crate::backends::mcp::McpOffsetPaginationSpec {
+                limit_arg: "limit".to_string(),
+                default_limit: 50,
+                max_limit: 100,
+                offset_arg: "offset".to_string(),
+                offset_start,
+                max_pages: None,
+            }),
+        },
+    };
+
+    *imported
+        .operation_metadata
+        .operations
+        .get_mut(&operation_id)
+        .expect("metadata") = metadata_with_offset_start(0);
+    imported
+        .validated_plan()
+        .expect("offset pagination starting at 0 must validate");
+
+    *imported
+        .operation_metadata
+        .operations
+        .get_mut(&operation_id)
+        .expect("metadata") = metadata_with_offset_start(1);
+    let error = imported
+        .validated_plan()
+        .expect_err("nonzero offset_start must fail");
+    assert!(
+        error.to_string().contains("offset_start must be 0"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn semantic_ir_serialization_contains_facts_not_inferred_policy() {
     let (_manifest, imported) = imported();
     let yaml = serde_yaml::to_string(&imported.semantic_ir).expect("semantic IR YAML");
