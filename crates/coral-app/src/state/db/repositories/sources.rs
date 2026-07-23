@@ -6,9 +6,11 @@
     )
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use sea_query::{Expr, ExprTrait, Order, Query};
+use sea_query::{
+    Condition, Expr, ExprTrait, Iden, JoinType, Order, Query, SelectStatement, UnionType,
+};
 
 use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
@@ -18,24 +20,23 @@ use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, sqlx::FromRow)]
-struct SourceRow {
+struct SourceAggregateRow {
     name: String,
     version: Option<String>,
     origin_kind: String,
     credential_storage: Option<String>,
     credential_revision: String,
-    created_at_unix_nanos: i64,
+    child_key: Option<String>,
+    variable_value: Option<String>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct SourceVariableRow {
-    key: String,
-    value: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct SourceSecretKeyRow {
-    key: String,
+#[derive(Iden)]
+enum SourceChildren {
+    Table,
+    WorkspaceId,
+    SourceName,
+    ChildKey,
+    VariableValue,
 }
 
 pub(crate) struct SourcesRepo<'a, S> {
@@ -54,37 +55,25 @@ where
         &mut self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, DbError> {
-        let statement = Query::select()
-            .columns([
-                Sources::Name,
-                Sources::Version,
-                Sources::OriginKind,
-                Sources::CredentialStorage,
-                Sources::CredentialRevision,
-                Sources::CreatedAtUnixNanos,
-            ])
-            .from(Sources::Table)
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .order_by(Sources::Name, Order::Asc)
-            .to_owned();
-        let rows: Vec<SourceRow> = self.session.fetch_all(statement).await?;
-        let mut sources = Vec::with_capacity(rows.len());
-        for row in rows {
-            sources.push(self.installed_source_from_row(workspace_name, row).await?);
-        }
-        Ok(sources)
+        let rows = self.source_aggregate_rows(workspace_name, None).await?;
+        installed_sources_from_rows(rows)
     }
 
     pub(crate) async fn list_workspace_source_names(
         &mut self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<String>, DbError> {
-        Ok(self
-            .list_workspace_sources(workspace_name)
-            .await?
+        let statement = Query::select()
+            .column(Sources::Name)
+            .from(Sources::Table)
+            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+            .order_by(Sources::Name, Order::Asc)
+            .to_owned();
+        let names: Vec<(String,)> = self.session.fetch_all(statement).await?;
+        names
             .into_iter()
-            .map(|source| source.name.as_str().to_string())
-            .collect())
+            .map(|(name,)| parse_source_name(&name).map(|name| name.as_str().to_string()))
+            .collect()
     }
 
     pub(crate) async fn get_source(
@@ -92,98 +81,21 @@ where
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<Option<InstalledSource>, DbError> {
-        let Some(row) = self.source_row(workspace_name, source_name).await? else {
-            return Ok(None);
-        };
-        self.installed_source_from_row(workspace_name, row)
+        Ok(installed_sources_from_rows(
+            self.source_aggregate_rows(workspace_name, Some(source_name))
+                .await?,
+        )?
+        .pop())
+    }
+
+    async fn source_aggregate_rows(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: Option<&SourceName>,
+    ) -> Result<Vec<SourceAggregateRow>, DbError> {
+        self.session
+            .fetch_all(source_aggregate_statement(workspace_name, source_name))
             .await
-            .map(Some)
-    }
-
-    async fn source_row(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Option<SourceRow>, DbError> {
-        let statement = Query::select()
-            .columns([
-                Sources::Name,
-                Sources::Version,
-                Sources::OriginKind,
-                Sources::CredentialStorage,
-                Sources::CredentialRevision,
-                Sources::CreatedAtUnixNanos,
-            ])
-            .from(Sources::Table)
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
-            .to_owned();
-        self.session.fetch_optional(statement).await
-    }
-
-    async fn installed_source_from_row(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        row: SourceRow,
-    ) -> Result<InstalledSource, DbError> {
-        let source_name = parse_source_name(&row.name)?;
-        let variables = self
-            .source_variables(workspace_name, &source_name)
-            .await?
-            .into_iter()
-            .map(|row| (row.key, row.value))
-            .collect::<BTreeMap<_, _>>();
-        let secrets = self
-            .source_secret_keys(workspace_name, &source_name)
-            .await?
-            .into_iter()
-            .map(|row| row.key)
-            .collect();
-        let credential_revision =
-            parse_credential_revision(&source_name, &row.credential_revision)?;
-        Ok(InstalledSource {
-            name: source_name,
-            version: row.version,
-            variables,
-            secrets,
-            credential_storage: row
-                .credential_storage
-                .as_deref()
-                .map(parse_credential_storage)
-                .transpose()?,
-            credential_revision,
-            origin: parse_source_origin(&row.origin_kind)?,
-        })
-    }
-
-    async fn source_variables(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Vec<SourceVariableRow>, DbError> {
-        let statement = Query::select()
-            .columns([SourceVariables::Key, SourceVariables::Value])
-            .from(SourceVariables::Table)
-            .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(SourceVariables::SourceName).eq(source_name.as_str()))
-            .order_by(SourceVariables::Key, Order::Asc)
-            .to_owned();
-        self.session.fetch_all(statement).await
-    }
-
-    async fn source_secret_keys(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Vec<SourceSecretKeyRow>, DbError> {
-        let statement = Query::select()
-            .column(SourceSecretKeys::Key)
-            .from(SourceSecretKeys::Table)
-            .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name.as_str()))
-            .order_by(SourceSecretKeys::Key, Order::Asc)
-            .to_owned();
-        self.session.fetch_all(statement).await
     }
 
     async fn source_created_at(
@@ -191,10 +103,210 @@ where
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<Option<i64>, DbError> {
-        Ok(self
-            .source_row(workspace_name, source_name)
-            .await?
-            .map(|row| row.created_at_unix_nanos))
+        let statement = Query::select()
+            .column(Sources::CreatedAtUnixNanos)
+            .from(Sources::Table)
+            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
+            .to_owned();
+        let created_at: Option<(i64,)> = self.session.fetch_optional(statement).await?;
+        Ok(created_at.map(|(created_at_unix_nanos,)| created_at_unix_nanos))
+    }
+}
+
+fn source_aggregate_statement(
+    workspace_name: &WorkspaceName,
+    source_name: Option<&SourceName>,
+) -> SelectStatement {
+    let mut statement = Query::select();
+    statement
+        .columns([
+            (Sources::Table, Sources::Name),
+            (Sources::Table, Sources::Version),
+            (Sources::Table, Sources::OriginKind),
+            (Sources::Table, Sources::CredentialStorage),
+            (Sources::Table, Sources::CredentialRevision),
+        ])
+        .expr_as(
+            Expr::col((SourceChildren::Table, SourceChildren::ChildKey)),
+            SourceChildren::ChildKey,
+        )
+        .expr_as(
+            Expr::col((SourceChildren::Table, SourceChildren::VariableValue)),
+            SourceChildren::VariableValue,
+        )
+        .from(Sources::Table)
+        .join_subquery(
+            JoinType::LeftJoin,
+            source_children_statement(workspace_name, source_name),
+            SourceChildren::Table,
+            Condition::all()
+                .add(
+                    Expr::col((Sources::Table, Sources::WorkspaceId))
+                        .equals((SourceChildren::Table, SourceChildren::WorkspaceId)),
+                )
+                .add(
+                    Expr::col((Sources::Table, Sources::Name))
+                        .equals((SourceChildren::Table, SourceChildren::SourceName)),
+                ),
+        )
+        .and_where(Expr::col((Sources::Table, Sources::WorkspaceId)).eq(workspace_name.as_str()))
+        .order_by((Sources::Table, Sources::Name), Order::Asc)
+        .order_by(
+            (SourceChildren::Table, SourceChildren::ChildKey),
+            Order::Asc,
+        );
+    if let Some(source_name) = source_name {
+        statement.and_where(Expr::col((Sources::Table, Sources::Name)).eq(source_name.as_str()));
+    }
+    statement
+}
+
+fn source_children_statement(
+    workspace_name: &WorkspaceName,
+    source_name: Option<&SourceName>,
+) -> SelectStatement {
+    let mut variables = Query::select();
+    variables
+        .expr_as(
+            Expr::col(SourceVariables::WorkspaceId),
+            SourceChildren::WorkspaceId,
+        )
+        .expr_as(
+            Expr::col(SourceVariables::SourceName),
+            SourceChildren::SourceName,
+        )
+        .expr_as(Expr::col(SourceVariables::Key), SourceChildren::ChildKey)
+        .expr_as(
+            Expr::col(SourceVariables::Value),
+            SourceChildren::VariableValue,
+        )
+        .from(SourceVariables::Table)
+        .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_name.as_str()));
+    if let Some(source_name) = source_name {
+        variables.and_where(Expr::col(SourceVariables::SourceName).eq(source_name.as_str()));
+    }
+
+    let mut secrets = Query::select();
+    secrets
+        .expr_as(
+            Expr::col(SourceSecretKeys::WorkspaceId),
+            SourceChildren::WorkspaceId,
+        )
+        .expr_as(
+            Expr::col(SourceSecretKeys::SourceName),
+            SourceChildren::SourceName,
+        )
+        .expr_as(Expr::col(SourceSecretKeys::Key), SourceChildren::ChildKey)
+        .expr_as(
+            Expr::val(Option::<String>::None),
+            SourceChildren::VariableValue,
+        )
+        .from(SourceSecretKeys::Table)
+        .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_name.as_str()));
+    if let Some(source_name) = source_name {
+        secrets.and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name.as_str()));
+    }
+
+    variables.union(UnionType::All, secrets);
+    variables
+}
+
+fn installed_sources_from_rows(
+    rows: Vec<SourceAggregateRow>,
+) -> Result<Vec<InstalledSource>, DbError> {
+    let mut sources = Vec::<SourceAggregate>::new();
+    for row in rows {
+        let SourceAggregateRow {
+            name,
+            version,
+            origin_kind,
+            credential_storage,
+            credential_revision,
+            child_key,
+            variable_value,
+        } = row;
+        if sources
+            .last()
+            .is_none_or(|aggregate| aggregate.source.name.as_str() != name)
+        {
+            sources.push(SourceAggregate::new(
+                &name,
+                version,
+                &origin_kind,
+                credential_storage.as_deref(),
+                &credential_revision,
+            )?);
+        }
+        let aggregate = sources
+            .last_mut()
+            .expect("source aggregate exists after processing a database row");
+        aggregate.add_child(child_key, variable_value)?;
+    }
+    Ok(sources
+        .into_iter()
+        .map(SourceAggregate::into_source)
+        .collect())
+}
+
+struct SourceAggregate {
+    source: InstalledSource,
+    secrets: BTreeSet<String>,
+}
+
+impl SourceAggregate {
+    fn new(
+        name: &str,
+        version: Option<String>,
+        origin_kind: &str,
+        credential_storage: Option<&str>,
+        credential_revision: &str,
+    ) -> Result<Self, DbError> {
+        let name = parse_source_name(name)?;
+        let credential_revision = parse_credential_revision(&name, credential_revision)?;
+        Ok(Self {
+            source: InstalledSource {
+                name,
+                version,
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: credential_storage
+                    .map(parse_credential_storage)
+                    .transpose()?,
+                credential_revision,
+                origin: parse_source_origin(origin_kind)?,
+            },
+            secrets: BTreeSet::new(),
+        })
+    }
+
+    fn add_child(
+        &mut self,
+        child_key: Option<String>,
+        variable_value: Option<String>,
+    ) -> Result<(), DbError> {
+        // Variable values are NOT NULL in the database. Secret-key rows project
+        // NULL here, while a left join with no child projects NULL for both fields.
+        match (child_key, variable_value) {
+            (None, None) => Ok(()),
+            (Some(key), Some(value)) => {
+                self.source.variables.insert(key, value);
+                Ok(())
+            }
+            (Some(key), None) => {
+                self.secrets.insert(key);
+                Ok(())
+            }
+            (child_key, variable_value) => Err(DbError::CorruptData(format!(
+                "invalid child row for source '{}': key={child_key:?}, variable_value={variable_value:?}",
+                self.source.name
+            ))),
+        }
+    }
+
+    fn into_source(mut self) -> InstalledSource {
+        self.source.secrets = self.secrets.into_iter().collect();
+        self.source
     }
 }
 
@@ -447,19 +559,112 @@ fn parse_credential_revision(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use sea_query::{Expr, Query};
+    use sea_query::{Expr, Query, SelectStatement};
+    use sea_query_sqlx::SqlxBinder;
+    use sqlx::FromRow;
+    use sqlx::postgres::PgRow;
+    use sqlx::sqlite::SqliteRow;
     use tempfile::tempdir;
+    use tokio::sync::Barrier;
 
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
     use crate::state::db::schema::Sources;
-    use crate::state::db::session::DbRepos;
+    use crate::state::db::session::{DbRepos, DbSession};
     use crate::state::db::{CoralDb, DatabaseConfig, DbError, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
+
+    struct ObservedReadSession<'a> {
+        db: &'a CoralDb,
+        interleave: Option<ReadInterleave>,
+        read_count: usize,
+    }
+
+    struct ReadInterleave {
+        first_read_done: Arc<Barrier>,
+        writer_done: Arc<Barrier>,
+    }
+
+    impl<'a> ObservedReadSession<'a> {
+        fn counting(db: &'a CoralDb) -> Self {
+            Self {
+                db,
+                interleave: None,
+                read_count: 0,
+            }
+        }
+
+        fn interleaved(
+            db: &'a CoralDb,
+            first_read_done: Arc<Barrier>,
+            writer_done: Arc<Barrier>,
+        ) -> Self {
+            Self {
+                db,
+                interleave: Some(ReadInterleave {
+                    first_read_done,
+                    writer_done,
+                }),
+                read_count: 0,
+            }
+        }
+
+        async fn after_read(&mut self) {
+            self.read_count += 1;
+            if self.read_count == 1
+                && let Some(interleave) = &self.interleave
+            {
+                interleave.first_read_done.wait().await;
+                interleave.writer_done.wait().await;
+            }
+        }
+    }
+
+    impl DbSession for ObservedReadSession<'_> {
+        async fn execute<S>(&mut self, statement: S) -> Result<(), DbError>
+        where
+            S: SqlxBinder,
+        {
+            let mut session = self.db;
+            session.execute(statement).await
+        }
+
+        async fn fetch_optional<T>(
+            &mut self,
+            statement: SelectStatement,
+        ) -> Result<Option<T>, DbError>
+        where
+            T: Send + Unpin,
+            for<'r> T: FromRow<'r, SqliteRow>,
+            for<'r> T: FromRow<'r, PgRow>,
+        {
+            let result = {
+                let mut session = self.db;
+                session.fetch_optional(statement).await
+            };
+            self.after_read().await;
+            result
+        }
+
+        async fn fetch_all<T>(&mut self, statement: SelectStatement) -> Result<Vec<T>, DbError>
+        where
+            T: Send + Unpin,
+            for<'r> T: FromRow<'r, SqliteRow>,
+            for<'r> T: FromRow<'r, PgRow>,
+        {
+            let result = {
+                let mut session = self.db;
+                session.fetch_all(statement).await
+            };
+            self.after_read().await;
+            result
+        }
+    }
 
     #[tokio::test]
     async fn source_repository_round_trips_against_sqlite() {
@@ -686,6 +891,145 @@ mod tests {
         );
         tx.commit().await.expect("commit remove");
         assert_eq!(get_source(db, &workspace, &zeta_name).await, None);
+
+        assert_source_get_is_coherent_during_replacement(db).await;
+        assert_source_list_is_coherent_during_delete(db).await;
+        assert_source_name_list_uses_one_query(db).await;
+    }
+
+    async fn assert_source_get_is_coherent_during_replacement(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let mut original = source(
+            "coherent-replacement",
+            Some("1.0.0"),
+            [("generation", "original")],
+            ["original_secret"],
+            Some(CredentialStorageKind::Keychain),
+            SourceOrigin::Imported,
+        );
+        original.credential_revision = uuid::Uuid::from_u128(10);
+        let mut replacement = source(
+            "coherent-replacement",
+            Some("2.0.0"),
+            [("generation", "replacement")],
+            ["replacement_secret"],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Bundled,
+        );
+        replacement.credential_revision = uuid::Uuid::from_u128(20);
+        write_source(db, &workspace, &original, 10).await;
+
+        let first_read_done = Arc::new(Barrier::new(2));
+        let writer_done = Arc::new(Barrier::new(2));
+        let mut session = ObservedReadSession::interleaved(
+            db,
+            Arc::clone(&first_read_done),
+            Arc::clone(&writer_done),
+        );
+        let reader = async {
+            session
+                .sources()
+                .get_source(&workspace, &original.name)
+                .await
+                .expect("read source during replacement")
+        };
+        let writer = async {
+            first_read_done.wait().await;
+            write_source(db, &workspace, &replacement, 20).await;
+            writer_done.wait().await;
+        };
+        let (read, ()) = tokio::join!(reader, writer);
+
+        assert_eq!(read, Some(original));
+        assert_eq!(session.read_count, 1);
+        assert_eq!(
+            get_source(db, &workspace, &replacement.name).await,
+            Some(replacement)
+        );
+    }
+
+    async fn assert_source_list_is_coherent_during_delete(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let source = source(
+            "coherent-delete",
+            Some("1.0.0"),
+            [("generation", "original")],
+            ["original_secret"],
+            Some(CredentialStorageKind::Keychain),
+            SourceOrigin::Imported,
+        );
+        write_source(db, &workspace, &source, 10).await;
+
+        let first_read_done = Arc::new(Barrier::new(2));
+        let writer_done = Arc::new(Barrier::new(2));
+        let mut session = ObservedReadSession::interleaved(
+            db,
+            Arc::clone(&first_read_done),
+            Arc::clone(&writer_done),
+        );
+        let reader = async {
+            session
+                .sources()
+                .list_workspace_sources(&workspace)
+                .await
+                .expect("list sources during delete")
+        };
+        let writer = async {
+            first_read_done.wait().await;
+            let mut tx = db.begin().await.expect("begin delete tx");
+            tx.sources()
+                .remove_source(&workspace, &source.name)
+                .await
+                .expect("remove source");
+            tx.commit().await.expect("commit delete");
+            writer_done.wait().await;
+        };
+        let (read, ()) = tokio::join!(reader, writer);
+
+        assert_eq!(read, vec![source]);
+        assert_eq!(session.read_count, 1);
+        assert!(sources(db, &workspace).await.is_empty());
+    }
+
+    async fn assert_source_name_list_uses_one_query(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let source = source(
+            "names-only",
+            None,
+            [("unused", "binding")],
+            ["unused_secret"],
+            None,
+            SourceOrigin::Bundled,
+        );
+        write_source(db, &workspace, &source, 10).await;
+
+        let mut session = ObservedReadSession::counting(db);
+        let names = session
+            .sources()
+            .list_workspace_source_names(&workspace)
+            .await
+            .expect("list source names");
+
+        assert_eq!(names, vec![source.name.as_str().to_string()]);
+        assert_eq!(session.read_count, 1);
+    }
+
+    async fn write_source(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source: &InstalledSource,
+        now_unix_nanos: i64,
+    ) {
+        let mut tx = db.begin().await.expect("begin source write");
+        tx.workspaces()
+            .ensure(workspace.as_str(), now_unix_nanos)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(workspace, source, now_unix_nanos)
+            .await
+            .expect("upsert source");
+        tx.commit().await.expect("commit source write");
     }
 
     async fn source_names(db: &CoralDb, workspace: &WorkspaceName) -> Vec<String> {
