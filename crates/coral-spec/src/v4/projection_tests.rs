@@ -1359,7 +1359,7 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
 }
 
 #[test]
-fn generated_mcp_projection_keeps_pagination_cursor_internal() {
+fn generated_mcp_projection_exposes_cursor_without_pagination_metadata() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1414,16 +1414,16 @@ fn generated_mcp_projection_keeps_pagination_cursor_internal() {
         .find(|input| input.wire_name == "cursor")
         .expect("cursor input");
 
-    assert_eq!(cursor.sql_exposure, SqlInputExposure::Internal);
+    assert_eq!(cursor.sql_exposure, SqlInputExposure::FunctionArg);
     assert!(
         mcp_projection_arg_specs(projection)
             .iter()
-            .all(|arg| arg.bind.arg != "cursor")
+            .any(|arg| arg.bind.arg == "cursor")
     );
 }
 
 #[test]
-fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
+fn generated_mcp_projection_with_only_cursor_is_table_function_without_pagination_metadata() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1471,14 +1471,17 @@ fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
         .find(|projection| projection.operation_id == "list_items")
         .expect("mcp projection");
 
-    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction { .. }
+    ));
     assert_eq!(
         projection
             .inputs
             .iter()
-            .filter(|input| input.sql_exposure != SqlInputExposure::Internal)
+            .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
             .count(),
-        0
+        1
     );
 }
 

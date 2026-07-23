@@ -1905,16 +1905,11 @@ surface:
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Mcp { pagination } => {
-                pagination.cursor.as_ref().expect("pagination")
-            }
+            coral_spec::v4::OperationMetadata::Mcp { pagination } => pagination,
             coral_spec::v4::OperationMetadata::Rest { .. } => panic!("expected MCP metadata"),
         };
-        assert_eq!(pagination.cursor_arg, "cursor");
-        assert_eq!(
-            pagination.response_cursor_path,
-            vec!["meta".to_string(), "nextCursor".to_string()]
-        );
+        assert!(pagination.cursor.is_none());
+        assert!(pagination.offset.is_none());
 
         let projections: ProjectionCatalog =
             read_yaml(&build.temp_dir.join(PROJECTIONS_FILENAME)).expect("read projections");

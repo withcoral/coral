@@ -865,7 +865,7 @@ surface:
     }
 
     #[test]
-    fn imports_output_cardinalities_and_row_types() {
+    fn imports_output_cardinalities_and_row_types_without_unwrapping_objects() {
         let catalog = McpToolCatalog {
             tools: vec![
                 tool_with_schemas(
@@ -932,10 +932,11 @@ surface:
         let wrapped_items = operation(&ir, "wrapped_items");
         assert_eq!(
             wrapped_items.output.cardinality,
-            OutputCardinality::WrappedList
+            OutputCardinality::Singleton
         );
         let wrapped_fields = row_fields(&ir, "wrapped_items_row");
-        assert_eq!(field(wrapped_fields, "enabled").type_ref, "mcp_boolean");
+        assert_eq!(field(wrapped_fields, "items").type_ref, "mcp_json");
+        assert!(wrapped_fields.iter().any(|field| field.name == "raw"));
 
         let get_item = operation(&ir, "get_item");
         assert_eq!(get_item.output.cardinality, OutputCardinality::Singleton);
@@ -950,7 +951,7 @@ surface:
     }
 
     #[test]
-    fn infers_cursor_pagination_for_wrapped_list_envelopes() {
+    fn does_not_infer_cursor_pagination_for_wrapped_list_envelopes() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
                 "list-items",
@@ -987,16 +988,15 @@ surface:
 
         let ir = import_catalog(&catalog);
         let operation = operation(&ir, "list_items");
-        assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+        assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
         let plan = ir.validated_plan().expect("plan");
-        let pagination = plan.mcp_pagination("list_items").0.expect("pagination");
-        assert_eq!(pagination.cursor_arg, "cursor");
-        assert_eq!(pagination.response_cursor_path, ["meta", "nextCursor"]);
-        assert_eq!(pagination.max_pages, None);
+        let (cursor, offset) = plan.mcp_pagination("list_items");
+        assert!(cursor.is_none());
+        assert!(offset.is_none());
     }
 
     #[test]
-    fn infers_offset_pagination_for_mcp_discovery_contract() {
+    fn does_not_infer_offset_pagination_for_wrapped_list_envelopes() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
                 "list-catalog",
@@ -1046,12 +1046,7 @@ surface:
         let plan = ir.validated_plan().expect("plan");
         let (cursor, offset) = plan.mcp_pagination("list_catalog");
         assert!(cursor.is_none());
-        let pagination = offset.expect("offset pagination");
-        assert_eq!(pagination.limit_arg, "limit");
-        assert_eq!(pagination.default_limit, 50);
-        assert_eq!(pagination.max_limit, 200);
-        assert_eq!(pagination.offset_arg, "offset");
-        assert_eq!(pagination.offset_start, 0);
+        assert!(offset.is_none());
 
         let projections = generate_projection_catalog(v4, &ir.validated_plan().expect("plan"))
             .expect("projection catalog");
@@ -1060,9 +1055,12 @@ surface:
             .iter()
             .find(|projection| projection.operation_id == "list_catalog")
             .expect("projection");
-        assert!(matches!(projection.kind, crate::v4::ProjectionKind::Table));
+        assert!(matches!(
+            projection.kind,
+            crate::v4::ProjectionKind::TableFunction { .. }
+        ));
         for input in &projection.inputs {
-            assert_eq!(input.sql_exposure, SqlInputExposure::Internal);
+            assert_eq!(input.sql_exposure, SqlInputExposure::FunctionArg);
         }
     }
 
