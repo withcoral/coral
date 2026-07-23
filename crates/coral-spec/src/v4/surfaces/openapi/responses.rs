@@ -69,8 +69,7 @@ impl OpenApiImporter<'_> {
         };
 
         let Some(resolved) = self.resolve_ref(&selected.schema, operation_id, diagnostics) else {
-            diagnostics.push(Diagnostic::warning(
-                "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
+            diagnostics.push(Diagnostic::new(
                 format!("operation '{operation_id}' response schema could not be resolved"),
                 Some(operation_id.to_string()),
             ));

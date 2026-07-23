@@ -365,7 +365,6 @@ mod tests {
             SourceLoadDiagnosticStage::Query,
             &workspace_name,
             &source_name,
-            "SOURCE_LOAD_FAILED",
             "test failure",
         );
         credential_manager
@@ -414,7 +413,7 @@ mod tests {
             &workspace_name,
             &source_name,
             "query-source",
-            "SOURCE_LOAD_FAILED",
+            "test failure",
         ));
     }
 
@@ -441,7 +440,6 @@ mod tests {
             SourceLoadDiagnosticStage::Query,
             &workspace_name,
             &source_name,
-            "SOURCE_LOAD_FAILED",
             "test failure",
         );
 
@@ -454,7 +452,7 @@ mod tests {
             &workspace_name,
             &source_name,
             "query-source",
-            "SOURCE_LOAD_FAILED",
+            "test failure",
         ));
     }
 }

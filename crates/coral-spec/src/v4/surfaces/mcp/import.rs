@@ -520,7 +520,7 @@ surface:
         assert!(
             ir.diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_NOT_FOUND")
+                .any(|diagnostic| diagnostic.message.contains("was not found"))
         );
 
         let projections = generate_projection_catalog(
@@ -563,7 +563,7 @@ surface:
         assert!(
             ir.diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_UNSUPPORTED")
+                .any(|diagnostic| diagnostic.message.contains("reference cycle"))
         );
     }
 
@@ -586,11 +586,11 @@ surface:
 
         let ir = import_catalog(&catalog);
         assert!(ir.operations.is_empty());
-        assert!(
-            ir.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "MCP_INPUT_SCHEMA_REQUIRED_PROPERTY_MISSING"
-            })
-        );
+        assert!(ir.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("required properties that are not defined")
+        }));
     }
 
     #[test]
@@ -817,7 +817,7 @@ surface:
         assert!(
             ir.diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_CONFLICT")
+                .any(|diagnostic| diagnostic.message.contains("conflicting property"))
         );
     }
 
@@ -853,7 +853,7 @@ surface:
         assert!(
             ir.diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED")
+                .any(|diagnostic| diagnostic.message.contains("uses anyOf/oneOf"))
         );
 
         let projections = generate_projection_catalog(

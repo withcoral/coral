@@ -533,7 +533,6 @@ impl QueryManager {
                         SourceLoadDiagnosticStage::Query,
                         workspace_name,
                         &source.name,
-                        "SOURCE_LOAD_FAILED",
                         &error.to_string(),
                     );
                 }

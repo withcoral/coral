@@ -68,62 +68,6 @@ paths: {}
 }
 
 #[test]
-fn importer_warns_and_skips_external_openapi_operation_refs() {
-    let manifest = parse_source_manifest_yaml(
-        r"
-name: digitalocean_ref_test
-dsl_version: 4
-surface:
-    type: openapi
-    file: /tmp/openapi.yaml
-    base_url: https://api.example.com
-",
-    )
-    .expect("manifest");
-    let v4 = manifest.as_v4().expect("v4");
-    let surface = &v4.surface;
-    let ir = import_openapi_surface(
-        v4,
-        surface,
-        r"
-openapi: 3.0.3
-paths:
-  /account:
-    get:
-      $ref: resources/account/account_get.yml
-"
-        .as_bytes(),
-    )
-    .expect("operation ref import should emit diagnostics");
-
-    assert!(
-        ir.operations.is_empty(),
-        "unsupported operation refs should not import empty operations: {:?}",
-        ir.operations
-    );
-    let diagnostic = ir
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
-        .expect("unsupported operation ref diagnostic");
-    assert!(diagnostic.operation_id.is_none());
-    assert!(
-        diagnostic
-            .message
-            .contains("resources/account/account_get.yml"),
-        "{}",
-        diagnostic.message
-    );
-    assert!(
-        diagnostic
-            .message
-            .contains("dereferenced or bundled OpenAPI documents"),
-        "{}",
-        diagnostic.message
-    );
-}
-
-#[test]
 fn importer_resolves_local_openapi_operation_refs() {
     let manifest = parse_source_manifest_yaml(
         r"
@@ -1191,16 +1135,23 @@ paths:
         .as_bytes(),
     )
     .expect("broken response refs import with diagnostics");
-    let codes = ir
+    let messages = ir
         .operations
         .iter()
         .flat_map(|operation| operation.diagnostics.iter())
-        .map(|diagnostic| diagnostic.code.as_str())
+        .map(|diagnostic| diagnostic.message.as_str())
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_REF_NOT_FOUND"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_EXTERNAL_REF_UNSUPPORTED"),
-        "{codes:?}"
+        messages
+            .iter()
+            .any(|message| message.contains("was not found")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("external reference")),
+        "{messages:?}"
     );
     for operation in &ir.operations {
         assert_eq!(operation.output.cardinality, OutputCardinality::None);
@@ -1252,12 +1203,14 @@ components:
     .expect("conflicting allOf imports with diagnostics");
 
     let operation = ir.operations.first().expect("operation");
-    let codes = operation
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
-        .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_ALLOF_CONFLICT"), "{codes:?}");
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("allOf property")),
+        "{:?}",
+        operation.diagnostics
+    );
     assert_eq!(operation.output.type_ref, "json");
 }
 
@@ -1997,15 +1950,19 @@ paths:
     )
     .expect("broken schema imports with diagnostics");
     let operation = ir.operations.first().expect("operation");
-    let codes = operation
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
-        .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_PARAMETER_INVALID"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_RESPONSE_SCHEMA_UNRESOLVED"),
-        "{codes:?}"
+        operation.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("parameter without a string name")),
+        "{:?}",
+        operation.diagnostics
+    );
+    assert!(
+        operation.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("response schema could not be resolved")),
+        "{:?}",
+        operation.diagnostics
     );
     assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);
 }

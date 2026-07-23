@@ -58,16 +58,14 @@ impl OpenApiImporter<'_> {
                 match merge_json_schema_properties_exact(&mut merged, properties) {
                     Ok(()) => {}
                     Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
-                        diagnostics.push(Diagnostic::warning(
-                            "OPENAPI_ALLOF_CONFLICT",
+                        diagnostics.push(Diagnostic::new(
                             format!("allOf property '{property}' conflicts in operation '{operation_id}'"),
                             Some(operation_id.to_string()),
                         ));
                         return None;
                     }
                     Err(JsonSchemaComparisonError::DepthExceeded) => {
-                        diagnostics.push(Diagnostic::warning(
-                            "OPENAPI_ALLOF_CONFLICT",
+                        diagnostics.push(Diagnostic::new(
                             format!("allOf schema exceeds maximum comparison depth in operation '{operation_id}'"),
                             Some(operation_id.to_string()),
                         ));

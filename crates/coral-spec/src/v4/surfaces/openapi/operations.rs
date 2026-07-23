@@ -122,16 +122,14 @@ impl OpenApiImporter<'_> {
                 continue;
             };
             let Some(parameter_obj) = resolved.as_object() else {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_INVALID",
+                diagnostics.push(Diagnostic::new(
                     format!("operation '{operation_id}' has a parameter that is not an object"),
                     Some(operation_id.to_string()),
                 ));
                 continue;
             };
             let Some(name) = parameter_obj.get("name").and_then(Value::as_str) else {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_INVALID",
+                diagnostics.push(Diagnostic::new(
                     format!("operation '{operation_id}' has a parameter without a string name"),
                     Some(operation_id.to_string()),
                 ));
@@ -142,8 +140,7 @@ impl OpenApiImporter<'_> {
                 .and_then(Value::as_str)
                 .and_then(parse_parameter_location)
             else {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_SERIALIZATION_UNSUPPORTED",
+                diagnostics.push(Diagnostic::new(
                     format!("operation '{operation_id}' has unsupported parameter location"),
                     Some(operation_id.to_string()),
                 ));
@@ -189,8 +186,7 @@ impl OpenApiImporter<'_> {
     ) -> Option<IrScalarType> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
         let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
-            diagnostics.push(Diagnostic::warning(
-                "PROJECTION_INPUT_UNSUPPORTED",
+            diagnostics.push(Diagnostic::new(
                 format!(
                     "parameter '{name}' has unsupported schema type '{}'",
                     json_schema_type_display(&resolved)
@@ -222,8 +218,7 @@ impl OpenApiImporter<'_> {
                 diagnostics,
             )
             .unwrap_or_else(|| "json".to_string());
-        diagnostics.push(Diagnostic::warning(
-            "OPENAPI_REQUEST_BODY_UNPUBLISHED",
+        diagnostics.push(Diagnostic::new(
             format!("operation '{operation_id}' has a request body and will not be published"),
             Some(operation_id.to_string()),
         ));
