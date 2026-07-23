@@ -99,7 +99,6 @@ pub(crate) struct TaskStartedValue {
 pub(crate) struct TaskEndedValue {
     pub(crate) task_id: TaskId,
     pub(crate) task_status: TaskStatus,
-    pub(crate) success: &'static str,
     pub(crate) note: &'static str,
 }
 

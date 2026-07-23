@@ -613,11 +613,9 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     let root_task_id = root["task_id"].as_str().expect("root task id").to_string();
     uuid::Uuid::parse_str(&root_task_id).expect("task id is a UUID");
     assert_eq!(root["message"], "Task started.");
-    assert!(
-        root["instructions"]
-            .as_str()
-            .expect("instructions")
-            .contains("end_task")
+    assert_eq!(
+        root["instructions"],
+        "Pass this task_id on subsequent Coral MCP tool calls for this task, then call end_task when it is complete."
     );
 
     let sql = client
@@ -650,7 +648,11 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     assert_structured_content_only(&end);
     let end = end.structured_content.expect("end structured content");
     assert_matches_output_schema(end_task_tool, &end);
-    assert_eq!(end["success"], "Task ended.");
+    assert!(
+        !end.as_object()
+            .expect("end task object")
+            .contains_key("success")
+    );
     assert_eq!(end["task_status"], "success");
 
     let invalid_task_id = client
