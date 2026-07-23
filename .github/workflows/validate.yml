@@ -237,7 +237,7 @@ jobs:
           CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
         run: |
           cargo test --locked -p coral-app --lib \
-            state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
+            repository_round_trips_against_postgres \
             -- --ignored
           cargo test --locked -p coral-app \
             --test postgres_database_tests \

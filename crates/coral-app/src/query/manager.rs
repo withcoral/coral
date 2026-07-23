@@ -1219,13 +1219,18 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::identity::Principal;
+    use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::task::manager::TaskManager;
+    use crate::task::store::TaskStore;
 
     struct QueryManagerFixture {
         _temp: TempDir,
         manager: QueryManager,
+        db: Arc<CoralDb>,
     }
 
     async fn query_manager_with(
@@ -1257,6 +1262,7 @@ mod tests {
         QueryManagerFixture {
             _temp: temp,
             manager,
+            db,
         }
     }
 
@@ -1290,6 +1296,7 @@ mod tests {
         QueryManagerFixture {
             _temp: temp,
             manager,
+            db,
         }
     }
 
@@ -1319,10 +1326,26 @@ mod tests {
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, config_store)
+        run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
         Arc::new(db)
+    }
+
+    async fn active_task_context(db: &Arc<CoralDb>) -> (TaskManager, RequestContext, String) {
+        let task = TaskManager::new(TaskStore::new(Arc::clone(db)));
+        let principal = Principal::local();
+        let started = task
+            .start_task(
+                WorkspaceName::default(),
+                principal.clone(),
+                "Exercise query attribution".to_string(),
+            )
+            .await
+            .expect("start attributed task");
+        let task_id = started.id.to_string();
+        let context = RequestContext::new(principal).with_task_id(Some(started.id));
+        (task, context, task_id)
     }
 
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
@@ -1391,7 +1414,8 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let service = QueryService::new(fixture.manager.clone());
+        let (task, request_context, task_id) = active_task_context(&fixture.db).await;
+        let service = QueryService::new(fixture.manager.clone(), task);
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
@@ -1399,10 +1423,7 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
         });
-        request.extensions_mut().insert(
-            crate::task::id::TaskId::parse("550e8400-e29b-41d4-a716-446655440000")
-                .expect("task id"),
-        );
+        request.extensions_mut().insert(request_context);
 
         // The query may fail (the fixture has no installed sources); the
         // `coral.query` span is created and stamped before execution regardless.
@@ -1419,10 +1440,7 @@ mod tests {
             .iter()
             .find(|attribute| attribute.key.as_str() == "task.id")
             .expect("task.id attribute present");
-        assert_eq!(
-            task_attr.value.as_str(),
-            "550e8400-e29b-41d4-a716-446655440000"
-        );
+        assert_eq!(task_attr.value.as_str(), task_id);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1443,13 +1461,14 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let service = CatalogService::new(fixture.manager.clone());
+        let (task, request_context, task_id) = active_task_context(&fixture.db).await;
+        let service = CatalogService::new(fixture.manager.clone(), task);
 
-        call_catalog_tools_with_task(&service).await;
+        call_catalog_tools_with_task(&service, &request_context).await;
 
         provider.force_flush().expect("flush spans");
         let spans = exporter.get_finished_spans().expect("finished spans");
-        assert_catalog_task_spans(&spans);
+        assert_catalog_task_spans(&spans, &task_id);
     }
 
     #[test]
@@ -1516,7 +1535,10 @@ mod tests {
         );
     }
 
-    async fn call_catalog_tools_with_task(service: &crate::catalog::service::CatalogService) {
+    async fn call_catalog_tools_with_task(
+        service: &crate::catalog::service::CatalogService,
+        request_context: &RequestContext,
+    ) {
         use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
         use coral_api::v1::{
             DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
@@ -1524,49 +1546,61 @@ mod tests {
         };
 
         let _list_catalog_result = service
-            .list_catalog(tagged_catalog_request(ListCatalogRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: String::new(),
-                kind: 0,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
+            .list_catalog(tagged_catalog_request(
+                request_context,
+                ListCatalogRequest {
+                    workspace: Some(default_workspace_proto()),
+                    schema_name: String::new(),
+                    kind: 0,
+                    pagination: Some(PaginationRequest {
+                        limit: 10,
+                        offset: 0,
+                    }),
+                },
+            ))
             .await;
         let _search_catalog_result = service
-            .search_catalog(tagged_catalog_request(SearchCatalogRequest {
-                workspace: Some(default_workspace_proto()),
-                pattern: "tables".to_string(),
-                ignore_case: true,
-                schema_name: String::new(),
-                kind: 0,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
+            .search_catalog(tagged_catalog_request(
+                request_context,
+                SearchCatalogRequest {
+                    workspace: Some(default_workspace_proto()),
+                    pattern: "tables".to_string(),
+                    ignore_case: true,
+                    schema_name: String::new(),
+                    kind: 0,
+                    pagination: Some(PaginationRequest {
+                        limit: 10,
+                        offset: 0,
+                    }),
+                },
+            ))
             .await;
         let _describe_table_result = service
-            .describe_table(tagged_catalog_request(DescribeTableRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: "coral".to_string(),
-                table_name: "tables".to_string(),
-            }))
+            .describe_table(tagged_catalog_request(
+                request_context,
+                DescribeTableRequest {
+                    workspace: Some(default_workspace_proto()),
+                    schema_name: "coral".to_string(),
+                    table_name: "tables".to_string(),
+                },
+            ))
             .await;
         let _list_columns_result = service
-            .list_columns(tagged_catalog_request(ListColumnsRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: "coral".to_string(),
-                table_name: "tables".to_string(),
-                pattern: None,
-                ignore_case: true,
-                required_only: false,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
+            .list_columns(tagged_catalog_request(
+                request_context,
+                ListColumnsRequest {
+                    workspace: Some(default_workspace_proto()),
+                    schema_name: "coral".to_string(),
+                    table_name: "tables".to_string(),
+                    pattern: None,
+                    ignore_case: true,
+                    required_only: false,
+                    pagination: Some(PaginationRequest {
+                        limit: 10,
+                        offset: 0,
+                    }),
+                },
+            ))
             .await;
     }
 
@@ -1576,23 +1610,22 @@ mod tests {
         }
     }
 
-    fn tagged_catalog_request<T>(message: T) -> tonic::Request<T> {
+    fn tagged_catalog_request<T>(
+        request_context: &RequestContext,
+        message: T,
+    ) -> tonic::Request<T> {
         let mut request = tonic::Request::new(message);
-        request.extensions_mut().insert(
-            crate::task::id::TaskId::parse("650e8400-e29b-41d4-a716-446655440000")
-                .expect("task id"),
-        );
+        request.extensions_mut().insert(request_context.clone());
         request
     }
 
-    fn assert_catalog_task_spans(spans: &[opentelemetry_sdk::trace::SpanData]) {
+    fn assert_catalog_task_spans(spans: &[opentelemetry_sdk::trace::SpanData], task_id: &str) {
         let attributed_query_spans = spans
             .iter()
             .filter(|span| {
                 span.name == "coral.query"
                     && span.attributes.iter().any(|attribute| {
-                        attribute.key.as_str() == "task.id"
-                            && attribute.value.as_str() == "650e8400-e29b-41d4-a716-446655440000"
+                        attribute.key.as_str() == "task.id" && attribute.value.as_str() == task_id
                     })
             })
             .collect::<Vec<_>>();

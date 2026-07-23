@@ -122,7 +122,7 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        annotate_request_context(&mut request);
+        let task_id = annotate_request_context(&mut request);
         let method_metadata = request.extensions().get::<GrpcServerMethod>().map_or_else(
             || GrpcMethodMetadata::new("coral.v1.UnknownService", "Unknown"),
             |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
@@ -148,9 +148,16 @@ where
                 .await
                 {
                     Ok(principal) => {
+                        let task_id = match task_id {
+                            Ok(task_id) => task_id,
+                            Err(status) => {
+                                record_grpc_status(&span, status.code(), Some(&status));
+                                return Ok(status.into_http());
+                            }
+                        };
                         request
                             .extensions_mut()
-                            .insert(RequestContext::new(principal));
+                            .insert(RequestContext::new(principal).with_task_id(task_id));
                         inner.call(request).await
                     }
                     Err(error) => {
@@ -274,28 +281,34 @@ fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
     )
 }
 
-fn annotate_request_context<B>(request: &mut http::Request<B>) {
+fn annotate_request_context<B>(request: &mut http::Request<B>) -> Result<Option<TaskId>, Status> {
     if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
         request.extensions_mut().insert(method);
     }
-    if let Some(task_id) = request
-        .headers()
-        .get(CORAL_TASK_ID_METADATA_KEY)
-        .and_then(task_id_from_header_value)
-    {
-        request.extensions_mut().insert(task_id);
+    let mut task_ids = request.headers().get_all(CORAL_TASK_ID_METADATA_KEY).iter();
+    let Some(task_id) = task_ids.next() else {
+        return Ok(None);
+    };
+    if task_ids.next().is_some() {
+        return Err(Status::invalid_argument(
+            "coral-task-id metadata must contain exactly one value",
+        ));
     }
+    task_id_from_header_value(task_id).map(Some)
 }
 
-fn task_id_from_header_value(value: &http::HeaderValue) -> Option<TaskId> {
-    let value = value.to_str().ok()?;
-    match TaskId::parse(value) {
-        Ok(task_id) => Some(task_id),
-        Err(error) => {
-            tracing::debug!(%error, "ignoring malformed coral-task-id metadata");
-            None
-        }
-    }
+fn task_id_from_header_value(value: &http::HeaderValue) -> Result<TaskId, Status> {
+    let value = value
+        .to_str()
+        .map_err(|_error| Status::invalid_argument("coral-task-id metadata must be ASCII"))?;
+    TaskId::parse(value).map_err(app_status)
+}
+
+pub(crate) fn request_context<T>(request: &Request<T>) -> Result<&RequestContext, Status> {
+    request
+        .extensions()
+        .get::<RequestContext>()
+        .ok_or_else(|| Status::internal("request context is unavailable"))
 }
 
 pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
@@ -615,7 +628,6 @@ mod tests {
     use crate::bootstrap::AppError;
     use crate::identity::PrincipalProviderError;
     use crate::query::manager::QueryManagerError;
-    use crate::task::id::TaskId;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
@@ -822,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn annotate_request_context_extracts_valid_task_id() {
+    fn annotate_request_context_parses_valid_task_id() {
         let mut request = tonic::codegen::http::Request::builder()
             .uri("/coral.v1.QueryService/ExecuteSql")
             .header(
@@ -832,25 +844,21 @@ mod tests {
             .body(())
             .expect("request");
 
-        annotate_request_context(&mut request);
-
-        let task_id = request
-            .extensions()
-            .get::<TaskId>()
-            .expect("task id extension");
+        let task_id = annotate_request_context(&mut request)
+            .expect("valid metadata")
+            .expect("task id");
         assert_eq!(task_id.to_string(), "750e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]
-    fn annotate_request_context_ignores_absent_and_malformed_task_id() {
+    fn annotate_request_context_accepts_absent_and_rejects_malformed_task_id() {
         let mut absent = tonic::codegen::http::Request::builder()
             .uri("/coral.v1.QueryService/ExecuteSql")
             .body(())
             .expect("request");
-        annotate_request_context(&mut absent);
-        assert!(
-            absent.extensions().get::<TaskId>().is_none(),
-            "a missing coral-task-id yields no attribution"
+        assert_eq!(
+            annotate_request_context(&mut absent).expect("absent metadata"),
+            None
         );
 
         let mut malformed = tonic::codegen::http::Request::builder()
@@ -858,10 +866,37 @@ mod tests {
             .header(CORAL_TASK_ID_METADATA_KEY, "has space")
             .body(())
             .expect("request");
-        annotate_request_context(&mut malformed);
-        assert!(
-            malformed.extensions().get::<TaskId>().is_none(),
-            "a malformed id is ignored, not surfaced"
+        let status =
+            annotate_request_context(&mut malformed).expect_err("reject malformed metadata");
+        assert_eq!(status.code(), Code::InvalidArgument);
+    }
+
+    #[test]
+    fn annotate_request_context_rejects_repeated_task_id_metadata() {
+        assert_repeated_task_id_metadata_rejected("750e8400-e29b-41d4-a716-446655440001");
+    }
+
+    #[test]
+    fn annotate_request_context_rejects_valid_and_malformed_repeated_task_id_metadata() {
+        assert_repeated_task_id_metadata_rejected("not-a-task-id");
+    }
+
+    fn assert_repeated_task_id_metadata_rejected(second_value: &str) {
+        let mut request = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(
+                CORAL_TASK_ID_METADATA_KEY,
+                "750e8400-e29b-41d4-a716-446655440000",
+            )
+            .header(CORAL_TASK_ID_METADATA_KEY, second_value)
+            .body(())
+            .expect("request");
+
+        let status = annotate_request_context(&mut request).expect_err("reject repeated metadata");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(
+            status.message(),
+            "coral-task-id metadata must contain exactly one value"
         );
     }
 

@@ -152,16 +152,13 @@ impl WorkspaceManager {
             })?;
 
         let (deleted, workspace_dir_backup) = {
-            let mut tx = self.db.begin().await?;
-            if tx
-                .workspaces()
-                .get(workspace_name.as_str())
+            let Some(deletion) = self
+                .db
+                .begin_workspace_deletion(workspace_name.as_str())
                 .await?
-                .is_none()
-            {
+            else {
                 return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
-            }
-            tx.workspaces().delete(workspace_name.as_str()).await?;
+            };
             let deleted = {
                 let _lifecycle_guard = self.lifecycle_lock.lock();
                 self.config_store
@@ -175,7 +172,7 @@ impl WorkspaceManager {
                     sources: Vec::new(),
                 }),
                 Err(error) => {
-                    if let Err(rollback_error) = tx.rollback().await {
+                    if let Err(rollback_error) = deletion.rollback().await {
                         warn!(
                             workspace = %workspace_name,
                             "workspace config cleanup failed, and database rollback also failed: {rollback_error}"
@@ -184,7 +181,7 @@ impl WorkspaceManager {
                     return Err(error);
                 }
             };
-            tx.commit().await?;
+            deletion.commit().await?;
             self.remove_deleted_workspace_credentials(&deleted);
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)

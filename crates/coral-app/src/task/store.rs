@@ -1,25 +1,34 @@
-//! Per-workspace, append-only task lifecycle store.
+//! Database-backed task lifecycle store.
 
-use std::path::Path;
+use std::sync::Arc;
 
 use coral_api::CORAL_TASK_INTENT_MAX_CHARS;
-use serde::{Deserialize, Serialize};
 
 use super::id::TaskId;
-use crate::state::AppStateLayout;
-use crate::storage::fs::{self as storage_fs, FileLock};
+use crate::identity::Principal;
+use crate::state::db::{
+    CoralDb, DbError, TaskCompletionUpdate, TaskCreation, TaskCreationResult, TaskLifecycleState,
+};
 use crate::workspaces::WorkspaceName;
 
-const MAX_TASK_BYTES_PER_WORKSPACE: u64 = 256 * 1024 * 1024;
+const MAX_RETAINED_TASKS_PER_WORKSPACE: u64 = 10_000;
 
-/// Final task status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum TaskStatus {
+/// Final task outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskOutcome {
     /// Task succeeded.
     Success,
     /// Task failed.
     Failure,
+}
+
+impl TaskOutcome {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
 }
 
 /// A task start event.
@@ -27,365 +36,355 @@ pub(crate) enum TaskStatus {
 pub(crate) struct TaskStart {
     pub(crate) id: TaskId,
     pub(crate) workspace: WorkspaceName,
+    pub(crate) created_by: Principal,
     pub(crate) intent: String,
+    pub(crate) created_at_unix_nanos: i64,
 }
 
-/// A task end event.
+/// A terminal task completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TaskEnd {
+pub(crate) struct TaskCompletion {
     pub(crate) id: TaskId,
     pub(crate) workspace: WorkspaceName,
-    pub(crate) status: TaskStatus,
+    pub(crate) outcome: TaskOutcome,
+    pub(crate) completed_at_unix_nanos: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-enum PersistedTaskEvent {
-    Start {
-        task_id: String,
-        workspace: String,
-        intent: String,
-    },
-    End {
-        task_id: String,
-        workspace: String,
-        task_status: TaskStatus,
-    },
-}
-
-impl PersistedTaskEvent {
-    fn from_start(start: &TaskStart, intent: &str) -> Self {
-        Self::Start {
-            task_id: start.id.to_string(),
-            workspace: start.workspace.as_str().to_string(),
-            intent: intent.to_string(),
-        }
-    }
-
-    fn from_end(end: &TaskEnd) -> Self {
-        Self::End {
-            task_id: end.id.to_string(),
-            workspace: end.workspace.as_str().to_string(),
-            task_status: end.status,
-        }
-    }
+/// Result of attempting the one-way transition to a terminal task outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskCompletionResult {
+    /// The active task was completed.
+    Completed,
+    /// The task exists but was already terminal.
+    AlreadyCompleted,
+    /// No task with this id exists in the workspace.
+    NotFound,
 }
 
 /// Errors from the task lifecycle store.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TaskStoreError {
-    /// Filesystem error reading or writing the store.
-    #[error("task store io: {0}")]
-    Io(#[from] std::io::Error),
-    /// JSON serialization error.
-    #[error("task store serialization: {0}")]
-    Serde(#[from] serde_json::Error),
+    /// Database error reading or writing the store.
+    #[error(transparent)]
+    Database(#[from] DbError),
     /// The task intent is empty or exceeds the maximum length.
     #[error("task intent must be non-empty and at most {max} characters")]
     InvalidIntent {
         /// The configured maximum intent length, in characters.
         max: usize,
     },
+    /// The task's workspace was removed before persistence began.
+    #[error("workspace '{workspace}' was not found")]
+    WorkspaceNotFound {
+        /// Missing workspace identifier.
+        workspace: String,
+    },
+    /// The workspace has reached its retained active-task limit.
+    #[error("workspace '{workspace}' already has {max} active tasks")]
+    WorkspaceCapacityExceeded {
+        /// Full workspace identifier.
+        workspace: String,
+        /// Maximum retained tasks.
+        max: u64,
+    },
 }
 
-/// Storage boundary for task lifecycle events.
-pub(crate) trait TaskEventStore: Send + Sync {
-    /// Persists a task start event.
-    fn start_task(&self, start: &TaskStart) -> Result<(), TaskStoreError>;
-
-    /// Persists a task end event.
-    fn end_task(&self, end: &TaskEnd) -> Result<(), TaskStoreError>;
-
-    /// Returns whether a task has been started for this workspace.
-    fn contains_started_task(
-        &self,
-        workspace: &WorkspaceName,
-        task_id: &TaskId,
-    ) -> Result<bool, TaskStoreError>;
-}
-
-/// Append-only, per-workspace JSONL task lifecycle store, bounded by a byte
-/// ceiling with oldest-out eviction.
+/// Database-backed task lifecycle persistence.
 #[derive(Clone)]
-pub(crate) struct JsonlTaskEventStore {
-    layout: AppStateLayout,
-    max_bytes: u64,
+pub(crate) struct TaskStore {
+    db: Arc<CoralDb>,
+    max_retained_tasks: u64,
 }
 
-impl JsonlTaskEventStore {
-    /// Creates a store that persists under `layout`.
-    pub(crate) fn new(layout: AppStateLayout) -> Self {
+impl TaskStore {
+    pub(crate) fn new(db: Arc<CoralDb>) -> Self {
         Self {
-            layout,
-            max_bytes: MAX_TASK_BYTES_PER_WORKSPACE,
+            db,
+            max_retained_tasks: MAX_RETAINED_TASKS_PER_WORKSPACE,
         }
     }
 
-    /// Overrides the per-workspace byte ceiling for tests.
     #[cfg(test)]
-    pub(crate) fn with_max_bytes(mut self, max_bytes: u64) -> Self {
-        self.max_bytes = max_bytes;
+    fn with_max_retained_tasks(mut self, max_retained_tasks: u64) -> Self {
+        self.max_retained_tasks = max_retained_tasks;
         self
     }
 
-    fn append_event(
-        &self,
-        workspace: &WorkspaceName,
-        event: PersistedTaskEvent,
-    ) -> Result<(), TaskStoreError> {
-        let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        let path = self.layout.task_events_file(workspace);
-        let records = read_all_records(&path)?;
-        append_within_budget(&path, records, event, self.max_bytes)
-    }
-}
-
-impl TaskEventStore for JsonlTaskEventStore {
-    fn start_task(&self, start: &TaskStart) -> Result<(), TaskStoreError> {
-        let intent = start.intent.trim();
-        if intent.is_empty() || intent.chars().count() > CORAL_TASK_INTENT_MAX_CHARS {
-            return Err(TaskStoreError::InvalidIntent {
-                max: CORAL_TASK_INTENT_MAX_CHARS,
-            });
+    pub(crate) async fn start_task(&self, start: &TaskStart) -> Result<(), TaskStoreError> {
+        let intent = validate_intent(&start.intent)?;
+        let task_id = start.id.to_string();
+        let result = self
+            .db
+            .task_state()
+            .create(
+                TaskCreation {
+                    id: &task_id,
+                    workspace_id: start.workspace.as_str(),
+                    created_by_principal_id: start.created_by.id().as_str(),
+                    intent,
+                    created_at_unix_nanos: start.created_at_unix_nanos,
+                },
+                self.max_retained_tasks,
+            )
+            .await?;
+        match result {
+            TaskCreationResult::Created => Ok(()),
+            TaskCreationResult::WorkspaceNotFound => Err(TaskStoreError::WorkspaceNotFound {
+                workspace: start.workspace.to_string(),
+            }),
+            TaskCreationResult::WorkspaceCapacityExceeded => {
+                Err(TaskStoreError::WorkspaceCapacityExceeded {
+                    workspace: start.workspace.to_string(),
+                    max: self.max_retained_tasks,
+                })
+            }
         }
-        self.append_event(
-            &start.workspace,
-            PersistedTaskEvent::from_start(start, intent),
-        )
     }
 
-    fn end_task(&self, end: &TaskEnd) -> Result<(), TaskStoreError> {
-        self.append_event(&end.workspace, PersistedTaskEvent::from_end(end))
-    }
-
-    fn contains_started_task(
+    pub(crate) async fn complete_task(
         &self,
-        workspace: &WorkspaceName,
-        task_id: &TaskId,
-    ) -> Result<bool, TaskStoreError> {
-        let _lock = FileLock::shared(self.layout.state_lock())?;
-        let path = self.layout.task_events_file(workspace);
-        let records = read_all_records(&path)?;
-        let task_id = task_id.to_string();
-        Ok(records.iter().any(|record| match record {
-            PersistedTaskEvent::Start {
-                task_id: started_task_id,
-                ..
-            } => started_task_id == &task_id,
-            PersistedTaskEvent::End { .. } => false,
-        }))
-    }
-}
-
-fn read_all_records(path: &Path) -> Result<Vec<PersistedTaskEvent>, TaskStoreError> {
-    let contents = match std::fs::read(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    Ok(contents
-        .split(|&byte| byte == b'\n')
-        .filter_map(|raw_line| {
-            let Ok(line) = std::str::from_utf8(raw_line) else {
-                tracing::warn!("skipping task record with invalid UTF-8");
-                return None;
-            };
-            if line.trim().is_empty() {
-                return None;
-            }
-            match serde_json::from_str::<PersistedTaskEvent>(line) {
-                Ok(record) => Some(record),
-                Err(error) => {
-                    tracing::warn!(%error, "skipping unparsable task record");
-                    None
-                }
-            }
+        completion: &TaskCompletion,
+    ) -> Result<TaskCompletionResult, TaskStoreError> {
+        let update = self
+            .db
+            .task_state()
+            .complete(
+                completion.workspace.as_str(),
+                &completion.id.to_string(),
+                completion.outcome.as_str(),
+                completion.completed_at_unix_nanos,
+            )
+            .await?;
+        Ok(match update {
+            TaskCompletionUpdate::Completed => TaskCompletionResult::Completed,
+            TaskCompletionUpdate::AlreadyCompleted => TaskCompletionResult::AlreadyCompleted,
+            TaskCompletionUpdate::NotFound => TaskCompletionResult::NotFound,
         })
-        .collect())
+    }
+
+    pub(crate) async fn task_state(
+        &self,
+        workspace: &WorkspaceName,
+        task_id: TaskId,
+    ) -> Result<Option<TaskLifecycleState>, TaskStoreError> {
+        let task_id = task_id.to_string();
+        self.db
+            .task_state()
+            .lifecycle(workspace.as_str(), &task_id)
+            .await
+            .map_err(Into::into)
+    }
 }
 
-fn append_within_budget(
-    path: &Path,
-    existing: Vec<PersistedTaskEvent>,
-    record: PersistedTaskEvent,
-    max_bytes: u64,
-) -> Result<(), TaskStoreError> {
-    let mut kept = existing;
-    kept.push(record);
-    let encoded: Vec<Vec<u8>> = kept
-        .iter()
-        .map(serde_json::to_vec)
-        .collect::<Result<_, _>>()?;
-    let record_count = encoded.len();
-    let mut total: u64 = encoded.iter().map(|line| line.len() as u64 + 1).sum();
-    let mut dropped = 0;
-    for line in &encoded {
-        if total <= max_bytes || dropped + 1 >= record_count {
-            break;
-        }
-        total -= line.len() as u64 + 1;
-        dropped += 1;
+fn validate_intent(intent: &str) -> Result<&str, TaskStoreError> {
+    if intent.trim().is_empty() || intent.chars().count() > CORAL_TASK_INTENT_MAX_CHARS {
+        return Err(TaskStoreError::InvalidIntent {
+            max: CORAL_TASK_INTENT_MAX_CHARS,
+        });
     }
-    let mut bytes = Vec::new();
-    for line in encoded.iter().skip(dropped) {
-        bytes.extend_from_slice(line);
-        bytes.push(b'\n');
-    }
-    if let Some(parent) = path.parent() {
-        storage_fs::ensure_dir(parent)?;
-    }
-    storage_fs::write_atomic(path, &bytes)?;
-    Ok(())
+    Ok(intent)
 }
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::indexing_slicing,
-        reason = "JSON record assertions intentionally fail loudly in tests"
-    )]
+    use std::sync::Arc;
 
-    use std::fs;
-
-    use serde_json::Value;
     use tempfile::TempDir;
 
     use super::{
-        JsonlTaskEventStore, PersistedTaskEvent, TaskEnd, TaskEventStore, TaskStart, TaskStatus,
-        TaskStoreError,
+        TaskCompletion, TaskCompletionResult, TaskOutcome, TaskStart, TaskStore, TaskStoreError,
+        validate_intent,
     };
+    use crate::identity::{Principal, PrincipalKind};
     use crate::state::AppStateLayout;
+    use crate::state::db::{CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig};
     use crate::task::id::TaskId;
     use crate::workspaces::WorkspaceName;
 
     const TASK_ID_1: &str = "550e8400-e29b-41d4-a716-446655440000";
     const TASK_ID_2: &str = "650e8400-e29b-41d4-a716-446655440000";
 
-    fn layout() -> (TempDir, AppStateLayout) {
+    async fn store() -> (TempDir, TaskStore) {
         let dir = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(dir.path().join("coral-config")))
             .expect("layout should resolve");
-        (dir, layout)
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default database is sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let mut tx = db.begin().await.expect("begin workspace tx");
+        tx.workspaces()
+            .ensure(WorkspaceName::default().as_str(), 1)
+            .await
+            .expect("seed default workspace");
+        tx.commit().await.expect("commit workspace");
+        (dir, TaskStore::new(db))
     }
 
-    fn start(workspace: &WorkspaceName, id: &str, intent: &str) -> TaskStart {
+    fn start(workspace: &WorkspaceName, task_id: &str, intent: &str) -> TaskStart {
+        start_for_principal(workspace, task_id, intent, Principal::local())
+    }
+
+    fn start_for_principal(
+        workspace: &WorkspaceName,
+        task_id: &str,
+        intent: &str,
+        created_by: Principal,
+    ) -> TaskStart {
         TaskStart {
-            id: TaskId::parse(id).expect("valid task id"),
+            id: TaskId::parse(task_id).expect("valid task id"),
             workspace: workspace.clone(),
+            created_by,
             intent: intent.to_string(),
+            created_at_unix_nanos: 2,
         }
     }
 
-    fn end(workspace: &WorkspaceName, id: &str, status: TaskStatus) -> TaskEnd {
-        TaskEnd {
-            id: TaskId::parse(id).expect("valid task id"),
-            workspace: workspace.clone(),
-            status,
+    fn completion(start: &TaskStart) -> TaskCompletion {
+        TaskCompletion {
+            id: start.id,
+            workspace: start.workspace.clone(),
+            outcome: TaskOutcome::Success,
+            completed_at_unix_nanos: 3,
         }
     }
 
-    #[test]
-    fn start_task_persists_task() {
-        let (_dir, layout) = layout();
-        let workspace = WorkspaceName::parse("acme").expect("workspace");
-        let store = JsonlTaskEventStore::new(layout.clone());
-
-        store
-            .start_task(&start(&workspace, TASK_ID_1, "Find renewal risk"))
-            .expect("start task");
-
-        let raw = fs::read_to_string(layout.task_events_file(&workspace)).expect("task file");
-        let record: Value = serde_json::from_str(raw.trim()).expect("task JSONL should parse");
-        assert_eq!(record["event"], "start");
-        assert_eq!(record["task_id"], TASK_ID_1);
-        assert_eq!(record["workspace"], "acme");
-        assert_eq!(record["intent"], "Find renewal risk");
-    }
-
-    #[test]
-    fn contains_started_task_matches_start_events_only() {
-        let (_dir, layout) = layout();
+    #[tokio::test]
+    async fn stores_task_lifecycle_in_database() {
+        let (_dir, store) = store().await;
         let workspace = WorkspaceName::default();
-        let store = JsonlTaskEventStore::new(layout);
+        let start = start(&workspace, TASK_ID_1, "  Find renewal risk  ");
 
-        store
-            .end_task(&end(&workspace, TASK_ID_1, TaskStatus::Failure))
-            .expect("end task");
-        assert!(
-            !store
-                .contains_started_task(
-                    &workspace,
-                    &TaskId::parse(TASK_ID_1).expect("valid task id")
-                )
-                .expect("contains task")
-        );
-
-        store
-            .start_task(&start(&workspace, TASK_ID_1, "Find renewal risk"))
-            .expect("start task");
-        assert!(
+        assert_eq!(
             store
-                .contains_started_task(
-                    &workspace,
-                    &TaskId::parse(TASK_ID_1).expect("valid task id")
-                )
-                .expect("contains task")
+                .complete_task(&completion(&start))
+                .await
+                .expect("end missing task"),
+            TaskCompletionResult::NotFound
+        );
+        store.start_task(&start).await.expect("start task");
+        assert_eq!(
+            store
+                .complete_task(&completion(&start))
+                .await
+                .expect("complete stored task"),
+            TaskCompletionResult::Completed
+        );
+        assert_eq!(
+            store
+                .complete_task(&completion(&start))
+                .await
+                .expect("end already terminal task"),
+            TaskCompletionResult::AlreadyCompleted
         );
     }
 
-    #[test]
-    fn end_task_preserves_existing_start_event() {
-        let (_dir, layout) = layout();
+    #[tokio::test]
+    async fn task_lifecycle_uses_workspace_and_id() {
+        let (_dir, store) = store().await;
         let workspace = WorkspaceName::default();
-        let store = JsonlTaskEventStore::new(layout.clone());
+        let start = start(&workspace, TASK_ID_1, "Find renewal risk");
+        store.start_task(&start).await.expect("start task");
 
-        store
-            .start_task(&start(&workspace, TASK_ID_1, "Find renewal risk"))
-            .expect("start task");
-        let raw_after_start =
-            fs::read_to_string(layout.task_events_file(&workspace)).expect("task file");
-        assert!(
-            raw_after_start.contains("Find renewal risk"),
-            "got after start: {raw_after_start}"
+        assert_eq!(
+            store
+                .complete_task(&completion(&start))
+                .await
+                .expect("end task by workspace and id"),
+            TaskCompletionResult::Completed
         );
-        let _parsed: PersistedTaskEvent =
-            serde_json::from_str(raw_after_start.trim()).expect("start event should parse");
-        store
-            .end_task(&end(&workspace, TASK_ID_1, TaskStatus::Success))
-            .expect("end task");
-
-        let raw = fs::read_to_string(layout.task_events_file(&workspace)).expect("task file");
-        assert!(raw.contains("Find renewal risk"), "got: {raw}");
-        assert!(raw.contains("success"), "got: {raw}");
+        assert_eq!(
+            store
+                .complete_task(&completion(&start))
+                .await
+                .expect("task is already terminal"),
+            TaskCompletionResult::AlreadyCompleted
+        );
     }
 
-    #[test]
-    fn validates_intent() {
-        let (_dir, layout) = layout();
+    #[tokio::test]
+    async fn evicts_oldest_completed_task_at_retention_limit() {
+        let (_dir, store) = store().await;
+        let store = store.with_max_retained_tasks(1);
         let workspace = WorkspaceName::default();
-        let store = JsonlTaskEventStore::new(layout);
+        let first = start(&workspace, TASK_ID_1, "First task");
+        store.start_task(&first).await.expect("start first task");
+        assert_eq!(
+            store
+                .complete_task(&completion(&first))
+                .await
+                .expect("complete first task"),
+            TaskCompletionResult::Completed
+        );
 
-        let blank_start = store
-            .start_task(&start(&workspace, TASK_ID_1, " "))
+        let second = start(&workspace, TASK_ID_2, "Second task");
+        store.start_task(&second).await.expect("start second task");
+        assert_eq!(
+            store
+                .complete_task(&completion(&first))
+                .await
+                .expect("oldest completed task was evicted"),
+            TaskCompletionResult::NotFound
+        );
+        assert_eq!(
+            store
+                .complete_task(&completion(&second))
+                .await
+                .expect("new task remains"),
+            TaskCompletionResult::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_new_task_instead_of_evicting_an_active_task() {
+        let (_dir, store) = store().await;
+        let store = store.with_max_retained_tasks(1);
+        let workspace = WorkspaceName::default();
+        let first = start(&workspace, TASK_ID_1, "First task");
+        store.start_task(&first).await.expect("start first task");
+
+        let second = start_for_principal(
+            &workspace,
+            TASK_ID_2,
+            "Second task",
+            Principal::parse("product:principal:other", PrincipalKind::Agent)
+                .expect("other principal"),
+        );
+        assert!(matches!(
+            store.start_task(&second).await,
+            Err(TaskStoreError::WorkspaceCapacityExceeded { .. })
+        ));
+        assert_eq!(
+            store
+                .complete_task(&completion(&first))
+                .await
+                .expect("existing active task remains"),
+            TaskCompletionResult::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn validates_intent_before_writing() {
+        let (_dir, store) = store().await;
+        let error = store
+            .start_task(&start(&WorkspaceName::default(), TASK_ID_1, " "))
+            .await
             .expect_err("blank intent");
-        assert!(matches!(blank_start, TaskStoreError::InvalidIntent { .. }));
+        assert!(matches!(error, TaskStoreError::InvalidIntent { .. }));
     }
 
     #[test]
-    fn task_events_evict_oldest_records_within_budget() {
-        let (_dir, layout) = layout();
-        let workspace = WorkspaceName::default();
-        let store = JsonlTaskEventStore::new(layout.clone()).with_max_bytes(1);
-
-        store
-            .end_task(&end(&workspace, TASK_ID_1, TaskStatus::Success))
-            .expect("first event");
-        store
-            .end_task(&end(&workspace, TASK_ID_2, TaskStatus::Failure))
-            .expect("second event");
-
-        let raw = fs::read_to_string(layout.task_events_file(&workspace)).expect("task file");
-        assert!(!raw.contains(TASK_ID_1));
-        assert!(raw.contains(TASK_ID_2));
+    fn intent_validation_preserves_authored_text() {
+        let authored = "  Find renewal risk  ";
+        assert_eq!(
+            validate_intent(authored).expect("authored intent should be valid"),
+            authored
+        );
     }
 }

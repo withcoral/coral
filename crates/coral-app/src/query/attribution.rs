@@ -1,7 +1,5 @@
 //! Transport-free attribution for a query's originating context.
 
-use tonic::codegen::http;
-
 use crate::task::id::TaskId;
 
 /// Request-scoped attribution threaded from the gRPC service edge into the query
@@ -14,15 +12,13 @@ use crate::task::id::TaskId;
 /// here; only the opaque id is propagated.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct QueryAttribution {
-    /// The task whose intent this query served, when the caller supplied a
-    /// valid `coral-task-id`; `None` for an untagged query.
+    /// The active task whose intent this query served; `None` for an untagged
+    /// query.
     pub(crate) task_id: Option<TaskId>,
 }
 
 impl QueryAttribution {
-    pub(crate) fn from_extensions(extensions: &http::Extensions) -> Self {
-        Self {
-            task_id: extensions.get::<TaskId>().copied(),
-        }
+    pub(crate) fn new(task_id: Option<TaskId>) -> Self {
+        Self { task_id }
     }
 }

@@ -6,17 +6,24 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::feedback::manager::{FeedbackManager, FeedbackReport};
-use crate::task::id::TaskId;
-use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto, workspace_to_proto};
+use crate::task::manager::TaskManager;
+use crate::task::service::task_manager_status;
+use crate::transport::{
+    grpc_span, instrument_grpc, request_context, workspace_name_from_proto, workspace_to_proto,
+};
 
 #[derive(Clone)]
 pub(crate) struct FeedbackService {
     feedback: FeedbackManager,
+    tasks: TaskManager,
 }
 
 impl FeedbackService {
-    pub(crate) fn new(feedback: FeedbackManager) -> Self {
-        Self { feedback }
+    pub(crate) fn new(feedback: FeedbackManager, task_manager: TaskManager) -> Self {
+        Self {
+            feedback,
+            tasks: task_manager,
+        }
     }
 }
 
@@ -27,11 +34,16 @@ impl FeedbackServiceApi for FeedbackService {
         request: Request<SubmitFeedbackRequest>,
     ) -> Result<Response<SubmitFeedbackResponse>, Status> {
         let span = grpc_span(&request);
-        let task_id = request.extensions().get::<TaskId>().copied();
         let feedback = self.feedback.clone();
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let task_id = tasks
+                .validate_attribution(&workspace_name, request_context.task_id())
+                .await
+                .map_err(task_manager_status)?;
             let submission = feedback
                 .submit_feedback(
                     &workspace_name,

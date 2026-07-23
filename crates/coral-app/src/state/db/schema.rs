@@ -13,3 +13,15 @@ pub(in crate::state::db) enum AppStateMigrations {
     Id,
     CompletedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum Tasks {
+    Table,
+    Id,
+    WorkspaceId,
+    CreatedByPrincipalId,
+    Intent,
+    Outcome,
+    CreatedAtUnixNanos,
+    CompletedAtUnixNanos,
+}

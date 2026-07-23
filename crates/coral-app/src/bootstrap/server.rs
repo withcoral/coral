@@ -67,7 +67,7 @@ use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_stat
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
-use crate::task::store::JsonlTaskEventStore;
+use crate::task::store::TaskStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcRequestContextLayer;
@@ -341,7 +341,7 @@ impl ServerBuilder {
             .load_with_overrides(&self.config.feature_overrides)?;
         let coral_db = init_database(&layout).await?;
         let config_store = ConfigStore::new(layout.clone());
-        run_state_migrations(&coral_db, &config_store).await?;
+        run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
@@ -383,7 +383,7 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -629,11 +629,11 @@ async fn start_server(
     };
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
-    let catalog_service = CatalogService::new(query.clone());
+    let catalog_service = CatalogService::new(query.clone(), task.clone());
     let function_service = FunctionService::new(query.clone());
-    let query_service = QueryService::new(query);
-    let search_service = SearchService::new(search.clone());
-    let feedback_service = FeedbackService::new(feedback);
+    let query_service = QueryService::new(query, task.clone());
+    let search_service = SearchService::new(search.clone(), task.clone());
+    let feedback_service = FeedbackService::new(feedback, task.clone());
     let task_service = TaskService::new(task);
     let mut application_routes = Routes::default()
         .add_service(
@@ -949,7 +949,7 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
-    use crate::task::store::JsonlTaskEventStore;
+    use crate::task::store::TaskStore;
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
@@ -1027,7 +1027,7 @@ enabled = false
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, config_store)
+        run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
         Arc::new(db)
@@ -1365,7 +1365,7 @@ backend = "unsupported"
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
         let server = ServerBuilder::new()
-            .with_config_dir(config_dir.clone())
+            .with_config_dir(config_dir)
             .start()
             .await
             .expect("start server");
@@ -1401,20 +1401,6 @@ backend = "unsupported"
             .expect("task end");
         assert_eq!(task_end.task_id, task.task_id);
         assert_eq!(task_end.task_status, TaskStatus::Success as i32);
-
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let workspace = WorkspaceName::default();
-        let tasks =
-            std::fs::read_to_string(layout.task_events_file(&workspace)).expect("task events file");
-        assert!(tasks.contains(&task.task_id));
-        assert!(
-            tasks.contains("find the HR onboarding form"),
-            "task events should contain start intent, got: {tasks}"
-        );
-        assert!(
-            tasks.contains("success"),
-            "task events should contain end status, got: {tasks}"
-        );
         server.shutdown().await.expect("shutdown");
     }
 
@@ -1532,7 +1518,6 @@ backend = "unsupported"
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1540,6 +1525,7 @@ backend = "unsupported"
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -1981,7 +1967,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1989,6 +1974,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2110,7 +2096,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -2118,6 +2103,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2236,7 +2222,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -2244,6 +2229,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),

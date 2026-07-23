@@ -13,17 +13,23 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::core_status;
 use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
-use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_from_proto};
+use crate::task::manager::TaskManager;
+use crate::task::service::task_manager_status;
+use crate::transport::{
+    grpc_span, instrument_grpc, query_status, request_context, workspace_name_from_proto,
+};
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
     queries: QueryManager,
+    tasks: TaskManager,
 }
 
 impl QueryService {
-    pub(crate) fn new(query_manager: QueryManager) -> Self {
+    pub(crate) fn new(query_manager: QueryManager, task_manager: TaskManager) -> Self {
         Self {
             queries: query_manager,
+            tasks: task_manager,
         }
     }
 }
@@ -36,10 +42,17 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let attribution = QueryAttribution::new(
+                tasks
+                    .validate_attribution(&workspace_name, request_context.task_id())
+                    .await
+                    .map_err(task_manager_status)?,
+            );
             let execution = queries
                 .execute_sql(&workspace_name, &inner.sql, &attribution)
                 .await
@@ -64,10 +77,17 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let attribution = QueryAttribution::new(
+                tasks
+                    .validate_attribution(&workspace_name, request_context.task_id())
+                    .await
+                    .map_err(task_manager_status)?,
+            );
             let plan = queries
                 .explain_sql(&workspace_name, &inner.sql, &attribution)
                 .await

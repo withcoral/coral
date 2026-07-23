@@ -51,6 +51,27 @@ root.
   initial DB bootstrap may coexist with filesystem-backed source behavior, but
   repository wiring must keep SQLx pools, transactions, SeaQuery schema
   identifiers, and row structs inside that module.
+- Give an independently identified entity one stable ID as its sole primary
+  key. Use a composite primary key only when the tuple itself is the durable
+  domain identity, not merely because every access is scoped by a parent such
+  as `workspace_id`.
+- Treat `workspace_id` as the confidentiality and access-control boundary for
+  workspace-owned rows. Every externally influenced lookup or mutation must
+  match the workspace and entity ID even when the entity ID is globally unique.
+- Name event timestamps for the fact they record as
+  `<fact>_at_unix_nanos BIGINT`. Name actor attribution
+  `<event>_by_principal_id`; attribution does not imply ownership or
+  authorization.
+- Prefer portable `TEXT` columns plus named `CHECK` constraints for small
+  closed value sets shared by SQLite and Postgres. Couple nullable fields with
+  a named constraint when they represent one state transition.
+- Versioned migrations must fail loudly on schema drift. Do not use
+  `IF NOT EXISTS` unless the migration deliberately adopts a documented legacy
+  object.
+- Design indexes from concrete access paths, including predicate and ordering
+  columns. Put multi-repository transaction choreography in a focused
+  `state/db/*_state.rs` operation; repositories expose the smallest reusable
+  query primitives.
 - DB repository behavior should have shared tests that run against SQLite
   locally and Postgres in CI through the repository harness.
 - Until the RDBMS migration phases replace the relevant stores, persist

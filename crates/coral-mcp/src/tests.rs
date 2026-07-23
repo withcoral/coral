@@ -655,6 +655,19 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     );
     assert_eq!(end["task_status"], "success");
 
+    let after_end = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1"],
+                "intent": "Reject attribution to an ended task",
+                "task_id": root_task_id
+            }))),
+        )
+        .await
+        .expect("ended task rejection should be a tool result");
+    assert_eq!(after_end.is_error, Some(true));
+    assert_tool_error_text_contains(&after_end, "has already ended");
+
     let invalid_task_id = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
@@ -716,27 +729,6 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .contains("unknown argument 'initialize_session'")
     );
 
-    let tasks_path = temp
-        .path()
-        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
-    let raw = fs::read_to_string(&tasks_path).expect("task file should exist");
-    let records = raw
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
-        .collect::<Vec<_>>();
-    assert_eq!(records.len(), 2);
-    let root_record = records
-        .iter()
-        .find(|record| record["task_id"] == root_task_id.as_str())
-        .expect("root task record");
-    assert_eq!(root_record["workspace"], "default");
-    assert_eq!(root_record["intent"], "Investigate customer renewal risk");
-    let end_record = records
-        .iter()
-        .find(|record| record["task_id"] == root_task_id.as_str() && record["event"] == "end")
-        .expect("task end record");
-    assert_eq!(end_record["task_status"], "success");
-
     let blank_intent = client
         .call_tool(
             CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
@@ -750,14 +742,12 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .to_string()
             .contains("missing string argument 'intent'")
     );
-    let raw_after_error = fs::read_to_string(&tasks_path).expect("task file should exist");
-    assert_eq!(raw_after_error.lines().count(), 2);
 
     session.shutdown().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn task_intent_is_persisted_but_not_exported_to_telemetry() {
+async fn task_intent_is_not_exported_to_telemetry() {
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -801,17 +791,6 @@ async fn task_intent_is_persisted_but_not_exported_to_telemetry() {
         .expect("task id")
         .to_string();
     uuid::Uuid::parse_str(&task_id).expect("task id is a UUID");
-
-    let tasks_path = temp
-        .path()
-        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
-    let persisted = fs::read_to_string(tasks_path).expect("task file should exist");
-    let start_record = persisted
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
-        .find(|record| record["task_id"] == task_id && record["event"] == "start")
-        .expect("task start record");
-    assert_eq!(start_record["intent"], sentinel);
 
     session.shutdown().await;
     provider.force_flush().expect("flush spans");
@@ -900,13 +879,6 @@ async fn mcp_task_tools_are_disabled_by_default() {
             .to_string()
             .contains("tool 'open_episode' not found")
     );
-    assert!(
-        !temp
-            .path()
-            .join("coral-config/workspaces/default/tasks/tasks.jsonl")
-            .exists()
-    );
-
     session.shutdown().await;
 }
 
@@ -1737,6 +1709,21 @@ async fn mcp_feedback_tool_accepts_task_id_when_tasks_enabled() {
     let tools = client.list_all_tools().await.expect("tools");
     assert_tool_advertises_task_context(tool_by_name(&tools, "feedback"));
 
+    let started = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": "Exercise task-attributed feedback"
+            }))),
+        )
+        .await
+        .expect("start feedback task")
+        .structured_content
+        .expect("start task structured content");
+    let task_id = started["task_id"]
+        .as_str()
+        .expect("started task id")
+        .to_string();
+
     let feedback = client
         .call_tool(
             CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
@@ -1744,7 +1731,7 @@ async fn mcp_feedback_tool_accepts_task_id_when_tasks_enabled() {
                 "tried": "Started a task and inspected failing output",
                 "stuck": "The final step still needs user judgment",
                 "intent": "Record blocked final task step",
-                "task_id": "550e8400-e29b-41d4-a716-446655440000"
+                "task_id": task_id
             }))),
         )
         .await
@@ -1763,7 +1750,7 @@ async fn mcp_feedback_tool_accepts_task_id_when_tasks_enabled() {
     let records = raw.lines().collect::<Vec<_>>();
     assert_eq!(records.len(), 1);
     let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
-    assert_eq!(record["task_id"], "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(record["task_id"], task_id);
 
     let invalid_task_id = client
         .call_tool(
