@@ -381,7 +381,7 @@ function DetailsStep({
     <div className={styles.fieldGroup}>
       {discovery ? (
         <Typography.BodySmall variant="tertiary">
-          {discoverySummary(discovery)} Review the detected details.
+          {discoverySummary(discovery)} Review the source details.
         </Typography.BodySmall>
       ) : null}
       <SourceField
@@ -434,13 +434,21 @@ function DetailsStep({
   )
 }
 
-function discoverySummary(discovery: { format: SourceDocumentFormat; warning?: string }): string {
+function discoverySummary(discovery: {
+  format: SourceDocumentFormat
+  inspectionError?: string
+}): string {
   if (discovery.format === 'mcp') return 'Detected an MCP endpoint from its URL.'
   if (discovery.format === 'openapi-json') return 'Detected an OpenAPI JSON document.'
   if (discovery.format === 'openapi-yaml') return 'Detected an OpenAPI YAML document.'
-  return discovery.warning
-    ? `No OpenAPI document was detected. ${discovery.warning}.`
-    : 'No OpenAPI document was detected.'
+  if (discovery.inspectionError) {
+    return `The source document could not be inspected. ${asSentence(discovery.inspectionError)}`
+  }
+  return 'No OpenAPI document was detected.'
+}
+
+function asSentence(value: string): string {
+  return /[.!?]$/.test(value) ? value : `${value}.`
 }
 
 function CredentialsStep({

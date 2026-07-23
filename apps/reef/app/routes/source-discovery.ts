@@ -1,6 +1,8 @@
 import type { Route } from './+types/source-discovery'
 
-const MAX_DESCRIPTOR_BYTES = 2 * 1024 * 1024
+const MAX_DESCRIPTOR_SIZE_MB = 64
+// Keep this aligned with coral-app's DSL v4 materialization limit.
+const MAX_DESCRIPTOR_BYTES = MAX_DESCRIPTOR_SIZE_MB * 1024 * 1024
 
 export type SourceDocumentFormat = 'mcp' | 'openapi-json' | 'openapi-yaml' | 'unknown'
 export type SourceDetectedAuth = {
@@ -14,10 +16,10 @@ export type SourceDiscoveryData =
       auth: SourceDetectedAuth
       description: string
       format: SourceDocumentFormat
+      inspectionError?: string
       name: string
       status: 'success'
       url: string
-      warning?: string
     }
   | {
       message: string
@@ -52,8 +54,8 @@ export async function loader({ request }: Route.LoaderArgs): Promise<SourceDisco
         auth: unknownAuth(),
         description: '',
         format: 'unknown',
+        inspectionError: `The URL returned HTTP ${response.status}`,
         title: '',
-        warning: `The URL returned HTTP ${response.status}`,
       })
     }
 
@@ -62,15 +64,15 @@ export async function loader({ request }: Route.LoaderArgs): Promise<SourceDisco
     return discoveredSource(rawUrl, sourceUrl, metadata)
   } catch (error) {
     if (request.signal.aborted) throw error
-    let warning = 'The source URL could not be loaded'
-    if (signal.aborted) warning = 'Source discovery timed out'
-    else if (error instanceof Error) warning = error.message
+    let inspectionError = 'The source URL could not be loaded'
+    if (signal.aborted) inspectionError = 'Source discovery timed out'
+    else if (error instanceof Error) inspectionError = error.message
     return discoveredSource(rawUrl, sourceUrl, {
       auth: unknownAuth(),
       description: '',
       format: 'unknown',
+      inspectionError,
       title: '',
-      warning,
     })
   }
 }
@@ -191,7 +193,7 @@ function objectKeys(value: unknown): string[] {
 async function responseTextWithinLimit(response: Response): Promise<string> {
   const declaredLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredLength) && declaredLength > MAX_DESCRIPTOR_BYTES) {
-    throw new Error('The source document is larger than 2 MB')
+    throw new Error(`The source document is larger than ${MAX_DESCRIPTOR_SIZE_MB} MB`)
   }
   if (!response.body) return ''
 
@@ -205,7 +207,7 @@ async function responseTextWithinLimit(response: Response): Promise<string> {
     bytesRead += value.byteLength
     if (bytesRead > MAX_DESCRIPTOR_BYTES) {
       await reader.cancel()
-      throw new Error('The source document is larger than 2 MB')
+      throw new Error(`The source document is larger than ${MAX_DESCRIPTOR_SIZE_MB} MB`)
     }
     text += decoder.decode(value, { stream: true })
   }
@@ -405,8 +407,8 @@ function discoveredSource(
     auth: SourceDetectedAuth
     description: string
     format: SourceDocumentFormat
+    inspectionError?: string
     title: string
-    warning?: string
   },
 ): SourceDiscoveryData {
   return {
@@ -419,6 +421,6 @@ function discoveredSource(
     name: sourceName(metadata.title || fallbackTitle(sourceUrl)),
     status: 'success',
     url,
-    ...(metadata.warning ? { warning: metadata.warning } : {}),
+    ...(metadata.inspectionError ? { inspectionError: metadata.inspectionError } : {}),
   }
 }

@@ -141,10 +141,10 @@ components:
       auth: { kind: 'unknown', label: '' },
       description: '',
       format: 'mcp',
+      inspectionError: 'The URL returned HTTP 405',
       name: 'mcp',
       status: 'success',
       url: 'https://tools.example/mcp',
-      warning: 'The URL returned HTTP 405',
     })
   })
 
