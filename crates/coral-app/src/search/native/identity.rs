@@ -92,20 +92,12 @@ pub(super) fn sort_key_for_row(
     match route.authored_route_id.as_deref() {
         Some(route_id) => append_component(&mut hasher, TAG_AUTHORED_ROUTE, route_id.as_bytes())
             .expect("route id length fits u64"),
-        None => match &route.target {
-            ResolvedUniversalSearchTarget::V3 { function_name } => {
-                append_component(&mut hasher, TAG_INFERRED_V3_ROUTE, function_name.as_bytes())
-                    .expect("function name length fits u64");
-            }
-            ResolvedUniversalSearchTarget::V4 { operation_id } => {
-                append_component(
-                    &mut hasher,
-                    TAG_INFERRED_V4_OPERATION,
-                    operation_id.as_bytes(),
-                )
-                .expect("operation id length fits u64");
-            }
-        },
+        None => append_component(
+            &mut hasher,
+            TAG_INFERRED_V4_OPERATION,
+            route.target.operation_id.as_bytes(),
+        )
+        .expect("operation id length fits u64"),
     }
     append_component(&mut hasher, TAG_ROW_ORDINAL, &row_ordinal.to_be_bytes())
         .expect("fixed row ordinal length fits u64");

@@ -24,8 +24,7 @@ use crate::search::result::{
     SearchCandidate, SearchPayload, SearchProviderKind,
 };
 use crate::sources::universal_search::{
-    ResolvedUniversalSearchRoute, ResolvedUniversalSearchTarget, UniversalSearchResolution,
-    UniversalSearchResolutionOrigin,
+    ResolvedUniversalSearchRoute, UniversalSearchResolution, UniversalSearchResolutionOrigin,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -574,17 +573,11 @@ fn route_sort_key(route: &ResolvedUniversalSearchRoute) -> (u8, String, String, 
         UniversalSearchResolutionOrigin::Explicit => 0,
         UniversalSearchResolutionOrigin::Inferred => 1,
     };
-    let (surface, operation) = match &route.target {
-        ResolvedUniversalSearchTarget::V3 { function_name } => {
-            (String::new(), function_name.clone())
-        }
-        ResolvedUniversalSearchTarget::V4 { operation_id } => (String::new(), operation_id.clone()),
-    };
     (
         origin,
         route.authored_route_id.clone().unwrap_or_default(),
-        surface,
-        operation,
+        String::new(),
+        route.target.operation_id.clone(),
         format!(
             "{}.{}",
             route.locator.schema_name, route.locator.function_name

@@ -256,8 +256,8 @@ fn route(
         installation_revision: Uuid::from_u128(source.bytes().map(u128::from).sum()),
         authored_route_id: matches!(origin, UniversalSearchResolutionOrigin::Explicit)
             .then(|| route_name.to_string()),
-        target: ResolvedUniversalSearchTarget::V3 {
-            function_name: route_name.to_string(),
+        target: ResolvedUniversalSearchTarget {
+            operation_id: route_name.to_string(),
         },
         locator: UniversalSearchFunctionLocator {
             schema_name: format!("{source}_runtime"),
