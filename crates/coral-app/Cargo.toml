@@ -17,6 +17,7 @@ chrono.workspace = true
 etcetera.workspace = true
 fs2.workspace = true
 keyring-core.workspace = true
+jsonwebtoken.workspace = true
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true
