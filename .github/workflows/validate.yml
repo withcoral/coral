@@ -521,6 +521,177 @@ jobs:
       - name: Test desktop
         run: npm test --prefix apps/desktop
 
+  desktop-release-ui-dry-run:
+    name: Desktop release UI dry run
+    needs: changes
+    # This disposable stacked PR reuses the successful producers from run
+    # 29998547117 so only the failed Desktop consumer runs again.
+    if: ${{ github.run_id == '29998547117' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      has-ui: ${{ steps.detect-ui.outputs.has-ui }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect UI package
+        id: detect-ui
+        run: |
+          if [ -f apps/ui/package.json ]; then
+            echo "has-ui=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-ui=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.detect-ui.outputs.has-ui == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/ui/.node-version
+          package-manager-cache: false
+
+      - name: Install UI dependencies
+        if: steps.detect-ui.outputs.has-ui == 'true'
+        run: npm ci --prefix apps/ui
+
+      - name: Build UI
+        if: steps.detect-ui.outputs.has-ui == 'true'
+        run: npm run build --prefix apps/ui
+
+      - name: Verify UI entrypoint
+        if: steps.detect-ui.outputs.has-ui == 'true'
+        run: test -s apps/ui/dist/index.html
+
+      - name: Upload UI artifact
+        if: steps.detect-ui.outputs.has-ui == 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ui-dist
+          retention-days: 1
+          path: apps/ui/dist
+
+  desktop-release-cli-dry-run:
+    name: Desktop release CLI dry run (${{ matrix.target }})
+    needs: desktop-release-ui-dry-run
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Ensure target is installed
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Download UI artifact
+        if: needs.desktop-release-ui-dry-run.outputs.has-ui == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+
+      # No Rust cache here — release builds must compile from a clean state
+      # to guard against cache poisoning attacks.
+      - name: Build macOS CLI
+        env:
+          HAS_UI: ${{ needs.desktop-release-ui-dry-run.outputs.has-ui }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          feature_args=()
+          if [ "$HAS_UI" = "true" ]; then
+            feature_args=(--features embedded-ui)
+          fi
+          cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
+
+      - name: Stage unsigned macOS binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          staging="unsigned-${TARGET}"
+          mkdir -p "$staging"
+          cp "target/${TARGET}/release/coral" "$staging/coral"
+
+      - name: Upload unsigned macOS binary
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-unsigned-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
+          path: unsigned-${{ matrix.target }}/coral
+
+  desktop-release-build-dry-run:
+    name: Desktop release build dry run
+    needs: desktop-release-cli-dry-run
+    if: ${{ always() }}
+    runs-on: blacksmith-6vcpu-macos-26
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download unsigned macOS binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: macos-unsigned-*-apple-darwin
+          path: ${{ runner.temp }}/unsigned-macos
+          merge-multiple: false
+          github-token: ${{ github.token }}
+          run-id: "29998547117"
+
+      - name: Create universal Coral binary
+        run: |
+          lipo -create \
+            "$RUNNER_TEMP/unsigned-macos/macos-unsigned-x86_64-apple-darwin/coral" \
+            "$RUNNER_TEMP/unsigned-macos/macos-unsigned-aarch64-apple-darwin/coral" \
+            -output "$RUNNER_TEMP/coral-universal"
+          lipo "$RUNNER_TEMP/coral-universal" -verify_arch x86_64 arm64
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      - name: Build xtask
+        run: cargo build --locked -p xtask
+
+      # Match the release build before Apple credentials enter the environment.
+      - name: Build universal desktop inputs
+        env:
+          CORAL_DESKTOP_CLI_PATH: ${{ runner.temp }}/coral-universal
+          CORAL_DESKTOP_RELEASE: "1"
+        run: npm run build --prefix apps/desktop
+
+      - name: Verify release updater bundle
+        run: npm run verify:release-build --prefix apps/desktop
+
+      - name: Verify Desktop reused the downloaded CLI
+        run: |
+          set -euo pipefail
+          staged_cli="apps/desktop/resources/coral/coral"
+          cmp "$RUNNER_TEMP/coral-universal" "$staged_cli"
+          lipo "$staged_cli" -verify_arch x86_64 arm64
+          test -x "$staged_cli"
+          shasum -a 256 "$RUNNER_TEMP/coral-universal" "$staged_cli"
+
   proto-lint:
     name: Lint protobuf API
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -746,6 +917,9 @@ jobs:
         ui-tests,
         reef-checks,
         desktop-checks,
+        desktop-release-ui-dry-run,
+        desktop-release-cli-dry-run,
+        desktop-release-build-dry-run,
         proto-lint,
         gha-security-audit-pr,
         gha-security-audit-sarif,
@@ -769,6 +943,9 @@ jobs:
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
+          DESKTOP_RELEASE_UI_DRY_RUN_RESULT: ${{ needs.desktop-release-ui-dry-run.result }}
+          DESKTOP_RELEASE_CLI_DRY_RUN_RESULT: ${{ needs.desktop-release-cli-dry-run.result }}
+          DESKTOP_RELEASE_BUILD_DRY_RUN_RESULT: ${{ needs.desktop-release-build-dry-run.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
           GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
@@ -787,6 +964,9 @@ jobs:
             "ui-tests:$UI_TESTS_RESULT"
             "reef-checks:$REEF_CHECKS_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
+            "desktop-release-ui-dry-run:$DESKTOP_RELEASE_UI_DRY_RUN_RESULT"
+            "desktop-release-cli-dry-run:$DESKTOP_RELEASE_CLI_DRY_RUN_RESULT"
+            "desktop-release-build-dry-run:$DESKTOP_RELEASE_BUILD_DRY_RUN_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
             "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"
