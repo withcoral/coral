@@ -123,7 +123,14 @@ impl RunningMcpHttpServer {
     ///
     /// Returns [`McpHttpError`] if the HTTP task fails or coordinated draining
     /// cannot complete within one second.
-    pub async fn shutdown(mut self) -> Result<(), McpHttpError> {
+    pub async fn shutdown(self) -> Result<(), McpHttpError> {
+        self.shutdown_with_grace_period(SHUTDOWN_GRACE_PERIOD).await
+    }
+
+    async fn shutdown_with_grace_period(
+        mut self,
+        grace_period: Duration,
+    ) -> Result<(), McpHttpError> {
         self.begin_shutdown();
         let state = self.state.clone();
         let drain = async {
@@ -132,7 +139,7 @@ impl RunningMcpHttpServer {
             drop(quiescence);
             (&mut self.task).await
         };
-        if let Ok(result) = tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, drain).await {
+        if let Ok(result) = tokio::time::timeout(grace_period, drain).await {
             return join_server(result);
         }
         self.task.abort();
