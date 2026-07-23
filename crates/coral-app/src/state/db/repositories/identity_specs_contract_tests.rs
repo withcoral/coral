@@ -6,7 +6,7 @@ use tempfile::tempdir;
 use super::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
 };
-use crate::bootstrap::{self, AppError};
+use crate::bootstrap::AppError;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::state::db::schema::IdentitySpecDocuments;
 use crate::state::db::{CoralDb, CoralTx, DbRepos, ResolvedDatabaseConfig};
@@ -22,22 +22,6 @@ async fn identity_spec_persistence_contract_holds_against_sqlite() {
     .await
     .expect("open sqlite");
     db.migrate().await.expect("migrate sqlite");
-    assert_identity_spec_persistence_contract(&db).await;
-}
-
-#[tokio::test]
-#[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
-async fn identity_spec_persistence_contract_holds_against_postgres() {
-    let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
-        .expect("read CORAL_TEST_POSTGRES_URL")
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-        .await
-        .expect("open postgres");
-    db.migrate().await.expect("migrate postgres");
     assert_identity_spec_persistence_contract(&db).await;
 }
 

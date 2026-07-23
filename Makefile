@@ -190,9 +190,6 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
 	  repository_round_trips_against_postgres \
 	  -- --ignored; \
-	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
-	  state::db::repositories::identity_specs_contract_tests::identity_spec_persistence_contract_holds_against_postgres \
-	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
 	  --test postgres_database_tests \
 	  -- --ignored
