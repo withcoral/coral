@@ -3,7 +3,7 @@
     reason = "focused native fixtures assert result shape immediately before indexed access"
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, BinaryArray, Float64Array, Int64Array, StringArray};
@@ -37,7 +37,7 @@ fn resolved_field(name: &str, data_type: ManifestDataType) -> ResolvedUniversalS
 
 fn route(mapping: ResolvedUniversalSearchResultMapping) -> ResolvedUniversalSearchRoute {
     ResolvedUniversalSearchRoute {
-        owner_source_name: "github".to_string(),
+        source_name: "github".to_string(),
         installation_revision: Uuid::from_u128(1),
         authored_route_id: Some("issues".to_string()),
         target: ResolvedUniversalSearchTarget {
@@ -99,9 +99,12 @@ fn explicit_mapping_wins_and_attributes_are_never_inferred() {
         ("arbitrary", string_column(vec![Some("must not appear")])),
     ]);
 
-    let candidates = normalize_batches(&workspace(), &route(mapping), &[batch]);
+    let route = route(mapping);
+    let candidates = normalize_batches(&workspace(), &route, &[batch]);
     assert_eq!(candidates.len(), 1);
     let result = &candidates[0].result;
+    assert_eq!(result.schema_name, route.source_name);
+    assert_eq!(result.function_name, route.locator.function_name);
     assert_eq!(result.provider_id.as_deref(), Some("N1"));
     assert_eq!(result.title.as_deref(), Some("Mapped title"));
     assert_eq!(result.entity_type.as_deref(), Some("issue"));
@@ -459,6 +462,35 @@ fn identity_is_stable_across_display_changes_and_absent_for_title_only_rows() {
 }
 
 #[test]
+fn native_v1_full_route_and_row_identity_digest_is_stable() {
+    let mapping = ResolvedUniversalSearchResultMapping {
+        authored_mapping: true,
+        entity_type: Some("issue".to_string()),
+        identity_fields: vec![resolved_field("id", ManifestDataType::Int64)],
+        title: Some(resolved_field("title", ManifestDataType::Utf8)),
+        ..ResolvedUniversalSearchResultMapping::default()
+    };
+    let route = route(mapping);
+    let row = batch(vec![
+        ("id", Arc::new(Int64Array::from(vec![7])) as ArrayRef),
+        ("title", string_column(vec![Some("Pinned identity")])),
+    ]);
+
+    let candidates = normalize_batches(&workspace(), &route, &[row]);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0]
+            .identity
+            .expect("complete route and row produce an identity")
+            .as_bytes(),
+        [
+            230, 38, 248, 94, 37, 184, 69, 70, 3, 3, 160, 116, 224, 246, 162, 78, 193, 194, 11,
+            122, 139, 183, 202, 4, 85, 24, 7, 21, 48, 184, 152, 153,
+        ]
+    );
+}
+
+#[test]
 fn invalid_authored_identity_falls_back_to_safe_provider_id_then_url() {
     let mapping = ResolvedUniversalSearchResultMapping {
         authored_mapping: true,
@@ -542,9 +574,11 @@ fn dedupe_keeps_lowest_ordinal_fills_missing_fields_and_never_crosses_scope() {
     let mut other_route = route(mapping.clone());
     other_route.authored_route_id = Some("pull_requests".to_string());
     let mut other_source = route(mapping);
-    other_source.owner_source_name = "gitlab".to_string();
+    other_source.source_name = "github_mcp_v4".to_string();
+    other_source.locator.schema_name = "github_mcp_v4".to_string();
     let mut other_installation = primary_route.clone();
     other_installation.installation_revision = Uuid::from_u128(2);
+    let other_workspace = WorkspaceName::parse("secondary").expect("valid workspace");
     let candidates =
         normalize_batches(&workspace(), &primary_route, std::slice::from_ref(&one_row))
             .into_iter()
@@ -561,10 +595,25 @@ fn dedupe_keeps_lowest_ordinal_fills_missing_fields_and_never_crosses_scope() {
             .chain(normalize_batches(
                 &workspace(),
                 &other_installation,
+                std::slice::from_ref(&one_row),
+            ))
+            .chain(normalize_batches(
+                &other_workspace,
+                &primary_route,
                 &[one_row],
             ))
-            .collect();
-    assert_eq!(deduplicate(candidates).len(), 4);
+            .collect::<Vec<_>>();
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.identity.is_some())
+    );
+    let identities = candidates
+        .iter()
+        .filter_map(|candidate| candidate.identity)
+        .collect::<HashSet<_>>();
+    assert_eq!(identities.len(), candidates.len());
+    assert_eq!(deduplicate(candidates).len(), 5);
 }
 
 #[test]

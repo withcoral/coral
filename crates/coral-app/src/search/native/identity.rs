@@ -91,11 +91,7 @@ fn identity_prefix(
     let mut hasher = Sha256::new();
     append_component(&mut hasher, TAG_VERSION, b"native/v1")?;
     append_component(&mut hasher, TAG_WORKSPACE, workspace.as_str().as_bytes())?;
-    append_component(
-        &mut hasher,
-        TAG_SOURCE_NAME,
-        route.owner_source_name.as_bytes(),
-    )?;
+    append_component(&mut hasher, TAG_SOURCE_NAME, route.source_name.as_bytes())?;
     append_component(
         &mut hasher,
         TAG_INSTALLATION_REVISION,
