@@ -23,6 +23,7 @@ struct SourceRow {
     version: Option<String>,
     origin_kind: String,
     credential_storage: Option<String>,
+    credential_revision: String,
     created_at_unix_nanos: i64,
 }
 
@@ -59,6 +60,7 @@ where
                 Sources::Version,
                 Sources::OriginKind,
                 Sources::CredentialStorage,
+                Sources::CredentialRevision,
                 Sources::CreatedAtUnixNanos,
             ])
             .from(Sources::Table)
@@ -109,6 +111,7 @@ where
                 Sources::Version,
                 Sources::OriginKind,
                 Sources::CredentialStorage,
+                Sources::CredentialRevision,
                 Sources::CreatedAtUnixNanos,
             ])
             .from(Sources::Table)
@@ -136,6 +139,8 @@ where
             .into_iter()
             .map(|row| row.key)
             .collect();
+        let credential_revision =
+            parse_credential_revision(&source_name, &row.credential_revision)?;
         Ok(InstalledSource {
             name: source_name,
             version: row.version,
@@ -146,7 +151,7 @@ where
                 .as_deref()
                 .map(parse_credential_storage)
                 .transpose()?,
-            credential_revision: uuid::Uuid::nil(),
+            credential_revision,
             origin: parse_source_origin(&row.origin_kind)?,
         })
     }
@@ -280,6 +285,7 @@ where
             Sources::Version,
             Sources::OriginKind,
             Sources::CredentialStorage,
+            Sources::CredentialRevision,
             Sources::CreatedAtUnixNanos,
             Sources::UpdatedAtUnixNanos,
         ])
@@ -293,6 +299,7 @@ where
                     .credential_storage
                     .map(CredentialStorageKind::as_config_value),
             ),
+            Expr::val(source.credential_revision.to_string()),
             Expr::val(created_at_unix_nanos),
             Expr::val(updated_at_unix_nanos),
         ])
@@ -426,6 +433,17 @@ fn parse_credential_storage(storage: &str) -> Result<CredentialStorageKind, DbEr
     }
 }
 
+fn parse_credential_revision(
+    source_name: &SourceName,
+    credential_revision: &str,
+) -> Result<uuid::Uuid, DbError> {
+    uuid::Uuid::parse_str(credential_revision).map_err(|error| {
+        DbError::CorruptData(format!(
+            "invalid credential revision '{credential_revision}' for source '{source_name}': {error}"
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -504,6 +522,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_repository_reports_corrupt_credential_revisions() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        let workspace = unique_workspace();
+        let source_name = SourceName::parse("corrupt-revision").expect("source name");
+
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 10)
+            .await
+            .expect("ensure workspace");
+        tx.execute(
+            Query::insert()
+                .into_table(Sources::Table)
+                .columns([
+                    Sources::WorkspaceId,
+                    Sources::Name,
+                    Sources::Version,
+                    Sources::OriginKind,
+                    Sources::CredentialStorage,
+                    Sources::CredentialRevision,
+                    Sources::CreatedAtUnixNanos,
+                    Sources::UpdatedAtUnixNanos,
+                ])
+                .values_panic([
+                    Expr::val(workspace.as_str().to_string()),
+                    Expr::val(source_name.as_str()),
+                    Expr::val(Option::<String>::None),
+                    Expr::val(SourceOrigin::Imported.as_config_value()),
+                    Expr::val(Option::<String>::None),
+                    Expr::val("not-a-uuid"),
+                    Expr::val(20),
+                    Expr::val(30),
+                ])
+                .to_owned(),
+        )
+        .await
+        .expect("insert corrupt source row");
+        tx.commit().await.expect("commit corrupt row");
+
+        let mut session = &db;
+        let error = session
+            .sources()
+            .get_source(&workspace, &source_name)
+            .await
+            .expect_err("corrupt credential revision should fail decode");
+        let DbError::CorruptData(detail) = error else {
+            panic!("expected corrupt data error, got {error:?}");
+        };
+        assert!(detail.contains("invalid credential revision 'not-a-uuid'"));
+        assert!(detail.contains(source_name.as_str()));
+    }
+
+    #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn source_repository_round_trips_against_postgres() {
         let Some(url) = postgres_test_url() else {
@@ -532,7 +605,7 @@ mod tests {
     async fn assert_source_repository_round_trip(db: &CoralDb) {
         let workspace = unique_workspace();
         let alpha = source("alpha", None, [], [], None, SourceOrigin::Bundled);
-        let zeta = source(
+        let mut zeta = source(
             "zeta",
             Some("1.2.3"),
             [("z_var", "last"), ("a_var", "first")],
@@ -540,6 +613,7 @@ mod tests {
             Some(CredentialStorageKind::Keychain),
             SourceOrigin::Imported,
         );
+        zeta.credential_revision = uuid::Uuid::from_u128(1);
 
         let mut tx = db.begin().await.expect("begin tx");
         tx.workspaces()
@@ -565,7 +639,7 @@ mod tests {
             vec![alpha.clone(), zeta.clone()]
         );
 
-        let alpha_replacement = source(
+        let mut alpha_replacement = source(
             "alpha",
             Some("9.9.9"),
             [("only", "new")],
@@ -573,6 +647,7 @@ mod tests {
             Some(CredentialStorageKind::File),
             SourceOrigin::Imported,
         );
+        alpha_replacement.credential_revision = uuid::Uuid::from_u128(2);
         let mut tx = db.begin().await.expect("begin replacement tx");
         tx.sources()
             .upsert_source(&workspace, &alpha_replacement, 40)
