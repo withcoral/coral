@@ -14,7 +14,7 @@ use coral_spec::v4::{
     V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest, ValidatedSurfacePlan,
     generate_projection_catalog, import_mcp_surface, import_openapi_surface,
     normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
-    sync_projection_inputs, validate_materialized_source, validate_materialized_source_structure,
+    sync_projection_catalog, validate_materialized_source, validate_materialized_source_structure,
     validate_openapi_base_url_template, validate_semantic_ir_structure,
 };
 use coral_spec::{
@@ -868,7 +868,7 @@ fn sync_loaded_projection_inputs(
         V4ProjectionCatalogOrigin::Materialized => ProjectionInputSyncMode::RecomputeInputExposure,
         V4ProjectionCatalogOrigin::Override => ProjectionInputSyncMode::PreserveExistingExposure,
     };
-    sync_projection_inputs(plan, projections, projection_sync_mode).map_err(|error| {
+    sync_projection_catalog(plan, projections, projection_sync_mode).map_err(|error| {
         match projections_file.origin {
             V4ProjectionCatalogOrigin::Materialized => {
                 incompatible_materialization_error(source_name, error.to_string())
@@ -1568,11 +1568,15 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {type: integer}
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
 "
     }
 
@@ -1841,21 +1845,26 @@ surface:
     }
 
     #[test]
-    fn build_v4_materialization_persists_lookup_keys_in_operation_metadata() {
+    fn build_v4_materialization_persists_inferred_operation_metadata() {
         let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
         let surface_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());
         let metadata: OperationMetadataCatalog =
             read_yaml(&surface_dir.join(OPERATION_METADATA_FILENAME))
                 .expect("read operation metadata");
-        let lookup_keys = match metadata
+        let (row_path, lookup_keys) = match metadata
             .operations
             .values()
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } => lookup_keys,
+            coral_spec::v4::OperationMetadata::Rest {
+                row_path,
+                lookup_keys,
+                ..
+            } => (row_path, lookup_keys),
             coral_spec::v4::OperationMetadata::Mcp { .. } => panic!("expected REST metadata"),
         };
+        assert_eq!(row_path, &["items"]);
         assert_eq!(lookup_keys, &["state"]);
     }
 
@@ -1899,16 +1908,22 @@ surface:
         let metadata: OperationMetadataCatalog =
             read_yaml(&build.temp_dir.join(OPERATION_METADATA_FILENAME))
                 .expect("read operation metadata");
-        let pagination = match metadata
+        let (row_path, pagination) = match metadata
             .operations
             .values()
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Mcp { pagination } => pagination,
+            coral_spec::v4::OperationMetadata::Mcp {
+                row_path,
+                pagination,
+            } => (row_path, pagination),
             coral_spec::v4::OperationMetadata::Rest { .. } => panic!("expected MCP metadata"),
         };
-        assert!(pagination.cursor.is_none());
+        assert_eq!(row_path, &["items"]);
+        let cursor = pagination.cursor.as_ref().expect("cursor pagination");
+        assert_eq!(cursor.cursor_arg, "cursor");
+        assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
         assert!(pagination.offset.is_none());
 
         let projections: ProjectionCatalog =
@@ -2292,7 +2307,7 @@ surface:
     }
 
     #[test]
-    fn load_v4_materialization_applies_operation_metadata_override_without_rewriting_artifact() {
+    fn load_v4_materialization_applies_metadata_override_without_rewriting_artifacts() {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let generated_path = layout
             .v4_materialized_dir(&workspace_name(), &source_name())
@@ -2304,9 +2319,15 @@ surface:
             .values_mut()
             .next()
             .expect("operation metadata");
-        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = operation_metadata else {
+        let coral_spec::v4::OperationMetadata::Rest {
+            row_path,
+            lookup_keys,
+            ..
+        } = operation_metadata
+        else {
             panic!("expected REST metadata");
         };
+        row_path.clear();
         *lookup_keys = vec!["q".to_string()];
         let override_path = layout
             .v4_override_dir(&workspace_name(), &source_name())
@@ -2344,16 +2365,38 @@ surface:
                 .plan
                 .input_is_lookup_key(&operation_id, "state")
         );
+        assert!(
+            materialized
+                .surface
+                .plan
+                .output_row_path(&operation_id)
+                .is_empty()
+        );
+        let column_names = materialized
+            .projections
+            .projections
+            .first()
+            .expect("projection")
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(column_names, ["total_count", "items"]);
 
         let artifact_metadata: OperationMetadataCatalog =
             read_yaml(&generated_path).expect("read persisted operation metadata");
-        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = artifact_metadata
+        let coral_spec::v4::OperationMetadata::Rest {
+            row_path,
+            lookup_keys,
+            ..
+        } = artifact_metadata
             .operations
             .get(&operation_id)
             .expect("artifact operation metadata")
         else {
             panic!("expected REST metadata");
         };
+        assert_eq!(row_path, &["items"]);
         assert_eq!(lookup_keys, &["state"]);
     }
 

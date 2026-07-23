@@ -238,6 +238,10 @@ fn http_manifest_for_surface(
             })?;
         let rest = rest_execution_for_operation(operation)?;
         let pagination = materialized_surface.plan.rest_pagination(&operation.id);
+        let response = response_with_row_path(
+            rest.response.response.clone(),
+            materialized_surface.plan.output_row_path(&operation.id),
+        );
         let request = request_spec_for_projection(projection, operation)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let columns = projection_column_specs(projection);
@@ -256,7 +260,7 @@ fn http_manifest_for_surface(
                     },
                     request,
                     requests: Vec::new(),
-                    response: rest.response.response.clone(),
+                    response: response.clone(),
                     pagination: pagination.clone(),
                 });
             }
@@ -270,7 +274,7 @@ fn http_manifest_for_surface(
                     detail_hints: projection.detail_hints.clone(),
                     args: projection_arg_specs(projection),
                     request,
-                    response: rest.response.response.clone(),
+                    response,
                     pagination: pagination.clone(),
                     columns,
                 });
@@ -347,11 +351,13 @@ fn mcp_manifest_for_surface(
         };
         let (cursor_pagination, offset_pagination) =
             materialized_surface.plan.mcp_pagination(&operation.id);
+        let row_path = materialized_surface.plan.output_row_path(&operation.id);
         match &projection.kind {
             ProjectionKind::Table => {
                 tables.push(mcp_table_spec(
                     projection,
                     mcp,
+                    row_path,
                     cursor_pagination.cloned(),
                     offset_pagination.cloned(),
                 ));
@@ -361,6 +367,7 @@ fn mcp_manifest_for_surface(
                     projection,
                     *function_kind,
                     mcp,
+                    row_path,
                     cursor_pagination.cloned(),
                     offset_pagination.cloned(),
                 ));
@@ -385,6 +392,7 @@ fn mcp_manifest_for_surface(
 fn mcp_table_spec(
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
+    row_path: &[String],
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
     offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableSpec {
@@ -405,7 +413,7 @@ fn mcp_table_spec(
         limit_binding: None,
         pagination,
         offset_pagination,
-        response: ResponseSpec::default(),
+        response: response_with_row_path(ResponseSpec::default(), row_path),
     }
 }
 
@@ -413,6 +421,7 @@ fn mcp_table_function_spec(
     projection: &Projection,
     function_kind: SourceTableFunctionKind,
     mcp: &coral_spec::v4::McpExecutionAttachment,
+    row_path: &[String],
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
     offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableFunctionSpec {
@@ -429,11 +438,16 @@ fn mcp_table_function_spec(
             detail_hints: projection.detail_hints.clone(),
             args: mcp_projection_arg_specs(projection),
             request: RequestSpec::default(),
-            response: ResponseSpec::default(),
+            response: response_with_row_path(ResponseSpec::default(), row_path),
             pagination: PaginationSpec::default(),
             columns: projection_column_specs(projection),
         },
     }
+}
+
+fn response_with_row_path(mut response: ResponseSpec, row_path: &[String]) -> ResponseSpec {
+    response.rows_path = row_path.to_vec();
+    response
 }
 
 fn mcp_filter_bindings(projection: &Projection) -> Vec<McpTableFilterBinding> {
@@ -513,7 +527,7 @@ mod tests {
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
         AcceptedIdentityRequirement, Fingerprint, FingerprintSurface, HttpMethod,
-        IdentityRequirements, IrExecutionAttachment, IrInputLocation, IrOperation,
+        IdentityRequirements, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
         IrOperationInput, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
         MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpOperationPagination,
         McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
@@ -524,7 +538,9 @@ mod tests {
         SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
         V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
     };
-    use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
+    use coral_spec::{
+        PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec, SourceTableFunctionKind,
+    };
 
     use crate::bootstrap::AppError;
 
@@ -557,6 +573,14 @@ mod tests {
         operation_id: &str,
         pagination: PaginationSpec,
     ) -> MaterializedSurface {
+        rest_materialized_surface(operation_id, pagination, Vec::new())
+    }
+
+    fn rest_materialized_surface(
+        operation_id: &str,
+        pagination: PaginationSpec,
+        row_path: Vec<String>,
+    ) -> MaterializedSurface {
         let mut pagination_inputs = Vec::new();
         for name in [
             pagination.page_param.as_deref(),
@@ -577,6 +601,7 @@ mod tests {
             }
             pagination_inputs.push(test_input(name, IrInputLocation::Query));
         }
+        let (output, types) = rest_test_output(&row_path);
         let semantic_ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "github_v4".to_string(),
@@ -590,10 +615,7 @@ mod tests {
                 read_only: true,
                 naming: None,
                 inputs: pagination_inputs.clone(),
-                output: IrOperationOutput {
-                    cardinality: coral_spec::v4::OutputCardinality::List,
-                    type_ref: "item".to_string(),
-                },
+                output,
                 entity: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
@@ -617,7 +639,7 @@ mod tests {
                 })),
                 diagnostics: Vec::new(),
             }],
-            types: vec![test_object_type("item")],
+            types,
             diagnostics: Vec::new(),
         };
         let operation_metadata = OperationMetadataCatalog {
@@ -627,6 +649,7 @@ mod tests {
             operations: BTreeMap::from([(
                 operation_id.to_string(),
                 OperationMetadata::Rest {
+                    row_path,
                     pagination,
                     lookup_keys: Vec::new(),
                 },
@@ -637,6 +660,50 @@ mod tests {
             source_document_sha256: None,
             normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
             raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
+        }
+    }
+
+    fn rest_test_output(row_path: &[String]) -> (IrOperationOutput, Vec<IrType>) {
+        if row_path.is_empty() {
+            (
+                IrOperationOutput {
+                    cardinality: coral_spec::v4::OutputCardinality::List,
+                    type_ref: "item".to_string(),
+                },
+                vec![test_object_type("item")],
+            )
+        } else {
+            (
+                IrOperationOutput {
+                    cardinality: coral_spec::v4::OutputCardinality::Singleton,
+                    type_ref: "envelope".to_string(),
+                },
+                vec![
+                    test_object_type("item"),
+                    IrType {
+                        id: "items".to_string(),
+                        shape: IrTypeShape::List {
+                            item_type_ref: "item".to_string(),
+                        },
+                        nullable: false,
+                        description: String::new(),
+                    },
+                    IrType {
+                        id: "envelope".to_string(),
+                        shape: IrTypeShape::Object {
+                            fields: vec![IrField {
+                                name: "items".to_string(),
+                                type_ref: "items".to_string(),
+                                required: true,
+                                nullable: false,
+                                description: String::new(),
+                            }],
+                        },
+                        nullable: false,
+                        description: String::new(),
+                    },
+                ],
+            )
         }
     }
 
@@ -708,6 +775,15 @@ mod tests {
         pagination: Option<McpPaginationSpec>,
         offset_pagination: Option<McpOffsetPaginationSpec>,
     ) -> MaterializedSurface {
+        mcp_materialized_surface(operation_id, pagination, offset_pagination, Vec::new())
+    }
+
+    fn mcp_materialized_surface(
+        operation_id: &str,
+        pagination: Option<McpPaginationSpec>,
+        offset_pagination: Option<McpOffsetPaginationSpec>,
+        row_path: Vec<String>,
+    ) -> MaterializedSurface {
         let mut inputs = Vec::new();
         if let Some(cursor) = pagination.as_ref() {
             let mut input = test_input(&cursor.cursor_arg, IrInputLocation::ToolArg);
@@ -751,6 +827,7 @@ mod tests {
             operations: BTreeMap::from([(
                 operation_id.to_string(),
                 OperationMetadata::Mcp {
+                    row_path,
                     pagination: McpOperationPagination {
                         cursor: pagination,
                         offset: offset_pagination,
@@ -1080,6 +1157,84 @@ mod tests {
             mcp.tables.first().expect("mcp table").pagination.as_ref(),
             Some(&pagination)
         );
+    }
+
+    #[test]
+    fn http_runtime_component_applies_operation_row_path() {
+        let manifest = manifest_with_surface(openapi_surface());
+        let materialized = V4MaterializedSource {
+            fingerprint: Some(fingerprint(SurfaceType::OpenApi, "github_v4")),
+            surface: rest_materialized_surface(
+                "rest_list_issues",
+                PaginationSpec::default(),
+                vec!["items".to_string()],
+            ),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: vec![published_projection("rest_list_issues")],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let component = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect("runtime component")
+            .expect("published component");
+        let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+            panic!("expected HTTP component");
+        };
+        let table = http.tables.first().expect("HTTP table");
+        assert_eq!(table.response.rows_path, ["items"]);
+    }
+
+    #[test]
+    fn mcp_runtime_component_applies_row_path_to_tables_and_functions() {
+        let manifest = manifest_with_surface(mcp_surface());
+        let materialized = |projection| V4MaterializedSource {
+            fingerprint: Some(fingerprint(SurfaceType::Mcp, "github_v4")),
+            surface: mcp_materialized_surface(
+                "mcp_list_issues",
+                None,
+                None,
+                vec!["items".to_string()],
+            ),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: vec![projection],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let table_component = runtime_component_for_v4_source(
+            &manifest,
+            &materialized(published_projection("mcp_list_issues")),
+        )
+        .expect("table component")
+        .expect("published table");
+        let coral_engine::RuntimeSourceComponent::Mcp(table_mcp) = table_component else {
+            panic!("expected MCP component");
+        };
+        let table = table_mcp.tables.first().expect("MCP table");
+        assert_eq!(table.response.rows_path, ["items"]);
+
+        let mut function_projection = published_projection("mcp_list_issues");
+        function_projection.kind = ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table,
+        };
+        let function_component =
+            runtime_component_for_v4_source(&manifest, &materialized(function_projection))
+                .expect("function component")
+                .expect("published function");
+        let coral_engine::RuntimeSourceComponent::Mcp(function_mcp) = function_component else {
+            panic!("expected MCP component");
+        };
+        let function = function_mcp.functions.first().expect("MCP function");
+        assert_eq!(function.common.response.rows_path, ["items"]);
     }
 
     #[test]

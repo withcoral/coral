@@ -1,6 +1,7 @@
 use crate::v4::ir::{
     IrEntityCandidate, IrExecutionAttachment, IrOperation, McpExecutionAttachment,
 };
+use crate::v4::surfaces::json_schema::{WrappedListInferenceContext, infer_wrapped_list};
 use crate::v4::{McpOperationPagination, OperationMetadata};
 
 use super::import::McpImporter;
@@ -23,9 +24,22 @@ impl McpImporter<'_> {
 
         let inputs = imported_inputs.inputs;
         let output = self.import_output(operation_id, tool.output_schema.as_ref());
+        let row_path = tool
+            .output_schema
+            .as_ref()
+            .and_then(|schema| {
+                infer_wrapped_list(WrappedListInferenceContext {
+                    operation_name: &tool.name,
+                    schema_root: schema,
+                    response_schema: schema,
+                })
+            })
+            .map(|inference| inference.row_path)
+            .unwrap_or_default();
         let (pagination, offset_pagination) = infer_mcp_pagination_contracts(
             &inputs,
             &output,
+            &row_path,
             tool.output_schema.as_ref(),
             &tool.input_schema,
         );
@@ -55,6 +69,7 @@ impl McpImporter<'_> {
         Some((
             operation,
             OperationMetadata::Mcp {
+                row_path,
                 pagination: McpOperationPagination {
                     cursor: pagination,
                     offset: offset_pagination,

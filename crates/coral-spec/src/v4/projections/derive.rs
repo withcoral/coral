@@ -131,7 +131,7 @@ fn generate_projection(
             }
         })
         .collect::<Vec<_>>();
-    let columns = projection_columns(type_by_id, operation);
+    let columns = projection_columns(plan, type_by_id, operation);
     let name = generated_projection_name(operation, is_search);
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
@@ -300,7 +300,16 @@ fn type_index(ir: &SemanticIr) -> TypeIndex<'_> {
     ir.types.iter().map(|ty| (ty.id.as_str(), ty)).collect()
 }
 
+pub(super) fn derived_projection_columns(
+    plan: &ValidatedSurfacePlan,
+    operation: &IrOperation,
+) -> Vec<ProjectionColumn> {
+    let type_by_id = type_index(plan.semantic_ir());
+    projection_columns(plan, &type_by_id, operation)
+}
+
 fn projection_columns(
+    plan: &ValidatedSurfacePlan,
     type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
 ) -> Vec<ProjectionColumn> {
@@ -327,7 +336,8 @@ fn projection_columns(
             },
         ];
     }
-    let Some(row_type) = type_by_id.get(operation.output.type_ref.as_str()) else {
+    let effective_type_ref = plan.rest_output_type_ref(&operation.id);
+    let Some(row_type) = type_by_id.get(effective_type_ref) else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
             data_type: ManifestDataType::Json,

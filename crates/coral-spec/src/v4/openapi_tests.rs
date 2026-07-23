@@ -21,6 +21,15 @@ fn imported_rest_pagination<'a>(
     }
 }
 
+fn imported_row_path<'a>(surface: &'a ImportedSurface, operation_id: &str) -> &'a [String] {
+    surface
+        .operation_metadata
+        .operations
+        .get(operation_id)
+        .expect("operation metadata")
+        .row_path()
+}
+
 #[test]
 fn extracts_openapi_document_metadata() {
     let metadata = openapi_document_metadata(
@@ -308,7 +317,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_common_envelope_objects_as_singletons() {
+fn importer_infers_nested_wrapped_list_row_paths_as_metadata() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: statusgator
@@ -341,9 +350,12 @@ paths:
                 type: object
                 properties:
                   success: {type: boolean}
-                  data:
-                    type: array
-                    items: {$ref: '#/components/schemas/Incident'}
+                  results:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Incident'}
                   pagination:
                     type: object
 components:
@@ -359,6 +371,7 @@ components:
     .expect("import");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(imported_row_path(&ir, "listincidents"), ["results", "data"]);
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -372,9 +385,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("success"), Some(&ManifestDataType::Boolean));
-    assert_eq!(columns.get("data"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("pagination"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -384,7 +397,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_single_array_payload_objects_as_singletons() {
+fn importer_infers_sole_array_payload_row_path() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -433,6 +446,13 @@ components:
     .expect("import");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(
+        imported_row_path(
+            &ir,
+            "actions_list_selected_repositories_enabled_github_actions_organization"
+        ),
+        ["repositories"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -442,8 +462,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(columns.get("repositories"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -453,7 +474,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_search_result_objects_as_singletons() {
+fn importer_prefers_named_wrapped_list_when_multiple_arrays_exist() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -512,6 +533,10 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(
+        imported_row_path(&ir, "search_issues_and_pull_requests"),
+        ["items"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -521,21 +546,11 @@ paths:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(
-        columns.get("incomplete_results"),
-        Some(&ManifestDataType::Boolean)
-    );
-    assert_eq!(columns.get("items"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("search_type"), Some(&ManifestDataType::Utf8));
-    assert_eq!(
-        columns.get("lexical_fallback_reason"),
-        Some(&ManifestDataType::Json)
-    );
-    assert!(!columns.contains_key("id"));
-    assert!(!columns.contains_key("number"));
-    assert!(!columns.contains_key("title"));
-    assert!(!columns.contains_key("state"));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("number"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("title"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("state"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 4);
 }
 
 #[test]
@@ -543,7 +558,7 @@ paths:
     clippy::too_many_lines,
     reason = "The fixture mirrors the resource object shape that regressed."
 )]
-fn importer_keeps_resource_objects_with_array_fields_as_singletons() {
+fn importer_legacy_sole_array_heuristic_can_select_resource_child_lists() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -636,6 +651,7 @@ components:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(imported_row_path(&ir, "projects_get_org_item"), ["fields"]);
 
     let row_type = ir
         .types
@@ -656,21 +672,12 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(projection.columns.len(), 11);
-    assert_eq!(column_types.get("id"), Some(&ManifestDataType::Float64));
-    assert_eq!(
-        column_types.get("content_type"),
-        Some(&ManifestDataType::Utf8)
-    );
-    assert_eq!(
-        column_types.get("created_at"),
-        Some(&ManifestDataType::Timestamp)
-    );
-    assert_eq!(column_types.get("fields"), Some(&ManifestDataType::Json));
+    assert_eq!(projection.columns.len(), 1);
+    assert_eq!(column_types.get("value"), Some(&ManifestDataType::Json));
 }
 
 #[test]
-fn importer_keeps_named_array_fields_on_resource_objects_as_singletons() {
+fn importer_legacy_preferred_name_can_select_resource_child_lists() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: resources
@@ -716,6 +723,7 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(imported_row_path(&ir, "bundles_get"), ["items"]);
 }
 
 #[test]
@@ -1812,10 +1820,8 @@ paths:
         "iterator_list",
         "start_cursor_list",
         "nested_next_list",
-        "singleton_get",
         "cursor_header_list",
         "cursor_page_list",
-        "numeric_page_list",
     ] {
         let operation = operations.get(operation_id).expect("operation");
         assert_eq!(
@@ -1825,10 +1831,25 @@ paths:
         );
         assert_eq!(
             imported_rest_pagination(&ir, operation_id).mode,
-            PaginationMode::None,
+            PaginationMode::CursorQuery,
             "{operation_id}"
         );
+        assert!(!imported_row_path(&ir, operation_id).is_empty());
     }
+
+    assert_eq!(
+        imported_rest_pagination(&ir, "numeric_page_list").mode,
+        PaginationMode::Page
+    );
+    assert_eq!(imported_row_path(&ir, "numeric_page_list"), ["data"]);
+
+    let singleton = operations.get("singleton_get").expect("singleton");
+    assert_eq!(singleton.output.cardinality, OutputCardinality::Singleton);
+    assert!(imported_row_path(&ir, "singleton_get").is_empty());
+    assert_eq!(
+        imported_rest_pagination(&ir, "singleton_get").mode,
+        PaginationMode::None
+    );
 
     let link = imported_rest_pagination(&ir, "link_list");
     assert_eq!(link.mode, PaginationMode::LinkHeader);

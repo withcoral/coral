@@ -5,7 +5,8 @@ use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
 use crate::v4::ir::{IrInputLocation, IrOperation, SemanticIr};
 use crate::v4::operation_metadata::model::{OperationMetadata, OperationMetadataCatalog};
 use crate::v4::operation_metadata::policy::{
-    rest_pagination_owned_inputs, validate_operation_metadata_structure,
+    resolve_output_row_type_ref, rest_pagination_owned_inputs,
+    validate_operation_metadata_structure,
 };
 use crate::v4::operation_metadata::structural::validate_semantic_ir_structure;
 use crate::{PaginationSpec, Result};
@@ -70,6 +71,46 @@ impl ValidatedSurfacePlan {
     }
 
     #[must_use]
+    pub fn output_row_path(&self, operation_id: &str) -> &[String] {
+        self.metadata_for_operation(operation_id).row_path()
+    }
+
+    #[must_use]
+    /// Returns the effective REST row type after applying operation metadata.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the operation is absent, is not a REST operation, or the
+    /// validated plan invariant has been violated.
+    pub fn rest_output_type_ref(&self, operation_id: &str) -> &str {
+        let operation = self
+            .semantic_ir
+            .operations
+            .iter()
+            .find(|operation| operation.id == operation_id)
+            .expect("validated plan contains the requested operation");
+        assert!(
+            matches!(
+                operation.execution,
+                crate::v4::ir::IrExecutionAttachment::Rest(_)
+            ),
+            "MCP operation has no REST output type"
+        );
+        let types = self
+            .semantic_ir
+            .types
+            .iter()
+            .map(|ty| (ty.id.as_str(), ty))
+            .collect();
+        resolve_output_row_type_ref(
+            &operation.output,
+            self.output_row_path(operation_id),
+            &types,
+        )
+        .expect("validated row path resolves to an output type")
+    }
+
+    #[must_use]
     /// Returns effective REST pagination for a REST operation.
     ///
     /// # Panics
@@ -93,7 +134,7 @@ impl ValidatedSurfacePlan {
         operation_id: &str,
     ) -> (Option<&McpPaginationSpec>, Option<&McpOffsetPaginationSpec>) {
         match self.metadata_for_operation(operation_id) {
-            OperationMetadata::Mcp { pagination } => {
+            OperationMetadata::Mcp { pagination, .. } => {
                 (pagination.cursor.as_ref(), pagination.offset.as_ref())
             }
             OperationMetadata::Rest { .. } => panic!("MCP operation has REST metadata"),
@@ -125,7 +166,7 @@ impl ValidatedSurfacePlan {
                     && rest_pagination_owned_inputs(operation, pagination)
                         .is_ok_and(|owned| owned.contains(input_name))
             }
-            OperationMetadata::Mcp { pagination } => {
+            OperationMetadata::Mcp { pagination, .. } => {
                 location == IrInputLocation::ToolArg
                     && (pagination
                         .cursor

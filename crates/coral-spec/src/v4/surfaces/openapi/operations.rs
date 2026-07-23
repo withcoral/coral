@@ -12,10 +12,13 @@ use crate::v4::ir::{
 use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
-    json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
-    json_schema_type_display,
+    WrappedListInferenceContext, infer_wrapped_list, json_schema_default_to_string,
+    json_schema_scalar_type_or_string, json_schema_type_contains, json_schema_type_display,
 };
-use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
+use crate::{
+    ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result,
+    v4::resolve_output_row_type_ref,
+};
 
 use super::import::OpenApiImporter;
 use super::responses::OpenApiResponsePaginationContext;
@@ -45,7 +48,24 @@ impl OpenApiImporter<'_> {
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
-        let pagination = detect_pagination(&parameters, &pagination_context);
+        let inferred_row_path = infer_wrapped_list(WrappedListInferenceContext {
+            operation_name: raw_operation_id.unwrap_or(&operation_id),
+            schema_root: self.document,
+            response_schema: &pagination_context.schema,
+        })
+        .map(|inference| inference.row_path)
+        .unwrap_or_default();
+        let types = self
+            .types
+            .iter()
+            .map(|(id, ty)| (id.as_str(), ty))
+            .collect::<BTreeMap<_, _>>();
+        let row_path = if resolve_output_row_type_ref(&output, &inferred_row_path, &types).is_ok() {
+            inferred_row_path
+        } else {
+            Vec::new()
+        };
+        let pagination = detect_pagination(&parameters, &pagination_context, &row_path);
         let lookup_keys = infer_rest_lookup_keys(&parameters, &pagination);
         let rest_parameters = parameters
             .iter()
@@ -91,6 +111,7 @@ impl OpenApiImporter<'_> {
         Ok((
             operation,
             OperationMetadata::Rest {
+                row_path,
                 pagination,
                 lookup_keys,
             },
@@ -308,8 +329,9 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
 fn detect_pagination(
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
+    row_path: &[String],
 ) -> PaginationSpec {
-    if !is_paginated_cardinality(context.cardinality) {
+    if !is_list_like_output(context.cardinality, row_path) {
         return PaginationSpec::default();
     }
     detect_link_header_pagination(inputs, context)
@@ -583,11 +605,8 @@ fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
         && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
 }
 
-fn is_paginated_cardinality(cardinality: OutputCardinality) -> bool {
-    matches!(
-        cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    )
+fn is_list_like_output(cardinality: OutputCardinality, row_path: &[String]) -> bool {
+    cardinality == OutputCardinality::List || !row_path.is_empty()
 }
 
 fn page_size_spec(input: &IrOperationInput) -> PageSizeSpec {

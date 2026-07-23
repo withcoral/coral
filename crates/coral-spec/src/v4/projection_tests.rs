@@ -1359,7 +1359,7 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
 }
 
 #[test]
-fn generated_mcp_projection_exposes_cursor_without_pagination_metadata() {
+fn generated_mcp_projection_keeps_inferred_pagination_cursor_internal() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1414,16 +1414,16 @@ fn generated_mcp_projection_exposes_cursor_without_pagination_metadata() {
         .find(|input| input.wire_name == "cursor")
         .expect("cursor input");
 
-    assert_eq!(cursor.sql_exposure, SqlInputExposure::FunctionArg);
+    assert_eq!(cursor.sql_exposure, SqlInputExposure::Internal);
     assert!(
         mcp_projection_arg_specs(projection)
             .iter()
-            .any(|arg| arg.bind.arg == "cursor")
+            .all(|arg| arg.bind.arg != "cursor")
     );
 }
 
 #[test]
-fn generated_mcp_projection_with_only_cursor_is_table_function_without_pagination_metadata() {
+fn generated_mcp_projection_with_only_inferred_cursor_is_table() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1471,17 +1471,14 @@ fn generated_mcp_projection_with_only_cursor_is_table_function_without_paginatio
         .find(|projection| projection.operation_id == "list_items")
         .expect("mcp projection");
 
-    assert!(matches!(
-        projection.kind,
-        ProjectionKind::TableFunction { .. }
-    ));
+    assert!(matches!(projection.kind, ProjectionKind::Table));
     assert_eq!(
         projection
             .inputs
             .iter()
-            .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
+            .filter(|input| input.sql_exposure != SqlInputExposure::Internal)
             .count(),
-        1
+        0
     );
 }
 
@@ -1582,6 +1579,123 @@ paths:
     )
     .expect("import");
     (manifest, imported)
+}
+
+fn imported_wrapped_items_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+#[test]
+fn generated_projection_columns_follow_effective_row_path_overrides() {
+    let (manifest, mut imported) = imported_wrapped_items_surface();
+    let generated_plan = imported.validated_plan().expect("generated plan");
+    let mut catalog = generate_projection_catalog(&manifest, &generated_plan).expect("projections");
+    let projection = catalog.projections.first().expect("projection");
+    let column = projection.columns.first().expect("column");
+    assert_eq!(column.name, "id", "generated metadata selects item rows");
+
+    let metadata = imported
+        .operation_metadata
+        .operations
+        .get_mut("items_list")
+        .expect("metadata");
+    let OperationMetadata::Rest { row_path, .. } = metadata else {
+        panic!("expected REST metadata");
+    };
+    row_path.clear();
+    let overridden_plan = imported.validated_plan().expect("overridden plan");
+    sync_projection_catalog(
+        &overridden_plan,
+        &mut catalog,
+        ProjectionInputSyncMode::RecomputeInputExposure,
+    )
+    .expect("sync generated projection");
+
+    let column_names = catalog
+        .projections
+        .first()
+        .expect("projection")
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(column_names, ["total_count", "items"]);
+}
+
+#[test]
+fn projection_override_columns_survive_effective_row_path_changes() {
+    let (manifest, mut imported) = imported_wrapped_items_surface();
+    let generated_plan = imported.validated_plan().expect("generated plan");
+    let mut catalog = generate_projection_catalog(&manifest, &generated_plan).expect("projections");
+    catalog
+        .projections
+        .first_mut()
+        .expect("projection")
+        .columns
+        .first_mut()
+        .expect("column")
+        .name = "authored_id".to_string();
+
+    let metadata = imported
+        .operation_metadata
+        .operations
+        .get_mut("items_list")
+        .expect("metadata");
+    let OperationMetadata::Rest { row_path, .. } = metadata else {
+        panic!("expected REST metadata");
+    };
+    row_path.clear();
+    let overridden_plan = imported.validated_plan().expect("overridden plan");
+    sync_projection_catalog(
+        &overridden_plan,
+        &mut catalog,
+        ProjectionInputSyncMode::PreserveExistingExposure,
+    )
+    .expect("sync projection override");
+
+    let projection = catalog.projections.first().expect("projection");
+    let column = projection.columns.first().expect("column");
+    assert_eq!(column.name, "authored_id");
 }
 
 #[test]

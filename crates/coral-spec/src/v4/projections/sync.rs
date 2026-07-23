@@ -8,6 +8,8 @@ use crate::v4::operation_metadata::ValidatedSurfacePlan;
 use crate::v4::projections::{ProjectionCatalog, ProjectionKind, SqlInputExposure};
 use crate::{ManifestError, Result};
 
+use super::derive::derived_projection_columns;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionInputSyncMode {
     RecomputeInputExposure,
@@ -65,6 +67,34 @@ pub fn sync_projection_inputs(
             input.lookup_key = matches!(operation.execution, IrExecutionAttachment::Rest(_))
                 && input.sql_exposure == SqlInputExposure::Filter
                 && plan.input_is_lookup_key(&operation.id, &input.wire_name);
+        }
+    }
+    Ok(())
+}
+
+/// Synchronizes every projection field derived from effective operation
+/// metadata. Authored projection overrides retain their explicit columns.
+pub fn sync_projection_catalog(
+    plan: &ValidatedSurfacePlan,
+    projections: &mut ProjectionCatalog,
+    mode: ProjectionInputSyncMode,
+) -> Result<()> {
+    sync_projection_inputs(plan, projections, mode)?;
+    if mode != ProjectionInputSyncMode::RecomputeInputExposure {
+        return Ok(());
+    }
+
+    for projection in &mut projections.projections {
+        let Some(operation) = plan
+            .semantic_ir()
+            .operations
+            .iter()
+            .find(|operation| operation.id == projection.operation_id)
+        else {
+            continue;
+        };
+        if matches!(operation.execution, IrExecutionAttachment::Rest(_)) {
+            projection.columns = derived_projection_columns(plan, operation);
         }
     }
     Ok(())

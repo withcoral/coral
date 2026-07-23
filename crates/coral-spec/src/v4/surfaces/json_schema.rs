@@ -5,6 +5,15 @@ use serde_json::Value;
 use crate::v4::ir::IrScalarType;
 
 const ANNOTATION_KEYS: &[&str] = &["$comment", "default", "description", "examples", "title"];
+const WRAPPED_LIST_MAX_DEPTH: usize = 8;
+const WRAPPED_LIST_PREFERRED_PROPERTIES: &[&str] = &["items", "data", "results", "rows"];
+const WRAPPED_LIST_METADATA_PROPERTIES: &[&str] = &[
+    "total_count",
+    "incomplete_results",
+    "has_more",
+    "next",
+    "previous",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefError<'a> {
@@ -30,6 +39,131 @@ pub(crate) enum JsonSchemaComparisonError {
 pub(crate) struct JsonObjectShape {
     pub(crate) properties: BTreeMap<String, Value>,
     pub(crate) required: BTreeSet<String>,
+}
+
+/// Inputs available to wrapped-list inference.
+///
+/// The operation name is deliberately part of the context even though the
+/// initial heuristic is schema-only. Future inference policy can add naming,
+/// pagination, and other signals without changing every surface importer.
+#[derive(Clone, Copy)]
+pub(crate) struct WrappedListInferenceContext<'a> {
+    pub(crate) operation_name: &'a str,
+    pub(crate) schema_root: &'a Value,
+    pub(crate) response_schema: &'a Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WrappedListInference {
+    pub(crate) row_path: Vec<String>,
+}
+
+pub(crate) fn infer_wrapped_list(
+    context: WrappedListInferenceContext<'_>,
+) -> Option<WrappedListInference> {
+    let _ = context.operation_name;
+    infer_wrapped_list_path(
+        context.schema_root,
+        context.response_schema,
+        &mut BTreeSet::new(),
+        0,
+    )
+    .ok()
+    .flatten()
+    .map(|row_path| WrappedListInference { row_path })
+}
+
+fn infer_wrapped_list_path<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+) -> Result<Option<Vec<String>>, JsonSchemaWalkError<'a>> {
+    with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        WRAPPED_LIST_MAX_DEPTH,
+        |resolved, resolving_refs, next_depth| {
+            if schema_uses_composition(resolved) {
+                return Ok(None);
+            }
+            if !json_schema_type_contains(resolved, "object") {
+                return Ok(None);
+            }
+            let Some(properties) = resolved.get("properties").and_then(Value::as_object) else {
+                return Ok(None);
+            };
+
+            // Preserve the legacy preference order for direct payload arrays.
+            for name in WRAPPED_LIST_PREFERRED_PROPERTIES {
+                if let Some(property) = properties.get(*name)
+                    && resolved_schema_has_type(
+                        root,
+                        property,
+                        resolving_refs,
+                        next_depth,
+                        "array",
+                    )?
+                {
+                    return Ok(Some(vec![(*name).to_string()]));
+                }
+            }
+
+            // Recurse only through preferred wrapper names. This adds nested
+            // envelopes such as `results.data` without turning the heuristic
+            // into an unrestricted walk of every resource child.
+            for name in WRAPPED_LIST_PREFERRED_PROPERTIES {
+                if let Some(property) = properties.get(*name)
+                    && let Some(mut path) =
+                        infer_wrapped_list_path(root, property, resolving_refs, next_depth)?
+                {
+                    path.insert(0, (*name).to_string());
+                    return Ok(Some(path));
+                }
+            }
+
+            let mut arrays = Vec::new();
+            for (name, property) in properties {
+                if WRAPPED_LIST_METADATA_PROPERTIES.contains(&name.as_str()) {
+                    continue;
+                }
+                if resolved_schema_has_type(root, property, resolving_refs, next_depth, "array")? {
+                    arrays.push(name);
+                }
+            }
+            match arrays.as_slice() {
+                [name] => Ok(Some(vec![(*name).clone()])),
+                [] | [_, _, ..] => Ok(None),
+            }
+        },
+    )
+}
+
+fn schema_uses_composition(schema: &Value) -> bool {
+    ["allOf", "anyOf", "oneOf", "not"]
+        .iter()
+        .any(|keyword| schema.get(*keyword).is_some())
+}
+
+fn resolved_schema_has_type<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    expected: &str,
+) -> Result<bool, JsonSchemaWalkError<'a>> {
+    with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        WRAPPED_LIST_MAX_DEPTH,
+        |resolved, _, _| {
+            Ok(!schema_uses_composition(resolved) && json_schema_type_contains(resolved, expected))
+        },
+    )
 }
 
 pub(crate) fn resolve_local_ref<'a>(
@@ -588,6 +722,148 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    fn inferred_row_path(root: &Value, response_schema: &Value) -> Option<Vec<String>> {
+        infer_wrapped_list(WrappedListInferenceContext {
+            operation_name: "list_items",
+            schema_root: root,
+            response_schema,
+        })
+        .map(|inference| inference.row_path)
+    }
+
+    #[test]
+    fn wrapped_list_prefers_named_direct_arrays_in_stable_order() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "data": {"type": "array", "items": {"type": "object"}},
+                "items": {"type": "array", "items": {"type": "object"}}
+            }
+        });
+
+        assert_eq!(
+            inferred_row_path(&schema, &schema),
+            Some(vec!["items".into()])
+        );
+    }
+
+    #[test]
+    fn wrapped_list_recurses_through_preferred_wrapper_names() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "total_count": {"type": "integer"},
+                "results": {
+                    "type": "object",
+                    "properties": {
+                        "data": {
+                            "type": "array",
+                            "items": {"type": "object"}
+                        }
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            inferred_row_path(&schema, &schema),
+            Some(vec!["results".into(), "data".into()])
+        );
+    }
+
+    #[test]
+    fn wrapped_list_falls_back_to_the_sole_non_metadata_array() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "total_count": {"type": "integer"},
+                "repositories": {"type": "array", "items": {"type": "object"}}
+            }
+        });
+
+        assert_eq!(
+            inferred_row_path(&schema, &schema),
+            Some(vec!["repositories".into()])
+        );
+    }
+
+    #[test]
+    fn wrapped_list_abstains_for_multiple_non_preferred_arrays() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "repositories": {"type": "array", "items": {"type": "object"}}
+            }
+        });
+
+        assert_eq!(inferred_row_path(&schema, &schema), None);
+    }
+
+    #[test]
+    fn wrapped_list_resolves_openapi_component_references_from_document_root() {
+        let document = json!({
+            "components": {
+                "schemas": {
+                    "Envelope": {
+                        "type": "object",
+                        "properties": {
+                            "items": {"$ref": "#/components/schemas/Items"}
+                        }
+                    },
+                    "Items": {
+                        "type": "array",
+                        "items": {"type": "object"}
+                    }
+                }
+            }
+        });
+        let response = json!({"$ref": "#/components/schemas/Envelope"});
+
+        assert_eq!(
+            inferred_row_path(&document, &response),
+            Some(vec!["items".into()])
+        );
+    }
+
+    #[test]
+    fn wrapped_list_resolves_mcp_defs_from_output_schema_root() {
+        let schema = json!({
+            "$defs": {
+                "Items": {
+                    "type": "array",
+                    "items": {"type": "object"}
+                }
+            },
+            "type": "object",
+            "properties": {
+                "items": {"$ref": "#/$defs/Items"}
+            }
+        });
+
+        assert_eq!(
+            inferred_row_path(&schema, &schema),
+            Some(vec!["items".into()])
+        );
+    }
+
+    #[test]
+    fn wrapped_list_abstains_for_unresolvable_or_composed_schemas() {
+        let external = json!({"$ref": "https://example.com/schema.json#/Envelope"});
+        let composed = json!({
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": {"type": "object"}}
+            },
+            "oneOf": [
+                {"type": "object", "properties": {"items": {"type": "array"}}}
+            ]
+        });
+
+        assert_eq!(inferred_row_path(&external, &external), None);
+        assert_eq!(inferred_row_path(&composed, &composed), None);
+    }
 
     #[test]
     fn scalar_type_accepts_nullable_type_arrays() {
