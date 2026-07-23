@@ -1050,6 +1050,39 @@ mod tests {
     }
 
     #[test]
+    fn mcp_function_argument_defaults_are_validated() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server"
+            },
+            "functions": [{
+                "name": "lookup",
+                "tool": "lookup",
+                "args": [{
+                    "name": "limit",
+                    "type": "Int64",
+                    "default": "ten",
+                    "bind": { "arg": "limit" }
+                }],
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("MCP function defaults must match their declared type");
+
+        assert!(
+            error
+                .to_string()
+                .contains("argument 'limit' default must match type Int64"),
+            "unexpected default validation error: {error}"
+        );
+    }
+
+    #[test]
     fn parses_streamable_http_mcp_server_with_input_backed_bearer_auth() {
         let manifest = McpSourceManifest::parse_manifest_value(json!({
             "dsl_version": 3,

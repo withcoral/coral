@@ -334,8 +334,10 @@ surface:
 
     #[test]
     fn parse_source_manifest_rejects_v3_universal_search_authoring() {
-        let error = parse_source_manifest_yaml(
-            r"
+        let manifests = [
+            (
+                "HTTP",
+                r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -362,15 +364,46 @@ functions:
       - name: id
         type: Utf8
 ",
-        )
-        .expect_err("DSL v3 Universal Search authoring must be rejected");
-
-        assert!(
-            error.to_string().contains(
-                "/functions/0: Additional properties are not allowed ('universal_search' was unexpected)"
             ),
-            "unexpected schema error: {error}"
-        );
+            (
+                "MCP",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: demo-mcp-server
+functions:
+  - name: search_items
+    tool: search_items
+    universal_search:
+      id: item_search
+      execute: true
+      query_arg: query
+    args:
+      - name: query
+        bind:
+          arg: query
+    columns:
+      - name: id
+        type: Utf8
+",
+            ),
+        ];
+
+        for (backend, manifest) in manifests {
+            let error = parse_source_manifest_yaml(manifest)
+                .expect_err("DSL v3 Universal Search authoring must be rejected");
+
+            assert!(
+                error.to_string().contains(
+                    "/functions/0: Additional properties are not allowed ('universal_search' was unexpected)"
+                ),
+                "unexpected {backend} schema error: {error}"
+            );
+        }
     }
 
     #[test]

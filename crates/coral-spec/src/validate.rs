@@ -1175,6 +1175,63 @@ mod tests {
         })
     }
 
+    fn function_default_manifest(data_type: &str, default: Value, values: Vec<&str>) -> Value {
+        json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "functions": [{
+                "name": "lookup",
+                "args": [{
+                    "name": "option",
+                    "type": data_type,
+                    "values": values,
+                    "default": default,
+                    "bind": { "arg": "option" }
+                }],
+                "request": {
+                    "path": "/lookup",
+                    "query": [{ "name": "option", "from": "arg", "key": "option" }]
+                },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        })
+    }
+
+    #[test]
+    fn http_function_argument_defaults_are_type_and_enum_checked() {
+        let type_error = parse_source_manifest_value(function_default_manifest(
+            "Int64",
+            json!("one"),
+            Vec::new(),
+        ))
+        .expect_err("string default must not satisfy an Int64 argument");
+        assert!(
+            type_error
+                .to_string()
+                .contains("argument 'option' default must match type Int64"),
+            "unexpected type error: {type_error}"
+        );
+
+        let enum_error = parse_source_manifest_value(function_default_manifest(
+            "Boolean",
+            json!(true),
+            vec!["false"],
+        ))
+        .expect_err("default must belong to the declared values");
+        assert!(
+            enum_error
+                .to_string()
+                .contains("argument 'option' default is not one of its declared values"),
+            "unexpected enum error: {enum_error}"
+        );
+
+        parse_source_manifest_value(function_default_manifest("Float64", json!(1.0), vec!["1"]))
+            .expect("integral-looking float default should match its rendered enum value");
+    }
+
     fn validate_test_http_table(
         filters: &[FilterSpec],
         request: &RequestSpec,

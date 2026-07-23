@@ -1278,6 +1278,38 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
+    fn table_function_arg_default_distinguishes_missing_from_explicit_null() {
+        let missing = serde_json::from_value::<TableFunctionArgSpec>(serde_json::json!({
+            "name": "options",
+            "type": "Json",
+            "bind": { "arg": "options" }
+        }))
+        .expect("argument without a default");
+        assert!(missing.default.is_none());
+
+        let explicit_null = serde_json::from_value::<TableFunctionArgSpec>(serde_json::json!({
+            "name": "options",
+            "type": "Json",
+            "default": null,
+            "bind": { "arg": "options" }
+        }))
+        .expect("argument with an explicit null default");
+        assert_eq!(
+            explicit_null
+                .default
+                .as_ref()
+                .map(DeclaredDefaultValue::value),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            serde_json::to_value(explicit_null)
+                .expect("serialize explicit null default")
+                .get("default"),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    #[test]
     fn resolve_request_returns_default_when_no_routes() {
         let table = test_http_table_spec(
             "items",
