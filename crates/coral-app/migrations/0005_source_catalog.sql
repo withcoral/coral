@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS sources (
     version TEXT,
     origin_kind TEXT NOT NULL,
     credential_storage TEXT,
+    credential_revision TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
     created_at_unix_nanos BIGINT NOT NULL,
     updated_at_unix_nanos BIGINT NOT NULL,
     PRIMARY KEY (workspace_id, name),
