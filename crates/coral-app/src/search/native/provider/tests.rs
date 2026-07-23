@@ -191,7 +191,6 @@ fn context(
                 table_functions: Vec::new(),
             },
             failed_source_names: BTreeSet::new(),
-            runtime_schema_owners: BTreeMap::new(),
             universal_search_resolutions: reports,
         }),
     )
@@ -218,7 +217,7 @@ fn context_with_resolution(
 
 fn report(source: &str, routes: Vec<ResolvedUniversalSearchRoute>) -> UniversalSearchResolution {
     UniversalSearchResolution {
-        owner_source_name: source.to_string(),
+        source_name: source.to_string(),
         eligible_routes: routes,
         explicit_denials: Vec::new(),
         diagnostics: Vec::new(),
@@ -234,7 +233,7 @@ fn resolution_diagnostic(
     reason: UniversalSearchResolutionReason,
 ) -> UniversalSearchResolutionDiagnostic {
     UniversalSearchResolutionDiagnostic {
-        owner_source_name: source.to_string(),
+        source_name: source.to_string(),
         authored_route_id: route_id.map(str::to_string),
         locator: locator.map(
             |(schema_name, function_name)| UniversalSearchFunctionLocator {
@@ -252,7 +251,7 @@ fn route(
     origin: UniversalSearchResolutionOrigin,
 ) -> ResolvedUniversalSearchRoute {
     ResolvedUniversalSearchRoute {
-        owner_source_name: source.to_string(),
+        source_name: source.to_string(),
         installation_revision: Uuid::from_u128(source.bytes().map(u128::from).sum()),
         authored_route_id: matches!(origin, UniversalSearchResolutionOrigin::Explicit)
             .then(|| route_name.to_string()),
@@ -260,7 +259,7 @@ fn route(
             operation_id: route_name.to_string(),
         },
         locator: UniversalSearchFunctionLocator {
-            schema_name: format!("{source}_runtime"),
+            schema_name: source.to_string(),
             function_name: route_name.to_string(),
         },
         query_argument: ResolvedUniversalSearchArgument {
@@ -363,7 +362,7 @@ fn route_selection_is_deterministic_explicit_first_and_one_per_source() {
         .iter()
         .map(|selected| {
             (
-                selected.route.owner_source_name.as_str(),
+                selected.route.source_name.as_str(),
                 selected.route.locator.function_name.as_str(),
             )
         })
@@ -406,9 +405,19 @@ fn route_selection_golden_is_a1_b1_a2_a3() {
         inventory
             .selected
             .iter()
-            .map(|selected| selected.route.locator.function_name.as_str())
+            .map(|selected| {
+                (
+                    selected.route.source_name.as_str(),
+                    selected.route.locator.function_name.as_str(),
+                )
+            })
             .collect::<Vec<_>>(),
-        ["a1", "b1", "a2", "a3"]
+        [
+            ("alpha", "a1"),
+            ("beta", "b1"),
+            ("alpha", "a2"),
+            ("alpha", "a3"),
+        ]
     );
 }
 
@@ -473,16 +482,28 @@ async fn native_results_round_robin_by_row_then_selected_route_before_digest() {
     let outcome = provider(executor)
         .search_native(context(Instant::now(), 10, reports))
         .await;
-    let titles = outcome
+    let results = outcome
         .candidates
         .iter()
         .map(|candidate| match &candidate.payload {
-            SearchPayload::NativeResult(result) => result.title.as_deref(),
-            _ => None,
+            SearchPayload::NativeResult(result) => (
+                result.schema_name.as_str(),
+                result.function_name.as_str(),
+                result.title.as_deref(),
+            ),
+            _ => unreachable!("native fanout returns only native results"),
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(titles, [Some("A0"), Some("B0"), Some("A1"), Some("B1")]);
+    assert_eq!(
+        results,
+        [
+            ("alpha", "a", Some("A0")),
+            ("beta", "b", Some("B0")),
+            ("alpha", "a", Some("A1")),
+            ("beta", "b", Some("B1")),
+        ]
+    );
     assert!(outcome.candidates[0].key > outcome.candidates[1].key);
 }
 
@@ -715,16 +736,6 @@ async fn diagnostics_are_capped_by_tier_then_explicit_source_route_order() {
         ],
     );
     alpha.omitted_diagnostic_count = 3;
-    alpha.diagnostics = (0..14)
-        .map(|index| {
-            resolution_diagnostic(
-                &format!("z{index:02}"),
-                Some(&format!("r{index:02}")),
-                Some(("safe_schema", "safe_function")),
-                UniversalSearchResolutionReason::RouteStale,
-            )
-        })
-        .collect();
     let beta = report(
         "beta",
         vec![route(
@@ -733,8 +744,21 @@ async fn diagnostics_are_capped_by_tier_then_explicit_source_route_order() {
             UniversalSearchResolutionOrigin::Explicit,
         )],
     );
+    let mut reports = vec![beta, alpha];
+    reports.extend((0..14).map(|index| {
+        let source_name = format!("z{index:02}");
+        let route_id = format!("r{index:02}");
+        let mut report = report(&source_name, Vec::new());
+        report.diagnostics = vec![resolution_diagnostic(
+            &source_name,
+            Some(&route_id),
+            Some((&source_name, "safe_function")),
+            UniversalSearchResolutionReason::RouteStale,
+        )];
+        report
+    }));
     let outcome = provider(ScriptedExecutor::same(empty_success()))
-        .search_native(context(Instant::now(), 10, vec![beta, alpha]))
+        .search_native(context(Instant::now(), 10, reports))
         .await;
 
     assert_eq!(outcome.status.diagnostics.len(), 16);
@@ -745,7 +769,7 @@ async fn diagnostics_are_capped_by_tier_then_explicit_source_route_order() {
             .iter()
             .map(|diagnostic| {
                 (
-                    diagnostic.installed_source_name.as_str(),
+                    diagnostic.source_name.as_str(),
                     diagnostic.function_name.as_deref(),
                 )
             })
@@ -765,17 +789,17 @@ async fn diagnostics_are_capped_by_tier_then_explicit_source_route_order() {
         outcome.status.diagnostics[4].function_name.as_deref(),
         Some("i2")
     );
-    assert_eq!(outcome.status.diagnostics[5].installed_source_name, "z00");
+    assert_eq!(outcome.status.diagnostics[5].source_name, "z00");
 }
 
 #[tokio::test]
-async fn resolved_diagnostic_keeps_locator_and_unresolved_diagnostic_omits_it() {
+async fn resolved_diagnostic_keeps_function_and_unresolved_diagnostic_omits_it() {
     let mut report = report("alpha", Vec::new());
     report.diagnostics = vec![
         resolution_diagnostic(
             "alpha",
             Some("resolved"),
-            Some(("safe_schema", "safe_function")),
+            Some(("alpha", "safe_function")),
             UniversalSearchResolutionReason::UnsafeOperation,
         ),
         resolution_diagnostic(
@@ -794,7 +818,7 @@ async fn resolved_diagnostic_keeps_locator_and_unresolved_diagnostic_omits_it() 
         .iter()
         .find(|diagnostic| diagnostic.authored_route_id.as_deref() == Some("resolved"))
         .expect("resolved diagnostic");
-    assert_eq!(resolved.schema_name.as_deref(), Some("safe_schema"));
+    assert_eq!(resolved.source_name, "alpha");
     assert_eq!(resolved.function_name.as_deref(), Some("safe_function"));
     let unresolved = outcome
         .status
@@ -802,7 +826,7 @@ async fn resolved_diagnostic_keeps_locator_and_unresolved_diagnostic_omits_it() 
         .iter()
         .find(|diagnostic| diagnostic.authored_route_id.as_deref() == Some("unresolved"))
         .expect("unresolved diagnostic");
-    assert_eq!(unresolved.schema_name, None);
+    assert_eq!(unresolved.source_name, "alpha");
     assert_eq!(unresolved.function_name, None);
 }
 
@@ -1176,7 +1200,7 @@ async fn early_panic_reaped_after_another_deadline_remains_internal() {
         .status
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.installed_source_name == "beta")
+        .find(|diagnostic| diagnostic.source_name == "beta")
         .expect("beta diagnostic");
 
     assert_eq!(beta.reason, NativeSearchDiagnosticReason::InternalError);

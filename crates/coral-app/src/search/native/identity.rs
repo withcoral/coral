@@ -77,12 +77,8 @@ pub(super) fn sort_key_for_row(
         .expect("fixed version length fits u64");
     append_component(&mut hasher, TAG_WORKSPACE, workspace.as_str().as_bytes())
         .expect("workspace length fits u64");
-    append_component(
-        &mut hasher,
-        TAG_SOURCE_NAME,
-        route.owner_source_name.as_bytes(),
-    )
-    .expect("source name length fits u64");
+    append_component(&mut hasher, TAG_SOURCE_NAME, route.source_name.as_bytes())
+        .expect("source name length fits u64");
     append_component(
         &mut hasher,
         TAG_INSTALLATION_REVISION,

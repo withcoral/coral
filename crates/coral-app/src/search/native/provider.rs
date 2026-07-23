@@ -429,14 +429,14 @@ struct RouteInventory {
 impl RouteInventory {
     fn from_reports(reports: &[UniversalSearchResolution]) -> Self {
         let mut reports = reports.to_vec();
-        reports.sort_by(|left, right| left.owner_source_name.cmp(&right.owner_source_name));
+        reports.sort_by(|left, right| left.source_name.cmp(&right.source_name));
         let mut grouped = BTreeMap::<String, Vec<ResolvedUniversalSearchRoute>>::new();
         let mut resolution_diagnostics = Vec::new();
         let mut already_omitted_diagnostics = 0_usize;
         for mut report in reports {
             report.eligible_routes.sort_by_key(route_sort_key);
             grouped
-                .entry(report.owner_source_name.clone())
+                .entry(report.source_name.clone())
                 .or_default()
                 .extend(report.eligible_routes);
             report.explicit_denials.sort_by_key(|denial| {
@@ -478,22 +478,24 @@ impl RouteInventory {
         resolution_diagnostics.sort_by_key(resolution_diagnostic_sort_key);
 
         let all = grouped
-            .into_values()
-            .flat_map(|mut routes| {
+            .into_iter()
+            .flat_map(|(source_name, mut routes)| {
                 routes.sort_by_key(route_sort_key);
                 routes
+                    .into_iter()
+                    .map(move |route| (source_name.clone(), route))
             })
             .enumerate()
-            .map(|(order, route)| SelectedRoute { order, route })
+            .map(|(order, (source_name, route))| (source_name, SelectedRoute { order, route }))
             .collect::<Vec<_>>();
         let eligible_count = all.len();
         let mut selected_indices = Vec::new();
         let mut selected_sources = BTreeSet::new();
-        for (index, route) in all.iter().enumerate() {
+        for (index, (source_name, _route)) in all.iter().enumerate() {
             if selected_indices.len() == MAX_SELECTED_FUNCTIONS {
                 break;
             }
-            if selected_sources.insert(route.route.owner_source_name.clone()) {
+            if selected_sources.insert(source_name.clone()) {
                 selected_indices.push(index);
             }
         }
@@ -505,7 +507,10 @@ impl RouteInventory {
                 selected_indices.push(index);
             }
         }
-        let mut slots = all.into_iter().map(Some).collect::<Vec<_>>();
+        let mut slots = all
+            .into_iter()
+            .map(|(_source_name, route)| Some(route))
+            .collect::<Vec<_>>();
         let selected = selected_indices
             .into_iter()
             .enumerate()
@@ -531,12 +536,11 @@ impl RouteInventory {
 
 fn resolution_diagnostic_sort_key(
     diagnostic: &NativeSearchDiagnostic,
-) -> (String, u8, String, String, String, u8) {
+) -> (String, u8, String, String, u8) {
     (
-        diagnostic.installed_source_name.clone(),
+        diagnostic.source_name.clone(),
         u8::from(diagnostic.authored_route_id.is_none()),
         diagnostic.authored_route_id.clone().unwrap_or_default(),
-        diagnostic.schema_name.clone().unwrap_or_default(),
         diagnostic.function_name.clone().unwrap_or_default(),
         native_reason_order(diagnostic.reason),
     )
@@ -776,7 +780,7 @@ fn attempt_from_join(
         Ok(attempt) => attempt,
         Err(error) => {
             tracing::error!(
-                source = %call.selected.route.owner_source_name,
+                source = %call.selected.route.source_name,
                 route_id = call.selected.route.authored_route_id.as_deref().unwrap_or(""),
                 cancelled = error.is_cancelled(),
                 panicked = error.is_panic(),

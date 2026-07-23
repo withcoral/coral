@@ -156,11 +156,7 @@ pub(super) fn skipped_route(
 
 pub(super) fn explicit_denial(denial: &ResolvedUniversalSearchDenial) -> NativeSearchDiagnostic {
     NativeSearchDiagnostic {
-        installed_source_name: denial.owner_source_name.clone(),
-        schema_name: denial
-            .locator
-            .as_ref()
-            .map(|locator| locator.schema_name.clone()),
+        source_name: denial.source_name.clone(),
         function_name: denial
             .locator
             .as_ref()
@@ -179,8 +175,7 @@ pub(super) fn resolution_failure(
 ) -> NativeSearchDiagnostic {
     let locator = diagnostic.locator.as_ref();
     NativeSearchDiagnostic {
-        installed_source_name: diagnostic.owner_source_name.clone(),
-        schema_name: locator.map(|locator| locator.schema_name.clone()),
+        source_name: diagnostic.source_name.clone(),
         function_name: locator.map(|locator| locator.function_name.clone()),
         authored_route_id: diagnostic.authored_route_id.clone(),
         state: NativeSearchDiagnosticState::Skipped,
@@ -240,8 +235,7 @@ fn route_diagnostic(
     has_more: bool,
 ) -> NativeSearchDiagnostic {
     NativeSearchDiagnostic {
-        installed_source_name: route.owner_source_name.clone(),
-        schema_name: Some(route.locator.schema_name.clone()),
+        source_name: route.source_name.clone(),
         function_name: Some(route.locator.function_name.clone()),
         authored_route_id: route.authored_route_id.clone(),
         state,
@@ -291,8 +285,23 @@ fn execution_failure(
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeProviderSummary, provider_state};
-    use crate::search::result::SearchProviderState;
+    use coral_spec::{ManifestDataType, SearchLimitsSpec};
+    use uuid::Uuid;
+
+    use super::{
+        NativeProviderSummary, explicit_denial, provider_state, resolution_failure, skipped_route,
+    };
+    use crate::search::result::{
+        NativeSearchDiagnosticReason, NativeSearchDiagnosticState, SearchProviderState,
+    };
+    use crate::sources::runtime_package::RuntimeContractFingerprint;
+    use crate::sources::universal_search::{
+        ResolvedUniversalSearchArgument, ResolvedUniversalSearchDenial,
+        ResolvedUniversalSearchResultMapping, ResolvedUniversalSearchRoute,
+        ResolvedUniversalSearchTarget, UniversalSearchFunctionLocator,
+        UniversalSearchResolutionDiagnostic, UniversalSearchResolutionOrigin,
+        UniversalSearchResolutionReason,
+    };
 
     #[test]
     fn aggregate_state_table_is_deterministic() {
@@ -312,5 +321,106 @@ mod tests {
         assert_eq!(state(2, 1, 1, 1, false), SearchProviderState::Partial);
         assert_eq!(state(4, 4, 0, 4, true), SearchProviderState::Partial);
         assert_eq!(state(2, 0, 2, 0, false), SearchProviderState::Error);
+    }
+
+    #[test]
+    fn diagnostics_use_canonical_source_and_only_the_locator_function() {
+        let route = route_with_locator_schema("legacy_runtime_component");
+        let route_diagnostic =
+            skipped_route(&route, NativeSearchDiagnosticReason::FanoutLimitReached);
+        assert_eq!(route_diagnostic.source_name, "github");
+        assert_eq!(
+            route_diagnostic.function_name.as_deref(),
+            Some("search_issues")
+        );
+        assert_eq!(route_diagnostic.state, NativeSearchDiagnosticState::Skipped);
+
+        let denial = ResolvedUniversalSearchDenial {
+            source_name: "linear".to_string(),
+            authored_route_id: "denied".to_string(),
+            target: ResolvedUniversalSearchTarget {
+                operation_id: "search_tasks".to_string(),
+            },
+            locator: Some(UniversalSearchFunctionLocator {
+                schema_name: "ignored_runtime_component".to_string(),
+                function_name: "search_tasks".to_string(),
+            }),
+        };
+        let denial_diagnostic = explicit_denial(&denial);
+        assert_eq!(denial_diagnostic.source_name, "linear");
+        assert_eq!(
+            denial_diagnostic.function_name.as_deref(),
+            Some("search_tasks")
+        );
+        assert_eq!(
+            denial_diagnostic.reason,
+            NativeSearchDiagnosticReason::NotAuthorized
+        );
+
+        let failure = UniversalSearchResolutionDiagnostic {
+            source_name: "salesforce".to_string(),
+            authored_route_id: Some("unsafe".to_string()),
+            locator: Some(UniversalSearchFunctionLocator {
+                schema_name: "ignored_failure_component".to_string(),
+                function_name: "search_accounts".to_string(),
+            }),
+            reason: UniversalSearchResolutionReason::UnsafeOperation,
+        };
+        let failure_diagnostic = resolution_failure(&failure);
+        assert_eq!(failure_diagnostic.source_name, "salesforce");
+        assert_eq!(
+            failure_diagnostic.function_name.as_deref(),
+            Some("search_accounts")
+        );
+        assert_eq!(
+            failure_diagnostic.reason,
+            NativeSearchDiagnosticReason::UnsafeOperation
+        );
+    }
+
+    #[test]
+    fn resolution_failure_without_locator_has_no_function_name() {
+        let failure = UniversalSearchResolutionDiagnostic {
+            source_name: "github".to_string(),
+            authored_route_id: None,
+            locator: None,
+            reason: UniversalSearchResolutionReason::AmbiguousRoute,
+        };
+
+        let diagnostic = resolution_failure(&failure);
+
+        assert_eq!(diagnostic.source_name, "github");
+        assert_eq!(diagnostic.function_name, None);
+        assert_eq!(diagnostic.authored_route_id, None);
+    }
+
+    fn route_with_locator_schema(locator_schema_name: &str) -> ResolvedUniversalSearchRoute {
+        ResolvedUniversalSearchRoute {
+            source_name: "github".to_string(),
+            installation_revision: Uuid::from_u128(1),
+            authored_route_id: Some("issues".to_string()),
+            target: ResolvedUniversalSearchTarget {
+                operation_id: "search_issues".to_string(),
+            },
+            locator: UniversalSearchFunctionLocator {
+                schema_name: locator_schema_name.to_string(),
+                function_name: "search_issues".to_string(),
+            },
+            query_argument: ResolvedUniversalSearchArgument {
+                name: "query".to_string(),
+                data_type: ManifestDataType::Utf8,
+            },
+            default_arguments: Vec::new(),
+            search_limits: SearchLimitsSpec {
+                default_top_k: 5,
+                max_top_k: 5,
+                max_calls_per_query: 1,
+            },
+            result: ResolvedUniversalSearchResultMapping::default(),
+            origin: UniversalSearchResolutionOrigin::Explicit,
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test(
+                "v1:diagnostic-test",
+            ),
+        }
     }
 }
