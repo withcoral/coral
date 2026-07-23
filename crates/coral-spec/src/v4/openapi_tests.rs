@@ -1483,6 +1483,82 @@ paths:
 }
 
 #[test]
+fn importer_skips_pagination_params_with_non_numeric_types() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: string_pagination
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /string-page:
+    get:
+      operationId: string-page/list
+      parameters:
+        - {name: page, in: query, schema: {type: string, default: '1'}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /string-offset:
+    get:
+      operationId: string-offset/list
+      parameters:
+        - {name: offset, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /string-limit:
+    get:
+      operationId: string-limit/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: limit, in: query, schema: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /string-page-link:
+    get:
+      operationId: string-page-link/list
+      parameters:
+        - {name: page, in: query, schema: {type: string, default: '1'}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+"
+        .as_bytes(),
+    )
+    .expect("string pagination import");
+    for operation_id in ["string_page_list", "string_offset_list", "string_limit_list"] {
+        assert_eq!(
+            imported_rest_pagination(&ir, operation_id).mode,
+            PaginationMode::None,
+            "operation {operation_id} must not infer pagination from non-numeric inputs"
+        );
+    }
+    let link = imported_rest_pagination(&ir, "string_page_link_list");
+    assert_eq!(link.mode, PaginationMode::LinkHeader);
+    assert_eq!(link.page_param, None);
+    ir.validated_plan()
+        .expect("inferred pagination must satisfy operation metadata validation");
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps related pagination cardinality cases together."

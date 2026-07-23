@@ -384,7 +384,7 @@ fn detect_cursor_query_pagination(
 }
 
 fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
-    let offset_input = find_query_input(
+    let offset_input = find_numeric_query_input(
         inputs,
         &["offset", "offsetindex", "pageoffset", "skip", "startindex"],
     )?;
@@ -400,7 +400,7 @@ fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpe
 }
 
 fn detect_page_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
-    let page_input = find_page_input(inputs)?;
+    let page_input = find_numeric_page_input(inputs)?;
     let page_size = detect_page_size(inputs)?;
     Some(PaginationSpec {
         mode: PaginationMode::Page,
@@ -417,7 +417,7 @@ fn detect_page_size(inputs: &[IrOperationInput]) -> Option<PageSizeSpec> {
 }
 
 fn detect_page_size_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_query_input(
+    find_numeric_query_input(
         inputs,
         &[
             "amount",
@@ -436,20 +436,11 @@ fn detect_page_size_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInp
     )
 }
 
-fn find_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_query_input(
+fn find_numeric_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
+    find_numeric_query_input(
         inputs,
         &["currentpage", "page", "pageindex", "pagenumber", "pagenum"],
     )
-}
-
-fn find_numeric_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_page_input(inputs).filter(|input| {
-        matches!(
-            input.data_type,
-            IrScalarType::Integer | IrScalarType::Number
-        ) || numeric_input_default(input).is_some()
-    })
 }
 
 fn find_query_input<'a>(
@@ -460,6 +451,21 @@ fn find_query_input<'a>(
         .iter()
         .filter(|input| input.location == IrInputLocation::Query)
         .find(|input| candidate_tokens.contains(&name_token(&input.name).as_str()))
+}
+
+/// Pagination metadata validation only accepts numeric inputs for page,
+/// offset, and page-size parameters, so detection must not select inputs of
+/// any other type.
+fn find_numeric_query_input<'a>(
+    inputs: &'a [IrOperationInput],
+    candidate_tokens: &[&str],
+) -> Option<&'a IrOperationInput> {
+    find_query_input(inputs, candidate_tokens).filter(|input| {
+        matches!(
+            input.data_type,
+            IrScalarType::Integer | IrScalarType::Number
+        )
+    })
 }
 
 fn find_optional_string_query_input<'a>(
