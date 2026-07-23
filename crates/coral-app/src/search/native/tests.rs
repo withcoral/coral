@@ -40,8 +40,8 @@ fn route(mapping: ResolvedUniversalSearchResultMapping) -> ResolvedUniversalSear
         owner_source_name: "github".to_string(),
         installation_revision: Uuid::from_u128(1),
         authored_route_id: Some("issues".to_string()),
-        target: ResolvedUniversalSearchTarget::V3 {
-            function_name: "search_issues".to_string(),
+        target: ResolvedUniversalSearchTarget {
+            operation_id: "search_issues".to_string(),
         },
         locator: UniversalSearchFunctionLocator {
             schema_name: "github".to_string(),

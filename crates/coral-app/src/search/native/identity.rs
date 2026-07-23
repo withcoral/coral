@@ -12,7 +12,7 @@ use coral_spec::ManifestDataType;
 use sha2::{Digest as _, Sha256};
 
 use crate::sources::universal_search::{
-    ResolvedUniversalSearchResultField, ResolvedUniversalSearchRoute, ResolvedUniversalSearchTarget,
+    ResolvedUniversalSearchResultField, ResolvedUniversalSearchRoute,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -21,7 +21,6 @@ const TAG_WORKSPACE: u8 = 0x02;
 const TAG_SOURCE_NAME: u8 = 0x03;
 const TAG_INSTALLATION_REVISION: u8 = 0x04;
 const TAG_AUTHORED_ROUTE: u8 = 0x05;
-const TAG_INFERRED_V3_ROUTE: u8 = 0x06;
 const TAG_INFERRED_V4_OPERATION: u8 = 0x08;
 const TAG_ENTITY_TYPE: u8 = 0x09;
 const TAG_ABSENT: u8 = 0x0a;
@@ -104,18 +103,11 @@ fn identity_prefix(
     )?;
     match route.authored_route_id.as_deref() {
         Some(route_id) => append_component(&mut hasher, TAG_AUTHORED_ROUTE, route_id.as_bytes())?,
-        None => match &route.target {
-            ResolvedUniversalSearchTarget::V3 { function_name } => {
-                append_component(&mut hasher, TAG_INFERRED_V3_ROUTE, function_name.as_bytes())?;
-            }
-            ResolvedUniversalSearchTarget::V4 { operation_id } => {
-                append_component(
-                    &mut hasher,
-                    TAG_INFERRED_V4_OPERATION,
-                    operation_id.as_bytes(),
-                )?;
-            }
-        },
+        None => append_component(
+            &mut hasher,
+            TAG_INFERRED_V4_OPERATION,
+            route.target.operation_id.as_bytes(),
+        )?,
     }
     match route.result.entity_type.as_deref() {
         Some(entity_type) => {
