@@ -54,7 +54,7 @@ use crate::feedback::publisher::{
 };
 use crate::feedback::service::FeedbackService;
 use crate::functions::service::FunctionService;
-use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
@@ -104,7 +104,7 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
@@ -122,7 +122,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+            principal_provider: Arc::new(LocalPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
@@ -283,16 +283,16 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Sets the server-side user principal provider.
+    /// Sets the server-side principal provider.
     ///
-    /// The default provider returns the local single-user principal for every
-    /// request. Product runtimes can authenticate inbound metadata and select a
-    /// user by installing their own provider.
-    pub fn with_user_principal_provider(
+    /// The default provider returns the local principal for every
+    /// request. Product runtimes can authenticate inbound metadata and select
+    /// any canonical principal by installing their own provider.
+    pub fn with_principal_provider(
         mut self,
-        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        principal_provider: Arc<dyn PrincipalProvider>,
     ) -> Self {
-        self.config.user_principal_provider = user_principal_provider;
+        self.config.principal_provider = principal_provider;
         self
     }
 
@@ -425,7 +425,7 @@ impl ServerBuilder {
                 task: task_manager,
             },
             trace_components,
-            self.config.user_principal_provider,
+            self.config.principal_provider,
             mode,
         )
         .await
@@ -604,7 +604,7 @@ struct ServerDependencies {
 async fn start_server(
     dependencies: ServerDependencies,
     trace_components: TraceServerComponents,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let TraceServerComponents {
@@ -665,7 +665,7 @@ async fn start_server(
     let routes = Routes::from(
         application_routes
             .into_axum_router()
-            .layer(GrpcRequestContextLayer::new(user_principal_provider)),
+            .layer(GrpcRequestContextLayer::new(principal_provider)),
     )
     // Process liveness must not depend on principal selection.
     .add_service(tonic_health::pb::health_server::HealthServer::new(
@@ -954,8 +954,8 @@ mod tests {
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
-        AwsEngineExtensionsProvider, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
-        UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError,
+        AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
+        Principal, PrincipalProvider, PrincipalProviderError,
     };
 
     fn default_workspace() -> Workspace {
@@ -1004,16 +1004,16 @@ enabled = false
     }
 
     #[derive(Debug)]
-    struct RejectingUserPrincipalProvider;
+    struct RejectingPrincipalProvider;
 
     #[tonic::async_trait]
-    impl UserPrincipalProvider for RejectingUserPrincipalProvider {
+    impl PrincipalProvider for RejectingPrincipalProvider {
         async fn principal_for_metadata(
             &self,
             _metadata: &tonic::metadata::MetadataMap,
-        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
-            Err(UserPrincipalProviderError::unauthenticated(
-                "rejected user principal",
+        ) -> Result<Principal, PrincipalProviderError> {
+            Err(PrincipalProviderError::unauthenticated(
+                "rejected principal",
             ))
         }
     }
@@ -1574,7 +1574,7 @@ backend = "unsupported"
                 service: Some(trace_service),
                 local_trace_store_dir: None,
             },
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await
@@ -1648,7 +1648,7 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let server = ServerBuilder::new()
             .with_config_dir(temp.path().join("coral-config"))
-            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .with_principal_provider(Arc::new(RejectingPrincipalProvider))
             .start()
             .await
             .expect("start server");
@@ -1847,7 +1847,7 @@ tables:
         let temp = TempDir::new().expect("temp dir");
         let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
             .with_config_dir(temp.path().join("coral-config"))
-            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .with_principal_provider(Arc::new(RejectingPrincipalProvider))
             .start()
             .await
             .expect("start embedded UI server");
@@ -2021,7 +2021,7 @@ tables:
                 task: task_manager,
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await
@@ -2147,7 +2147,7 @@ tables:
                 task: task_manager,
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await
@@ -2273,7 +2273,7 @@ tables:
                 task: task_manager,
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await

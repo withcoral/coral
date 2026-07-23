@@ -66,7 +66,8 @@ pub use bootstrap::{
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use identity::{
-    SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError,
+    LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind, PrincipalProvider,
+    PrincipalProviderError,
 };
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,

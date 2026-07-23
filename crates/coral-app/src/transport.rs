@@ -33,9 +33,7 @@ use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
-use crate::identity::{
-    UserPrincipalProvider, UserPrincipalProviderError, UserPrincipalProviderErrorKind,
-};
+use crate::identity::{PrincipalProvider, PrincipalProviderError, PrincipalProviderErrorKind};
 use crate::query::manager::QueryManagerError;
 use crate::request_context::RequestContext;
 use crate::task::id::TaskId;
@@ -43,7 +41,7 @@ use crate::workspaces::WorkspaceName;
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
 
-const USER_PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
+const PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct GrpcServerSpan(tracing::Span);
@@ -78,14 +76,12 @@ impl Extractor for MetadataExtractor<'_> {
 /// covered by the same principal-selection path.
 #[derive(Clone)]
 pub(crate) struct GrpcRequestContextLayer {
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
 }
 
 impl GrpcRequestContextLayer {
-    pub(crate) fn new(user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
-        Self {
-            user_principal_provider,
-        }
+    pub(crate) fn new(principal_provider: Arc<dyn PrincipalProvider>) -> Self {
+        Self { principal_provider }
     }
 }
 
@@ -95,7 +91,7 @@ impl<S> Layer<S> for GrpcRequestContextLayer {
     fn layer(&self, inner: S) -> Self::Service {
         GrpcRequestContextService {
             inner,
-            user_principal_provider: Arc::clone(&self.user_principal_provider),
+            principal_provider: Arc::clone(&self.principal_provider),
         }
     }
 }
@@ -103,7 +99,7 @@ impl<S> Layer<S> for GrpcRequestContextLayer {
 #[derive(Clone)]
 pub(crate) struct GrpcRequestContextService<S> {
     inner: S,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
 }
 
 impl<S, B, ResBody> Service<http::Request<B>> for GrpcRequestContextService<S>
@@ -132,7 +128,7 @@ where
             |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
         );
         let request_metadata = MetadataMap::from_headers(request.headers().clone());
-        let user_principal_provider = Arc::clone(&self.user_principal_provider);
+        let principal_provider = Arc::clone(&self.principal_provider);
         let span = grpc_span_for_metadata(&method_metadata, &request_metadata);
         request
             .extensions_mut()
@@ -145,9 +141,9 @@ where
         Box::pin(
             async move {
                 match principal_for_request(
-                    user_principal_provider.as_ref(),
+                    principal_provider.as_ref(),
                     &request_metadata,
-                    USER_PRINCIPAL_PROVIDER_TIMEOUT,
+                    PRINCIPAL_PROVIDER_TIMEOUT,
                 )
                 .await
                 {
@@ -158,7 +154,7 @@ where
                         inner.call(request).await
                     }
                     Err(error) => {
-                        let status = user_principal_provider_status(&error);
+                        let status = principal_provider_status(&error);
                         record_grpc_status(&span, status.code(), Some(&status));
                         Ok(status.into_http())
                     }
@@ -170,26 +166,24 @@ where
 }
 
 async fn principal_for_request(
-    provider: &dyn UserPrincipalProvider,
+    provider: &dyn PrincipalProvider,
     metadata: &MetadataMap,
     timeout: Duration,
-) -> Result<crate::identity::UserPrincipal, UserPrincipalProviderError> {
+) -> Result<crate::identity::Principal, PrincipalProviderError> {
     tokio::time::timeout(timeout, provider.principal_for_metadata(metadata))
         .await
         .unwrap_or_else(|_| {
-            Err(UserPrincipalProviderError::unavailable(
-                "user principal provider timed out",
+            Err(PrincipalProviderError::unavailable(
+                "principal provider timed out",
             ))
         })
 }
 
-fn user_principal_provider_status(error: &UserPrincipalProviderError) -> Status {
+fn principal_provider_status(error: &PrincipalProviderError) -> Status {
     let (code, prefix) = match error.kind() {
-        UserPrincipalProviderErrorKind::Unauthenticated => {
-            (Code::Unauthenticated, "unauthenticated")
-        }
-        UserPrincipalProviderErrorKind::Unavailable => (Code::Unavailable, "unavailable"),
-        UserPrincipalProviderErrorKind::Internal => (Code::Internal, "internal"),
+        PrincipalProviderErrorKind::Unauthenticated => (Code::Unauthenticated, "unauthenticated"),
+        PrincipalProviderErrorKind::Unavailable => (Code::Unavailable, "unavailable"),
+        PrincipalProviderErrorKind::Internal => (Code::Internal, "internal"),
     };
     status_with_bounded_detail(code, format!("{prefix}: {}", error.client_message()))
 }
@@ -614,13 +608,12 @@ mod tests {
 
     use super::{
         GRPC_REQUEST_ERROR_MESSAGE, GrpcMethodMetadata, GrpcServerMethod, annotate_request_context,
-        grpc_method, grpc_span_for_metadata, instrument_grpc, query_status,
-        query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
-        table_to_proto, user_principal_provider_status, workspace_name_from_proto,
-        workspace_to_proto,
+        grpc_method, grpc_span_for_metadata, instrument_grpc, principal_provider_status,
+        query_status, query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
+        table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
-    use crate::identity::UserPrincipalProviderError;
+    use crate::identity::PrincipalProviderError;
     use crate::query::manager::QueryManagerError;
     use crate::task::id::TaskId;
     use crate::workspaces::WorkspaceName;
@@ -754,26 +747,26 @@ mod tests {
     }
 
     #[test]
-    fn user_principal_provider_status_preserves_failure_class() {
+    fn principal_provider_status_preserves_failure_class() {
         let cases = [
             (
-                UserPrincipalProviderError::unauthenticated("bad token"),
+                PrincipalProviderError::unauthenticated("bad token"),
                 Code::Unauthenticated,
                 "unauthenticated: bad token",
             ),
             (
-                UserPrincipalProviderError::unavailable("key service offline"),
+                PrincipalProviderError::unavailable("key service offline"),
                 Code::Unavailable,
                 "unavailable: key service offline",
             ),
             (
-                UserPrincipalProviderError::internal("invalid principal selection"),
+                PrincipalProviderError::internal("invalid principal selection"),
                 Code::Internal,
                 "internal: invalid principal selection",
             ),
         ];
         for (error, code, message) in cases {
-            let status = user_principal_provider_status(&error);
+            let status = principal_provider_status(&error);
             assert_eq!(status.code(), code);
             assert_eq!(status.message(), message);
         }

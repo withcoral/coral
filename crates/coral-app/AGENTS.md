@@ -37,6 +37,13 @@ root.
 - Keep process environment access in `src/bootstrap/env.rs` or other clearly
   app-owned bootstrap seams. Do not read ambient process environment from
   managers, services, state helpers, or credential helpers.
+- Treat `PrincipalId` as an opaque, stable identifier from one collision-free
+  namespace spanning every actor kind and identity authority. Principal
+  providers own canonicalization and supply the authenticated `PrincipalKind`;
+  downstream code must not infer actor kind, ownership, or authorization from
+  the identifier. Kind is an input to authorization policy, not a permission or
+  role by itself, and providers must not classify the same `PrincipalId` as
+  different kinds across requests.
 - Keep `state/`, `credentials/`, `workspaces/`, `sources/`, `query/`, and
   `catalog/` as the main internal boundaries. Do not create new sub-boundaries
   unless they own durable, independent behavior.
