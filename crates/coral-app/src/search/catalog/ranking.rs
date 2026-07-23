@@ -1,7 +1,7 @@
 //! Catalog provider relevance ranking.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::search::catalog::snapshot::surface_kind_from_str;
 use crate::search::catalog::sqlite_index::{CatalogIndexDocumentKind, CatalogSearchHit};
@@ -22,6 +22,7 @@ const QUALIFIED_NAME_CONTAINS_TERM_RELEVANCE_BOOST: u32 = 1_500;
 const SEARCHABLE_TEXT_CONTAINS_TERM_RELEVANCE_BOOST: u32 = 800;
 const DESCRIPTION_CONTAINS_TERM_RELEVANCE_BOOST: u32 = 600;
 const ALL_QUERY_TERMS_MATCHED_RELEVANCE_BOOST: u32 = 12_000;
+const PARENT_MATCHED_QUERY_CONCEPT_RELEVANCE_BOOST: u32 = 4_000;
 const PARENT_CATALOG_SURFACE_RANK_ORDER: u8 = 0;
 const COLUMN_HINT_RANK_ORDER: u8 = 1;
 
@@ -144,11 +145,11 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
     let description = hit.description.to_lowercase();
     let searchable_text = hit.searchable_text.to_lowercase();
     let mut score = doc_kind_boost(hit.doc_kind);
-    let required_term_count = terms
+    let required_concepts = terms
         .iter()
-        .filter(|term| is_required_query_term(term))
-        .count();
-    let mut matched_required_terms = 0_usize;
+        .filter_map(|term| normalized_query_concept(term))
+        .collect::<BTreeSet<_>>();
+    let mut matched_concepts = BTreeSet::new();
 
     for term in terms {
         let mut term_score = 0_u32;
@@ -194,22 +195,29 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
         if qualified_name.contains(term) {
             term_score = term_score.saturating_add(QUALIFIED_NAME_CONTAINS_TERM_RELEVANCE_BOOST);
         }
-        if searchable_text.contains(term) {
+        if text_matches_query_concept(&searchable_text, term) {
             term_score = term_score.saturating_add(SEARCHABLE_TEXT_CONTAINS_TERM_RELEVANCE_BOOST);
         }
-        if description.contains(term) {
+        if text_matches_query_concept(&description, term) {
             term_score = term_score.saturating_add(DESCRIPTION_CONTAINS_TERM_RELEVANCE_BOOST);
         }
         if term_score > 0 {
-            if is_required_query_term(term) {
-                matched_required_terms += 1;
+            if let Some(concept) = normalized_query_concept(term) {
+                matched_concepts.insert(concept);
             }
             score = score.saturating_add(term_score);
         }
     }
 
-    if required_term_count > 1 && matched_required_terms == required_term_count {
+    if required_concepts.len() > 1 && matched_concepts == required_concepts {
         score = score.saturating_add(ALL_QUERY_TERMS_MATCHED_RELEVANCE_BOOST);
+    }
+    if !matches!(hit.doc_kind, CatalogIndexDocumentKind::ColumnHint) {
+        score = score.saturating_add(
+            u32::try_from(matched_concepts.len().saturating_sub(1))
+                .unwrap_or(u32::MAX)
+                .saturating_mul(PARENT_MATCHED_QUERY_CONCEPT_RELEVANCE_BOOST),
+        );
     }
 
     score
@@ -256,8 +264,56 @@ fn compact_identifier(value: &str) -> String {
     value.chars().filter(|ch| ch.is_alphanumeric()).collect()
 }
 
-fn is_required_query_term(term: &str) -> bool {
+fn text_matches_query_concept(text: &str, term: &str) -> bool {
+    let Some(query_concept) = normalized_query_concept(term) else {
+        return false;
+    };
+    identifier_tokens(text)
+        .filter_map(normalized_identifier_token)
+        .any(|token| token == query_concept)
+}
+
+fn normalized_query_concept(term: &str) -> Option<String> {
+    if !is_query_concept(term) {
+        return None;
+    }
+    let mut tokens = identifier_tokens(term);
+    let token = tokens.next()?;
+    if tokens.next().is_some() {
+        return None;
+    }
+    normalized_identifier_token(token)
+}
+
+fn normalized_identifier_token(token: &str) -> Option<String> {
+    let mut normalized = compact_identifier(&token.to_lowercase());
+    if normalized.len() > 3 && normalized.ends_with('s') && !normalized.ends_with("ss") {
+        normalized.pop();
+    }
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn is_query_concept(term: &str) -> bool {
     !term.chars().any(char::is_whitespace)
+        && !matches!(
+            term,
+            "a" | "an"
+                | "and"
+                | "are"
+                | "by"
+                | "for"
+                | "from"
+                | "in"
+                | "including"
+                | "into"
+                | "is"
+                | "of"
+                | "on"
+                | "or"
+                | "the"
+                | "to"
+                | "with"
+        )
 }
 
 fn doc_kind_boost(kind: CatalogIndexDocumentKind) -> u32 {
@@ -280,7 +336,7 @@ fn doc_kind_order(kind: CatalogIndexDocumentKind) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::rank_catalog_hits;
+    use super::{normalized_query_concept, rank_catalog_hits, text_matches_query_concept};
     use crate::search::catalog::sqlite_index::{CatalogIndexDocumentKind, CatalogSearchHit};
 
     const EQUAL_RETRIEVAL_SCORE_FIXTURE: u32 = 5_000;
@@ -501,6 +557,58 @@ mod tests {
             hits.first().expect("top ranked hit").hit.doc_id,
             "catalog:table:github.issues"
         );
+    }
+
+    #[test]
+    fn parent_surface_breadth_uses_indexed_searchable_text() {
+        let mut target = hit(HitInput {
+            doc_id: "catalog:function:z_metrics",
+            doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+            source_name: "datadog",
+            surface_kind: "table_function",
+            surface_name: "metrics",
+            field_name: "",
+            field_role: "",
+            description: "Timeseries data",
+            matched_fields: vec!["searchable_text"],
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+
+        let terms = [
+            "checkout".to_string(),
+            "error".to_string(),
+            "rate".to_string(),
+            "series".to_string(),
+            "timestamp".to_string(),
+            "values".to_string(),
+            "host".to_string(),
+            "service".to_string(),
+            "tags".to_string(),
+        ];
+        let baseline_score = rank_catalog_hits(vec![target.clone()], &terms)
+            .into_iter()
+            .find(|hit| hit.hit.doc_id == target.doc_id)
+            .expect("baseline parent")
+            .score;
+        target.searchable_text =
+            "metrics timeseries host service value tags series timestamp".to_string();
+        let surface_owned_score = rank_catalog_hits(vec![target.clone()], &terms)
+            .into_iter()
+            .find(|hit| hit.hit.doc_id == target.doc_id)
+            .expect("surface-owned parent")
+            .score;
+
+        assert!(surface_owned_score > baseline_score);
+    }
+
+    #[test]
+    fn surface_breadth_uses_token_boundaries_and_deduplicates_plurals() {
+        assert_eq!(
+            normalized_query_concept("request"),
+            normalized_query_concept("requests")
+        );
+        assert!(text_matches_query_concept("requests created_at", "request"));
+        assert!(!text_matches_query_concept("requests created_at", "rate"));
     }
 
     #[test]

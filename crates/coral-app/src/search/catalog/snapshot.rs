@@ -14,7 +14,7 @@ use crate::search::catalog::sqlite_index::{
 };
 use crate::search::result::{SearchFieldRole, SearchSurfaceKind};
 
-const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v3";
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v4";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
@@ -194,6 +194,18 @@ fn normalized_runtime_schema_owners(
 
 fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
     let qualified_name = qualified_name(&table.schema_name, &table.table_name);
+    let columns = table
+        .columns
+        .iter()
+        .flat_map(|column| {
+            [
+                column.name.as_str(),
+                column.data_type.as_str(),
+                column.description.as_str(),
+            ]
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     documents.push(CatalogDocument {
         doc_id: format!("catalog:table:{qualified_name}"),
         doc_kind: CatalogDocumentKind::CatalogTable,
@@ -212,6 +224,7 @@ fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
             qualified_name.as_str(),
             table.description.as_str(),
             table.guide.as_str(),
+            columns.as_str(),
             table.required_filters.join(" ").as_str(),
         ]),
     });
@@ -289,13 +302,22 @@ fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<Ca
     let arguments = function
         .arguments
         .iter()
-        .map(|argument| argument.name.as_str())
+        .flat_map(|argument| {
+            std::iter::once(argument.name.as_str())
+                .chain(argument.values.iter().map(String::as_str))
+        })
         .collect::<Vec<_>>()
         .join(" ");
     let result_columns = function
         .result_columns
         .iter()
-        .map(|column| column.name.as_str())
+        .flat_map(|column| {
+            [
+                column.name.as_str(),
+                column.data_type.as_str(),
+                column.description.as_str(),
+            ]
+        })
         .collect::<Vec<_>>()
         .join(" ");
     documents.push(CatalogDocument {
@@ -513,7 +535,11 @@ fn update_hash(hasher: &mut Sha256, value: &str) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use coral_engine::{CatalogInfo, TableInfo};
+    use coral_engine::{
+        CatalogInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
+        TableInfo,
+    };
+    use coral_spec::SourceTableFunctionKind;
 
     use super::{CatalogDocumentKind, CatalogSearchSnapshot};
 
@@ -567,6 +593,43 @@ mod tests {
         assert!(snapshot.documents.iter().any(|doc| doc.doc_kind
             == CatalogDocumentKind::ColumnHint
             && doc.field_name == "title"));
+        assert!(
+            snapshot
+                .documents
+                .iter()
+                .any(|doc| doc.doc_kind == CatalogDocumentKind::CatalogTable
+                    && doc.searchable_text.contains("title Utf8 Message title"))
+        );
+    }
+
+    #[test]
+    fn snapshot_indexes_table_function_field_evidence_on_parent() {
+        let snapshot = CatalogSearchSnapshot::from_catalog(&CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![TableFunctionInfo {
+                schema_name: "fixture".to_string(),
+                function_name: "search_logs".to_string(),
+                description: "Search logs".to_string(),
+                arguments: vec![TableFunctionArgumentInfo {
+                    name: "status".to_string(),
+                    required: false,
+                    values: vec!["error".to_string()],
+                }],
+                result_columns: vec![TableFunctionResultColumnInfo {
+                    name: "service".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    description: "Owning service".to_string(),
+                }],
+                kind: SourceTableFunctionKind::Search,
+                search_limits: None,
+            }],
+        });
+
+        assert!(snapshot.documents.iter().any(|doc| doc.doc_kind
+            == CatalogDocumentKind::CatalogTableFunction
+            && doc.searchable_text.contains("status error")
+            && doc.searchable_text.contains("service Utf8 Owning service")));
     }
 
     fn catalog_with_table(table_name: &str) -> CatalogInfo {
