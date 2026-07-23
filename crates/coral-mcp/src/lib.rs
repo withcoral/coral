@@ -13,7 +13,8 @@
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, `search`, paginated `list_catalog`, `describe_table`, `list_columns`, and optionally `feedback`, `start_task`, and `end_task`
+//! - tools: `start_task`, `sql`, `search`, paginated `list_catalog`,
+//!   `describe_table`, `list_columns`, `end_task`, and optionally `feedback`
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay
@@ -96,15 +97,13 @@ impl McpQueryExample {
     }
 }
 
-/// Optional MCP surface features.
+/// MCP runtime options.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
     /// Advertise observed-value search behavior across MCP discovery surfaces.
     pub observed_values_search_enabled: bool,
-    /// Expose the task lifecycle and attribution surface.
-    pub tasks_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
     /// Installed source names to include in MCP initialize instructions.

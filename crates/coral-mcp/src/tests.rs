@@ -167,8 +167,42 @@ functions:
     manifest_path
 }
 
-fn json_object(value: &Value) -> Map<String, Value> {
+fn task_arguments(task_id: &str, value: &Value) -> Map<String, Value> {
+    let mut arguments = raw_json_object(value);
+    assert!(
+        arguments
+            .insert("task_id".to_string(), json!(task_id))
+            .is_none(),
+        "task arguments should not provide their own task_id"
+    );
+    arguments
+        .entry("intent".to_string())
+        .or_insert_with(|| json!("Exercise the MCP test contract"));
+    arguments
+}
+
+fn raw_json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
+}
+
+async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
+                "intent": "Exercise the MCP test contract"
+            }))),
+        )
+        .await
+        .expect("start test task");
+    assert_eq!(result.is_error, Some(false));
+    let task_id = result
+        .structured_content
+        .expect("start task structured content")["task_id"]
+        .as_str()
+        .expect("start task id")
+        .to_string();
+    uuid::Uuid::parse_str(&task_id).expect("task id is a UUID");
+    task_id
 }
 
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
@@ -473,22 +507,6 @@ fn assert_intent_schema(schema: &Value, label: &str) {
     }
 }
 
-fn assert_tool_omits_task_id(tool: &Tool) {
-    assert!(
-        !tool_input_properties(tool).contains_key("task_id"),
-        "tool '{}' should not advertise task_id by default",
-        tool.name
-    );
-}
-
-fn assert_tool_omits_intent(tool: &Tool) {
-    assert!(
-        !tool_input_properties(tool).contains_key("intent"),
-        "tool '{}' should not advertise task intent by default",
-        tool.name
-    );
-}
-
 fn assert_matches_output_schema(tool: &Tool, value: &Value) {
     let schema = Value::Object(
         tool.output_schema
@@ -541,18 +559,11 @@ fn assert_tool_error_text_contains(result: &CallToolResult, expected: &str) {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "This end-to-end MCP task test verifies feature-gated tool advertisement, persistence, tagged follow-up calls, and validation together."
+    reason = "This end-to-end MCP task test verifies mandatory tool advertisement, persistence, tagged follow-up calls, and validation together."
 )]
 async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     let temp = TempDir::new().expect("temp dir");
-    let session = start_session_with_options(
-        &temp,
-        McpOptions {
-            tasks_enabled: true,
-            ..McpOptions::default()
-        },
-    )
-    .await;
+    let session = start_session(&temp).await;
     let client = &session.client;
 
     let tools = client.list_all_tools().await.expect("tools");
@@ -562,12 +573,12 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "start_task",
             "sql",
             "search",
             "list_catalog",
             "describe_table",
             "list_columns",
-            "start_task",
             "end_task"
         ]
     );
@@ -600,7 +611,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
 
     let root = client
         .call_tool(
-            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
                 "intent": "Investigate customer renewal risk"
             }))),
         )
@@ -615,16 +626,18 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     assert_eq!(root["message"], "Task started.");
     assert_eq!(
         root["instructions"],
-        "Pass this task_id on subsequent Coral MCP tool calls for this task, then call end_task when it is complete."
+        "Pass this task_id plus a concise intent for the specific operation on each subsequent Coral data or enabled-feedback call, then call end_task when the task is complete."
     );
 
     let sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": ["SELECT 1 AS ok"],
-                "intent": "Verify task-scoped SQL execution",
-                "task_id": root_task_id
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &root_task_id,
+                &json!({
+                    "queries": ["SELECT 1 AS ok"],
+                    "intent": "Verify task-scoped SQL execution"
+                }),
+            )),
         )
         .await
         .expect("tagged sql");
@@ -637,7 +650,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
 
     let end = client
         .call_tool(
-            CallToolRequestParams::new("end_task").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("end_task").with_arguments(raw_json_object(&json!({
                 "task_id": root_task_id,
                 "task_status": "success"
             }))),
@@ -655,22 +668,24 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     );
     assert_eq!(end["task_status"], "success");
 
-    let after_end = client
+    let post_end_sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": ["SELECT 1"],
-                "intent": "Reject attribution to an ended task",
-                "task_id": root_task_id
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &root_task_id,
+                &json!({
+                    "queries": ["SELECT 1"],
+                    "intent": "Verify ended tasks reject data calls"
+                }),
+            )),
         )
         .await
-        .expect("ended task rejection should be a tool result");
-    assert_eq!(after_end.is_error, Some(true));
-    assert_tool_error_text_contains(&after_end, "has already ended");
+        .expect("ended task should return a tool error");
+    assert_eq!(post_end_sql.is_error, Some(true));
+    assert_tool_error_text_contains(&post_end_sql, "has already ended");
 
     let invalid_task_id = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("sql").with_arguments(raw_json_object(&json!({
                 "queries": ["SELECT 1"],
                 "intent": "Validate bad task id handling",
                 "task_id": "has space"
@@ -686,7 +701,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
 
     let missing_task_id = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("sql").with_arguments(raw_json_object(&json!({
                 "queries": ["SELECT 1"],
                 "intent": "Validate missing task id handling"
             }))),
@@ -701,7 +716,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
 
     let missing_tool_intent = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("sql").with_arguments(raw_json_object(&json!({
                 "queries": ["SELECT 1"],
                 "task_id": root_task_id
             }))),
@@ -716,7 +731,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
 
     let invalid_initializer = client
         .call_tool(
-            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
                 "intent": "Open another task",
                 "initialize_session": true
             }))),
@@ -731,7 +746,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
 
     let blank_intent = client
         .call_tool(
-            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
                 "intent": " "
             }))),
         )
@@ -763,20 +778,13 @@ async fn task_intent_is_not_exported_to_telemetry() {
     );
     let _guard = tracing::subscriber::set_default(subscriber);
     let temp = TempDir::new().expect("temp dir");
-    let session = start_session_with_options(
-        &temp,
-        McpOptions {
-            tasks_enabled: true,
-            ..McpOptions::default()
-        },
-    )
-    .await;
+    let session = start_session(&temp).await;
     let sentinel = "SENSITIVE_RAW_TASK_INTENT_TELEMETRY_MARKER";
 
     let started = session
         .client
         .call_tool(
-            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
                 "intent": sentinel
             }))),
         )
@@ -836,39 +844,67 @@ async fn task_intent_is_not_exported_to_telemetry() {
 }
 
 #[tokio::test]
-async fn mcp_task_tools_are_disabled_by_default() {
+async fn mcp_task_tools_are_always_available() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
     let client = &session.client;
+    let peer_info = client.peer_info().expect("initialize result");
+    let instructions = peer_info
+        .instructions
+        .as_deref()
+        .expect("initialize instructions");
+
+    assert!(instructions.contains("MUST call `start_task`"));
+    assert!(instructions.contains("returned `task_id`"));
+    assert!(instructions.contains("every subsequent data or feedback tool call"));
+    assert!(instructions.contains("call `end_task`"));
 
     let tools = client.list_all_tools().await.expect("tools");
-    assert!(
+    assert_eq!(
         tools
             .iter()
-            .all(|tool| tool.name.as_ref() != "start_task" && tool.name.as_ref() != "end_task"),
-        "task tools should not be listed by default"
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "start_task",
+            "sql",
+            "search",
+            "list_catalog",
+            "describe_table",
+            "list_columns",
+            "end_task"
+        ]
     );
-    for tool in &tools {
-        assert_tool_omits_task_id(tool);
-        assert_tool_omits_intent(tool);
+    for name in [
+        "sql",
+        "search",
+        "list_catalog",
+        "describe_table",
+        "list_columns",
+    ] {
+        assert_tool_advertises_task_context(tool_by_name(&tools, name));
     }
 
     let start_task = client
         .call_tool(
-            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
                 "intent": "Investigate customer renewal risk"
             }))),
         )
         .await
-        .expect_err("start_task should not be exposed by default");
+        .expect("start_task should always be exposed");
+    assert_eq!(start_task.is_error, Some(false));
     assert!(
         start_task
-            .to_string()
-            .contains("tool 'start_task' not found")
+            .structured_content
+            .expect("start task structured content")["task_id"]
+            .as_str()
+            .is_some_and(|task_id| uuid::Uuid::parse_str(task_id).is_ok())
     );
+
     let open_episode = client
         .call_tool(
-            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("open_episode").with_arguments(raw_json_object(&json!({
                 "intent": "Investigate customer renewal risk"
             }))),
         )
@@ -887,13 +923,17 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
     let client = &session.client;
+    let task_id = start_test_task(client).await;
     let expected_tables = ["columns", "filters", "inputs", "table_functions", "tables"];
 
     let sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": ["SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": ["SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"]
+                }),
+            )),
         )
         .await
         .expect("sql system catalog");
@@ -911,10 +951,13 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
 
     let catalog = client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "schema": "coral",
-                "kind": "table"
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "coral",
+                    "kind": "table"
+                }),
+            )),
         )
         .await
         .expect("list system catalog");
@@ -933,10 +976,13 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
 
     let described = client
         .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
-                "schema": "coral",
-                "table": "columns"
-            }))),
+            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "coral",
+                    "table": "columns"
+                }),
+            )),
         )
         .await
         .expect("describe system table")
@@ -948,10 +994,13 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
 
     let columns = client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "coral",
-                "table": "tables"
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "coral",
+                    "table": "tables"
+                }),
+            )),
         )
         .await
         .expect("list system columns")
@@ -974,6 +1023,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
     let mut session = start_session(&temp).await;
     let client = &session.client;
+    let task_id = start_test_task(client).await;
 
     let initial_tools = client.list_all_tools().await.expect("initial tools");
     assert_eq!(
@@ -982,22 +1032,25 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "start_task",
             "sql",
             "search",
             "list_catalog",
             "describe_table",
-            "list_columns"
+            "list_columns",
+            "end_task"
         ]
     );
+    let initial_sql_tool = tool_by_name(&initial_tools, "sql");
     assert!(
-        initial_tools[0]
+        initial_sql_tool
             .description
             .as_deref()
             .expect("sql description")
             .contains("5 table(s) are currently visible")
     );
     assert!(
-        initial_tools[0]
+        initial_sql_tool
             .description
             .as_deref()
             .expect("sql description")
@@ -1048,47 +1101,48 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     add_demo_source(&mut session.source_client, manifest_yaml).await;
 
     let updated_tools = client.list_all_tools().await.expect("updated tools");
+    let sql_tool = tool_by_name(&updated_tools, "sql");
     let search_tool = tool_by_name(&updated_tools, "search");
     let list_catalog_tool = tool_by_name(&updated_tools, "list_catalog");
     let describe_table_tool = tool_by_name(&updated_tools, "describe_table");
     let list_columns_tool = tool_by_name(&updated_tools, "list_columns");
     assert!(
-        updated_tools[0]
+        sql_tool
             .description
             .as_deref()
             .expect("sql description")
             .contains("8 table(s) are currently visible")
     );
     assert!(
-        updated_tools[0]
+        sql_tool
             .description
             .as_deref()
             .expect("sql description")
             .contains("Connected sources/schemas include: local_messages")
     );
     assert!(
-        updated_tools[1]
+        search_tool
             .description
             .as_deref()
             .expect("catalog description")
             .contains("8 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
-        updated_tools[1]
+        search_tool
             .description
             .as_deref()
             .expect("catalog description")
             .contains("Connected sources/schemas include: local_messages")
     );
     assert!(
-        updated_tools[2]
+        list_catalog_tool
             .description
             .as_deref()
             .expect("catalog search description")
             .contains("8 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
-        updated_tools[2]
+        list_catalog_tool
             .description
             .as_deref()
             .expect("catalog search description")
@@ -1139,7 +1193,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     ));
 
     let catalog = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(
+            CallToolRequestParams::new("list_catalog")
+                .with_arguments(task_arguments(&task_id, &json!({}))),
+        )
         .await
         .expect("list catalog");
     let catalog = catalog.structured_content.expect("structured catalog");
@@ -1152,12 +1209,15 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let catalog_page = client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "kind": "table",
-                "limit": 2,
-                "offset": 0
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "kind": "table",
+                    "limit": 2,
+                    "offset": 0
+                }),
+            )),
         )
         .await
         .expect("list paginated catalog");
@@ -1171,12 +1231,15 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let unknown_catalog_schema = client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "schema": "missing",
-                "kind": "table",
-                "limit": 2,
-                "offset": 0
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "missing",
+                    "kind": "table",
+                    "limit": 2,
+                    "offset": 0
+                }),
+            )),
         )
         .await
         .expect("list unknown catalog schema");
@@ -1194,28 +1257,37 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "limit": 0
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "limit": 0
+                }),
+            )),
         )
         .await
         .expect_err("limit zero should be invalid");
 
     client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "kind": "invalid"
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "kind": "invalid"
+                }),
+            )),
         )
         .await
         .expect_err("invalid catalog kind should fail");
 
     let universal_search = client
         .call_tool(
-            CallToolRequestParams::new("search").with_arguments(json_object(&json!({
-                "query": "messages",
-                "limit": 5
-            }))),
+            CallToolRequestParams::new("search").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "query": "messages",
+                    "limit": 5
+                }),
+            )),
         )
         .await
         .expect("search");
@@ -1227,10 +1299,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let described = client
         .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "messages"
-            }))),
+            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "messages"
+                }),
+            )),
         )
         .await
         .expect("describe table");
@@ -1244,10 +1319,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let missing_table = client
         .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "missing"
-            }))),
+            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "missing"
+                }),
+            )),
         )
         .await
         .expect("describe missing table");
@@ -1274,10 +1352,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let missing_schema = client
         .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
-                "schema": "local_mesages",
-                "table": "missing["
-            }))),
+            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_mesages",
+                    "table": "missing["
+                }),
+            )),
         )
         .await
         .expect("describe missing schema");
@@ -1293,21 +1374,27 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     client
         .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": " "
-            }))),
+            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": " "
+                }),
+            )),
         )
         .await
         .expect_err("blank table should fail");
 
     let columns = client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "messages",
-                "limit": 2
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "messages",
+                    "limit": 2
+                }),
+            )),
         )
         .await
         .expect("list columns");
@@ -1324,11 +1411,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let required_columns = client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "sessions",
-                "required_only": true
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "sessions",
+                    "required_only": true
+                }),
+            )),
         )
         .await
         .expect("list required columns");
@@ -1340,11 +1430,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let filtered_columns = client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "messages",
-                "pattern": "SESSION"
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "messages",
+                    "pattern": "SESSION"
+                }),
+            )),
         )
         .await
         .expect("list filtered columns");
@@ -1364,11 +1457,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let empty_column_filter = client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "messages",
-                "pattern": "does-not-match"
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "messages",
+                    "pattern": "does-not-match"
+                }),
+            )),
         )
         .await
         .expect("list filtered columns with no matches");
@@ -1389,10 +1485,13 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let missing_columns = client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "missing"
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "missing"
+                }),
+            )),
         )
         .await
         .expect("list columns for missing table");
@@ -1418,11 +1517,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     let missing_columns_with_bad_pattern = client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "missing",
-                "pattern": "["
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "missing",
+                    "pattern": "["
+                }),
+            )),
         )
         .await
         .expect("list columns for missing table with bad pattern");
@@ -1434,11 +1536,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 
     client
         .call_tool(
-            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-                "schema": "local_messages",
-                "table": "messages",
-                "pattern": ""
-            }))),
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "messages",
+                    "pattern": ""
+                }),
+            )),
         )
         .await
         .expect_err("empty column regex should fail");
@@ -1455,6 +1560,7 @@ async fn list_catalog_surfaces_table_functions() {
     let client = &session.client;
 
     add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let task_id = start_test_task(client).await;
 
     let tools = client.list_all_tools().await.expect("tools");
     assert!(
@@ -1471,9 +1577,12 @@ async fn list_catalog_surfaces_table_functions() {
     let catalog_tool = tool_by_name(&tools, "list_catalog");
     let catalog = client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "schema": "searchy"
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "searchy"
+                }),
+            )),
         )
         .await
         .expect("list catalog")
@@ -1501,11 +1610,14 @@ async fn list_catalog_surfaces_table_functions() {
 
     let functions = client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "kind": "table_function",
-                "limit": 1,
-                "offset": 1
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "kind": "table_function",
+                    "limit": 1,
+                    "offset": 1
+                }),
+            )),
         )
         .await
         .expect("list table functions")
@@ -1541,7 +1653,6 @@ async fn factory_shares_client_and_configured_tools_across_sessions() {
         app,
         McpOptions {
             feedback_enabled: true,
-            tasks_enabled: true,
             ..McpOptions::default()
         },
     );
@@ -1557,12 +1668,12 @@ async fn factory_shares_client_and_configured_tools_across_sessions() {
                 .map(|tool| tool.name.as_ref())
                 .collect::<Vec<_>>(),
             vec![
+                "start_task",
                 "sql",
                 "search",
                 "list_catalog",
                 "describe_table",
                 "list_columns",
-                "start_task",
                 "end_task",
                 "feedback"
             ]
@@ -1583,6 +1694,10 @@ async fn factory_shares_client_and_configured_tools_across_sessions() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "End-to-end feedback coverage verifies the advertised surface, persistence, result contract, and validation together."
+)]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(
@@ -1594,6 +1709,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     )
     .await;
     let client = &session.client;
+    let task_id = start_test_task(client).await;
 
     let tools = client.list_all_tools().await.expect("tools");
     assert_eq!(
@@ -1602,11 +1718,13 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "start_task",
             "sql",
             "search",
             "list_catalog",
             "describe_table",
             "list_columns",
+            "end_task",
             "feedback"
         ]
     );
@@ -1623,11 +1741,14 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 
     let feedback = client
         .call_tool(
-            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
-                "trying_to_do": "Fix failing tests",
-                "tried": "Ran cargo test and inspected the failing assertion",
-                "stuck": "The fixture shape does not match the documented contract"
-            }))),
+            CallToolRequestParams::new("feedback").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "trying_to_do": "Fix failing tests",
+                    "tried": "Ran cargo test and inspected the failing assertion",
+                    "stuck": "The fixture shape does not match the documented contract"
+                }),
+            )),
         )
         .await
         .expect("feedback");
@@ -1668,11 +1789,14 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 
     let blank_feedback = client
         .call_tool(
-            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
-                "trying_to_do": "Fix failing tests",
-                "tried": " ",
-                "stuck": "The fixture shape does not match the documented contract"
-            }))),
+            CallToolRequestParams::new("feedback").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "trying_to_do": "Fix failing tests",
+                    "tried": " ",
+                    "stuck": "The fixture shape does not match the documented contract"
+                }),
+            )),
         )
         .await
         .expect_err("blank feedback should fail before persistence");
@@ -1693,46 +1817,33 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 }
 
 #[tokio::test]
-async fn mcp_feedback_tool_accepts_task_id_when_tasks_enabled() {
+async fn mcp_feedback_tool_always_accepts_task_context() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(
         &temp,
         McpOptions {
-            tasks_enabled: true,
             feedback_enabled: true,
             ..McpOptions::default()
         },
     )
     .await;
     let client = &session.client;
+    let task_id = start_test_task(client).await;
 
     let tools = client.list_all_tools().await.expect("tools");
     assert_tool_advertises_task_context(tool_by_name(&tools, "feedback"));
 
-    let started = client
-        .call_tool(
-            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
-                "intent": "Exercise task-attributed feedback"
-            }))),
-        )
-        .await
-        .expect("start feedback task")
-        .structured_content
-        .expect("start task structured content");
-    let task_id = started["task_id"]
-        .as_str()
-        .expect("started task id")
-        .to_string();
-
     let feedback = client
         .call_tool(
-            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
-                "trying_to_do": "Finish a task-scoped task",
-                "tried": "Started a task and inspected failing output",
-                "stuck": "The final step still needs user judgment",
-                "intent": "Record blocked final task step",
-                "task_id": task_id
-            }))),
+            CallToolRequestParams::new("feedback").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "trying_to_do": "Finish a task-scoped task",
+                    "tried": "Started a task and inspected failing output",
+                    "stuck": "The final step still needs user judgment",
+                    "intent": "Record blocked final task step"
+                }),
+            )),
         )
         .await
         .expect("task-tagged feedback");
@@ -1754,7 +1865,7 @@ async fn mcp_feedback_tool_accepts_task_id_when_tasks_enabled() {
 
     let invalid_task_id = client
         .call_tool(
-            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("feedback").with_arguments(raw_json_object(&json!({
                 "trying_to_do": "Finish a task-scoped task",
                 "tried": "Started a task and inspected failing output",
                 "stuck": "The final step still needs user judgment",
@@ -1781,7 +1892,7 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
 
     let feedback = client
         .call_tool(
-            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("feedback").with_arguments(raw_json_object(&json!({
                 "trying_to_do": "Fix failing tests",
                 "tried": "Ran cargo test",
                 "stuck": "Need more context"
@@ -1808,17 +1919,21 @@ async fn mcp_sql_executes_successful_batch_in_input_order() {
     let mut session = start_session(&temp).await;
     add_demo_source(&mut session.source_client, manifest_yaml).await;
     let client = &session.client;
+    let task_id = start_test_task(client).await;
     let tools = client.list_all_tools().await.expect("tools");
     let sql_tool = tool_by_name(&tools, "sql");
 
     let sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": [
-                    "SELECT text FROM local_messages.messages WHERE text = 'world'",
-                    "SELECT text FROM local_messages.messages WHERE text = 'hello'"
-                ]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": [
+                        "SELECT text FROM local_messages.messages WHERE text = 'world'",
+                        "SELECT text FROM local_messages.messages WHERE text = 'hello'"
+                    ]
+                }),
+            )),
         )
         .await
         .expect("batched sql");
@@ -1845,6 +1960,7 @@ async fn mcp_tool_error_does_not_end_session() {
     let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
     let mut session = start_session(&temp).await;
     let client = &session.client;
+    let task_id = start_test_task(client).await;
 
     add_demo_source(&mut session.source_client, manifest_yaml).await;
     let tools = client.list_all_tools().await.expect("tools");
@@ -1852,9 +1968,12 @@ async fn mcp_tool_error_does_not_end_session() {
 
     let sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
+                }),
+            )),
         )
         .await
         .expect("sql");
@@ -1866,12 +1985,15 @@ async fn mcp_tool_error_does_not_end_session() {
 
     let mixed_sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": [
-                    "SELECT text FROM local_messages.messages WHERE text = 'hello'",
-                    "DELETE FROM local_messages.messages"
-                ]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": [
+                        "SELECT text FROM local_messages.messages WHERE text = 'hello'",
+                        "DELETE FROM local_messages.messages"
+                    ]
+                }),
+            )),
         )
         .await
         .expect("mixed sql still returns tool result");
@@ -1902,9 +2024,12 @@ async fn mcp_tool_error_does_not_end_session() {
 
     let catalog_after_error = client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "schema": "local_messages"
-            }))),
+            CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "local_messages"
+                }),
+            )),
         )
         .await
         .expect("list catalog after error");
@@ -1932,12 +2057,16 @@ async fn mcp_sql_returns_large_int64_as_string() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
     let client = &session.client;
+    let task_id = start_test_task(client).await;
 
     let sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": ["SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": ["SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"]
+                }),
+            )),
         )
         .await
         .expect("sql");

@@ -920,7 +920,6 @@ async fn run_app_command(
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     observed_values_search_enabled: features
                         .enabled(coral_app::features::Feature::ObservedValuesSearch),
-                    tasks_enabled: features.enabled(coral_app::features::Feature::Tasks),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
                     query_examples,
@@ -2061,6 +2060,16 @@ mod tests {
         .expect_err("conflicting feature overrides should fail");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn retired_task_feature_flags_are_rejected() {
+        for flag in ["--enable-tasks", "--disable-tasks"] {
+            let error = Cli::try_parse_from(["coral", flag, "mcp-stdio"])
+                .expect_err("retired task feature flag should be rejected");
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 
     #[test]

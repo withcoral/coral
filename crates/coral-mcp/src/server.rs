@@ -82,7 +82,7 @@ fn task_started_value(task: &coral_api::v1::Task) -> Result<TaskStartedValue, to
     Ok(TaskStartedValue {
         task_id,
         message: "Task started.",
-        instructions: "Pass this task_id on subsequent Coral MCP tool calls for this task, then call end_task when it is complete.",
+        instructions: "Pass this task_id plus a concise intent for the specific operation on each subsequent Coral data or enabled-feedback call, then call end_task when the task is complete.",
     })
 }
 
@@ -190,9 +190,6 @@ impl TaskCallContext {
 }
 
 fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskContextRequirement {
-    if !options.tasks_enabled {
-        return TaskContextRequirement::None;
-    }
     match tool_name {
         ToolName::Sql
         | ToolName::Search
@@ -308,13 +305,8 @@ impl CoralMcpServer {
 
     fn tool_allowed(&self, tool: ToolName) -> bool {
         match tool {
-            ToolName::Sql
-            | ToolName::Search
-            | ToolName::ListCatalog
-            | ToolName::DescribeTable
-            | ToolName::ListColumns => true,
-            ToolName::StartTask | ToolName::EndTask => self.options.tasks_enabled,
             ToolName::Feedback => self.options.feedback_enabled,
+            _ => true,
         }
     }
 
@@ -811,7 +803,6 @@ impl ServerHandler for CoralMcpServer {
             let tools = available_tools(
                 &tool_context,
                 ToolAvailability {
-                    tasks_enabled: self.options.tasks_enabled,
                     feedback_enabled: self.options.feedback_enabled,
                     observed_values_search_enabled: self.options.observed_values_search_enabled,
                 },
