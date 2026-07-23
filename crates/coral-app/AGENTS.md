@@ -108,6 +108,9 @@ root.
   config-file persistence, locking, and TOML extraction stay in `state/`.
 - Bundled installs persist source identity plus configured variables and
   secrets, then resolve their manifest from the current binary at runtime.
+- Keep reusable database pools workspace-scoped. `coral-app` owns the
+  workspace-to-registry map and removes an entry when its workspace is deleted;
+  `coral-engine` owns the registry's provider-specific pool implementation.
 - Credential backend selection stays inside `credentials/`. Managers pass
   explicit source credential-storage routes; CLI, MCP, source-spec, and engine
   code must not know backend implementation details.

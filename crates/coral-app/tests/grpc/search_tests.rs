@@ -145,6 +145,7 @@ async fn list_catalog_item(
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(workspace.clone()),
+            catalog_name: String::new(),
             schema_name: schema_name.to_string(),
             kind: kind as i32,
             pagination: Some(PaginationRequest {

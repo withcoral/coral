@@ -10,7 +10,8 @@ use crate::state::ConfigStore;
 use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
-    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspacePaths, WorkspaceRecord,
+    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspacePaths,
+    WorkspacePoolRegistries, WorkspaceRecord,
 };
 
 /// App-owned workspace lifecycle behavior.
@@ -23,6 +24,7 @@ pub(crate) struct WorkspaceManager {
     lifecycle_lock: WorkspaceLifecycleLock,
     db: Arc<CoralDb>,
     diagnostic_reporter: SourceDiagnosticReporter,
+    pool_registries: Arc<WorkspacePoolRegistries>,
 }
 
 impl WorkspaceManager {
@@ -62,7 +64,16 @@ impl WorkspaceManager {
             lifecycle_lock,
             db,
             diagnostic_reporter,
+            pool_registries: Arc::new(WorkspacePoolRegistries::default()),
         }
+    }
+
+    pub(crate) fn with_pool_registries(
+        mut self,
+        pool_registries: Arc<WorkspacePoolRegistries>,
+    ) -> Self {
+        self.pool_registries = pool_registries;
+        self
     }
 
     pub(crate) async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
@@ -182,6 +193,7 @@ impl WorkspaceManager {
                 }
             };
             deletion.commit().await?;
+            self.pool_registries.remove(workspace_name);
             self.remove_deleted_workspace_credentials(&deleted);
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
@@ -298,7 +310,7 @@ mod tests {
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
     use crate::state::{AppStateLayout, ConfigStore};
-    use crate::workspaces::WorkspaceName;
+    use crate::workspaces::{WorkspaceName, WorkspacePoolRegistries};
 
     fn test_layout(temp: &TempDir) -> AppStateLayout {
         AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout")
@@ -337,6 +349,7 @@ mod tests {
         let credential_manager = CredentialManager::new(credential_store);
         let db = test_db(&layout).await;
         let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let pool_registries = Arc::new(WorkspacePoolRegistries::default());
         let manager = WorkspaceManager::new(
             store.clone(),
             credential_manager.clone(),
@@ -345,8 +358,10 @@ mod tests {
             crate::workspaces::WorkspaceLifecycleLock::default(),
             Arc::clone(&db),
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registries(Arc::clone(&pool_registries));
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
+        let pool_registry_before_delete = pool_registries.for_workspace(&workspace_name);
         let source = installed_source("github");
         let source_name = source.name.clone();
         let credential_set_id = CredentialSetId::for_source(&source.name);
@@ -412,6 +427,11 @@ mod tests {
             "query-source",
             "test failure",
         ));
+        let pool_registry_after_delete = pool_registries.for_workspace(&workspace_name);
+        assert!(!Arc::ptr_eq(
+            &pool_registry_before_delete,
+            &pool_registry_after_delete
+        ));
     }
 
     #[tokio::test]
@@ -422,6 +442,7 @@ mod tests {
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
         let db = test_db(&layout).await;
         let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let pool_registries = Arc::new(WorkspacePoolRegistries::default());
         let manager = WorkspaceManager::new(
             store,
             credential_manager,
@@ -430,8 +451,10 @@ mod tests {
             crate::workspaces::WorkspaceLifecycleLock::default(),
             db,
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registries(Arc::clone(&pool_registries));
         let workspace_name = WorkspaceName::default();
+        let pool_registry_before_delete = pool_registries.for_workspace(&workspace_name);
         let source_name = SourceName::parse("github").expect("source name");
         diagnostic_reporter.report_source_load_failure(
             SourceLoadDiagnosticStage::Query,
@@ -450,6 +473,11 @@ mod tests {
             &source_name,
             "query-source",
             "test failure",
+        ));
+        let pool_registry_after_delete = pool_registries.for_workspace(&workspace_name);
+        assert!(Arc::ptr_eq(
+            &pool_registry_before_delete,
+            &pool_registry_after_delete
         ));
     }
 }

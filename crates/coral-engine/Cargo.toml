@@ -27,7 +27,6 @@ datafusion-table-providers = { workspace = true, features = [
 datafusion-tracing.workspace = true
 futures.workspace = true
 httpdate.workspace = true
-moka.workspace = true
 object_store.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
