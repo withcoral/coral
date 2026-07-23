@@ -638,7 +638,7 @@ mod tests {
     where
         S: DbSession,
     {
-        session
+        Ok(session
             .fetch_all::<(String,)>(
                 Query::select()
                     .column(Sources::CredentialRevision)
@@ -650,8 +650,8 @@ mod tests {
             .await?
             .into_iter()
             .next()
-            .map(|row| row.0)
-            .ok_or_else(|| DbError::CorruptData("missing source credential revision".to_string()))
+            .expect("source row")
+            .0)
     }
 
     async fn fetch_count<S>(session: &mut S, statement: SelectStatement) -> Result<i64, DbError>
