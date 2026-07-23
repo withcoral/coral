@@ -320,6 +320,12 @@ mod tests {
                 .expect("count secret keys"),
             1
         );
+        assert_eq!(
+            source_credential_revision(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("read credential revision"),
+            uuid::Uuid::nil().to_string()
+        );
         assert_source_catalog_uniqueness_contract(&mut session, &workspace_id, &source_name).await;
 
         let alternate_workspace_id = format!("alternate_workspace_{suffix}");
@@ -622,6 +628,30 @@ mod tests {
                 .to_owned(),
         )
         .await
+    }
+
+    async fn source_credential_revision<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<String, DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .fetch_all::<(String,)>(
+                Query::select()
+                    .column(Sources::CredentialRevision)
+                    .from(Sources::Table)
+                    .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_id))
+                    .and_where(Expr::col(Sources::Name).eq(source_name))
+                    .to_owned(),
+            )
+            .await?
+            .into_iter()
+            .next()
+            .map(|row| row.0)
+            .ok_or_else(|| DbError::CorruptData("missing source credential revision".to_string()))
     }
 
     async fn fetch_count<S>(session: &mut S, statement: SelectStatement) -> Result<i64, DbError>
