@@ -10,12 +10,12 @@ use coral_spec::v4::{
     Diagnostic, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION, MaterializedSurface,
     McpToolCatalog, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
     OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION, ProjectionCatalog,
-    ProjectionInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
-    V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest, ValidatedSurfacePlan,
-    generate_projection_catalog, import_mcp_surface, import_openapi_surface,
-    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
-    sync_projection_inputs, validate_materialized_source, validate_materialized_source_structure,
-    validate_openapi_base_url_template, validate_semantic_ir_structure,
+    SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+    V4MaterializedSource, V4SourceManifest, ValidatedSurfacePlan, generate_projection_catalog,
+    import_mcp_surface, import_openapi_surface, normalize_mcp_tool_catalog,
+    normalize_source_document, openapi_document_metadata, validate_materialized_source,
+    validate_materialized_source_structure, validate_openapi_base_url_template,
+    validate_projection_compatibility, validate_semantic_ir_structure,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -385,7 +385,7 @@ pub(crate) fn load_v4_materialization_with_reporter(
         &fingerprint_path,
         &mut load_diagnostics,
     );
-    let mut projections = load_projection_catalog(
+    let projections = load_projection_catalog(
         source_name,
         manifest,
         &projections_file,
@@ -431,7 +431,8 @@ pub(crate) fn load_v4_materialization_with_reporter(
     {
         load_diagnostics.push(diagnostic);
     }
-    sync_loaded_projection_inputs(source_name, &projections_file, &plan, &mut projections)?;
+    validate_projection_compatibility(&plan, &projections)
+        .map_err(|error| incompatible_materialization_error(source_name, error.to_string()))?;
     diagnostic_reporter.report_source_diagnostics(
         workspace_name,
         source_name,
@@ -812,30 +813,6 @@ fn validate_operation_metadata_header(
     Ok(())
 }
 
-fn sync_loaded_projection_inputs(
-    source_name: &SourceName,
-    projections_file: &V4ProjectionCatalogFile,
-    plan: &ValidatedSurfacePlan,
-    projections: &mut ProjectionCatalog,
-) -> Result<(), AppError> {
-    let projection_sync_mode = match projections_file.origin {
-        V4ProjectionCatalogOrigin::Materialized => ProjectionInputSyncMode::RecomputeInputExposure,
-        V4ProjectionCatalogOrigin::Override => ProjectionInputSyncMode::PreserveExistingExposure,
-    };
-    sync_projection_inputs(plan, projections, projection_sync_mode).map_err(|error| {
-        match projections_file.origin {
-            V4ProjectionCatalogOrigin::Materialized => {
-                incompatible_materialization_error(source_name, error.to_string())
-            }
-            V4ProjectionCatalogOrigin::Override => invalid_projection_override_error(
-                source_name,
-                &projections_file.path,
-                error.to_string(),
-            ),
-        }
-    })
-}
-
 fn validate_loaded_materialization(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
@@ -854,39 +831,6 @@ fn validate_loaded_materialization(
             ),
         }
     })?;
-    let operations = materialized
-        .surface
-        .plan
-        .semantic_ir()
-        .operations
-        .iter()
-        .map(|operation| operation.id.as_str())
-        .collect::<BTreeSet<_>>();
-    validate_projection_references(source_name, projections_file, materialized, &operations)
-}
-
-fn validate_projection_references(
-    source_name: &SourceName,
-    projections_file: &V4ProjectionCatalogFile,
-    materialized: &V4MaterializedSource,
-    operations: &BTreeSet<&str>,
-) -> Result<(), AppError> {
-    for projection in &materialized.projections.projections {
-        if !operations.contains(projection.operation_id.as_str()) {
-            let detail = format!(
-                "projection '{}' references missing operation '{}'",
-                projection.name, projection.operation_id
-            );
-            return Err(match projections_file.origin {
-                V4ProjectionCatalogOrigin::Materialized => {
-                    incompatible_materialization_error(source_name, detail)
-                }
-                V4ProjectionCatalogOrigin::Override => {
-                    invalid_projection_override_error(source_name, &projections_file.path, detail)
-                }
-            });
-        }
-    }
     Ok(())
 }
 
@@ -2247,7 +2191,8 @@ surface:
     }
 
     #[test]
-    fn load_v4_materialization_applies_operation_metadata_override_without_rewriting_artifact() {
+    fn load_v4_materialization_applies_compatible_operation_metadata_override_without_rewriting_artifact()
+     {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let generated_path = layout
             .v4_materialized_dir(&workspace_name(), &source_name())
@@ -2262,7 +2207,7 @@ surface:
         let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = operation_metadata else {
             panic!("expected REST metadata");
         };
-        *lookup_keys = vec!["q".to_string()];
+        lookup_keys.push("q".to_string());
         let override_path = layout
             .v4_override_dir(&workspace_name(), &source_name())
             .join(OPERATION_METADATA_FILENAME);
@@ -2294,7 +2239,7 @@ surface:
                 .input_is_lookup_key(&operation_id, "q")
         );
         assert!(
-            !materialized
+            materialized
                 .surface
                 .plan
                 .input_is_lookup_key(&operation_id, "state")

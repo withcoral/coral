@@ -520,14 +520,15 @@ mod tests {
         MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpOperationPagination,
         McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
         OpenApiRuntimeConfig, OperationMetadata, OperationMetadataCatalog,
-        PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionKind,
-        ProjectionVisibility, RestExecutionAttachment, RestParameterBinding,
-        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor,
-        SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
-        V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
+        PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionInput,
+        ProjectionKind, ProjectionVisibility, RestExecutionAttachment, RestParameterBinding,
+        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SqlInputExposure,
+        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+        V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
     };
     use coral_spec::{
-        PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec, SourceTableFunctionKind,
+        ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec,
+        SourceTableFunctionKind,
     };
 
     use crate::bootstrap::AppError;

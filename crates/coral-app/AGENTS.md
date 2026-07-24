@@ -89,6 +89,10 @@ root.
   isolate source-local compatibility failures while preserving fail-closed
   behavior for operational errors. RDBMS migration machinery must not turn
   load-time compatibility into silent regeneration.
+- Treat `projections.yaml` as an immutable materialized snapshot. Effective
+  operation-metadata overrides never reconcile projection exposure or lookup
+  keys at runtime. Reject incompatible selected artifact combinations instead
+  of changing projection fields in memory.
 - Store DSL v4 source documents, semantic IR, generated operation metadata,
   fingerprint, diagnostics, and the generated projection catalog directly
   under the materialization root. Store full `operation-metadata.yaml` and
