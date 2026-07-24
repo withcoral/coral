@@ -80,7 +80,7 @@ pub(crate) fn guide_resource_content(
     );
     let mut schemas = tables
         .iter()
-        .filter(|table| table.schema_name != "coral")
+        .filter(|table| !is_coral_system_schema(table))
         .map(addressable_schema_name)
         .collect::<BTreeSet<_>>();
     schemas.extend(
@@ -181,7 +181,7 @@ fn sql_string_literal(value: &str) -> String {
 fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str, &str)> {
     tables
         .iter()
-        .filter(|table| table.schema_name != "coral")
+        .filter(|table| !is_coral_system_schema(table))
         .min_by(|left, right| {
             (&left.catalog_name, &left.schema_name, &left.name).cmp(&(
                 &right.catalog_name,
@@ -198,11 +198,16 @@ fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str, &str)> {
         })
 }
 
+fn is_coral_system_schema(table: &TableSummary) -> bool {
+    table.catalog_name.is_empty() && table.schema_name == "coral"
+}
+
 fn addressable_schema_name(table: &TableSummary) -> String {
+    let schema_name = prompt_safe_text(&table.schema_name);
     if table.catalog_name.is_empty() {
-        table.schema_name.clone()
+        schema_name
     } else {
-        format!("{}.{}", table.catalog_name, table.schema_name)
+        format!("{}.{schema_name}", prompt_safe_text(&table.catalog_name))
     }
 }
 
