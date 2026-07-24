@@ -80,8 +80,8 @@ fn database_strategy(connection: &DatabaseConnectionSpec) -> &dyn DatabaseCatalo
 
 #[async_trait]
 impl CompiledBackendSource for CompiledDatabaseSource {
-    fn qualified_name(&self) -> &str {
-        &self.manifest.common.name
+    fn qualified_name(&self) -> SourceQualifiedName {
+        SourceQualifiedName::Catalog(self.manifest.common.name.clone())
     }
 
     fn source_name(&self) -> &str {
