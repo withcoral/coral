@@ -8,16 +8,18 @@
 
 use std::env;
 use std::fs;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, ensure};
 use coral_api::v1::{ImportSourceRequest, import_source_response};
 use coral_client::{AppClient, default_workspace, local::ServerBuilder};
-use coral_mcp::{CoralMcpServerFactory, McpOptions};
-use rmcp::{
-    RoleClient, ServerHandler, ServiceExt, model::CallToolRequestParams, service::RunningService,
+use coral_mcp::{
+    McpOptions,
+    http::{McpHttpConfig, start_auth_disabled},
 };
+use rmcp::{ServiceExt, model::CallToolRequestParams, transport::StreamableHttpClientTransport};
 use serde_json::{Map, Value};
 use tempfile::TempDir;
 use tiktoken_rs::o200k_base_singleton;
@@ -73,15 +75,20 @@ async fn run_benchmark() -> Result<()> {
         .context("connecting benchmark Coral client")?;
     import_fixture(&app, manifest_yaml).await?;
 
-    let handler = CoralMcpServerFactory::new(
+    let mcp_server = start_auth_disabled(
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .context("configuring benchmark MCP HTTP server")?,
         app,
         McpOptions {
             source_names: vec![SCHEMA.to_string()],
             ..McpOptions::default()
         },
     )
-    .create();
-    let (client, mcp_task) = start_mcp_session(handler).await?;
+    .await
+    .context("starting benchmark MCP HTTP server")?;
+    let transport =
+        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", mcp_server.local_addr()));
+    let client = ().serve(transport).await.context("starting benchmark MCP client")?;
     let response = client
         .call_tool(
             CallToolRequestParams::new("list_columns").with_arguments(Map::from_iter([
@@ -125,7 +132,10 @@ async fn run_benchmark() -> Result<()> {
     );
 
     client.cancel().await.context("stopping MCP client")?;
-    mcp_task.await.context("joining MCP server task")??;
+    mcp_server
+        .shutdown()
+        .await
+        .context("stopping benchmark MCP HTTP server")?;
     app_server
         .shutdown()
         .await
@@ -159,22 +169,4 @@ async fn import_fixture(app: &AppClient, manifest_yaml: String) -> Result<()> {
         }
     }
     anyhow::bail!("benchmark source import ended without installing the source")
-}
-
-async fn start_mcp_session(
-    server: impl ServerHandler + Clone,
-) -> Result<(
-    RunningService<RoleClient, ()>,
-    tokio::task::JoinHandle<Result<()>>,
-)> {
-    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
-    let task = tokio::spawn(async move {
-        let server = Box::pin(server.serve(server_transport))
-            .await
-            .context("starting MCP server")?;
-        server.waiting().await.context("running MCP server")?;
-        Ok(())
-    });
-    let client = ().serve(client_transport).await.context("starting MCP client")?;
-    Ok((client, task))
 }
