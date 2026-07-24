@@ -478,7 +478,7 @@ fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
     } else {
         format!("`{reference}` or `{fully_quoted_reference}`")
     };
-    let reference_shape = if info.catalog_name.is_empty() {
+    let reference_shape = if info.catalog_name.is_none() {
         "schema.table"
     } else {
         "catalog.schema.table"
@@ -492,13 +492,10 @@ fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
 }
 
 fn raw_schema_table_name(info: &TableInfo) -> String {
-    if info.catalog_name.is_empty() {
-        format!("{}.{}", info.schema_name, info.table_name)
+    if let Some(catalog_name) = info.catalog_name.as_deref() {
+        format!("{}.{}.{}", catalog_name, info.schema_name, info.table_name)
     } else {
-        format!(
-            "{}.{}.{}",
-            info.catalog_name, info.schema_name, info.table_name
-        )
+        format!("{}.{}", info.schema_name, info.table_name)
     }
 }
 
@@ -506,33 +503,33 @@ fn raw_schema_table_name(info: &TableInfo) -> String {
 /// names stay one quoted identifier; case-preserving names are quoted
 /// only when they would otherwise round-trip wrong).
 fn format_schema_table(info: &TableInfo) -> String {
-    if info.catalog_name.is_empty() {
+    if let Some(catalog_name) = info.catalog_name.as_deref() {
         format!(
-            "{}.{}",
-            quote_dotted_identifier(&info.schema_name),
+            "{}.{}.{}",
+            quote_dotted_identifier(catalog_name),
+            quote_identifier(&info.schema_name),
             quote_identifier(&info.table_name)
         )
     } else {
         format!(
-            "{}.{}.{}",
-            quote_dotted_identifier(&info.catalog_name),
-            quote_identifier(&info.schema_name),
+            "{}.{}",
+            quote_dotted_identifier(&info.schema_name),
             quote_identifier(&info.table_name)
         )
     }
 }
 
 fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
-    if info.catalog_name.is_empty() {
+    if let Some(catalog_name) = info.catalog_name.as_deref() {
         format!(
-            "{}.{}",
+            "{}.{}.{}",
+            quote_identifier_always(catalog_name),
             quote_identifier_always(&info.schema_name),
             quote_identifier_always(&info.table_name)
         )
     } else {
         format!(
-            "{}.{}.{}",
-            quote_identifier_always(&info.catalog_name),
+            "{}.{}",
             quote_identifier_always(&info.schema_name),
             quote_identifier_always(&info.table_name)
         )
@@ -664,8 +661,9 @@ fn table_schema_matches(info: &TableInfo, schema_lower: &str) -> bool {
     if info.schema_name.to_lowercase() == schema_lower {
         return true;
     }
-    !info.catalog_name.is_empty()
-        && format!("{}.{}", info.catalog_name, info.schema_name).to_lowercase() == schema_lower
+    info.catalog_name.as_deref().is_some_and(|catalog_name| {
+        format!("{catalog_name}.{}", info.schema_name).to_lowercase() == schema_lower
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -694,7 +692,7 @@ mod tests {
 
     fn table(schema: &str, name: &str) -> TableInfo {
         TableInfo {
-            catalog_name: String::new(),
+            catalog_name: None,
             schema_name: schema.to_string(),
             table_name: name.to_string(),
             description: String::new(),
@@ -706,7 +704,7 @@ mod tests {
 
     fn catalog_table(catalog: &str, schema: &str, name: &str) -> TableInfo {
         TableInfo {
-            catalog_name: catalog.to_string(),
+            catalog_name: Some(catalog.to_string()),
             ..table(schema, name)
         }
     }

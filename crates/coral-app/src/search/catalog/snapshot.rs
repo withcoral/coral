@@ -574,7 +574,7 @@ mod tests {
     fn catalog_with_table(table_name: &str) -> CatalogInfo {
         CatalogInfo {
             tables: vec![TableInfo {
-                catalog_name: String::new(),
+                catalog_name: None,
                 schema_name: "fixture".to_string(),
                 table_name: table_name.to_string(),
                 description: format!("Fixture {table_name}"),
