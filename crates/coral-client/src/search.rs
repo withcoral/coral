@@ -735,7 +735,9 @@ pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
     format!("{reference}({required_arguments})")
 }
 
-fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str) -> String {
+/// Formats a display table name with its query-visible schema and optional catalog.
+#[must_use]
+pub fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str) -> String {
     if catalog_name.is_empty() {
         format!("{schema_name}.{table_name}")
     } else {

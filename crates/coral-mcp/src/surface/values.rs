@@ -1,5 +1,5 @@
 use coral_api::v1::TableSummary;
-pub(crate) use coral_client::format_schema_table_equivalent;
+pub(crate) use coral_client::{format_schema_table_equivalent, format_table_name};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -74,13 +74,5 @@ impl<'a> From<&'a TableSummary> for MissingTableSummaryValue<'a> {
             description: &table.description,
             required_filters: &table.required_filters,
         }
-    }
-}
-
-pub(crate) fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str) -> String {
-    if catalog_name.is_empty() {
-        format!("{schema_name}.{table_name}")
-    } else {
-        format!("{catalog_name}.{schema_name}.{table_name}")
     }
 }
