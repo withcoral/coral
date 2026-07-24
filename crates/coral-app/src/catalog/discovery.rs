@@ -671,7 +671,7 @@ fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool 
 /// semantics and `describe_table`'s behavior; a supplied catalog is strict.
 /// Callers that resolve a single table reject wildcard matches spanning more
 /// than one catalog instead of guessing. Catalog and schema must be supplied
-/// separately; the service boundary rejects compound `catalog.schema` values.
+/// separately; schema values are otherwise matched literally.
 fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
     match table_ref.catalog_name {
         Some(catalog_name) => {

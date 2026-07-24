@@ -378,15 +378,15 @@ fn register_backend_registration(
     for (catalog_name, _registered_catalog, registered_source, column_fetcher) in catalog_staged {
         result.column_fetchers.push(CatalogColumnFetcher {
             catalog_name,
-            schema_names: registered_source
+            relation_names: registered_source
                 .tables
                 .iter()
-                .filter_map(|table| table.schema_name.clone())
-                .collect(),
-            table_names: registered_source
-                .tables
-                .iter()
-                .map(|table| table.table_name.clone())
+                .filter_map(|table| {
+                    table
+                        .schema_name
+                        .as_ref()
+                        .map(|schema_name| (schema_name.clone(), table.table_name.clone()))
+                })
                 .collect(),
             fetcher: column_fetcher,
         });

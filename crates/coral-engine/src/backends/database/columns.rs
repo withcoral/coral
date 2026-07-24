@@ -1,7 +1,7 @@
 //! Lazy column-metadata inventory for relational database sources.
 //!
 //! Each provider answers column metadata from its own catalog
-//! (`information_schema.columns`, `pragma_table_info`) in a single round
+//! (`information_schema.columns`, `pragma_table_xinfo`) in a single round
 //! trip, instead of probing every table's Arrow schema individually.
 
 use std::fmt;
@@ -48,10 +48,19 @@ SELECT 'main' AS schema_name,
        CAST(p.cid AS TEXT) AS ordinal_position,
        p.name AS column_name,
        CASE WHEN p.type = '' THEN 'unknown' ELSE p.type END AS data_type,
-       CASE WHEN p.\"notnull\" = 0 THEN 'true' ELSE 'false' END AS is_nullable
+       CASE
+         WHEN p.\"notnull\" <> 0 THEN 'false'
+         WHEN p.pk > 0
+          AND UPPER(TRIM(p.type)) = 'INTEGER'
+          AND (SELECT COUNT(*) FROM pragma_table_xinfo(m.name) AS key_column WHERE key_column.pk > 0) = 1
+         THEN 'false'
+         ELSE 'true'
+       END AS is_nullable
 FROM sqlite_master AS m
-JOIN pragma_table_info(m.name) AS p
-WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%'";
+JOIN pragma_table_xinfo(m.name) AS p
+WHERE m.type IN ('table', 'view')
+  AND m.name NOT LIKE 'sqlite_%'
+  AND p.hidden <> 1";
 
 /// [`DatabaseColumnFetcher`] backed by a connection pool and one of the
 /// provider inventory queries above.

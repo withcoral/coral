@@ -205,7 +205,7 @@ pub(crate) struct DatabaseColumnRow {
 /// Query-time source of column metadata for one registered database catalog.
 ///
 /// Fetches answer from the remote database's catalog (`information_schema`,
-/// `pragma_table_info`) in one round trip per call, so `coral.columns` cost
+/// `pragma_table_xinfo`) in one round trip per call, so `coral.columns` cost
 /// scales with source count instead of table count.
 #[async_trait]
 pub(crate) trait DatabaseColumnFetcher: std::fmt::Debug + Send + Sync {
@@ -219,8 +219,7 @@ pub(crate) trait DatabaseColumnFetcher: std::fmt::Debug + Send + Sync {
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogColumnFetcher {
     pub(crate) catalog_name: String,
-    pub(crate) schema_names: BTreeSet<String>,
-    pub(crate) table_names: BTreeSet<String>,
+    pub(crate) relation_names: BTreeSet<(String, String)>,
     pub(crate) fetcher: Arc<dyn DatabaseColumnFetcher>,
 }
 
