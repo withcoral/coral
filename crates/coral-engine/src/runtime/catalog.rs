@@ -1307,8 +1307,7 @@ impl TableProvider for CoralColumnsTable {
             .iter()
             .filter(|fetcher| {
                 pins.includes_catalog(&fetcher.catalog_name)
-                    && ColumnPins::pin_intersects(pins.schemas.as_ref(), &fetcher.schema_names)
-                    && ColumnPins::pin_intersects(pins.tables.as_ref(), &fetcher.table_names)
+                    && pins.matches_any_relation(&fetcher.relation_names)
             })
             .collect::<Vec<_>>();
         let outcomes = join_all(relevant.iter().map(|fetcher| async {
@@ -1330,7 +1329,11 @@ impl TableProvider for CoralColumnsTable {
         for (fetcher, outcome) in relevant.iter().zip(outcomes) {
             match outcome {
                 Ok(rows) => {
-                    let rows = database_catalog_columns(&fetcher.catalog_name, rows);
+                    let rows = database_catalog_columns(
+                        &fetcher.catalog_name,
+                        &fetcher.relation_names,
+                        rows,
+                    );
                     batches.push(catalog_columns_batch(Arc::clone(&self.schema), &rows)?);
                 }
                 Err(error) => {
@@ -1350,9 +1353,11 @@ impl TableProvider for CoralColumnsTable {
 
 fn database_catalog_columns(
     catalog_name: &str,
+    relation_names: &BTreeSet<(String, String)>,
     rows: Vec<DatabaseColumnRow>,
 ) -> Vec<CatalogColumn> {
     rows.into_iter()
+        .filter(|row| relation_names.contains(&(row.schema_name.clone(), row.table_name.clone())))
         .map(|row| CatalogColumn {
             catalog_name: catalog_name.to_string(),
             schema_name: row.schema_name,
@@ -1405,8 +1410,16 @@ impl ColumnPins {
             .is_none_or(|catalogs| catalogs.contains(catalog_name))
     }
 
-    fn pin_intersects(pinned: Option<&BTreeSet<String>>, known: &BTreeSet<String>) -> bool {
-        pinned.is_none_or(|values| values.iter().any(|value| known.contains(value)))
+    fn matches_any_relation(&self, relation_names: &BTreeSet<(String, String)>) -> bool {
+        relation_names.iter().any(|(schema_name, table_name)| {
+            self.schemas
+                .as_ref()
+                .is_none_or(|schemas| schemas.contains(schema_name))
+                && self
+                    .tables
+                    .as_ref()
+                    .is_none_or(|tables| tables.contains(table_name))
+        })
     }
 
     fn inventory_filter(&self) -> ColumnInventoryFilter {
@@ -1690,19 +1703,16 @@ mod tests {
 
     fn column_fetcher(
         catalog_name: &str,
-        schema_names: &[&str],
-        table_names: &[&str],
+        relation_names: &[(&str, &str)],
         fetcher: Arc<RecordingFetcher>,
     ) -> CatalogColumnFetcher {
         CatalogColumnFetcher {
             catalog_name: catalog_name.to_string(),
-            schema_names: schema_names
+            relation_names: relation_names
                 .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
-            table_names: table_names
-                .iter()
-                .map(|value| (*value).to_string())
+                .map(|(schema_name, table_name)| {
+                    ((*schema_name).to_string(), (*table_name).to_string())
+                })
                 .collect(),
             fetcher,
         }
@@ -1772,16 +1782,10 @@ mod tests {
         let warehouse = RecordingFetcher::new(FetchOutcome::Rows(Vec::new()));
         let analytics = RecordingFetcher::new(FetchOutcome::Rows(Vec::new()));
         let fetchers = [
-            column_fetcher(
-                "warehouse",
-                &["public"],
-                &["orders"],
-                Arc::clone(&warehouse),
-            ),
+            column_fetcher("warehouse", &[("public", "orders")], Arc::clone(&warehouse)),
             column_fetcher(
                 "analytics",
-                &["metrics"],
-                &["events"],
+                &[("metrics", "events")],
                 Arc::clone(&analytics),
             ),
         ];
@@ -1816,8 +1820,8 @@ mod tests {
         let failed = RecordingFetcher::new(FetchOutcome::Error);
         let stalled = RecordingFetcher::new(FetchOutcome::Pending);
         let fetchers = [
-            column_fetcher("failed", &["public"], &["orders"], Arc::clone(&failed)),
-            column_fetcher("stalled", &["public"], &["users"], Arc::clone(&stalled)),
+            column_fetcher("failed", &[("public", "orders")], Arc::clone(&failed)),
+            column_fetcher("stalled", &[("public", "users")], Arc::clone(&stalled)),
         ];
         let mut table = build_columns_table(&[], &fetchers).expect("columns table");
         table.fetch_timeout = Duration::from_millis(20);

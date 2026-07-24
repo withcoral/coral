@@ -6,6 +6,7 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, FieldRef};
 use coral_spec::ManifestDataType;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::utils::quote_identifier;
 use datafusion::common::{ScalarValue, TableReference};
 use datafusion::dataframe::DataFrame;
 use datafusion::error::DataFusionError;
@@ -682,13 +683,20 @@ impl QueryRuntimeAdapter {
     }
 
     fn qualified_table_reference(table: &TableInfo) -> String {
-        match table.catalog_name.as_deref() {
+        let reference = match table.catalog_name.as_deref() {
             Some(catalog_name) => format!(
-                "`{}.{}.{}`",
-                catalog_name, table.schema_name, table.table_name
+                "{}.{}.{}",
+                quote_identifier(catalog_name),
+                quote_identifier(&table.schema_name),
+                quote_identifier(&table.table_name)
             ),
-            None => format!("`{}.{}`", table.schema_name, table.table_name),
-        }
+            None => format!(
+                "{}.{}",
+                quote_identifier(&table.schema_name),
+                quote_identifier(&table.table_name)
+            ),
+        };
+        format!("`{reference}`")
     }
 
     pub(crate) fn registration_failure(
