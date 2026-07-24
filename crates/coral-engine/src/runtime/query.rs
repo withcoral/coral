@@ -30,7 +30,6 @@ use crate::runtime::error::{
     query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
-use crate::runtime::non_default_catalog_name;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
@@ -53,7 +52,7 @@ use crate::{
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelectionError, RequestIdentitySelector, SelectedRequestIdentity,
     SourceDecorator, SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
-    UdfRuntimeDefinition,
+    UdfRuntimeDefinition, normalize_catalog_name,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -494,7 +493,7 @@ fn table_qualifier_matches(
     schema_filter: Option<&str>,
 ) -> bool {
     catalog_filter
-        .is_none_or(|value| table.catalog_name.as_deref() == non_default_catalog_name(Some(value)))
+        .is_none_or(|value| table.catalog_name.as_deref() == normalize_catalog_name(Some(value)))
         && schema_filter.is_none_or(|value| table.schema_name == value)
 }
 
@@ -503,7 +502,7 @@ fn table_reference_matches(
     catalog_name: Option<&str>,
     schema_name: &str,
 ) -> bool {
-    table.catalog_name.as_deref() == non_default_catalog_name(catalog_name)
+    table.catalog_name.as_deref() == normalize_catalog_name(catalog_name)
         && table.schema_name == schema_name
 }
 
@@ -588,7 +587,7 @@ impl QueryRuntimeAdapter {
         schema_filter: Option<&str>,
     ) -> CatalogInfo {
         let includes_schema_sources =
-            catalog_filter.is_none_or(|value| non_default_catalog_name(Some(value)).is_none());
+            catalog_filter.is_none_or(|value| normalize_catalog_name(Some(value)).is_none());
         CatalogInfo {
             tables: self.list_tables(catalog_filter, schema_filter, None),
             table_functions: if includes_schema_sources {
@@ -901,7 +900,7 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, table_name)) = relation_parts(table_reference) else {
             return;
         };
-        let catalog_name = non_default_catalog_name(table_reference.catalog());
+        let catalog_name = normalize_catalog_name(table_reference.catalog());
         if self.tables.iter().any(|table| {
             table.catalog_name.as_deref() == catalog_name
                 && table.schema_name == schema_name
