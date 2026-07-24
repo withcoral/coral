@@ -170,7 +170,7 @@ export const lightTheme = createTheme(theme, {
       backgroundHover: paletteLight.GreenAlpha['04'],
       color: paletteLight.Green['11'],
       colorHover: paletteLight.Green['11'],
-      stroke: paletteLight.GreenAlpha['06'],
+      stroke: paletteLight.GreenAlpha['09'],
     },
     mention: {
       background: paletteLight.CoralGreenAlpha['03'],
