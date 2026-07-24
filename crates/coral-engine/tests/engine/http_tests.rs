@@ -1181,6 +1181,104 @@ async fn source_scoped_table_function_builds_http_search_request() {
 }
 
 #[tokio::test]
+async fn source_scoped_table_function_preserves_float_spelling_for_default_utf8_argument() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Integral float",
+                "score": 1.0
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest(
+        "default_utf8_argument",
+        &server.uri(),
+    ));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM default_utf8_argument.search_issues(q => 1.0)",
+        )
+        .await
+        .expect("default Utf8 arguments should preserve scalar stringification"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Integral float" })]);
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_checks_allowed_values_before_numeric_coercion() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "1.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Allowed numeric value",
+                "score": 1.0
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("numeric_allowed_value", &server.uri());
+    manifest["functions"][0]["args"][0]["type"] = json!("Float64");
+    manifest["functions"][0]["args"][0]["values"] = json!(["1"]);
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM numeric_allowed_value.search_issues(q => 1)",
+        )
+        .await
+        .expect("allowed values should use the source literal spelling"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Allowed numeric value" })]);
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_preserves_serialized_json_string_argument() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "\"exact\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Exact JSON string",
+                "score": 1.0
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("json_string_argument", &server.uri());
+    manifest["functions"][0]["args"][0]["type"] = json!("Json");
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM json_string_argument.search_issues(q => '\"exact\"')",
+        )
+        .await
+        .expect("HTTP JSON arguments should retain their serialized representation"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Exact JSON string" })]);
+}
+
+#[tokio::test]
 async fn execution_provenance_records_source_scoped_table_functions() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

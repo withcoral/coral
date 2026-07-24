@@ -3,11 +3,11 @@
 //!
 //! This module is the home for the canonical `ManifestDataType`-to-Arrow
 //! type-level policy and Arrow-to-manifest inference.
-//! Value-level `ManifestDataType` switches still live with their backends
-//! (`convert_items` in `backends/shared/mapping.rs` builds Arrow arrays per
-//! variant, and `coerce_filter_value` / `coerce_call_arg_value` in the MCP
-//! backend coerce JSON values). All of those matches are wildcard-free, so
-//! adding a `ManifestDataType` variant breaks each of them loudly.
+//! Value-level `ManifestDataType` switches live at their execution seams:
+//! `convert_items` in `backends/shared/mapping.rs` builds Arrow arrays,
+//! table-function binding lives in `runtime::source_functions`, and MCP filter
+//! binding lives in its backend. These matches are wildcard-free, so adding a
+//! `ManifestDataType` variant breaks each of them loudly.
 
 use coral_spec::ManifestDataType;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};

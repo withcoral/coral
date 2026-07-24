@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use coral_spec::SourceTableFunctionSpec;
+use coral_spec::{ManifestDataType, SourceTableFunctionSpec};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
@@ -19,13 +19,12 @@ use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::SourceObservationSurfaceKind;
-use crate::backends::SourceFunctionProviderFactory;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
-use crate::backends::shared::filter_expr::literal_to_string;
 use crate::backends::shared::source_observation::SourceObservationPublishers;
+use crate::backends::{BoundSourceFunctionArg, SourceFunctionProviderFactory};
 
 struct FunctionCallContext<'a> {
     source_schema: &'a str,
@@ -88,7 +87,7 @@ impl SourceFunctionProviderFactory for HttpSourceTableFunction {
         Arc::clone(&self.state.schema)
     }
 
-    fn provider_for_args(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+    fn provider_for_args(&self, args: &[BoundSourceFunctionArg]) -> Result<Arc<dyn TableProvider>> {
         let arg_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
         Ok(Arc::new(HttpSourceFunctionCallTableProvider {
             state: Arc::clone(&self.state),
@@ -164,7 +163,7 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
 fn bind_function_args(
     source_schema: &str,
     function: &SourceTableFunctionSpec,
-    args: &[Expr],
+    args: &[BoundSourceFunctionArg],
 ) -> Result<HashMap<String, String>> {
     let context = FunctionCallContext {
         source_schema,
@@ -176,14 +175,23 @@ fn bind_function_args(
     let mut arg_values = HashMap::with_capacity(function.args.len());
 
     for (index, spec) in function.args.iter().enumerate() {
-        let Some(value) = resolve_call_arg_literal(&context, spec.name.as_str(), args.get(index))?
-        else {
+        let Some(value) = args.get(index).and_then(Option::as_ref) else {
             if spec.required {
                 required_missing.push(spec.name.as_str());
             }
             continue;
         };
-        ensure_call_arg_allowed_value(&context, spec.name.as_str(), &value, &spec.values)?;
+        ensure_call_arg_allowed_value(
+            &context,
+            spec.name.as_str(),
+            &value.source_text,
+            &spec.values,
+        )?;
+        let value = match (spec.data_type, &value.value) {
+            (ManifestDataType::Json, value) => value.to_string(),
+            (_, serde_json::Value::String(value)) => value.clone(),
+            (_, value) => value.to_string(),
+        };
         arg_values.insert(spec.bind.arg.clone(), value);
     }
 
@@ -211,35 +219,6 @@ fn ensure_no_extra_args(
         )));
     }
     Ok(())
-}
-
-fn resolve_call_arg_literal(
-    context: &FunctionCallContext<'_>,
-    arg_name: &str,
-    expr: Option<&Expr>,
-) -> Result<Option<String>> {
-    let Some(expr) = expr else {
-        return Ok(None);
-    };
-    if is_null_literal(expr) {
-        return Ok(None);
-    }
-    let Some(value) = literal_to_string(expr) else {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} argument '{}' must be a literal",
-            context.source_schema, context.function_name, arg_name
-        )));
-    };
-    Ok(Some(value))
-}
-
-fn is_null_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Literal(value, _) => value.is_null(),
-        Expr::Cast(cast) => is_null_literal(cast.expr.as_ref()),
-        Expr::TryCast(cast) => is_null_literal(cast.expr.as_ref()),
-        _ => false,
-    }
 }
 
 fn ensure_call_arg_allowed_value(

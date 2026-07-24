@@ -12,6 +12,7 @@ use datafusion::logical_expr::Expr;
 use crate::runtime::catalog::{
     CatalogTableFunction, CatalogTableFunctionArgument, CatalogTableFunctionResultColumn,
 };
+use crate::runtime::literal_scalar_value;
 use crate::runtime::query::{QueryRuntimeAdapter, query_parameter_scalar_value};
 use crate::runtime::scoped_table_functions::{ScopedTableFunctionName, qualified_name};
 use crate::types::parameter_binding_is_string_shaped;
@@ -231,34 +232,6 @@ fn udf_argument_value(
                 scalar_literal_kind(&value)
             ))
         })
-}
-
-fn literal_scalar_value(expr: &Expr) -> DataFusionResult<Option<ScalarValue>> {
-    match unalias(expr) {
-        Expr::Literal(value, _) => Ok(Some(value.clone())),
-        Expr::Cast(cast) => Ok(literal_scalar_value(&cast.expr)?
-            .map(|value| value.cast_to(cast.field.data_type()))
-            .transpose()?),
-        Expr::TryCast(cast) => {
-            let Some(value) = literal_scalar_value(&cast.expr)? else {
-                return Ok(None);
-            };
-            Ok(Some(value.cast_to(cast.field.data_type()).unwrap_or(
-                ScalarValue::try_new_null(cast.field.data_type())?,
-            )))
-        }
-        Expr::Negative(expr) => Ok(literal_scalar_value(expr)?
-            .map(|value| value.arithmetic_negate())
-            .transpose()?),
-        _ => Ok(None),
-    }
-}
-
-fn unalias(mut expr: &Expr) -> &Expr {
-    while let Expr::Alias(alias) = expr {
-        expr = &alias.expr;
-    }
-    expr
 }
 
 pub(crate) fn udf_param_values(params: &QueryParameters) -> Vec<(String, ScalarValue)> {

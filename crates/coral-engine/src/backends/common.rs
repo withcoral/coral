@@ -16,22 +16,37 @@ use coral_spec::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::Expr;
 use datafusion::prelude::SessionContext;
+use serde_json::Value;
+
+/// One table-function argument after SQL literal evaluation and
+/// manifest-directed coercion.
+#[derive(Debug, Clone)]
+pub(crate) struct BoundSourceFunctionValue {
+    /// Value encoded according to the manifest-declared type.
+    pub(crate) value: Value,
+    /// Original scalar spelling used by the existing `values:` contract.
+    pub(crate) source_text: String,
+}
+
+/// `None` represents SQL `NULL`.
+pub(crate) type BoundSourceFunctionArg = Option<BoundSourceFunctionValue>;
 
 /// Provider factory for one registered source-scoped table function.
 ///
-/// Implementations bind one call site's positional arguments (manifest order,
-/// NULL meaning "absent") into a scannable provider. Binding is pure argument
-/// validation plus request-value capture — no I/O happens until the returned
-/// provider is scanned.
+/// Implementations map one call site's manifest-bound positional arguments
+/// (`None` meaning SQL `NULL`) into a scannable provider. Mapping is pure
+/// argument validation plus request-value capture — no I/O happens until the
+/// returned provider is scanned.
 pub(crate) trait SourceFunctionProviderFactory: std::fmt::Debug + Send + Sync {
     /// Manifest-declared result schema for this function.
     fn schema(&self) -> SchemaRef;
 
-    /// Binds positional call arguments into a provider for one call site.
-    fn provider_for_args(&self, args: &[Expr])
-    -> datafusion::error::Result<Arc<dyn TableProvider>>;
+    /// Maps manifest-bound positional arguments into a provider for one call site.
+    fn provider_for_args(
+        &self,
+        args: &[BoundSourceFunctionArg],
+    ) -> datafusion::error::Result<Arc<dyn TableProvider>>;
 }
 
 #[derive(Debug, Clone)]
@@ -432,7 +447,7 @@ pub(crate) mod test_support {
 
         fn provider_for_args(
             &self,
-            _args: &[Expr],
+            _args: &[BoundSourceFunctionArg],
         ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
             Err(DataFusionError::Internal(
                 "stub source function factory cannot bind arguments".to_string(),
