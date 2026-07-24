@@ -5,7 +5,6 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use coral_client::{AppClient, local::ServerBuilder};
-use coral_mcp::McpOptions;
 use rmcp::ServiceExt as _;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -14,6 +13,8 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tower::ServiceExt as _;
+
+use crate::McpOptions;
 
 use super::{
     McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, SHUTDOWN_GRACE_PERIOD,
@@ -248,8 +249,8 @@ async fn shutdown_timeout_matches_one_second_contract() {
     let server = start_auth_disabled(config, app, McpOptions::default())
         .await
         .expect("start MCP HTTP server");
-    let requests = server.state.requests.clone();
-    let request = requests.read().await;
+    let state = server.state.clone();
+    let request = state.requests.read().await;
 
     let result = tokio::time::timeout(
         Duration::from_secs(1),
@@ -260,6 +261,7 @@ async fn shutdown_timeout_matches_one_second_contract() {
     assert!(matches!(result, Err(McpHttpError::ShutdownTimedOut)));
 
     drop(request);
+    drop(state);
     app_server.shutdown().await.expect("shutdown app server");
 }
 

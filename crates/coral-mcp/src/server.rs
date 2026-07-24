@@ -205,7 +205,7 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
 
 /// Cloneable factory for constructing an independent MCP handler per session.
 #[derive(Clone)]
-pub struct CoralMcpServerFactory {
+pub(crate) struct CoralMcpServerFactory {
     app: AppClient,
     options: McpOptions,
 }
@@ -219,13 +219,13 @@ impl CoralMcpServerFactory {
     /// transport must use a client bound to the validated session and must not
     /// fall back to a shared unauthenticated client.
     #[must_use]
-    pub fn new(app: AppClient, options: McpOptions) -> Self {
+    pub(crate) fn new(app: AppClient, options: McpOptions) -> Self {
         Self { app, options }
     }
 
     /// Constructs a fresh handler for one MCP session.
     #[must_use]
-    pub fn create(&self) -> impl ServerHandler + Clone + use<> {
+    pub(crate) fn create(&self) -> impl ServerHandler + Clone + use<> {
         CoralMcpServer::new(&self.app, self.options.clone())
     }
 }

@@ -19,7 +19,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_client::{AppClient, default_workspace};
-use coral_mcp::{CoralMcpServerFactory, McpOptions};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::SessionManager,
     session::local::LocalSessionManager,
@@ -29,6 +28,8 @@ use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
 use tonic::Request as GrpcRequest;
 use tower::ServiceExt;
+
+use crate::{CoralMcpServerFactory, McpOptions};
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
@@ -252,7 +253,7 @@ fn auth_disabled_router(
         sessions: sessions.clone(),
         config,
         readiness,
-        requests: Arc::new(RwLock::new(())),
+        requests: RwLock::new(()),
     });
     let router = Router::new()
         .route("/mcp", any(mcp))
@@ -262,13 +263,12 @@ fn auth_disabled_router(
     (router, state)
 }
 
-#[derive(Clone)]
 struct HttpState {
     factory: CoralMcpServerFactory,
     sessions: Arc<LocalSessionManager>,
     config: StreamableHttpServerConfig,
     readiness: ReadinessProbe,
-    requests: Arc<RwLock<()>>,
+    requests: RwLock<()>,
 }
 
 async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Response {

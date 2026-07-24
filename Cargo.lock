@@ -1410,6 +1410,7 @@ dependencies = [
 name = "coral-mcp"
 version = "0.7.1"
 dependencies = [
+ "axum",
  "coral-api",
  "coral-app",
  "coral-client",
@@ -1427,27 +1428,11 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-types",
+ "tower",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "coral-mcp-http"
-version = "0.7.1"
-dependencies = [
- "axum",
- "coral-api",
- "coral-client",
- "coral-mcp",
- "rmcp",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tonic",
- "tower",
 ]
 
 [[package]]
