@@ -185,12 +185,7 @@ pub(crate) enum RawFeatureValue {
 struct PersistedWorkspaceConfig {
     #[serde(default)]
     sources: BTreeMap<String, PersistedInstalledSource>,
-    // The persisted TOML shape is `functions.<name> = {}` so existing workspace
-    // configs keep round-tripping even though installed functions are membership-only.
-    #[expect(
-        clippy::zero_sized_map_values,
-        reason = "persisted function membership uses the existing TOML map shape"
-    )]
+    // Function entries preserve the existing `functions.<name>` TOML table shape.
     #[serde(default)]
     functions: BTreeMap<String, PersistedInstalledFunction>,
 }
@@ -265,19 +260,25 @@ impl WorkspaceCatalog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedInstalledFunction {}
+struct PersistedInstalledFunction {
+    #[serde(default)]
+    write_surface: crate::functions::model::FunctionWriteSurface,
+}
 
 impl PersistedInstalledFunction {
-    fn into_installed_function(function_name: FunctionName) -> InstalledFunction {
+    fn into_installed_function(self, function_name: FunctionName) -> InstalledFunction {
         InstalledFunction {
             name: function_name,
+            write_surface: self.write_surface,
         }
     }
 }
 
 impl From<&InstalledFunction> for PersistedInstalledFunction {
-    fn from(_value: &InstalledFunction) -> Self {
-        Self {}
+    fn from(value: &InstalledFunction) -> Self {
+        Self {
+            write_surface: value.write_surface,
+        }
     }
 }
 
@@ -896,7 +897,7 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
             source_item["origin"] = value(source.origin.as_config_value());
         }
 
-        for function_name in workspace.functions.keys() {
+        for (function_name, function) in &workspace.functions {
             ensure_implicit_table(&mut doc["workspaces"]);
             ensure_implicit_table(&mut doc["workspaces"][workspace_name]);
             ensure_implicit_table(&mut doc["workspaces"][workspace_name]["functions"]);
@@ -910,6 +911,7 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                 .expect("function config entry should be a table after initialization");
             function_table.remove("origin");
             function_table.remove("enabled");
+            function_item["write_surface"] = value(function.write_surface.as_config_value());
         }
     }
 
@@ -1003,11 +1005,11 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
                 let source_name = SourceName::parse(&source_name)?;
                 catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
             }
-            for (function_name, _function) in workspace_config.functions {
+            for (function_name, function) in workspace_config.functions {
                 let function_name = FunctionName::parse(&function_name)?;
                 functions.upsert_function(
                     &workspace_name,
-                    PersistedInstalledFunction::into_installed_function(function_name),
+                    function.into_installed_function(function_name),
                 );
             }
         }
@@ -1260,6 +1262,7 @@ mod tests {
     fn installed_function(name: &str) -> InstalledFunction {
         InstalledFunction {
             name: FunctionName::parse(name).expect("function"),
+            write_surface: crate::functions::model::FunctionWriteSurface::Unknown,
         }
     }
 
@@ -1381,6 +1384,7 @@ version = 1
         let raw = render_config(&PersistedAppConfig::from(&config), None);
 
         assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(raw.contains("write_surface = \"unknown\""));
         assert!(!raw.contains("origin = \"user\""));
         assert!(!raw.contains("enabled = true"));
     }
@@ -1408,6 +1412,7 @@ enabled = true
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
 
         assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(raw.contains("write_surface = \"unknown\""));
         assert!(!raw.contains("origin = \"user\""));
         assert!(!raw.contains("enabled = true"));
     }

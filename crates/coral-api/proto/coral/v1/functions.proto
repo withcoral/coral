@@ -5,6 +5,17 @@ package coral.v1;
 import "coral/v1/catalog.proto";
 import "coral/v1/resources.proto";
 
+// The Coral surface that wrote the current installed function definition.
+enum FunctionWriteSurface {
+  // The write surface is not known, including functions installed before this
+  // metadata was recorded.
+  FUNCTION_WRITE_SURFACE_UNSPECIFIED = 0;
+  // The function was written through the Coral CLI.
+  FUNCTION_WRITE_SURFACE_CLI = 1;
+  // The function was written through Coral's MCP server.
+  FUNCTION_WRITE_SURFACE_MCP = 2;
+}
+
 // One scalar function argument.
 message FunctionArgument {
   // Argument name.
@@ -62,6 +73,8 @@ message Function {
     // The function is installed but is not currently queryable.
     FunctionRuntimeInvalid invalid = 4;
   }
+  // The Coral surface that wrote the current function definition.
+  FunctionWriteSurface write_surface = 5;
 }
 
 // Installs or replaces one user function after validation.
@@ -74,6 +87,8 @@ message AddFunctionRequest {
   // Defaults to false so callers written before this field was added retain
   // the original replace-existing behavior.
   bool fail_if_exists = 3;
+  // The Coral surface issuing this write. Omit when unknown.
+  FunctionWriteSurface write_surface = 4;
 }
 
 // Function install response.

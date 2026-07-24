@@ -7,8 +7,8 @@ use coral_api::v1::{
     DescribeTableResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
     ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
     PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
-    TaskStatus as ProtoTaskStatus, catalog_item,
+    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
+    catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
@@ -37,16 +37,15 @@ use crate::{
     surface::{
         AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
         SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, StartTaskArguments,
-        TaskEndedValue, TaskId,
-        TaskStartedValue, TaskStatus, ToolAvailability, ToolDescriptionContext, ToolName,
-        add_function_arguments, available_tools, build_tool_result, describe_table_arguments,
-        describe_table_value, end_task_arguments, feedback_arguments, function_added_value,
-        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
-        list_catalog_value, list_columns_arguments, list_columns_table_fallback_value,
-        list_columns_value, render_function_artifact, required_task_id_argument,
-        required_tool_intent_argument, search_arguments, sql_arguments, start_task_arguments,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
+        ToolDescriptionContext, ToolName, add_function_arguments, available_tools,
+        build_tool_result, describe_table_arguments, describe_table_value, end_task_arguments,
+        feedback_arguments, function_added_value, guide_resource, guide_resource_content,
+        initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
+        list_columns_table_fallback_value, list_columns_value, render_function_artifact,
+        required_task_id_argument, required_tool_intent_argument, search_arguments, sql_arguments,
+        start_task_arguments, status_to_error_data, tables_resource, tables_resource_content,
+        tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -665,6 +664,7 @@ impl CoralMcpServer {
                 workspace: Some(self.workspace()),
                 sql: artifact_sql,
                 fail_if_exists: !arguments.replace_existing,
+                write_surface: FunctionWriteSurface::Mcp as i32,
             }))
             .await?
             .into_inner();

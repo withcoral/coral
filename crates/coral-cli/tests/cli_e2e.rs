@@ -18,7 +18,7 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::{
     AddFunctionResponse, CatalogRebuildResult, DiscoverSourcesResponse, ExecuteSqlResponse,
-    Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady,
+    Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady, FunctionWriteSurface,
     ListFunctionsResponse, ListSourcesResponse, ListWorkspacesResponse, RebuildSearchIndexResponse,
     SearchDataScope, SearchIndexProvider, SearchMaintenanceResult, SearchMaintenanceState,
     SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function,
@@ -290,6 +290,7 @@ async fn functions_add_sends_file_to_selected_workspace() {
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
     assert_eq!(requests[0].sql, sql);
     assert!(!requests[0].fail_if_exists);
+    assert_eq!(requests[0].write_surface, FunctionWriteSurface::Cli as i32);
 
     server.shutdown().await;
 }

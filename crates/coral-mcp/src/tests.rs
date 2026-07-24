@@ -1970,12 +1970,15 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
 
     let added = client
         .call_tool(
-            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
-                "schema": "functions",
-                "name": "echo_value",
-                "description": "Echo one value",
-                "sql": "select cast($value as VARCHAR) as value"
-            }))),
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "functions",
+                    "name": "echo_value",
+                    "description": "Echo one value",
+                    "sql": "select cast($value as VARCHAR) as value"
+                }),
+            )),
         )
         .await
         .expect("add function");
@@ -1995,12 +1998,18 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
     assert_eq!(added["sql_reference"], "functions.echo_value");
     assert_eq!(added["result_columns"][0]["column_name"], "value");
     assert_eq!(added["replaced"], false);
+    let config_raw =
+        fs::read_to_string(temp.path().join("coral-config/config.toml")).expect("read config");
+    assert!(config_raw.contains("write_surface = \"mcp\""));
 
     let query = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &json!({
-                "queries": ["select * from functions.echo_value(value => 'hello')"]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": ["select * from functions.echo_value(value => 'hello')"]
+                }),
+            )),
         )
         .await
         .expect("query added function");
@@ -2012,12 +2021,15 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
 
     let duplicate = client
         .call_tool(
-            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
-                "schema": "functions",
-                "name": "echo_value",
-                "description": "Should not replace",
-                "sql": "select cast($value as VARCHAR) as replacement"
-            }))),
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "functions",
+                    "name": "echo_value",
+                    "description": "Should not replace",
+                    "sql": "select cast($value as VARCHAR) as replacement"
+                }),
+            )),
         )
         .await
         .expect("duplicate create should return a tool error");
@@ -2026,13 +2038,16 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
 
     let rejected = client
         .call_tool(
-            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
-                "schema": "functions",
-                "name": "echo_value",
-                "description": "Invalid replacement",
-                "sql": "select $value as value",
-                "replace_existing": true
-            }))),
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "functions",
+                    "name": "echo_value",
+                    "description": "Invalid replacement",
+                    "sql": "select $value as value",
+                    "replace_existing": true
+                }),
+            )),
         )
         .await
         .expect("invalid replacement should return a tool error");
@@ -2041,9 +2056,12 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
 
     let still_callable = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &json!({
-                "queries": ["select * from functions.echo_value(value => 'still here')"]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": ["select * from functions.echo_value(value => 'still here')"]
+                }),
+            )),
         )
         .await
         .expect("query preserved function");
@@ -2055,13 +2073,16 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
 
     let replaced = client
         .call_tool(
-            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
-                "schema": "functions",
-                "name": "echo_value",
-                "description": "Return a replacement value",
-                "sql": "select cast($value as VARCHAR) as replacement",
-                "replace_existing": true
-            }))),
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "functions",
+                    "name": "echo_value",
+                    "description": "Return a replacement value",
+                    "sql": "select cast($value as VARCHAR) as replacement",
+                    "replace_existing": true
+                }),
+            )),
         )
         .await
         .expect("replace function");
@@ -2074,12 +2095,15 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
 
     let blank = client
         .call_tool(
-            CallToolRequestParams::new("add_function").with_arguments(task_arguments(&task_id, &json!({
-                "schema": "functions",
-                "name": "blank",
-                "description": "Blank query",
-                "sql": "   "
-            }))),
+            CallToolRequestParams::new("add_function").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "schema": "functions",
+                    "name": "blank",
+                    "description": "Blank query",
+                    "sql": "   "
+                }),
+            )),
         )
         .await
         .expect_err("blank SQL should fail before dispatch");

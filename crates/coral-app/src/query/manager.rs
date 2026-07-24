@@ -24,6 +24,7 @@ use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::functions::manager::{
     FunctionInstallMode, FunctionListing, FunctionManager, ValidatedFunctionInstall,
 };
+use crate::functions::model::FunctionWriteSurface;
 use crate::hash::sha256_hex;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
@@ -73,6 +74,7 @@ pub(crate) struct ValidatedSource {
 pub(crate) struct AddedUserFunction {
     pub(crate) definition: UdfRuntimeDefinition,
     pub(crate) replaced: bool,
+    pub(crate) write_surface: FunctionWriteSurface,
 }
 
 #[derive(Clone, Copy)]
@@ -802,6 +804,7 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         raw_sql: &str,
         mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
     ) -> Result<AddedUserFunction, QueryManagerError> {
         for _ in 0..2 {
             let revision = self.lifecycle_lock.snapshot_async().await.revision();
@@ -830,6 +833,7 @@ impl QueryManager {
                     &runtime_function,
                     revision,
                     mode,
+                    write_surface,
                 )
                 .await
                 .map_err(QueryManagerError::App)?
@@ -838,6 +842,7 @@ impl QueryManager {
                     return Ok(AddedUserFunction {
                         definition: runtime_function,
                         replaced,
+                        write_surface,
                     });
                 }
                 ValidatedFunctionInstall::WorkspaceChanged => {}
@@ -2592,6 +2597,7 @@ select text from function_demo.messages
                 &workspace_name,
                 function_sql,
                 FunctionInstallMode::ReplaceExisting,
+                FunctionWriteSurface::Unknown,
             )
             .await
             .expect_err("source change should invalidate the original validation snapshot");

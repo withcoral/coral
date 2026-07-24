@@ -4,8 +4,8 @@ use coral_api::v1::function_service_server::FunctionService as FunctionServiceAp
 use coral_api::v1::{
     AddFunctionRequest, AddFunctionResponse, DeleteFunctionRequest, DeleteFunctionResponse,
     Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady,
-    FunctionTableFunctionPublish, ListFunctionsRequest, ListFunctionsResponse,
-    TableFunctionResultColumn, function,
+    FunctionTableFunctionPublish, FunctionWriteSurface as ProtoFunctionWriteSurface,
+    ListFunctionsRequest, ListFunctionsResponse, TableFunctionResultColumn, function,
 };
 use coral_engine::{
     UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimeTableFunctionPublish,
@@ -14,7 +14,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::functions::manager::{FunctionInstallMode, FunctionListing, FunctionRuntimeStatus};
-use crate::functions::model::FunctionName;
+use crate::functions::model::{FunctionName, FunctionWriteSurface};
 use crate::query::manager::QueryManager;
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, workspace_name_from_proto, workspace_to_proto,
@@ -50,12 +50,17 @@ impl FunctionServiceApi for FunctionService {
             } else {
                 FunctionInstallMode::ReplaceExisting
             };
+            let write_surface = function_write_surface_from_proto(inner.write_surface);
             let added = queries
-                .add_user_function(&workspace_name, &inner.sql, mode)
+                .add_user_function(&workspace_name, &inner.sql, mode, write_surface)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(AddFunctionResponse {
-                function: Some(runtime_function_to_proto(&workspace_name, added.definition)),
+                function: Some(runtime_function_to_proto(
+                    &workspace_name,
+                    added.definition,
+                    added.write_surface,
+                )),
                 replaced: added.replaced,
             }))
         }))
@@ -105,16 +110,22 @@ impl FunctionServiceApi for FunctionService {
 }
 
 fn function_listing_to_proto(workspace_name: &WorkspaceName, listing: FunctionListing) -> Function {
-    match listing.runtime {
+    let FunctionListing {
+        name,
+        write_surface,
+        runtime,
+    } = listing;
+    match runtime {
         FunctionRuntimeStatus::Ready(definition) => {
-            runtime_function_to_proto(workspace_name, *definition)
+            runtime_function_to_proto(workspace_name, *definition, write_surface)
         }
         FunctionRuntimeStatus::Invalid(reason) => Function {
-            name: listing.name.to_string(),
+            name: name.to_string(),
             workspace: Some(workspace_to_proto(workspace_name)),
             runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
                 reason,
             })),
+            write_surface: function_write_surface_to_proto(write_surface),
         },
     }
 }
@@ -122,6 +133,7 @@ fn function_listing_to_proto(workspace_name: &WorkspaceName, listing: FunctionLi
 fn runtime_function_to_proto(
     workspace_name: &WorkspaceName,
     function: UdfRuntimeDefinition,
+    write_surface: FunctionWriteSurface,
 ) -> Function {
     let name = function.name;
     let UdfRuntimeImplementation::CoralSql { query: sql_body } = function.implementation else {
@@ -156,6 +168,23 @@ fn runtime_function_to_proto(
             sql_body,
             source_names: function.source_names,
         })),
+        write_surface: function_write_surface_to_proto(write_surface),
+    }
+}
+
+fn function_write_surface_from_proto(value: i32) -> FunctionWriteSurface {
+    match ProtoFunctionWriteSurface::try_from(value) {
+        Ok(ProtoFunctionWriteSurface::Cli) => FunctionWriteSurface::Cli,
+        Ok(ProtoFunctionWriteSurface::Mcp) => FunctionWriteSurface::Mcp,
+        Ok(ProtoFunctionWriteSurface::Unspecified) | Err(_) => FunctionWriteSurface::Unknown,
+    }
+}
+
+fn function_write_surface_to_proto(value: FunctionWriteSurface) -> i32 {
+    match value {
+        FunctionWriteSurface::Unknown => ProtoFunctionWriteSurface::Unspecified as i32,
+        FunctionWriteSurface::Cli => ProtoFunctionWriteSurface::Cli as i32,
+        FunctionWriteSurface::Mcp => ProtoFunctionWriteSurface::Mcp as i32,
     }
 }
 
@@ -179,6 +208,7 @@ mod tests {
         let workspace = WorkspaceName::parse("default").expect("workspace");
         let listing = FunctionListing {
             name: FunctionName::parse("review_queue").expect("function"),
+            write_surface: FunctionWriteSurface::Unknown,
             runtime: FunctionRuntimeStatus::Invalid("function file is missing".to_string()),
         };
 
