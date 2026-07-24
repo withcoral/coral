@@ -13,7 +13,7 @@ use datafusion::prelude::SessionContext;
 use serde::Serialize;
 
 use crate::backends::{RegisteredSource, RegisteredTable, SourceQualifiedName};
-use crate::runtime::non_default_catalog_name;
+use crate::runtime::normalize_catalog_name;
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
@@ -733,7 +733,7 @@ fn append_catalog_filter(
 ) {
     let mut predicates = Vec::new();
     if let Some(value) = catalog_filter {
-        let value = non_default_catalog_name(Some(value)).unwrap_or_default();
+        let value = normalize_catalog_name(Some(value)).unwrap_or_default();
         predicates.push(format!("catalog_name = {}", sql_string_literal(value)));
     }
     if let Some(value) = schema_filter {
