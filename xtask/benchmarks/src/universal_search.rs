@@ -307,7 +307,6 @@ fn prepare(args: &PrepareArgs) -> Result<bool> {
     if args.count == 0 {
         bail!("--count must be positive");
     }
-    fs::create_dir_all(&args.dir).with_context(|| format!("creating {}", args.dir.display()))?;
     let coral_bin = absolute_path(&args.coral_bin)?;
     ensure_file(&coral_bin, "Coral binary")?;
 
@@ -319,11 +318,7 @@ fn prepare(args: &PrepareArgs) -> Result<bool> {
     validate_inventory(&inventory)?;
     let inventory_bytes = inventory_bytes(&inventory)?;
     let inventory_hash = sha256_hex(&inventory_bytes);
-    atomic_write(&args.dir.join("inventory.json"), &inventory_bytes)?;
-
     let samples = sample_inventory(&inventory, args.count, args.seed)?;
-    write_jsonl(&args.dir.join("samples.jsonl"), &samples)?;
-
     let coral_version = command_version(&coral_bin)?;
     let manifest = json!({
         "format_version": FORMAT_VERSION,
@@ -343,6 +338,9 @@ fn prepare(args: &PrepareArgs) -> Result<bool> {
             "queries": [TABLES_QUERY, COLUMNS_QUERY, FUNCTIONS_QUERY]
         }
     });
+    claim_run_dir(&args.dir)?;
+    atomic_write(&args.dir.join("inventory.json"), &inventory_bytes)?;
+    write_jsonl(&args.dir.join("samples.jsonl"), &samples)?;
     atomic_write_json(&args.dir.join("manifest.json"), &manifest)?;
     println!(
         "Prepared {} samples from {} tables, {} columns, and {} table functions in {}.",
@@ -2419,6 +2417,21 @@ fn refuse_existing_replay(replay_path: &Path, raw_replay_dir: &Path) -> Result<(
     Ok(())
 }
 
+fn claim_run_dir(dir: &Path) -> Result<()> {
+    ensure_parent(dir)?;
+    match fs::create_dir(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!(
+                "benchmark run directory already exists; choose a new --dir instead of overwriting {}",
+                dir.display()
+            )
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("claiming benchmark run directory {}", dir.display())),
+    }
+}
+
 fn refuse_existing_summary(json_path: &Path, markdown_path: &Path) -> Result<()> {
     if json_path.exists() || markdown_path.exists() {
         bail!(
@@ -2721,7 +2734,7 @@ mod tests {
     use super::{
         CollectArgs, ColumnRow, CorpusCase, FunctionRow, Inventory, RankEvaluation, ReplayRecord,
         SearchRun, TableRow, Target, artifact_path, catalog_provider_operational_error,
-        collection_command, compare_replays, evaluate_response, extract_search_call,
+        claim_run_dir, collection_command, compare_replays, evaluate_response, extract_search_call,
         read_replay_records, refuse_existing_replay, sample_inventory, set_config_dir, summarize,
         validate_corpus_case_ids, validate_inventory, validate_label,
     };
@@ -3094,6 +3107,23 @@ mod tests {
             std::path::Path::new("definitely-missing-raw-replay-dir"),
         );
         std::fs::remove_file(&replay_path).expect("remove replay fixture");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn prepare_cannot_overwrite_existing_run_evidence() {
+        let run_dir = std::env::temp_dir().join(format!(
+            "coral-search-bench-prepare-{}-{}",
+            std::process::id(),
+            super::unix_nanos().expect("clock")
+        ));
+        std::fs::create_dir(&run_dir).expect("create run directory");
+        std::fs::write(run_dir.join("manifest.json"), b"existing provenance")
+            .expect("write manifest fixture");
+
+        let result = claim_run_dir(&run_dir);
+        std::fs::remove_dir_all(&run_dir).expect("remove run directory");
 
         assert!(result.is_err());
     }
