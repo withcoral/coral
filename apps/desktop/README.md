@@ -29,8 +29,8 @@ uses `CORAL_ENDPOINT` to reach the supervised sidecar.
   Content-Security-Policy
 - light and dark app icons (macOS; Windows icon assets are staged for a future
   Windows target)
-- Coral MCP configuration for Codex and Claude Code — from the Settings page and
-  the app menu — via `add-mcp`
+- Coral MCP configuration from Desktop Settings for supported stdio-capable
+  clients, including before they are installed
 - macOS DMG and ZIP packaging via `electron-builder`, with a signed and
   notarized release mode
 - GitHub Releases update metadata for packaged desktop auto-updates

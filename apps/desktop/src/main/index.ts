@@ -1,8 +1,12 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, nativeTheme, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { McpClientId } from '../shared/types'
-import { configureMcpClient, getMcpLaunchConfig, mcpClients } from './mcp-config'
+import {
+  configureMcpClient,
+  getMcpLaunchConfig,
+  mcpClients,
+  removeMcpClient,
+} from './mcp-config'
 import {
   APP_ENTRY_URL,
   APP_ORIGIN,
@@ -238,41 +242,18 @@ async function stopServices(): Promise<void> {
 
 function registerIpcHandlers() {
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
-  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) =>
-    configureMcpClient(clientId),
+  ipcMain.handle('coral:configure-mcp', (_event, clientId: unknown, workspaceName: unknown) =>
+    configureMcpClient(clientId, workspaceName),
   )
+  ipcMain.handle('coral:remove-mcp', (_event, clientId: unknown) => removeMcpClient(clientId))
   ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
 }
 
 function installMenu() {
-  const mcpSubmenu: Electron.MenuItemConstructorOptions[] = mcpClients().map((client) => ({
-    label: client.name,
-    click: async () => {
-      try {
-        const result = await configureMcpClient(client.id)
-        await dialog.showMessageBox({
-          type: 'info',
-          message: `${result.client.name} MCP configured`,
-          detail: result.configPath,
-        })
-      } catch (error) {
-        await dialog.showMessageBox({
-          type: 'error',
-          message: 'MCP configuration failed',
-          detail: error instanceof Error ? error.message : String(error),
-        })
-      }
-    },
-  }))
-
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Coral',
       submenu: [
-        {
-          label: 'Configure MCP',
-          submenu: mcpSubmenu,
-        },
         ...(desktopUpdatesSupported()
           ? ([
               {

@@ -16,6 +16,7 @@ export interface McpClientsSettingsProps {
   readonly error?: string
   readonly loading?: boolean
   readonly onWorkspaceChange: (clientId: string, workspaceName?: string) => void
+  readonly pendingClientIds?: ReadonlyArray<string>
   readonly workspaces: ReadonlyArray<{ name: string }>
 }
 
@@ -24,6 +25,7 @@ export function McpClientsSettings({
   error,
   loading = false,
   onWorkspaceChange,
+  pendingClientIds = [],
   workspaces,
 }: McpClientsSettingsProps) {
   const status = loading ? (
@@ -36,7 +38,7 @@ export function McpClientsSettings({
     </Typography.BodySmall>
   ) : clients.length === 0 ? (
     <Typography.BodySmall variant="tertiary">
-      No supported MCP clients detected.
+      No supported MCP clients available.
     </Typography.BodySmall>
   ) : null
 
@@ -78,6 +80,7 @@ export function McpClientsSettings({
                 </Table.Row>
               ) : (
                 clients.map((client) => {
+                  const pending = pendingClientIds.includes(client.id)
                   const access =
                     client.configuredWorkspace === undefined
                       ? NOT_CONFIGURED
@@ -98,7 +101,9 @@ export function McpClientsSettings({
                         <Menu.Container>
                           <Menu.Trigger
                             className={styles.workspaceTrigger}
-                            render={<Button.Container fullWidth variant="secondary" />}
+                            render={
+                              <Button.Container disabled={pending} fullWidth variant="secondary" />
+                            }
                           >
                             <Button.Text>{accessLabel}</Button.Text>
                             <Button.Icon name="ChevronDown" />
