@@ -26,6 +26,9 @@ pub(crate) const TABLE_FUNCTION_NOT_TABLE_REASON: &str = "TABLE_FUNCTION_NOT_TAB
 /// this only if we have data justifying divergence from that baseline.
 const DID_YOU_MEAN_SIMILARITY: f64 = 0.5;
 
+const LIST_AVAILABLE_TABLES_SQL: &str =
+    "SELECT catalog_name, schema_name, table_name FROM coral.tables";
+
 /// Structure-preserving column reference used by `unknown_column`.
 ///
 /// Keeping the qualifier components separate from the bare name means the
@@ -402,10 +405,9 @@ fn table_not_found_hint(
         if let Some((winner, _score)) = best {
             return Some(did_you_mean_hint(&format_schema_table(winner)));
         }
-        return Some(
-            "List available tables with `SELECT schema_name, table_name FROM coral.tables`."
-                .to_string(),
-        );
+        return Some(format!(
+            "List available tables with `{LIST_AVAILABLE_TABLES_SQL}`."
+        ));
     };
 
     let schema_lower = schema.to_lowercase();
@@ -424,8 +426,8 @@ fn table_not_found_hint(
         // enrich the hint at their layer.
         return Some(format!(
             "Schema `{schema}` is not currently registered. \
-             Query `SELECT DISTINCT schema_name FROM coral.tables` \
-             to see available schemas."
+             Query `{LIST_AVAILABLE_TABLES_SQL}` \
+             to see available catalogs, schemas, and tables."
         ));
     }
 
@@ -827,6 +829,9 @@ mod tests {
         assert_eq!(err.status(), StatusCode::NotFound);
         let hint = err.hint().expect("hint should be present");
         assert!(hint.contains("coral.tables"), "got: {hint}");
+        assert!(hint.contains("catalog_name"), "got: {hint}");
+        assert!(hint.contains("schema_name"), "got: {hint}");
+        assert!(hint.contains("table_name"), "got: {hint}");
         assert!(
             !hint.contains("coral source"),
             "hint must stay transport-neutral (no CLI-specific commands), got: {hint}"
@@ -1179,6 +1184,9 @@ mod tests {
 
         let hint = err.hint().expect("hint should be present");
         assert!(hint.contains("coral.tables"), "got: {hint}");
+        assert!(hint.contains("catalog_name"), "got: {hint}");
+        assert!(hint.contains("schema_name"), "got: {hint}");
+        assert!(hint.contains("table_name"), "got: {hint}");
     }
 
     #[test]
