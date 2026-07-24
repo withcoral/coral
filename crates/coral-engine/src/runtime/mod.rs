@@ -8,7 +8,7 @@ use datafusion::logical_expr::Expr;
 pub(crate) const DATAFUSION_DEFAULT_CATALOG: &str = "datafusion";
 
 /// Removes `DataFusion`'s synthetic default catalog from a table qualifier.
-/// Schema-backed Coral tables store an empty catalog name in metadata, even
+/// Schema-backed Coral tables store no catalog name in metadata, even
 /// when `DataFusion` expands an explicit reference to `datafusion.schema.table`.
 pub(crate) fn non_default_catalog_name(catalog_name: Option<&str>) -> Option<&str> {
     catalog_name.filter(|name| !name.eq_ignore_ascii_case(DATAFUSION_DEFAULT_CATALOG))
