@@ -71,8 +71,8 @@ pub(crate) fn compile_manifest(
 
 #[async_trait]
 impl CompiledBackendSource for FileCompiledSource {
-    fn qualified_name(&self) -> &str {
-        &self.manifest.common.name
+    fn qualified_name(&self) -> SourceQualifiedName {
+        SourceQualifiedName::Schema(self.manifest.common.name.clone())
     }
 
     fn source_name(&self) -> &str {

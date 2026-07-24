@@ -154,10 +154,11 @@ async fn register_sources_inner(
                         )? {
                             return Err(core_error);
                         }
+                        let qualified_name = compiled_source.qualified_name();
                         push_source_failure(
                             &mut result,
                             &source_name,
-                            compiled_source.qualified_name(),
+                            qualified_name.name(),
                             core_error.to_string(),
                         );
                     }
