@@ -24,6 +24,8 @@ const RESPONSE_TOKEN_ENCODING: &str = "o200k_base";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const DEFAULT_GENERATOR_BATCH_SIZE: usize = 10;
 const QUESTIONS_PER_SAMPLE: usize = 3;
+const QUESTION_STYLES: [&str; QUESTIONS_PER_SAMPLE] =
+    ["natural", "identifier_light", "field_focused"];
 const COLLECTION_PROTOCOL_VERSION: &str = "coral-search-once-v1";
 const COLLECTION_PROMPT_PREFIX: &str = "Find the Coral catalog surface that would help answer the question below.\nCall coral.search exactly once with limit 10. Choose the search query yourself.\nDo not call any other tool and do not execute SQL. Reply DONE after the search.\n\nQuestion: ";
 const COLLECTION_PROMPT_SUFFIX: &str = "\n";
@@ -307,7 +309,6 @@ fn prepare(args: &PrepareArgs) -> Result<bool> {
     if args.count == 0 {
         bail!("--count must be positive");
     }
-    fs::create_dir_all(&args.dir).with_context(|| format!("creating {}", args.dir.display()))?;
     let coral_bin = absolute_path(&args.coral_bin)?;
     ensure_file(&coral_bin, "Coral binary")?;
 
@@ -319,11 +320,7 @@ fn prepare(args: &PrepareArgs) -> Result<bool> {
     validate_inventory(&inventory)?;
     let inventory_bytes = inventory_bytes(&inventory)?;
     let inventory_hash = sha256_hex(&inventory_bytes);
-    atomic_write(&args.dir.join("inventory.json"), &inventory_bytes)?;
-
     let samples = sample_inventory(&inventory, args.count, args.seed)?;
-    write_jsonl(&args.dir.join("samples.jsonl"), &samples)?;
-
     let coral_version = command_version(&coral_bin)?;
     let manifest = json!({
         "format_version": FORMAT_VERSION,
@@ -343,6 +340,9 @@ fn prepare(args: &PrepareArgs) -> Result<bool> {
             "queries": [TABLES_QUERY, COLUMNS_QUERY, FUNCTIONS_QUERY]
         }
     });
+    claim_run_dir(&args.dir)?;
+    atomic_write(&args.dir.join("inventory.json"), &inventory_bytes)?;
+    write_jsonl(&args.dir.join("samples.jsonl"), &samples)?;
     atomic_write_json(&args.dir.join("manifest.json"), &manifest)?;
     println!(
         "Prepared {} samples from {} tables, {} columns, and {} table functions in {}.",
@@ -743,10 +743,11 @@ fn generate_batch(
 
 fn generator_prompt(samples: &[Sample]) -> Result<String> {
     let samples_json = serde_json::to_string_pretty(samples).context("serializing sample batch")?;
+    let question_styles = QUESTION_STYLES.join(", ");
     Ok(format!(
         "Generate exactly three realistic user questions for each catalog target below.\n\
          The target must be useful for answering each question, but do not teach the user Coral's schema, table, function, or field identifiers. Natural provider and domain language is allowed when a real user would use it.\n\
-         Use these styles once per sample: natural, identifier_light, field_focused.\n\
+         Use these styles once per sample: {question_styles}.\n\
          Return only the structured JSON required by the output schema. Preserve every sample_id exactly.\n\n\
          Targets:\n{samples_json}\n"
     ))
@@ -768,7 +769,7 @@ fn generator_output_schema() -> Value {
                         "sample_id": {"type": "string"},
                         "style": {
                             "type": "string",
-                            "enum": ["natural", "identifier_light", "field_focused"]
+                            "enum": QUESTION_STYLES
                         },
                         "question": {"type": "string", "minLength": 1},
                         "rationale": {"type": "string", "minLength": 1}
@@ -784,6 +785,7 @@ fn validate_generated_batch(samples: &[Sample], questions: &[GeneratedQuestion])
         .iter()
         .map(|sample| sample.id.as_str())
         .collect::<BTreeSet<_>>();
+    let expected_styles = BTreeSet::from(QUESTION_STYLES);
     let mut counts = BTreeMap::<&str, usize>::new();
     let mut styles = BTreeMap::<&str, BTreeSet<&str>>::new();
     for question in questions {
@@ -803,8 +805,11 @@ fn validate_generated_batch(samples: &[Sample], questions: &[GeneratedQuestion])
         if counts.get(sample_id).copied() != Some(QUESTIONS_PER_SAMPLE) {
             bail!("generator must return exactly three questions for {sample_id}");
         }
-        if styles.get(sample_id).map(BTreeSet::len) != Some(QUESTIONS_PER_SAMPLE) {
-            bail!("generator must return three distinct styles for {sample_id}");
+        if styles.get(sample_id) != Some(&expected_styles) {
+            bail!(
+                "generator must return exactly these styles for {sample_id}: {}",
+                QUESTION_STYLES.join(", ")
+            );
         }
     }
     Ok(())
@@ -1325,6 +1330,8 @@ fn replay(args: &ReplayArgs) -> Result<bool> {
     let coral_version = command_version(&coral_bin)?;
     let coral_sha256 = sha256_file(&coral_bin)?;
     let timeout = Duration::from_secs(args.timeout_seconds);
+    // Replay workers share a lazily built SQLite catalog projection. Run one real
+    // case first so index setup cannot contend with the parallel search workers.
     let (first_case, remaining_cases) = corpus.split_first().context("non-empty replay corpus")?;
     let mut records = vec![replay_case(first_case, args, &coral_bin, timeout)?];
     let outputs = parallel_map(remaining_cases, args.jobs, |_, case| {
@@ -1672,7 +1679,7 @@ struct ComparisonReport {
     lost_hits_at_10: usize,
     rank_improvements: usize,
     rank_regressions: usize,
-    unchanged: usize,
+    unchanged_at_10: usize,
     movements: Vec<CaseMovement>,
 }
 
@@ -1830,7 +1837,7 @@ fn compare_replays(
         lost_hits_at_10: 0,
         rank_improvements: 0,
         rank_regressions: 0,
-        unchanged: 0,
+        unchanged_at_10: 0,
         movements: Vec::new(),
     };
     for (case_id, baseline) in baseline_by_id {
@@ -1884,7 +1891,7 @@ fn compare_replays(
                 Some("rank_regressed")
             }
             _ => {
-                comparison.unchanged += 1;
+                comparison.unchanged_at_10 += 1;
                 None
             }
         };
@@ -2109,7 +2116,8 @@ fn render_comparison(comparison: &ComparisonReport) -> String {
     let mut markdown = format!(
         "## Paired comparison\n\n\
          Candidate `{}` against baseline `{}` using the same case IDs, frozen queries, and exact targets.\n\n\
-         | Cases | Unscored | New Hit@10 | Lost Hit@10 | Rank improved | Rank regressed | Unchanged |\n\
+         Rank movement is classified within the limit-10 response; limit-50 metrics are reported separately.\n\n\
+         | Cases | Unscored | New Hit@10 | Lost Hit@10 | Rank improved | Rank regressed | Unchanged @10 |\n\
          | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n\
          | {} | {} | {} | {} | {} | {} | {} |\n\n",
         comparison.candidate_label,
@@ -2120,7 +2128,7 @@ fn render_comparison(comparison: &ComparisonReport) -> String {
         comparison.lost_hits_at_10,
         comparison.rank_improvements,
         comparison.rank_regressions,
-        comparison.unchanged,
+        comparison.unchanged_at_10,
     );
     if !comparison.movements.is_empty() {
         markdown.push_str(
@@ -2417,6 +2425,21 @@ fn refuse_existing_replay(replay_path: &Path, raw_replay_dir: &Path) -> Result<(
         );
     }
     Ok(())
+}
+
+fn claim_run_dir(dir: &Path) -> Result<()> {
+    ensure_parent(dir)?;
+    match fs::create_dir(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!(
+                "benchmark run directory already exists; choose a new --dir instead of overwriting {}",
+                dir.display()
+            )
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("claiming benchmark run directory {}", dir.display())),
+    }
 }
 
 fn refuse_existing_summary(json_path: &Path, markdown_path: &Path) -> Result<()> {
@@ -2719,11 +2742,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CollectArgs, ColumnRow, CorpusCase, FunctionRow, Inventory, RankEvaluation, ReplayRecord,
-        SearchRun, TableRow, Target, artifact_path, catalog_provider_operational_error,
+        CollectArgs, ColumnRow, CorpusCase, FunctionRow, GeneratedQuestion, Inventory,
+        QUESTION_STYLES, RankEvaluation, ReplayRecord, Sample, SampleMetadata, SearchRun, TableRow,
+        Target, artifact_path, catalog_provider_operational_error, claim_run_dir,
         collection_command, compare_replays, evaluate_response, extract_search_call,
         read_replay_records, refuse_existing_replay, sample_inventory, set_config_dir, summarize,
-        validate_corpus_case_ids, validate_inventory, validate_label,
+        validate_corpus_case_ids, validate_generated_batch, validate_inventory, validate_label,
     };
 
     #[test]
@@ -2763,6 +2787,26 @@ mod tests {
         });
 
         validate_inventory(&inventory).expect_err("system surface must be rejected");
+    }
+
+    #[test]
+    fn generated_batch_requires_the_named_question_styles() {
+        let sample = fixture_sample();
+        let valid = QUESTION_STYLES
+            .into_iter()
+            .map(|style| fixture_generated_question(&sample.id, style))
+            .collect::<Vec<_>>();
+        validate_generated_batch(std::slice::from_ref(&sample), &valid)
+            .expect("named styles must be accepted");
+
+        let invalid = ["concise", "detailed", "exploratory"]
+            .into_iter()
+            .map(|style| fixture_generated_question(&sample.id, style))
+            .collect::<Vec<_>>();
+        let error = validate_generated_batch(&[sample], &invalid)
+            .expect_err("arbitrary distinct styles must be rejected");
+
+        assert!(error.to_string().contains("exactly these styles"));
     }
 
     #[test]
@@ -2945,13 +2989,21 @@ mod tests {
     }
 
     #[test]
-    fn paired_comparison_classifies_exact_target_rank_changes() {
+    fn paired_comparison_classifies_limit_10_changes() {
+        let mut censored_missing = fixture_replay_record("missing", None);
+        censored_missing
+            .limit_10
+            .evaluation
+            .as_mut()
+            .expect("fixture evaluation")
+            .censored = true;
         let baseline = vec![
             fixture_replay_record("new", None),
             fixture_replay_record("lost", Some(2)),
             fixture_replay_record("improved", Some(8)),
             fixture_replay_record("regressed", Some(3)),
             fixture_replay_record("unchanged", Some(5)),
+            fixture_replay_record("missing", None),
         ];
         let candidate = vec![
             fixture_replay_record("new", Some(9)),
@@ -2959,6 +3011,7 @@ mod tests {
             fixture_replay_record("improved", Some(4)),
             fixture_replay_record("regressed", Some(7)),
             fixture_replay_record("unchanged", Some(5)),
+            censored_missing,
         ];
 
         let comparison =
@@ -2968,7 +3021,7 @@ mod tests {
         assert_eq!(comparison.lost_hits_at_10, 1);
         assert_eq!(comparison.rank_improvements, 1);
         assert_eq!(comparison.rank_regressions, 1);
-        assert_eq!(comparison.unchanged, 1);
+        assert_eq!(comparison.unchanged_at_10, 2);
         assert_eq!(comparison.unscored_cases, 0);
     }
 
@@ -3099,6 +3152,23 @@ mod tests {
     }
 
     #[test]
+    fn prepare_cannot_overwrite_existing_run_evidence() {
+        let run_dir = std::env::temp_dir().join(format!(
+            "coral-search-bench-prepare-{}-{}",
+            std::process::id(),
+            super::unix_nanos().expect("clock")
+        ));
+        std::fs::create_dir(&run_dir).expect("create run directory");
+        std::fs::write(run_dir.join("manifest.json"), b"existing provenance")
+            .expect("write manifest fixture");
+
+        let result = claim_run_dir(&run_dir);
+        std::fs::remove_dir_all(&run_dir).expect("remove run directory");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn collection_protocol_rejects_additional_tools() {
         let search = json!({
             "type": "item.completed",
@@ -3164,6 +3234,35 @@ mod tests {
                 field_name: None,
             },
             frozen_query: None,
+        }
+    }
+
+    fn fixture_sample() -> Sample {
+        Sample {
+            format_version: 1,
+            id: "sample".to_string(),
+            target: Target {
+                schema_name: "linear".to_string(),
+                surface_kind: "table".to_string(),
+                surface_name: "issues".to_string(),
+                field_role: None,
+                field_name: None,
+            },
+            metadata: SampleMetadata {
+                description: "Linear issues".to_string(),
+                guide: String::new(),
+                data_type: None,
+                required: None,
+            },
+        }
+    }
+
+    fn fixture_generated_question(sample_id: &str, style: &str) -> GeneratedQuestion {
+        GeneratedQuestion {
+            sample_id: sample_id.to_string(),
+            style: style.to_string(),
+            question: "Which issues are blocked?".to_string(),
+            rationale: "Find issue relations".to_string(),
         }
     }
 
