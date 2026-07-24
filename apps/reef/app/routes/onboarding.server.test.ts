@@ -115,24 +115,37 @@ describe('onboarding server route', () => {
 
     expect(completeGuiOnboarding).toHaveBeenCalledWith(request, null)
     expect(response).toBeInstanceOf(Response)
-    expect((response as Response).headers.get('Location')).toBe('/workspaces/analytics/sources')
+    expect((response as Response).headers.get('Location')).toBe('/workspaces/analytics/traces')
     expect(runSourcesAction).not.toHaveBeenCalled()
   })
 
-  it('returns typed non-2xx action data when finishing setup fails', async () => {
-    firstWorkspaceForRequest.mockRejectedValueOnce(new Error('workspace lookup failed'))
+  it('preserves route responses when the workspace is unavailable', async () => {
+    const missingWorkspace = new Response('No Coral workspace is configured.', {
+      status: 404,
+      statusText: 'Workspace Not Found',
+    })
+    firstWorkspaceForRequest.mockRejectedValueOnce(missingWorkspace)
+
+    await expect(action(authRouteTestArgs(completionRequest(), {}, null))).rejects.toBe(
+      missingWorkspace,
+    )
+    expect(completeGuiOnboarding).not.toHaveBeenCalled()
+  })
+
+  it('returns typed internal-error action data when completion fails', async () => {
+    completeGuiOnboarding.mockRejectedValueOnce(new Error('completion database failed'))
 
     const result = await action(authRouteTestArgs(completionRequest(), {}, null))
 
     expect(result).toMatchObject({
       data: {
         intent: 'complete-onboarding',
-        message: 'workspace lookup failed',
+        message: 'completion database failed',
         status: 'error',
       },
-      init: { status: 503 },
+      init: { status: 500 },
     })
-    expect(completeGuiOnboarding).not.toHaveBeenCalled()
+    expect(completeGuiOnboarding).toHaveBeenCalledOnce()
   })
 
   it('keeps source intents on the existing source-action path', async () => {
@@ -147,7 +160,7 @@ describe('onboarding server route', () => {
 })
 
 function completionRequest() {
-  return formRequest({ _intent: 'complete-onboarding' })
+  return formRequest({ intent: 'complete-onboarding' })
 }
 
 function formRequest(fields: Record<string, string>) {

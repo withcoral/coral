@@ -6,7 +6,7 @@ import { requestAuthContext } from '@/auth/server-context'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { completeGuiOnboarding } from '@/lib/gui-onboarding.server'
-import { CORAL_UNAVAILABLE_STATUS, type CompleteGuiOnboardingError } from '@/lib/gui-onboarding'
+import type { CompleteGuiOnboardingError } from '@/lib/gui-onboarding'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
 import { errorMessage } from '@/lib/utils'
 import { firstWorkspaceForRequest, listWorkspacesForRequest } from '@/lib/workspaces.server'
@@ -53,21 +53,23 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
 export async function action({ context, request }: Route.ActionArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
-  const intent = (await request.clone().formData()).get('_intent')
+  const intent = (await request.clone().formData()).get('intent')
 
   if (intent === 'complete-onboarding') {
     try {
       const workspace = await firstWorkspaceForRequest(request, accessToken)
       await completeGuiOnboarding(request, accessToken)
-      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+      return redirect(routePath('workspaceTraces', { workspaceId: workspace.name }))
     } catch (error) {
+      if (error instanceof Response) throw error
+
       return data(
         {
           intent: 'complete-onboarding',
           message: errorMessage(error),
           status: 'error',
         } satisfies CompleteGuiOnboardingError,
-        { status: CORAL_UNAVAILABLE_STATUS },
+        { status: 500 },
       )
     }
   }
