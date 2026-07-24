@@ -147,6 +147,9 @@ struct ReplayArgs {
     /// Optional Coral configuration directory.
     #[arg(long)]
     coral_config_dir: Option<PathBuf>,
+    /// Include values observed during earlier queries in search results.
+    #[arg(long)]
+    enable_observed_values_search: bool,
     /// Maximum concurrent replay cases. Each case performs limits 10 and 50.
     #[arg(long, default_value_t = 10)]
     jobs: usize,
@@ -1346,6 +1349,7 @@ fn replay(args: &ReplayArgs) -> Result<bool> {
             "coral_sha256": coral_sha256,
             "workspace": args.workspace,
             "coral_config_dir": args.coral_config_dir,
+            "observed_values_search": args.enable_observed_values_search,
             "jobs": args.jobs,
             "corpus": corpus_path,
             "corpus_sha256": corpus_sha256,
@@ -1406,7 +1410,7 @@ fn run_coral_search(
     let limit_text = limit.to_string();
     let mut command = Command::new(coral_bin);
     command.args([
-        "--disable-observed-values-search",
+        observed_values_search_flag(args.enable_observed_values_search),
         "--workspace",
         &args.workspace,
         "search",
@@ -1454,6 +1458,14 @@ fn run_coral_search(
         response_token_count,
         elapsed_millis: outcome.elapsed.as_millis(),
     })
+}
+
+fn observed_values_search_flag(enabled: bool) -> &'static str {
+    if enabled {
+        "--enable-observed-values-search"
+    } else {
+        "--disable-observed-values-search"
+    }
 }
 
 fn response_token_count(response: &Value) -> Option<usize> {
@@ -1707,6 +1719,11 @@ struct MetricSummary {
     child_parent_hit_at_10: usize,
     child_hit_at_10: usize,
     child_hit_with_parent_at_10: usize,
+    observed_value_provider_states: BTreeMap<String, usize>,
+    observed_value_max_eligible_units: usize,
+    observed_value_cases: usize,
+    observed_value_results: usize,
+    best_observed_value_rank: Option<usize>,
     tokenized_responses: usize,
     mean_response_tokens: f64,
     p95_response_tokens: usize,
@@ -1969,6 +1986,11 @@ fn summarize<'a>(runs: impl Iterator<Item = &'a SearchRun>) -> MetricSummary {
         child_parent_hit_at_10: 0,
         child_hit_at_10: 0,
         child_hit_with_parent_at_10: 0,
+        observed_value_provider_states: BTreeMap::new(),
+        observed_value_max_eligible_units: 0,
+        observed_value_cases: 0,
+        observed_value_results: 0,
+        best_observed_value_rank: None,
         tokenized_responses: 0,
         mean_response_tokens: 0.0,
         p95_response_tokens: 0,
@@ -1978,6 +2000,9 @@ fn summarize<'a>(runs: impl Iterator<Item = &'a SearchRun>) -> MetricSummary {
     let mut parent_reciprocal_rank_sum = 0.0;
     let mut response_tokens = Vec::new();
     for run in runs {
+        if let Some(response) = run.response.as_ref() {
+            record_observed_value_exposure(&mut summary, response);
+        }
         let Some(evaluation) = run.evaluation.as_ref() else {
             summary.errors += 1;
             continue;
@@ -2039,6 +2064,59 @@ fn summarize<'a>(runs: impl Iterator<Item = &'a SearchRun>) -> MetricSummary {
         summary.max_response_tokens = response_tokens.last().copied().unwrap_or_default();
     }
     summary
+}
+
+fn record_observed_value_exposure(summary: &mut MetricSummary, response: &Value) {
+    if let Some(status) = response
+        .get("provider_statuses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|status| status.get("provider").and_then(Value::as_str) == Some("observed_values"))
+    {
+        let state = status
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("missing");
+        *summary
+            .observed_value_provider_states
+            .entry(state.to_string())
+            .or_default() += 1;
+        let eligible_units = status
+            .pointer("/coverage/eligible_units")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or_default();
+        summary.observed_value_max_eligible_units = summary
+            .observed_value_max_eligible_units
+            .max(eligible_units);
+    }
+
+    let mut observed_value_count = 0;
+    let mut best_rank = None;
+    for (index, result) in response
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if result.get("kind").and_then(Value::as_str) == Some("observed_value") {
+            observed_value_count += 1;
+            best_rank.get_or_insert(index + 1);
+        }
+    }
+    if observed_value_count == 0 {
+        return;
+    }
+    summary.observed_value_cases += 1;
+    summary.observed_value_results += observed_value_count;
+    let best_rank = best_rank.expect("observed value result has a rank");
+    summary.best_observed_value_rank = Some(
+        summary
+            .best_observed_value_rank
+            .map_or(best_rank, |current| current.min(best_rank)),
+    );
 }
 
 fn render_report(report: &Report) -> String {
@@ -2193,6 +2271,12 @@ fn render_metric_section(
          | Limit | Counted | Mean tokens | P95 tokens | Max tokens |\n\
          | ---: | ---: | ---: | ---: | ---: |\n\
          {}\n\
+         {}\n\n\
+         ### Observed-value exposure\n\n\
+         Counts observed-value results competing for the returned result window. Values are retained in the ignored replay payloads but are not copied into this report.\n\n\
+         | Limit | Provider states | Max eligible units | Cases with observed values | Result slots | Best rank |\n\
+         | ---: | --- | ---: | ---: | ---: | ---: |\n\
+         {}\n\
          {}\n\n",
         target_metric_row(10, limit_10),
         target_metric_row(50, limit_50),
@@ -2202,8 +2286,32 @@ fn render_metric_section(
         child_metric_row(50, limit_50),
         RESPONSE_TOKEN_ENCODING,
         response_token_metric_row(10, limit_10),
-        response_token_metric_row(50, limit_50)
+        response_token_metric_row(50, limit_50),
+        observed_value_metric_row(10, limit_10),
+        observed_value_metric_row(50, limit_50)
     )
+}
+
+fn observed_value_metric_row(limit: u32, summary: &MetricSummary) -> String {
+    format!(
+        "| {limit} | {} | {} | {} | {} | {} |",
+        provider_state_label(&summary.observed_value_provider_states),
+        summary.observed_value_max_eligible_units,
+        summary.observed_value_cases,
+        summary.observed_value_results,
+        rank_label(summary.best_observed_value_rank)
+    )
+}
+
+fn provider_state_label(states: &BTreeMap<String, usize>) -> String {
+    if states.is_empty() {
+        return "—".to_string();
+    }
+    states
+        .iter()
+        .map(|(state, count)| format!("{state}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn response_token_metric_row(limit: u32, summary: &MetricSummary) -> String {
@@ -2735,8 +2843,8 @@ mod tests {
         CollectArgs, ColumnRow, CorpusCase, FunctionRow, Inventory, RankEvaluation, ReplayRecord,
         SearchRun, TableRow, Target, artifact_path, catalog_provider_operational_error,
         claim_run_dir, collection_command, compare_replays, evaluate_response, extract_search_call,
-        read_replay_records, refuse_existing_replay, sample_inventory, set_config_dir, summarize,
-        validate_corpus_case_ids, validate_inventory, validate_label,
+        observed_values_search_flag, read_replay_records, refuse_existing_replay, sample_inventory,
+        set_config_dir, summarize, validate_corpus_case_ids, validate_inventory, validate_label,
     };
 
     #[test]
@@ -2955,6 +3063,61 @@ mod tests {
         assert_eq!(summary.tokenized_responses, 1);
         assert!(summary.mean_response_tokens > 0.0);
         assert_eq!(summary.p95_response_tokens, summary.max_response_tokens);
+    }
+
+    #[test]
+    fn replay_feature_flag_is_explicit_in_both_modes() {
+        assert_eq!(
+            observed_values_search_flag(true),
+            "--enable-observed-values-search"
+        );
+        assert_eq!(
+            observed_values_search_flag(false),
+            "--disable-observed-values-search"
+        );
+    }
+
+    #[test]
+    fn summary_reports_observed_value_result_slots_and_best_rank() {
+        let run = SearchRun {
+            limit: 10,
+            response: Some(json!({
+                "provider_statuses": [{
+                    "provider": "observed_values",
+                    "state": "results_found",
+                    "coverage": {
+                        "eligible_units": 42
+                    }
+                }],
+                "results": [
+                    {"kind": "catalog_metadata"},
+                    {"kind": "observed_value"},
+                    {"kind": "catalog_metadata"},
+                    {"kind": "observed_value"}
+                ]
+            })),
+            evaluation: Some(RankEvaluation {
+                target_rank: Some(1),
+                parent_rank: Some(1),
+                child_rank: None,
+                child_target: false,
+                censored: false,
+            }),
+            error: None,
+            response_token_count: None,
+            elapsed_millis: 0,
+        };
+
+        let summary = summarize([&run].into_iter());
+
+        assert_eq!(
+            summary.observed_value_provider_states.get("results_found"),
+            Some(&1)
+        );
+        assert_eq!(summary.observed_value_max_eligible_units, 42);
+        assert_eq!(summary.observed_value_cases, 1);
+        assert_eq!(summary.observed_value_results, 2);
+        assert_eq!(summary.best_observed_value_rank, Some(2));
     }
 
     #[test]
