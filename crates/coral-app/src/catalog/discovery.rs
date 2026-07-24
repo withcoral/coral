@@ -562,7 +562,7 @@ fn column_matched_fields(column: &ColumnInfo, regex: &Regex) -> Vec<ColumnMetada
 fn available_table_schemas(tables: &[TableInfo]) -> Vec<String> {
     tables
         .iter()
-        .map(table_addressable_schema_name)
+        .map(|table| table.schema_name.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -764,10 +764,7 @@ mod tests {
             vec![CatalogMetadataField::CatalogName]
         );
 
-        assert_eq!(
-            available_table_schemas(&tables),
-            vec!["coral_db.analytics", "coral_db.main"]
-        );
+        assert_eq!(available_table_schemas(&tables), vec!["analytics", "main"]);
         let same_schema = same_schema_tables(
             &tables,
             CatalogTableRef::new(Some("coral_db"), "main", "missing"),
