@@ -297,12 +297,16 @@ fn register_backend_registration(
     result: &mut SourceRegistrationResult,
 ) -> std::result::Result<(), CoreError> {
     // Source decorators wrap table providers at registration time, but catalog
-    // registrations expose providers lazily through the catalog itself, so
-    // decorators cannot be applied to them. Fail the source instead of
-    // silently bypassing an embedder's policy/observability hook.
-    if !registration.catalogs.is_empty() && !source_decorators.is_empty() {
+    // registrations expose providers lazily through the catalog itself.
+    // Decorators must explicitly allow that their table-decoration hook is
+    // skipped so policy decorators fail closed while lifecycle observers can
+    // still participate.
+    if let Some(decorator) = source_decorators.iter().find(|decorator| {
+        !registration.catalogs.is_empty() && !decorator.supports_catalog_sources()
+    }) {
         let core_error = CoreError::FailedPrecondition(format!(
-            "source '{source_name}' registers database catalogs, which do not support source decorators"
+            "source '{source_name}' registers database catalogs, which source decorator '{}' does not support",
+            decorator.name()
         ));
         if handle_source_registration_failure(source_decorators, query_source, &core_error)? {
             return Err(core_error);
