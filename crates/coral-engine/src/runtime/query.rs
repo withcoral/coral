@@ -493,7 +493,8 @@ fn table_qualifier_matches(
     catalog_filter: Option<&str>,
     schema_filter: Option<&str>,
 ) -> bool {
-    catalog_filter.is_none_or(|value| table.catalog_name.as_deref() == Some(value))
+    catalog_filter
+        .is_none_or(|value| table.catalog_name.as_deref() == non_default_catalog_name(Some(value)))
         && schema_filter.is_none_or(|value| table.schema_name == value)
 }
 
@@ -586,9 +587,11 @@ impl QueryRuntimeAdapter {
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
     ) -> CatalogInfo {
+        let includes_schema_sources =
+            catalog_filter.is_none_or(|value| non_default_catalog_name(Some(value)).is_none());
         CatalogInfo {
             tables: self.list_tables(catalog_filter, schema_filter, None),
-            table_functions: if catalog_filter.is_none() {
+            table_functions: if includes_schema_sources {
                 self.list_table_functions(schema_filter, None)
             } else {
                 Vec::new()
@@ -1401,7 +1404,15 @@ mod tests {
                 }],
                 required_filters: vec!["owner".to_string()],
             }],
-            table_functions: Vec::new(),
+            table_functions: vec![TableFunctionInfo {
+                schema_name: "demo".to_string(),
+                function_name: "search_events".to_string(),
+                description: "Search events.".to_string(),
+                arguments: Vec::new(),
+                result_columns: Vec::new(),
+                kind: coral_spec::SourceTableFunctionKind::Table,
+                search_limits: None,
+            }],
             failures: Vec::new(),
             name_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
             query_result_observers: Vec::new(),
@@ -1429,6 +1440,25 @@ mod tests {
             .expect("missing context table");
         assert!(context_table.columns.is_empty());
         assert_eq!(context_table.required_filters, ["owner".to_string()]);
+    }
+
+    #[test]
+    fn explicit_datafusion_catalog_filters_schema_metadata() {
+        let adapter = adapter_with_table();
+
+        let tables = adapter.list_tables(
+            Some(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+            Some("demo"),
+            None,
+        );
+        assert_eq!(tables.len(), 1);
+
+        let catalog = adapter.catalog_info(
+            Some(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+            Some("demo"),
+        );
+        assert_eq!(catalog.tables.len(), 1);
+        assert_eq!(catalog.table_functions.len(), 1);
     }
 
     #[test]
