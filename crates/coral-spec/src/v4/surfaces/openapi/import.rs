@@ -6,14 +6,17 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrType, SemanticIr};
 use crate::v4::manifest::{V4SourceManifest, V4Surface};
 use crate::v4::surfaces::json_schema::{RefError, resolve_local_ref};
-use crate::v4::{OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
+use crate::v4::{
+    ImportedSurface, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
+    OperationMetadataCatalog, V4_ARTIFACT_SCHEMA_VERSION,
+};
 use crate::{ManifestError, Result};
 
 pub fn import_openapi_surface(
     manifest: &V4SourceManifest,
     surface: &V4Surface,
     document_bytes: &[u8],
-) -> Result<SemanticIr> {
+) -> Result<ImportedSurface> {
     let document: Value =
         serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
     let openapi = document
@@ -22,8 +25,7 @@ pub fn import_openapi_surface(
         .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
     if !openapi.starts_with("3.0.") {
         return Err(ManifestError::validation(format!(
-            "OpenAPI document for surface '{}' uses unsupported version '{openapi}'",
-            surface.id
+            "OpenAPI document uses unsupported version '{openapi}'"
         )));
     }
 
@@ -55,13 +57,14 @@ impl<'a> OpenApiImporter<'a> {
         }
     }
 
-    fn import(&mut self) -> Result<SemanticIr> {
+    fn import(&mut self) -> Result<ImportedSurface> {
         let paths = self
             .document
             .get("paths")
             .and_then(Value::as_object)
             .ok_or_else(|| ManifestError::validation("OpenAPI document is missing paths"))?;
         let mut operations = Vec::new();
+        let mut operation_metadata = BTreeMap::new();
         let mut operation_ids = HashSet::new();
         for (path, path_item) in paths {
             let Some(path_item) = path_item.as_object() else {
@@ -77,7 +80,7 @@ impl<'a> OpenApiImporter<'a> {
                     match resolve_local_ref(self.document, operation_value) {
                         Ok(operation_value) => operation_value,
                         Err(error) => {
-                            let diagnostic = self.ref_error_diagnostic(
+                            let diagnostic = Self::ref_error_diagnostic(
                                 error,
                                 &RefDiagnosticContext::Operation { path, method_name },
                             );
@@ -88,26 +91,36 @@ impl<'a> OpenApiImporter<'a> {
                 } else {
                     operation_value
                 };
-                let operation =
+                let (operation, metadata) =
                     self.import_operation(path, path_item, method_name, operation_value)?;
                 if !operation_ids.insert(operation.id.clone()) {
                     return Err(ManifestError::validation(format!(
-                        "source '{}' surface '{}' imports duplicate operation id '{}'",
-                        self.manifest.common.name, self.surface.id, operation.id
+                        "source '{}' surface imports duplicate operation id '{}'",
+                        self.manifest.common.name, operation.id
                     )));
                 }
+                operation_metadata.insert(operation.id.clone(), metadata);
                 operations.push(operation);
             }
         }
-        Ok(SemanticIr {
+        let semantic_ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: self.manifest.common.name.clone(),
-            surface_id: self.surface.id.clone(),
             surface_type: self.surface.surface_type,
             importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
             operations,
             types: self.types.values().cloned().collect(),
             diagnostics: self.diagnostics.clone(),
+        };
+        let operation_metadata = OperationMetadataCatalog {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: self.manifest.common.name.clone(),
+            generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+            operations: operation_metadata,
+        };
+        Ok(ImportedSurface {
+            semantic_ir,
+            operation_metadata,
         })
     }
 
@@ -120,22 +133,16 @@ impl<'a> OpenApiImporter<'a> {
         match resolve_local_ref(self.document, value) {
             Ok(resolved) => Some(resolved.clone()),
             Err(error) => {
-                diagnostics.push(
-                    self.ref_error_diagnostic(
-                        error,
-                        &RefDiagnosticContext::OperationId(operation_id),
-                    ),
-                );
+                diagnostics.push(Self::ref_error_diagnostic(
+                    error,
+                    &RefDiagnosticContext::OperationId(operation_id),
+                ));
                 None
             }
         }
     }
 
-    fn ref_error_diagnostic(
-        &self,
-        error: RefError<'_>,
-        context: &RefDiagnosticContext<'_>,
-    ) -> Diagnostic {
+    fn ref_error_diagnostic(error: RefError<'_>, context: &RefDiagnosticContext<'_>) -> Diagnostic {
         let (code, message) = match error {
             RefError::External(reference) => (
                 "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
@@ -157,6 +164,6 @@ impl<'a> OpenApiImporter<'a> {
                 (message, Some(operation_id.to_string()))
             }
         };
-        Diagnostic::warning(code, message, self.surface.id.clone(), operation_id)
+        Diagnostic::warning(code, message, operation_id)
     }
 }

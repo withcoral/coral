@@ -6,6 +6,7 @@ import {
   DeleteSourceRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
+  ImportSourceRequestSchema,
 } from '@/generated/coral/v1/sources_pb'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
@@ -32,7 +33,7 @@ export {
   type InstallInput,
 } from '@/lib/source-install-form'
 
-export type SourceActionIntent = 'delete' | 'edit' | 'install'
+export type SourceActionIntent = 'delete' | 'edit' | 'import' | 'install'
 
 export type SourcesActionData =
   | {
@@ -40,6 +41,11 @@ export type SourcesActionData =
       message: string
       name: string
       status: 'error'
+    }
+  | {
+      intent: SourceActionIntent
+      name: string
+      status: 'success'
     }
   | undefined
 
@@ -52,12 +58,24 @@ export async function action({
   params,
   request,
 }: SourcesActionArgs): Promise<SourcesActionData | Response> {
+  const workspace = workspaceFromParams(params)
+  const result = await runSourcesAction(request, workspace)
+  return result.status === 'success'
+    ? redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+    : result
+}
+
+type SourceActionResult = Exclude<SourcesActionData, undefined>
+
+export async function runSourcesAction(
+  request: Request,
+  workspace: Workspace,
+): Promise<SourceActionResult> {
   const formData = await request.formData()
   const intent = formValue(formData, '_intent')
   const name = formValue(formData, 'name')
   if (!name) return actionError('install', '', 'Missing source name')
 
-  const workspace = workspaceFromParams(params)
   const sourceClient = sourceClientForRequest(request)
   try {
     if (intent === 'install') {
@@ -76,7 +94,7 @@ export async function action({
         name,
         installBindingsFromForm(info, formData),
       )
-      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+      return actionSuccess('install', name)
     }
     if (intent === 'edit') {
       const source = await getInstalledSource(sourceClient, workspace, name)
@@ -90,16 +108,27 @@ export async function action({
         name,
         editBindingsFromForm(source, info, formData),
       )
-      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+      return actionSuccess('edit', name)
     }
     if (intent === 'delete') {
       await sourceClient.deleteSource(create(DeleteSourceRequestSchema, { name, workspace }))
-      return redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+      return actionSuccess('delete', name)
+    }
+    if (intent === 'import') {
+      const manifestYaml = formData.get('manifest_yaml')
+      if (typeof manifestYaml !== 'string' || manifestYaml.trim().length === 0) {
+        return actionError('import', name, 'Missing source manifest')
+      }
+      const secretKey = formValue(formData, 'secret_key')
+      const secretValue = formValue(formData, 'secret_value')
+      const secrets = secretKey && secretValue ? [{ key: secretKey, value: secretValue }] : []
+      await importSourceManifest(sourceClient, workspace, manifestYaml, secrets)
+      return actionSuccess('import', name)
     }
     return actionError('install', name, 'Unknown source action')
   } catch (error) {
     return actionError(
-      intent === 'edit' || intent === 'delete' ? intent : 'install',
+      intent === 'edit' || intent === 'delete' || intent === 'import' ? intent : 'install',
       name,
       errorMessage(error),
     )
@@ -147,6 +176,31 @@ async function createBundledSource(
   return response.source
 }
 
-function actionError(intent: SourceActionIntent, name: string, message: string): SourcesActionData {
+async function importSourceManifest(
+  sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
+  manifestYaml: string,
+  secrets: { key: string; value: string }[],
+) {
+  const stream = sourceClient.importSource(
+    create(ImportSourceRequestSchema, { manifestYaml, secrets, workspace }),
+  )
+  // The import wizard has no OAuth inputs, so the stream only carries the
+  // terminal source event.
+  for await (const response of stream) {
+    if (response.event.case === 'source') return response.event.value
+  }
+  throw new Error('Coral did not return the imported source')
+}
+
+function actionError(
+  intent: SourceActionIntent,
+  name: string,
+  message: string,
+): SourceActionResult {
   return { intent, message, name, status: 'error' }
+}
+
+function actionSuccess(intent: SourceActionIntent, name: string): SourceActionResult {
+  return { intent, name, status: 'success' }
 }

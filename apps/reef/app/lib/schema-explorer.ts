@@ -5,9 +5,9 @@ import {
   CatalogItemKind,
   ListCatalogRequestSchema,
   ListColumnsRequestSchema,
+  type CatalogItem,
   type CatalogService,
   type ListColumnsResponse,
-  type TableSummary,
 } from '@/generated/coral/v1/catalog_pb'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
 
@@ -27,13 +27,37 @@ export interface TableDef {
   columns: ColumnDef[]
   columnsLoaded: boolean
   description?: string
+  kind: 'table'
   name: string
   requiredFilters: string[]
 }
 
-export interface SchemaGroup {
+export interface TableFunctionArgumentDef {
   name: string
-  tables: TableDef[]
+  required: boolean
+  values: string[]
+}
+
+export interface TableFunctionResultColumnDef {
+  description?: string
+  name: string
+  nullable: boolean
+  type: string
+}
+
+export interface TableFunctionDef {
+  arguments: TableFunctionArgumentDef[]
+  description?: string
+  kind: 'tableFunction'
+  name: string
+  resultColumns: TableFunctionResultColumnDef[]
+}
+
+export type SchemaItemDef = TableDef | TableFunctionDef
+
+export interface SchemaGroup {
+  items: SchemaItemDef[]
+  name: string
 }
 
 export interface SchemaResponse {
@@ -48,48 +72,72 @@ export async function fetchSchemaFromCoral(
   workspace: Workspace,
   signal?: AbortSignal,
 ): Promise<SchemaResponse> {
-  const tableSummaries = await listTables(catalogClient, workspace, signal)
-  if (tableSummaries.length === 0) return { connectors: [] }
+  const catalogItems = await listCatalogItems(catalogClient, workspace, signal)
+  if (catalogItems.length === 0) return { connectors: [] }
 
-  const schemaMap = new Map<string, TableDef[]>()
-  for (const summary of tableSummaries) {
-    if (!summary.schemaName || !summary.name) continue
+  const schemaMap = new Map<string, SchemaItemDef[]>()
+  for (const item of catalogItems) {
+    if (item.item.case === 'table') {
+      const table = item.item.value
+      if (!table.schemaName || !table.name) continue
 
-    const tables = schemaMap.get(summary.schemaName) ?? []
-    tables.push({
-      columns: [],
-      columnsLoaded: false,
-      description: optional(summary.description),
-      name: summary.name,
-      requiredFilters: summary.requiredFilters,
-    })
-    schemaMap.set(summary.schemaName, tables)
+      const schemaItems = schemaMap.get(table.schemaName) ?? []
+      schemaItems.push({
+        columns: [],
+        columnsLoaded: false,
+        description: optional(table.description),
+        kind: 'table',
+        name: table.name,
+        requiredFilters: table.requiredFilters,
+      })
+      schemaMap.set(table.schemaName, schemaItems)
+      continue
+    }
+
+    if (item.item.case === 'tableFunction') {
+      const tableFunction = item.item.value
+      if (!tableFunction.schemaName || !tableFunction.name) continue
+
+      const schemaItems = schemaMap.get(tableFunction.schemaName) ?? []
+      schemaItems.push({
+        arguments: tableFunction.arguments.map((argument) => ({
+          name: argument.name,
+          required: argument.required,
+          values: argument.values,
+        })),
+        description: optional(tableFunction.description),
+        kind: 'tableFunction',
+        name: tableFunction.name,
+        resultColumns: tableFunction.resultColumns.map((column) => ({
+          description: optional(column.description),
+          name: column.name,
+          nullable: column.nullable,
+          type: column.dataType || 'unknown',
+        })),
+      })
+      schemaMap.set(tableFunction.schemaName, schemaItems)
+    }
   }
 
   return {
-    connectors: [...schemaMap.entries()]
-      .toSorted(([left], [right]) => left.localeCompare(right))
-      .map(([name, tables]) => ({
-        name,
-        tables: tables.toSorted((left, right) => left.name.localeCompare(right.name)),
-      })),
+    connectors: [...schemaMap.entries()].map(([name, items]) => ({ items, name })),
   }
 }
 
-async function listTables(
+async function listCatalogItems(
   catalogClient: CatalogClient,
   workspace: Workspace,
   signal?: AbortSignal,
-): Promise<TableSummary[]> {
+): Promise<CatalogItem[]> {
   const response = await catalogClient.listCatalog(
     create(ListCatalogRequestSchema, {
-      kind: CatalogItemKind.TABLE,
+      kind: CatalogItemKind.UNSPECIFIED,
       workspace,
     }),
     { signal },
   )
 
-  return response.items.flatMap((item) => (item.item.case === 'table' ? [item.item.value] : []))
+  return response.items
 }
 
 export async function fetchTableColumnsFromCoral(

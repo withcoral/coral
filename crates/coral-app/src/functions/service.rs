@@ -40,7 +40,7 @@ impl FunctionServiceApi for FunctionService {
     ) -> Result<Response<AddFunctionResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let runtime_function = queries
@@ -50,7 +50,7 @@ impl FunctionServiceApi for FunctionService {
             Ok(Response::new(AddFunctionResponse {
                 function: Some(runtime_function_to_proto(&workspace_name, runtime_function)),
             }))
-        })
+        }))
         .await
     }
 

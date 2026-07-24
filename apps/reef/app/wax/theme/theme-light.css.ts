@@ -30,7 +30,7 @@ export const lightTheme = createTheme(theme, {
   },
   button: {
     bare: {
-      hover: paletteLight.GrayAlpha['02'],
+      hover: paletteLight.GrayAlpha['04'],
     },
     destructive: {
       default: paletteLight.Red['09'],
@@ -38,15 +38,15 @@ export const lightTheme = createTheme(theme, {
       hover: paletteLight.Red['10'],
     },
     primary: {
-      default: paletteLight.CoralGreen['10'],
+      default: paletteLight.CoralGreen['09'],
       disabled: paletteLight.GrayAlpha['02'],
       focus: paletteLight.CoralGreen['10'],
       hover: paletteLight.CoralGreen['11'],
     },
     secondary: {
-      default: paletteLight.Gray['03'],
-      focus: paletteLight.Gray['05'],
-      hover: paletteLight.Gray['07'],
+      default: paletteLight.GrayAlpha['03'],
+      focus: paletteLight.GrayAlpha['05'],
+      hover: paletteLight.GrayAlpha['04'],
     },
   },
   causeGraph: {
@@ -89,6 +89,7 @@ export const lightTheme = createTheme(theme, {
   },
   content: {
     accentContent: {
+      iconFill: paletteLight.CoralGreenAlpha['03'],
       primary: paletteLight.CoralGreen['12'],
       primaryReverse: paletteLight.CoralGreen['02'],
       secondary: paletteLight.CoralGreen['11'],
@@ -100,6 +101,7 @@ export const lightTheme = createTheme(theme, {
     },
     disabled: paletteLight.GrayAlpha['07'],
     error: paletteLight.RedAlpha['10'],
+    errorBackground: paletteLight.RedAlpha['03'],
     info: paletteLight.BlueAlpha['10'],
     link: paletteLight.CoralGreen['11'],
     linkHover: paletteLight.CoralGreen['12'],
@@ -108,8 +110,10 @@ export const lightTheme = createTheme(theme, {
     secondary: paletteLight.GrayAlpha['12'],
     selection: paletteLight.CoralGreenAlpha['04'],
     success: paletteLight.GreenAlpha['10'],
+    successBackground: paletteLight.GreenAlpha['03'],
     tertiary: paletteLight.GrayAlpha['09'],
     warning: paletteLight.AmberAlpha['11'],
+    warningBackground: paletteLight.AmberAlpha['03'],
   },
   elevation: {
     e1: `0 4px 24px 0 ${paletteLight.BlackAlpha['01']}, 0 1px 2px 0 ${paletteLight.BlackAlpha['02']}`,
@@ -120,10 +124,14 @@ export const lightTheme = createTheme(theme, {
   gradient: {
     card: `linear-gradient(92deg, ${utils.opacify(paletteLight.CoralGreenAlpha['01'], 20)} 0%, ${utils.opacify(paletteLight.CoralGreenAlpha['07'], 20)} 100%), ${staticUtilities.white}`,
   },
+  help: {
+    componentBackground: paletteLight.Gray['02'],
+  },
   input: {
     stroke: {
       default: paletteLight.GrayAlpha['04'],
       disabled: paletteLight.GrayAlpha['03'],
+      error: paletteLight.RedAlpha['07'],
       focus: paletteLight.CoralGreen['10'],
       hover: paletteLight.GrayAlpha['05'],
     },
@@ -162,7 +170,7 @@ export const lightTheme = createTheme(theme, {
       backgroundHover: paletteLight.GreenAlpha['04'],
       color: paletteLight.Green['11'],
       colorHover: paletteLight.Green['11'],
-      stroke: paletteLight.GreenAlpha['06'],
+      stroke: paletteLight.GreenAlpha['09'],
     },
     mention: {
       background: paletteLight.CoralGreenAlpha['03'],
@@ -199,7 +207,8 @@ export const lightTheme = createTheme(theme, {
       selected: paletteLight.GrayAlpha['03'],
     },
     buttonAccent: {
-      hover: paletteLight.CoralGreenAlpha['02'],
+      default: paletteLight.CoralGreenAlpha['03'],
+      hover: paletteLight.CoralGreenAlpha['03'],
       selected: paletteLight.CoralGreenAlpha['03'],
     },
   },
@@ -213,10 +222,11 @@ export const lightTheme = createTheme(theme, {
   surface: {
     backdrop: paletteLight.BlackAlpha['08'],
     card: staticUtilities.white,
+    cardHover: paletteLight.GrayAlpha['01'],
     floating: staticUtilities.white,
     main: paletteLight.Gray['03'],
     mainContent: paletteLight.Gray['01'],
-    onMainContent: paletteLight.GrayAlpha['03'],
+    onMainContent: paletteLight.GrayAlpha['02'],
     onMainContentHover: paletteLight.GrayAlpha['04'],
     onMainContentSubtle: paletteLight.GrayAlpha['01'],
     skeleton: paletteLight.GrayAlpha['03'],

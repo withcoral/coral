@@ -106,6 +106,9 @@ export const tr = style({
     'tbody &:hover': {
       backgroundColor: tableVars.rowHoverBackground.value,
     },
+    'tbody &:last-child': {
+      borderBottom: 'none',
+    },
   },
 })
 

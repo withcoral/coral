@@ -1,4 +1,4 @@
-//! JSON Schema validation for source manifests.
+//! JSON Schema validation for Coral manifests.
 
 use std::sync::OnceLock;
 
@@ -9,9 +9,10 @@ use crate::{ManifestError, Result};
 
 static SOURCE_SCHEMA: OnceLock<Validator> = OnceLock::new();
 static SOURCE_V4_SCHEMA: OnceLock<Validator> = OnceLock::new();
+static IDENTITY_SCHEMA: OnceLock<Validator> = OnceLock::new();
 
 pub(crate) fn validate_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
-    validate_with_schema(manifest_json, source_schema())
+    validate_with_schema(manifest_json, source_schema(), "source manifest")
 }
 
 pub(crate) fn validate_manifest_schema_for_dsl_version(
@@ -19,9 +20,13 @@ pub(crate) fn validate_manifest_schema_for_dsl_version(
     dsl_version: u32,
 ) -> Result<()> {
     if dsl_version == 4 {
-        return validate_with_schema(manifest_json, source_v4_schema());
+        return validate_with_schema(manifest_json, source_v4_schema(), "source manifest");
     }
     validate_manifest_schema(manifest_json)
+}
+
+pub(crate) fn validate_identity_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
+    validate_with_schema(manifest_json, identity_schema(), "identity manifest")
 }
 
 fn source_schema() -> &'static Validator {
@@ -42,8 +47,21 @@ fn source_v4_schema() -> &'static Validator {
     })
 }
 
-fn validate_with_schema(manifest_json: &JsonValue, validator: &Validator) -> Result<()> {
-    let problems: Vec<String> = validator
+fn identity_schema() -> &'static Validator {
+    IDENTITY_SCHEMA.get_or_init(|| {
+        let schema_json: JsonValue =
+            serde_json::from_str(include_str!("schema/identity_manifest.schema.json"))
+                .expect("embedded identity schema must be valid JSON");
+        jsonschema::validator_for(&schema_json).expect("embedded identity schema must compile")
+    })
+}
+
+fn validate_with_schema(
+    manifest_json: &JsonValue,
+    validator: &Validator,
+    manifest_kind: &str,
+) -> Result<()> {
+    let problems = validator
         .iter_errors(manifest_json)
         .take(8)
         .map(|error| {
@@ -51,10 +69,10 @@ fn validate_with_schema(manifest_json: &JsonValue, validator: &Validator) -> Res
             let location = if path.is_empty() { "/" } else { &path };
             format!("  {location}: {error}")
         })
-        .collect();
+        .collect::<Vec<_>>();
     if !problems.is_empty() {
         return Err(ManifestError::validation(format!(
-            "source manifest failed schema validation:\n{}",
+            "{manifest_kind} failed schema validation:\n{}",
             problems.join("\n")
         )));
     }
@@ -63,9 +81,9 @@ fn validate_with_schema(manifest_json: &JsonValue, validator: &Validator) -> Res
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value as JsonValue;
+    use serde_json::{Value as JsonValue, json};
 
-    use super::validate_manifest_schema;
+    use super::{validate_identity_manifest_schema, validate_manifest_schema};
     use crate::parser::parse_source_manifest_yaml;
 
     fn valid_http_manifest() -> &'static str {
@@ -174,13 +192,31 @@ functions:
     }
 
     #[test]
+    fn validate_identity_manifest_schema_uses_identity_error_prefix() {
+        let manifest = json!({
+            "kind": "source",
+            "spec_version": 1,
+            "name": "demo",
+            "version": "0.1.0",
+            "issuer": "demo",
+            "type": "fixed_token"
+        });
+        let error =
+            validate_identity_manifest_schema(&manifest).expect_err("wrong kind should fail");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("identity manifest failed schema validation:"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn validate_manifest_schema_directly_rejects_v4_manifest() {
         let manifest = manifest_json(
             r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
 ",

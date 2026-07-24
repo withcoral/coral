@@ -8,8 +8,7 @@ use crate::bootstrap::AppError;
 use crate::functions::FunctionName;
 use crate::sources::SourceName;
 use crate::sources::materialization::{
-    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PARAMETER_METADATA_OVERRIDE_FILENAME,
-    PROJECTIONS_FILENAME,
+    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME,
 };
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::{WorkspaceName, WorkspacePaths};
@@ -28,6 +27,18 @@ pub(crate) enum V4ProjectionCatalogOrigin {
 pub(crate) struct V4ProjectionCatalogFile {
     pub(crate) path: PathBuf,
     pub(crate) origin: V4ProjectionCatalogOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V4OperationMetadataOrigin {
+    Materialized,
+    Override,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V4OperationMetadataFile {
+    pub(crate) path: PathBuf,
+    pub(crate) origin: V4OperationMetadataOrigin,
 }
 
 #[derive(Debug, Clone)]
@@ -258,27 +269,29 @@ impl AppStateLayout {
             .join(DIAGNOSTICS_FILENAME)
     }
 
-    pub(crate) fn v4_parameter_metadata_override_file(
+    pub(crate) fn v4_operation_metadata_file(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-        surface_id: &str,
-    ) -> PathBuf {
-        self.v4_override_dir(workspace_name, source_name)
-            .join("surfaces")
-            .join(surface_id)
-            .join(PARAMETER_METADATA_OVERRIDE_FILENAME)
-    }
-
-    pub(crate) fn v4_surface_dir(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-        surface_id: &str,
-    ) -> PathBuf {
-        self.v4_materialized_dir(workspace_name, source_name)
-            .join("surfaces")
-            .join(surface_id)
+    ) -> Result<V4OperationMetadataFile, AppError> {
+        let override_file = self
+            .v4_override_dir(workspace_name, source_name)
+            .join(OPERATION_METADATA_FILENAME);
+        match std::fs::symlink_metadata(&override_file) {
+            Ok(_) => Ok(V4OperationMetadataFile {
+                path: override_file,
+                origin: V4OperationMetadataOrigin::Override,
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(V4OperationMetadataFile {
+                    path: self
+                        .v4_materialized_dir(workspace_name, source_name)
+                        .join(OPERATION_METADATA_FILENAME),
+                    origin: V4OperationMetadataOrigin::Materialized,
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -396,11 +409,29 @@ mod tests {
             overridden.origin,
             super::V4ProjectionCatalogOrigin::Override
         );
+        let generated_metadata = layout
+            .v4_operation_metadata_file(&workspace_name, &source_name)
+            .expect("generated metadata path");
         assert_eq!(
-            layout.v4_parameter_metadata_override_file(&workspace_name, &source_name, "rest"),
+            generated_metadata.path,
             config_dir
-                .join("workspaces/default/sources/github/overrides/surfaces/rest")
-                .join("parameter_metadata.yaml")
+                .join("workspaces/default/sources/github/materialized/v4/operation-metadata.yaml")
+        );
+        assert_eq!(
+            generated_metadata.origin,
+            super::V4OperationMetadataOrigin::Materialized
+        );
+
+        let metadata_override =
+            override_dir.join(crate::sources::materialization::OPERATION_METADATA_FILENAME);
+        fs::write(&metadata_override, "{}").expect("write operation metadata override");
+        let overridden_metadata = layout
+            .v4_operation_metadata_file(&workspace_name, &source_name)
+            .expect("overridden metadata path");
+        assert_eq!(overridden_metadata.path, metadata_override);
+        assert_eq!(
+            overridden_metadata.origin,
+            super::V4OperationMetadataOrigin::Override
         );
     }
 }

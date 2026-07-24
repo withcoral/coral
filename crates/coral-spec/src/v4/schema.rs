@@ -14,22 +14,30 @@ use crate::{
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopesSpec,
 };
 
+const NON_WHITESPACE_PATTERN: &str = "[^\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]";
+const TRIMMED_IDENTIFIER_PATTERN: &str = "^[\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]*[A-Za-z_][A-Za-z0-9_]*[\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]*$";
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "Coral DSL v4 Source Manifest")]
 struct V4SourceManifestSchema {
     #[schemars(extend("const" = 4))]
     dsl_version: u32,
-    #[schemars(length(min = 1))]
+    #[schemars(length(min = 1), pattern(r"^[a-z][a-z0-9_]*$"))]
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
+    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required)]
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(inner(length(min = 1)))]
     test_queries: Vec<String>,
-    #[schemars(length(min = 1))]
-    surfaces: Vec<V4SurfaceSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    identity_requirements: Option<IdentityRequirementsSchema>,
+    surface: V4SurfaceSchema,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -43,25 +51,12 @@ enum V4SurfaceSchema {
 #[serde(deny_unknown_fields)]
 #[schemars(extend("oneOf" = [{ "required": ["url"] }, { "required": ["file"] }]))]
 struct V4OpenApiSurfaceSchema {
-    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
-    id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(
-        required,
-        length(min = 1),
-        pattern(r"^[a-z][a-z0-9_]*$"),
-        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
-    )]
-    namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required, pattern(r"^https://"))]
     url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required, length(min = 1))]
     file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
-    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required, length(min = 1))]
     base_url: Option<String>,
@@ -76,20 +71,32 @@ struct V4OpenApiSurfaceSchema {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4McpSurfaceSchema {
-    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
-    id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(
-        required,
-        length(min = 1),
-        pattern(r"^[a-z][a-z0-9_]*$"),
-        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
-    )]
-    namespace_suffix: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
-    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct IdentityRequirementsSchema {
+    #[schemars(length(min = 1))]
+    accepts: Vec<AcceptedIdentityRequirementSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AcceptedIdentityRequirementSchema {
+    #[schemars(length(min = 1), pattern(NON_WHITESPACE_PATTERN))]
+    id: String,
+    #[schemars(
+        length(min = 1),
+        inner(
+            length(min = 1),
+            pattern(TRIMMED_IDENTIFIER_PATTERN)
+        ),
+        extend("uniqueItems" = true)
+    )]
+    identity_specs: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    audience: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -437,20 +444,44 @@ mod tests {
     }
 
     #[test]
-    fn generated_schema_accepts_core_v4_fixture_and_parser_agrees() {
-        let raw = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../sources/v4/github/manifest.yaml"),
-        )
-        .expect("core v4 fixture");
+    fn generated_schema_accepts_every_preview_v4_manifest_and_parser_agrees() {
         let validator = validator();
-        let manifest = manifest_json(&raw);
-        let errors = validation_errors(&validator, &manifest);
+        let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sources/v4");
+        let mut parsed_sources = Vec::new();
+        for entry in std::fs::read_dir(&source_root).expect("preview v4 source directory") {
+            let entry = entry.expect("preview v4 source entry");
+            let manifest_path = entry.path().join("manifest.yaml");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let source = entry.file_name().to_string_lossy().into_owned();
+            let raw = std::fs::read_to_string(&manifest_path).expect("v4 fixture");
+            let manifest = manifest_json(&raw);
+            let errors = validation_errors(&validator, &manifest);
+            assert!(
+                errors.is_empty(),
+                "generated schema should accept {source} v4 fixture: {errors:?}"
+            );
+            let parsed = parse_source_manifest_yaml(&raw).expect("parser accepts v4 fixture");
+            parsed_sources.push((
+                source,
+                parsed
+                    .as_v4()
+                    .expect("preview manifest should use DSL v4")
+                    .common
+                    .name
+                    .clone(),
+            ));
+        }
+
+        parsed_sources.sort();
         assert!(
-            errors.is_empty(),
-            "generated schema should accept core v4 fixture: {errors:?}"
+            parsed_sources.len() >= 2,
+            "expected multiple preview v4 manifests"
         );
-        parse_source_manifest_yaml(&raw).expect("parser accepts core v4 fixture");
+        assert!(parsed_sources.contains(&("github".to_string(), "github_v4".to_string())));
+        assert!(parsed_sources.contains(&("github_mcp".to_string(), "github_mcp_v4".to_string())));
+        assert_ne!("github_v4", "github_mcp_v4");
     }
 
     #[test]
@@ -458,13 +489,11 @@ mod tests {
         let raw = r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: mcp
-    namespace_suffix: mcp
+inputs:
+  MCP_TOKEN:
+    kind: secret
+surface:
     type: mcp
-    inputs:
-      MCP_TOKEN:
-        kind: secret
     server:
       transport: streamable_http
       url: https://mcp.example.com/mcp
@@ -489,13 +518,11 @@ surfaces:
         let raw = r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: stdio_mcp
-    namespace_suffix: stdio
+inputs:
+  MCP_TOKEN:
+    kind: secret
+surface:
     type: mcp
-    inputs:
-      MCP_TOKEN:
-        kind: secret
     server:
       transport: stdio
       command: demo-mcp-server
@@ -503,19 +530,6 @@ surfaces:
         - name: MCP_TOKEN
           from: input
           key: MCP_TOKEN
-  - id: http_mcp
-    namespace_suffix: http
-    type: mcp
-    inputs:
-      HTTP_TOKEN:
-        kind: secret
-    server:
-      transport: streamable_http
-      url: https://mcp.example.com/mcp
-      auth:
-        type: bearer
-        from: input
-        key: HTTP_TOKEN
 ";
 
         let validator = validator();
@@ -529,48 +543,121 @@ surfaces:
     }
 
     #[test]
-    fn generated_schema_accepts_oauth_surface_input_and_parser_agrees() {
+    fn generated_schema_accepts_identity_requirements_and_parser_agrees() {
         let raw = r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+identity_requirements:
+  accepts:
+    - id: github_rest_read
+      identity_specs: [github_oauth, github_pat]
+      audience: {host: github.com, port: 443}
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+";
+
+        let validator = validator();
+        let errors = validation_errors(&validator, &manifest_json(raw));
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept identity requirements: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts identity requirements");
+    }
+
+    #[test]
+    fn generated_schema_rejects_invalid_identity_requirement_shapes() {
+        let invalid_fields = [
+            "identity_requirements: null\n",
+            "identity_requirements: {accepts: []}\n",
+            "identity_requirements:\n  accepts:\n    - id: \"\"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: \"   \"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: []\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"\"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"   \"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github-oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth, github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth]\n      issuer: github\n",
+        ];
+
+        let validator = validator();
+        for manifest_fields in invalid_fields {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\n{manifest_fields}surface:\n  type: openapi\n  url: https://example.com/openapi.yaml\n"
+            );
+            assert!(
+                !validator.is_valid(&manifest_json(&raw)),
+                "generated schema should reject: {manifest_fields}"
+            );
+            parse_source_manifest_yaml(&raw)
+                .expect_err("parser should reject invalid identity requirements");
+        }
+    }
+
+    #[test]
+    fn generated_schema_rejects_surface_scoped_identity_requirements() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+  identity_requirements:
+    accepts:
+      - {id: github_rest_read, identity_specs: [github_oauth]}
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "generated schema should reject surface-scoped identity requirements"
+        );
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject surface-scoped identity requirements");
+    }
+
+    #[test]
+    fn generated_schema_accepts_oauth_top_level_input_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+inputs:
+  TENANT_ID:
+    kind: variable
+    default: organizations
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          description: Use OAuth.
+          hint: Authorize in your browser.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
+              token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://login.example.com/{{input.TENANT_ID}}/oauth/register
+                client_name: Coral Demo
+                token_endpoint_auth_method: none
+                request_refresh_token_grant: true
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read
+        - type: source_config
+          label: Paste token
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
-    inputs:
-      TENANT_ID:
-        kind: variable
-        default: organizations
-      API_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              label: Connect
-              description: Use OAuth.
-              hint: Authorize in your browser.
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:0/oauth/callback
-                redirect_uri_port_mode: random
-                endpoints:
-                  authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
-                  token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
-                client:
-                  dynamic_registration:
-                    registration_url: https://login.example.com/{{input.TENANT_ID}}/oauth/register
-                    client_name: Coral Demo
-                    token_endpoint_auth_method: none
-                    request_refresh_token_grant: true
-                scopes:
-                  scope:
-                    delimiter: space
-                    values:
-                      - read
-            - type: source_config
-              label: Paste token
     base_url: https://api.example.com
     auth:
       type: HeaderAuth
@@ -585,38 +672,37 @@ surfaces:
         let errors = validation_errors(&validator, &manifest);
         assert!(
             errors.is_empty(),
-            "generated schema should accept v4 OAuth surface input: {errors:?}"
+            "generated schema should accept v4 OAuth top-level input: {errors:?}"
         );
-        parse_source_manifest_yaml(raw).expect("parser accepts v4 OAuth surface input");
+        parse_source_manifest_yaml(raw).expect("parser accepts v4 OAuth top-level input");
     }
 
     #[test]
-    fn generated_schema_rejects_unknown_oauth_surface_input_field() {
+    fn generated_schema_rejects_unknown_oauth_top_level_input_field() {
         let raw = r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            endpoints:
+              authorization_url: https://login.example.com/oauth/authorize
+              token_url: https://login.example.com/oauth/token
+            client:
+              id:
+                default: demo-client
+            unsupported: true
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
-    inputs:
-      API_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:0/oauth/callback
-                endpoints:
-                  authorization_url: https://login.example.com/oauth/authorize
-                  token_url: https://login.example.com/oauth/token
-                client:
-                  id:
-                    default: demo-client
-                unsupported: true
 ";
 
         assert!(
@@ -631,61 +717,57 @@ surfaces:
         let credential_null = r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential: null
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
-    inputs:
-      API_TOKEN:
-        kind: secret
-        credential: null
 ";
         let oauth_manifest = |oauth_extra: &str, registration_extra: &str| {
             format!(
                 r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+{oauth_extra}            endpoints:
+              authorization_url: https://login.example.com/oauth/authorize
+              token_url: https://login.example.com/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://login.example.com/oauth/register
+{registration_extra}
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
-    inputs:
-      API_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:0/oauth/callback
-{oauth_extra}                endpoints:
-                  authorization_url: https://login.example.com/oauth/authorize
-                  token_url: https://login.example.com/oauth/token
-                client:
-                  dynamic_registration:
-                    registration_url: https://login.example.com/oauth/register
-{registration_extra}"
+"
             )
         };
         let invalid = [
             ("credential", credential_null.to_string()),
             (
                 "resource",
-                oauth_manifest("                resource: null\n", ""),
+                oauth_manifest("            resource: null\n", ""),
             ),
             (
                 "redirect_uri_port_mode",
-                oauth_manifest("                redirect_uri_port_mode: null\n", ""),
+                oauth_manifest("            redirect_uri_port_mode: null\n", ""),
             ),
-            (
-                "scopes",
-                oauth_manifest("                scopes: null\n", ""),
-            ),
+            ("scopes", oauth_manifest("            scopes: null\n", "")),
             (
                 "client_name",
-                oauth_manifest("", "                    client_name: null\n"),
+                oauth_manifest("", "                client_name: null\n"),
             ),
         ];
 
@@ -711,7 +793,7 @@ surfaces:
         ];
         for field in invalid {
             let raw = format!(
-                "name: demo\ndsl_version: 4\n{field}surfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
+                "name: demo\ndsl_version: 4\n{field}surface:\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
             );
             assert!(
                 !validator().is_valid(&manifest_json(&raw)),
@@ -719,7 +801,7 @@ surfaces:
             );
         }
 
-        let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
+        let raw = "name: demo\ndsl_version: 4\nsurface:\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
         assert!(
             !validator().is_valid(&manifest_json(raw)),
             "surface sha256 should be rejected"
@@ -737,7 +819,7 @@ surfaces:
         ];
         for surface_fields in invalid_surfaces {
             let raw = format!(
-                "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n{surface_fields}"
+                "name: demo\ndsl_version: 4\nsurface:\n    type: openapi\n{surface_fields}"
             );
             assert!(
                 !validator().is_valid(&manifest_json(&raw)),
@@ -747,88 +829,49 @@ surfaces:
     }
 
     #[test]
-    fn generated_schema_rejects_empty_surfaces_and_parser_agrees() {
+    fn generated_schema_rejects_plural_surfaces_and_parser_agrees() {
         let raw = "name: demo\ndsl_version: 4\nsurfaces: []\n";
 
         assert!(
             !validator().is_valid(&manifest_json(raw)),
-            "empty surfaces should be rejected by generated schema"
+            "plural surfaces should be rejected by generated schema"
         );
-        parse_source_manifest_yaml(raw).expect_err("parser should reject empty surfaces");
+        parse_source_manifest_yaml(raw).expect_err("parser should reject plural surfaces");
     }
 
     #[test]
-    fn generated_schema_accepts_one_missing_multi_surface_namespace_and_parser_agrees() {
+    fn generated_schema_rejects_surface_id_and_parser_agrees() {
         let raw = r"
 name: demo
 dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.yaml
-  - id: mcp
-    namespace_suffix: mcp
-    type: mcp
-    server:
-      transport: stdio
-      command: demo-mcp-server
-";
-
-        let validator = validator();
-        let manifest = manifest_json(raw);
-        let errors = validation_errors(&validator, &manifest);
-        assert!(
-            errors.is_empty(),
-            "generated schema should accept one default relation namespace: {errors:?}"
-        );
-        parse_source_manifest_yaml(raw)
-            .expect("parser should accept one missing multi-surface namespace");
-    }
-
-    #[test]
-    fn parser_rejects_two_missing_multi_surface_namespaces_after_schema_accepts_shape() {
-        let raw = r"
-name: demo
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.yaml
-  - id: mcp
-    type: mcp
-    server:
-      transport: stdio
-      command: demo-mcp-server
-";
-
-        let validator = validator();
-        let manifest = manifest_json(raw);
-        let errors = validation_errors(&validator, &manifest);
-        assert!(
-            errors.is_empty(),
-            "generated schema should accept this parser-owned invariant: {errors:?}"
-        );
-        parse_source_manifest_yaml(raw)
-            .expect_err("parser should reject multiple missing multi-surface namespaces");
-    }
-
-    #[test]
-    fn generated_schema_rejects_invalid_surface_namespace_and_parser_agrees() {
-        let raw = r"
-name: demo
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: GitHubRest
+surface:
+    id: rest
     type: openapi
     url: https://example.com/openapi.yaml
 ";
 
         assert!(
             !validator().is_valid(&manifest_json(raw)),
-            "mixed-case namespace_suffix should be rejected by generated schema"
+            "surface id should be rejected by generated schema"
         );
-        parse_source_manifest_yaml(raw)
-            .expect_err("parser should reject mixed-case namespace_suffix");
+        parse_source_manifest_yaml(raw).expect_err("parser should reject surface id");
+    }
+
+    #[test]
+    fn generated_schema_rejects_namespace_suffix_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surface:
+    namespace_suffix: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "namespace_suffix should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject namespace_suffix");
     }
 }

@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } from 'e
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId } from '../shared/types'
-import { configureMcpClient, mcpClients } from './mcp-config'
+import { configureMcpClient, getMcpLaunchConfig, mcpClients } from './mcp-config'
 import {
   APP_ENTRY_URL,
   APP_ORIGIN,
@@ -10,6 +10,7 @@ import {
   registerAppSchemePrivileges,
 } from './app-renderer'
 import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
+import { checkForDesktopUpdates, desktopUpdatesSupported, installAutoUpdater } from './auto-update'
 
 const SHUTDOWN_TIMEOUT_MS = 6000
 
@@ -237,7 +238,10 @@ async function stopServices(): Promise<void> {
 
 function registerIpcHandlers() {
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
-  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
+  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) =>
+    configureMcpClient(clientId),
+  )
+  ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
 }
 
 function installMenu() {
@@ -269,6 +273,16 @@ function installMenu() {
           label: 'Configure MCP',
           submenu: mcpSubmenu,
         },
+        ...(desktopUpdatesSupported()
+          ? ([
+              {
+                label: 'Check for Updates...',
+                click: () => {
+                  void checkForDesktopUpdates({ interactive: true })
+                },
+              },
+            ] satisfies Electron.MenuItemConstructorOptions[])
+          : []),
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -282,6 +296,8 @@ function installMenu() {
         { role: 'cut' },
         { role: 'copy' },
         { role: 'paste' },
+        { type: 'separator' },
+        { role: 'selectAll' },
       ],
     },
     {
@@ -323,6 +339,7 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', updatePlatformIcon)
   registerIpcHandlers()
   installMenu()
+  installAutoUpdater()
   registerAppProtocol(() => ensureSidecar().then((started) => started.url))
   void ensureSidecar().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)

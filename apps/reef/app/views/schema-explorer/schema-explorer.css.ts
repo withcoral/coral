@@ -81,7 +81,7 @@ export const connectorName = style({
   whiteSpace: 'nowrap',
 })
 
-export const connectorTableCount = style({
+export const connectorItemCount = style({
   color: theme.content.tertiary,
   marginInlineStart: 'auto',
 })
@@ -92,7 +92,7 @@ export const connectorChildren = style({
   marginInlineStart: 16,
 })
 
-export const tableName = style({
+export const itemName = style({
   minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',

@@ -19,7 +19,10 @@ use crate::backends::{
     build_registered_table_function, registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
-use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
+use crate::{
+    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
+    SourceInputResolver,
+};
 use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
@@ -54,41 +57,26 @@ struct HttpCompiledSource {
     trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_observation_publishers: SourceObservationPublishers,
-}
-
-pub(crate) fn compile_source(
-    manifest: HttpSourceManifest,
-    source_input_resolution: SourceInputResolutionContext,
-    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    body_capture_max_bytes: Option<usize>,
-    trace_context: Option<opentelemetry::Context>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    source_observation_publishers: SourceObservationPublishers,
-) -> Box<dyn CompiledBackendSource> {
-    Box::new(HttpCompiledSource {
-        manifest,
-        source_input_resolution,
-        request_authenticators,
-        body_capture_max_bytes,
-        trace_context,
-        source_input_resolver,
-        source_observation_publishers,
-    })
+    request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
 }
 
 pub(crate) fn compile_manifest(
     manifest: &HttpSourceManifest,
     request: &BackendCompileRequest<'_>,
+    request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
 ) -> Box<dyn CompiledBackendSource> {
-    compile_source(
-        manifest.clone(),
-        SourceInputResolutionContext::from_query_source(request.source),
-        request.request_authenticators.clone(),
-        request.runtime_context.body_capture_max_bytes,
-        request.runtime_context.trace_context.clone(),
-        request.source_input_resolver.clone(),
-        source_observation_publishers(request.source_observation_publishers),
-    )
+    Box::new(HttpCompiledSource {
+        manifest: manifest.clone(),
+        source_input_resolution: SourceInputResolutionContext::from_query_source(request.source),
+        request_authenticators: request.request_authenticators.clone(),
+        body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
+        trace_context: request.runtime_context.trace_context.clone(),
+        source_input_resolver: request.source_input_resolver.clone(),
+        source_observation_publishers: source_observation_publishers(
+            request.source_observation_publishers,
+        ),
+        request_identity_http_authenticator,
+    })
 }
 
 #[async_trait]
@@ -118,10 +106,15 @@ impl CompiledBackendSource for HttpCompiledSource {
         _ctx: &SessionContext,
         registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
-        let http = client::default_http_client(registration, &self.manifest.common.name)?;
+        let http = client::default_http_client(
+            registration,
+            &self.manifest.common.name,
+            self.request_identity_http_authenticator.is_some(),
+        )?;
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
+            self.request_identity_http_authenticator.clone(),
             self.body_capture_max_bytes,
             self.trace_context.clone(),
             http,

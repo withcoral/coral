@@ -11,6 +11,15 @@ import * as styles from './schema-explorer.css'
 import { findSchemaTable } from './schema'
 import { formatError, useRouteRetry } from './shared'
 
+interface DisplayColumn {
+  description?: string
+  filterable?: boolean
+  name: string
+  nullable: boolean
+  type: string
+  virtual?: boolean
+}
+
 // The parent schema layout resolves its schema before rendering this Outlet, so
 // table metadata (description, required filters) is available synchronously.
 function useSelectedTable(): { schemaName: string; tableName: string; table?: TableDef } {
@@ -82,53 +91,60 @@ export function SchemaTableError() {
 export function SchemaTableView({ columns }: { columns: ColumnDef[] }) {
   return (
     <TableDetailLayout>
-      {columns.length === 0 ? (
-        <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
-          No columns reported for this table.
-        </Typography.BodySmall>
-      ) : (
-        <Table.Wrapper style="compact">
-          <Table.Root>
-            <Table.Head>
-              <Table.Row>
-                <Table.HeaderCell>name</Table.HeaderCell>
-                <Table.HeaderCell>type</Table.HeaderCell>
-                <Table.HeaderCell>nullable</Table.HeaderCell>
-                <Table.HeaderCell>description</Table.HeaderCell>
-              </Table.Row>
-            </Table.Head>
-            <Table.Body>
-              {columns.map((column) => (
-                <Table.Row
-                  className={column.virtual ? styles.virtualRow : undefined}
-                  key={column.name}
-                >
-                  <Table.Cell mono>
-                    {column.name}
-                    {column.filterable ? (
-                      <Tooltip
-                        content="Required filter: queries for this table must include a filter on this field."
-                        side="top"
-                      >
-                        <span
-                          aria-label="Required filter"
-                          className={styles.requiredStar}
-                          tabIndex={0}
-                        >
-                          *
-                        </span>
-                      </Tooltip>
-                    ) : null}
-                  </Table.Cell>
-                  <Table.Cell mono>{column.type}</Table.Cell>
-                  <Table.Cell mono>{column.nullable ? 'yes' : 'no'}</Table.Cell>
-                  <Table.Cell>{column.description ?? '-'}</Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table.Root>
-        </Table.Wrapper>
-      )}
+      <SchemaColumnsTable columns={columns} emptyMessage="No columns reported for this table." />
     </TableDetailLayout>
+  )
+}
+
+export function SchemaColumnsTable({
+  columns,
+  emptyMessage,
+}: {
+  columns: DisplayColumn[]
+  emptyMessage: string
+}) {
+  if (columns.length === 0) {
+    return (
+      <Typography.BodySmall className={styles.emptyInline} variant="tertiary">
+        {emptyMessage}
+      </Typography.BodySmall>
+    )
+  }
+
+  return (
+    <Table.Wrapper style="compact">
+      <Table.Root>
+        <Table.Head>
+          <Table.Row>
+            <Table.HeaderCell>name</Table.HeaderCell>
+            <Table.HeaderCell>type</Table.HeaderCell>
+            <Table.HeaderCell>nullable</Table.HeaderCell>
+            <Table.HeaderCell>description</Table.HeaderCell>
+          </Table.Row>
+        </Table.Head>
+        <Table.Body>
+          {columns.map((column) => (
+            <Table.Row className={column.virtual ? styles.virtualRow : undefined} key={column.name}>
+              <Table.Cell mono>
+                {column.name}
+                {column.filterable ? (
+                  <Tooltip
+                    content="Required filter: queries for this table must include a filter on this field."
+                    side="top"
+                  >
+                    <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
+                      *
+                    </span>
+                  </Tooltip>
+                ) : null}
+              </Table.Cell>
+              <Table.Cell mono>{column.type}</Table.Cell>
+              <Table.Cell mono>{column.nullable ? 'yes' : 'no'}</Table.Cell>
+              <Table.Cell>{column.description ?? '-'}</Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Root>
+    </Table.Wrapper>
   )
 }

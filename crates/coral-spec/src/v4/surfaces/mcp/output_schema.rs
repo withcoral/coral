@@ -9,7 +9,6 @@ use crate::v4::surfaces::json_schema::{
 
 use super::import::McpImporter;
 use super::input_schema::schema_description;
-use super::pagination::find_response_cursor_path;
 
 impl McpImporter<'_> {
     pub(super) fn import_output(
@@ -23,7 +22,6 @@ impl McpImporter<'_> {
             return IrOperationOutput {
                 cardinality: OutputCardinality::Singleton,
                 type_ref: row_type_id,
-                row_path: Vec::new(),
             };
         };
         if json_schema_type_contains(schema, "array") {
@@ -32,22 +30,12 @@ impl McpImporter<'_> {
             return IrOperationOutput {
                 cardinality: OutputCardinality::List,
                 type_ref: row_type_id,
-                row_path: Vec::new(),
-            };
-        }
-        if let Some((array_property, item_schema)) = wrapped_list_property(schema) {
-            self.insert_row_type_from_schema(&row_type_id, item_schema);
-            return IrOperationOutput {
-                cardinality: OutputCardinality::WrappedList,
-                type_ref: row_type_id,
-                row_path: vec![array_property.to_string()],
             };
         }
         self.insert_row_type_from_schema(&row_type_id, Some(schema));
         IrOperationOutput {
             cardinality: OutputCardinality::Singleton,
             type_ref: row_type_id,
-            row_path: Vec::new(),
         }
     }
 
@@ -127,37 +115,4 @@ impl McpImporter<'_> {
             },
         );
     }
-}
-
-fn wrapped_list_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
-    if !json_schema_type_contains(schema, "object") {
-        return None;
-    }
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    let mut arrays = properties
-        .iter()
-        .filter(|(_name, property)| json_schema_type_contains(property, "array"));
-    let (name, property) = arrays.next()?;
-    if arrays.next().is_some() {
-        return None;
-    }
-    if properties.len() != 1
-        && find_response_cursor_path(schema).is_none()
-        && !is_offset_pagination_envelope(properties)
-    {
-        return None;
-    }
-    Some((name.as_str(), property.get("items")))
-}
-
-fn is_offset_pagination_envelope(properties: &serde_json::Map<String, Value>) -> bool {
-    properties
-        .get("limit")
-        .is_some_and(|schema| json_schema_type_contains(schema, "integer"))
-        && properties
-            .get("offset")
-            .is_some_and(|schema| json_schema_type_contains(schema, "integer"))
-        && properties
-            .get("has_more")
-            .is_some_and(|schema| json_schema_type_contains(schema, "boolean"))
 }

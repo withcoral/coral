@@ -1,6 +1,5 @@
 //! `DataFusion` table provider for manifest-driven HTTP-backed tables.
 
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -257,10 +256,6 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
 
 #[async_trait]
 impl TableProvider for HttpSourceTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

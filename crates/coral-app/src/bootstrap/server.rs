@@ -3,8 +3,7 @@
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::future::{Future, Ready};
-use std::net::Ipv4Addr;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -29,7 +28,7 @@ use coral_api::{
     TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::{self, JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codegen::http::header::CONTENT_TYPE;
@@ -41,7 +40,10 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
+use super::health::AggregateHealthService;
+use super::server_config::ServerSettings;
 use crate::EngineExtensionsProvider;
+use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
@@ -90,11 +92,17 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
     fn get(&self, path: &str) -> Option<StaticAsset>;
 }
 
+#[derive(Clone)]
+enum ServerModeSelection {
+    Explicit(ServerMode),
+    ConfiguredStandaloneGrpc,
+}
+
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
-    mode: ServerMode,
+    mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
@@ -112,7 +120,7 @@ impl ServerConfig {
     pub(crate) fn new() -> Self {
         Self {
             config_dir: None,
-            mode: ServerMode::NativeGrpc,
+            mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
@@ -127,8 +135,22 @@ impl ServerConfig {
     }
 
     pub(crate) fn with_mode(mut self, mode: ServerMode) -> Self {
-        self.mode = mode;
+        self.mode = ServerModeSelection::Explicit(mode);
         self
+    }
+
+    pub(crate) fn with_configured_standalone_grpc(mut self) -> Self {
+        self.mode = ServerModeSelection::ConfiguredStandaloneGrpc;
+        self
+    }
+
+    fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
+        match &self.mode {
+            ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
+            ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
+                bind: ServerSettings::load(layout)?.bind_addr,
+            }),
+        }
     }
 
     pub(crate) fn add_engine_extensions_provider(
@@ -158,8 +180,13 @@ impl ServerConfig {
 /// transport or asset-serving knob.
 #[derive(Clone)]
 pub enum ServerMode {
-    /// Native gRPC for CLI, MCP, and local client callers.
-    NativeGrpc,
+    /// Ephemeral native gRPC for CLI, MCP, and local client callers.
+    EphemeralGrpc,
+    /// Native gRPC bound to an explicit address for a standalone server.
+    StandaloneGrpc {
+        /// Address to bind.
+        bind: SocketAddr,
+    },
     /// Loopback gRPC-Web server that also serves embedded UI assets.
     EmbeddedUi {
         /// Port to bind on `127.0.0.1`.
@@ -172,7 +199,8 @@ pub enum ServerMode {
 impl ServerMode {
     fn bind_addr(&self) -> SocketAddr {
         match self {
-            Self::NativeGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Self::EphemeralGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Self::StandaloneGrpc { bind } => *bind,
             Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
         }
     }
@@ -186,7 +214,7 @@ pub struct ServerBuilder {
 
 impl ServerBuilder {
     #[must_use]
-    /// Creates a builder for the default native gRPC local server.
+    /// Creates a builder for the default ephemeral native gRPC local server.
     pub fn new() -> Self {
         Self {
             config: ServerConfig::new(),
@@ -194,9 +222,23 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Creates a builder for a native gRPC local server.
-    pub fn native_grpc() -> Self {
-        Self::new().with_mode(ServerMode::NativeGrpc)
+    /// Creates a builder for an ephemeral native gRPC local server.
+    pub fn ephemeral_grpc() -> Self {
+        Self::new().with_mode(ServerMode::EphemeralGrpc)
+    }
+
+    #[must_use]
+    /// Creates a standalone native gRPC server bound to an explicit address.
+    pub fn standalone_grpc(bind: SocketAddr) -> Self {
+        Self::new().with_mode(ServerMode::StandaloneGrpc { bind })
+    }
+
+    #[must_use]
+    /// Creates a standalone gRPC server using `[server].bind_addr`.
+    pub fn configured_standalone_grpc() -> Self {
+        Self {
+            config: ServerConfig::new().with_configured_standalone_grpc(),
+        }
     }
 
     #[must_use]
@@ -292,7 +334,8 @@ impl ServerBuilder {
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
-        let layout = env.app_state_layout(self.config.config_dir)?;
+        let layout = env.app_state_layout(self.config.config_dir.clone())?;
+        let mode = self.config.resolved_mode(&layout)?;
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -354,26 +397,23 @@ impl ServerBuilder {
             credential_manager,
             query_runtime_context,
             layout.clone(),
-            workspace_lifecycle_lock,
+            workspace_lifecycle_lock.clone(),
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
         );
-        let search_observations = features
-            .enabled(Feature::ObservedValuesSearch)
-            .then(|| SearchObservationHandle::new(layout.clone()));
+        let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
+        let search_observations =
+            observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
         let search_manager = SearchManager::with_diagnostic_reporter(
             layout,
             &config_store,
             workspace_manager.clone(),
+            observed_values_search_enabled,
             diagnostic_reporter,
+            CatalogDiscovery::new(query_manager.clone()),
+            workspace_lifecycle_lock,
         );
-        let trace_components =
-            active_trace_store.map_or_else(TraceServerComponents::default, |store| {
-                TraceServerComponents {
-                    local_trace_store_dir: Some(store.dir.clone()),
-                    service: Some(TraceService::new(store.dir, store.retention)),
-                }
-            });
+        let trace_components = trace_components_for_store(active_trace_store);
         start_server(
             ServerDependencies {
                 source: source_manager,
@@ -386,10 +426,21 @@ impl ServerBuilder {
             },
             trace_components,
             self.config.user_principal_provider,
-            self.config.mode,
+            mode,
         )
         .await
     }
+}
+
+fn trace_components_for_store(
+    active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+) -> TraceServerComponents {
+    active_trace_store.map_or_else(TraceServerComponents::default, |store| {
+        TraceServerComponents {
+            local_trace_store_dir: Some(store.dir.clone()),
+            service: Some(TraceService::new(store.dir, store.retention)),
+        }
+    })
 }
 
 async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
@@ -430,6 +481,7 @@ pub struct RunningServer {
     search: SearchManager,
     search_observations: Mutex<Option<SearchObservationHandle>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    task_finished: watch::Receiver<bool>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
 
@@ -449,6 +501,17 @@ impl RunningServer {
     /// trace history is enabled for this process.
     pub fn local_trace_store_dir(&self) -> Option<&std::path::Path> {
         self.local_trace_store_dir.as_deref()
+    }
+
+    /// Waits until the background server task exits.
+    ///
+    /// This method is cancellation-safe and does not initiate shutdown,
+    /// consume the task result, or release server resources. Call
+    /// [`RunningServer::shutdown`] afterward to join the task, surface errors,
+    /// and complete cleanup.
+    pub async fn wait_for_exit(&self) {
+        let mut task_finished = self.task_finished.clone();
+        let _finished = task_finished.wait_for(|finished| *finished).await;
     }
 
     /// Shuts the server down and waits for the background task to finish.
@@ -572,7 +635,7 @@ async fn start_server(
     let search_service = SearchService::new(search.clone());
     let feedback_service = FeedbackService::new(feedback);
     let task_service = TaskService::new(task);
-    let mut routes = Routes::default()
+    let mut application_routes = Routes::default()
         .add_service(
             SourceServiceServer::new(source_service)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -594,24 +657,32 @@ async fn start_server(
                 .max_encoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE),
         );
     if let Some(trace_service) = trace_service {
-        routes = routes.add_service(
+        application_routes = application_routes.add_service(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
         );
     }
-    let routes = routes
-        .into_axum_router()
-        .layer(GrpcRequestContextLayer::new(user_principal_provider))
-        .into();
+    let routes = Routes::from(
+        application_routes
+            .into_axum_router()
+            .layer(GrpcRequestContextLayer::new(user_principal_provider)),
+    )
+    // Process liveness must not depend on principal selection.
+    .add_service(tonic_health::pb::health_server::HealthServer::new(
+        AggregateHealthService,
+    ));
 
     let listener = TcpListener::bind(mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (task_finished_tx, task_finished) = watch::channel(false);
 
     let task = match mode {
-        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
+        ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => {
+            start_grpc_server(listener, shutdown_rx, routes, task_finished_tx)
+        }
         ServerMode::EmbeddedUi { assets, .. } => {
-            start_grpc_web_server(listener, shutdown_rx, routes, assets)
+            start_grpc_web_server(listener, shutdown_rx, routes, assets, task_finished_tx)
         }
     };
 
@@ -621,6 +692,7 @@ async fn start_server(
         search,
         search_observations: Mutex::new(search_observations),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
+        task_finished,
         task: Mutex::new(Some(task)),
     })
 }
@@ -629,15 +701,18 @@ fn start_grpc_server(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
+    task_finished: watch::Sender<bool>,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     tokio::spawn(async move {
-        Server::builder()
+        let result = Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(routes)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await
+            .await;
+        task_finished.send_replace(true);
+        result
     })
 }
 
@@ -646,6 +721,7 @@ fn start_grpc_web_server(
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
     static_assets: Arc<dyn StaticAssetsProvider>,
+    task_finished: watch::Sender<bool>,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     let grpc = routes
         .into_axum_router()
@@ -659,14 +735,16 @@ fn start_grpc_web_server(
     let combined: Routes = app.into();
 
     tokio::spawn(async move {
-        Server::builder()
+        let result = Server::builder()
             .accept_http1(true)
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(combined)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
             })
-            .await
+            .await;
+        task_finished.send_replace(true);
+        result
     })
 }
 
@@ -828,9 +906,11 @@ mod tests {
     )]
 
     use std::borrow::Cow;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::future::Future as _;
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use std::task::Poll;
     use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
@@ -845,6 +925,7 @@ mod tests {
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
+    use tokio::sync::{oneshot, watch};
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
 
@@ -854,6 +935,7 @@ mod tests {
         is_native_grpc_content_type, start_server,
     };
     use crate::bootstrap::AppError;
+    use crate::catalog::discovery::CatalogDiscovery;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
@@ -952,7 +1034,11 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn shutdown_attempts_observed_values_shutdown_after_server_task_error() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "server lifecycle test requires full runtime assembly"
+    )]
+    async fn wait_for_exit_preserves_task_error_and_shutdown_cleanup() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -963,12 +1049,28 @@ enabled = false
         let db = test_db(&layout, &config_store).await;
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
-            credential_manager,
+            credential_manager.clone(),
             layout.clone(),
             None,
             db,
         );
-        let search = SearchManager::new(layout.clone(), &config_store, workspace_manager);
+        let query_manager = QueryManager::new_for_tests(
+            config_store.clone(),
+            workspace_manager.clone(),
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            vec![Arc::new(NoopEngineExtensionsProvider)],
+        );
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let search = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager,
+            true,
+            CatalogDiscovery::new(query_manager),
+            lifecycle_lock,
+        );
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
         let generation = store
@@ -990,9 +1092,13 @@ enabled = false
             )
             .expect("enqueue observed value");
         let search_observations = SearchObservationHandle::new(layout);
-        let task = tokio::spawn(async {
+        let (task_gate_tx, task_gate_rx) = oneshot::channel();
+        let (task_finished_tx, task_finished) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            drop(task_gate_rx.await);
             let should_panic = true;
             assert!(!should_panic, "server task panicked");
+            task_finished_tx.send_replace(true);
             Ok::<(), tonic::transport::Error>(())
         });
         let server = RunningServer {
@@ -1001,12 +1107,30 @@ enabled = false
             search,
             search_observations: Mutex::new(Some(search_observations)),
             shutdown_tx: Mutex::new(None),
+            task_finished,
             task: Mutex::new(Some(task)),
         };
 
+        let mut canceled_wait = Box::pin(server.wait_for_exit());
+        std::future::poll_fn(|cx| {
+            assert!(canceled_wait.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(canceled_wait);
+        task_gate_tx.send(()).expect("release server task");
+
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), server.wait_for_exit())
+                .await
+                .expect("server task completion should wake waiters");
+        }
         let result = server.shutdown_inner().await;
 
-        assert!(matches!(result, Err(AppError::TaskJoin(_))));
+        assert!(matches!(
+            result,
+            Err(AppError::TaskJoin(error)) if error.is_panic()
+        ));
         assert!(
             server
                 .search_observations
@@ -1026,6 +1150,87 @@ enabled = false
                 .expect("pending queue depth"),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn standalone_grpc_binds_the_requested_loopback_address() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start explicit loopback server");
+
+        assert!(server.endpoint_uri().starts_with("http://127.0.0.1:"));
+        server.shutdown().await.expect("shutdown server");
+    }
+
+    #[test]
+    fn configured_standalone_grpc_resolves_configured_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server]\nbind_addr = '127.0.0.2:14555'\n",
+        )
+        .expect("write config");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let builder = ServerBuilder::configured_standalone_grpc();
+
+        let ServerMode::StandaloneGrpc { bind } = builder
+            .config
+            .resolved_mode(&layout)
+            .expect("resolve configured bind")
+        else {
+            panic!("configured server must use standalone gRPC mode");
+        };
+        assert_eq!(bind, SocketAddr::from(([127, 0, 0, 2], 14555)));
+    }
+
+    #[tokio::test]
+    async fn configured_standalone_grpc_starts_with_configured_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server]\nbind_addr = '127.0.0.1:0'\n",
+        )
+        .expect("write config");
+
+        let server = ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start configured standalone server");
+
+        let endpoint = server
+            .endpoint_uri()
+            .strip_prefix("http://")
+            .expect("endpoint scheme")
+            .parse::<SocketAddr>()
+            .expect("socket address endpoint");
+        assert!(endpoint.ip().is_loopback());
+        assert_ne!(endpoint.port(), 0);
+        server.shutdown().await.expect("shutdown server");
+    }
+
+    #[tokio::test]
+    async fn standalone_grpc_binds_the_requested_non_loopback_address() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start explicit non-loopback server");
+
+        assert!(server.endpoint_uri().starts_with("http://0.0.0.0:"));
+        server.shutdown().await.expect("shutdown server");
     }
 
     #[tokio::test]
@@ -1344,8 +1549,15 @@ backend = "unsupported"
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
+        );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
@@ -1363,7 +1575,7 @@ backend = "unsupported"
                 local_trace_store_dir: None,
             },
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");
@@ -1432,7 +1644,7 @@ backend = "unsupported"
     }
 
     #[tokio::test]
-    async fn server_builder_applies_injected_provider_to_native_grpc() {
+    async fn server_builder_applies_injected_provider_to_ephemeral_grpc() {
         let temp = TempDir::new().expect("temp dir");
         let server = ServerBuilder::new()
             .with_config_dir(temp.path().join("coral-config"))
@@ -1789,8 +2001,15 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
+        );
         let running = start_server(
             ServerDependencies {
                 source: source_manager,
@@ -1803,7 +2022,7 @@ tables:
             },
             TraceServerComponents::default(),
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");
@@ -1908,8 +2127,15 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
+        );
         let running = start_server(
             ServerDependencies {
                 source: source_manager,
@@ -1922,7 +2148,7 @@ tables:
             },
             TraceServerComponents::default(),
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");
@@ -2027,8 +2253,15 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
-        let search_manager =
-            SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
+        let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let search_manager = SearchManager::new(
+            layout.clone(),
+            &config_store,
+            workspace_manager.clone(),
+            true,
+            CatalogDiscovery::new(query_manager.clone()),
+            lifecycle_lock,
+        );
         let running = start_server(
             ServerDependencies {
                 source: source_manager,
@@ -2041,7 +2274,7 @@ tables:
             },
             TraceServerComponents::default(),
             Arc::new(SingleUserPrincipalProvider),
-            ServerMode::NativeGrpc,
+            ServerMode::EphemeralGrpc,
         )
         .await
         .expect("start server");

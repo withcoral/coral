@@ -26,8 +26,7 @@ export const headerInner = style({
   alignItems: 'flex-start',
   boxSizing: 'border-box',
   display: 'flex',
-  gap: 24,
-  justifyContent: 'space-between',
+  gap: 8,
   marginInline: 'auto',
   width: '100%',
 })
@@ -67,19 +66,12 @@ export const headerText = style({
   flex: '1 1 auto',
   flexDirection: 'column',
   gap: 4,
+  maxWidth: 363,
   minWidth: 0,
 })
 
-export const headerTextVariant = styleVariants({
-  compact: {
-    maxWidth: 420,
-  },
-  full: {
-    maxWidth: 680,
-  },
-})
-
 export const searchBar = style({
+  marginInlineStart: 'auto',
   width: '100%',
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
@@ -91,13 +83,21 @@ export const searchBar = style({
 
 export const searchBarVariant = styleVariants({
   compact: {
-    flex: '0 0 280px',
+    flex: '0 1 280px',
     maxWidth: 280,
+    minWidth: 180,
   },
   full: {
-    flex: '0 0 360px',
-    maxWidth: 360,
+    flex: '0 1 280px',
+    maxWidth: 280,
+    minWidth: 180,
   },
+})
+
+export const headerAction = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
 })
 
 export const statusPanel = style({

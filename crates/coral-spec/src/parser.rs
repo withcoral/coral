@@ -42,9 +42,13 @@ impl ValidatedSourceManifest {
     #[must_use]
     pub fn backend(&self) -> SourceBackend {
         match &self.inner {
-            ValidatedManifestKind::Http(_) | ValidatedManifestKind::V4(_) => SourceBackend::Http,
+            ValidatedManifestKind::Http(_) => SourceBackend::Http,
             ValidatedManifestKind::File(_) => SourceBackend::File,
             ValidatedManifestKind::Mcp(_) => SourceBackend::Mcp,
+            ValidatedManifestKind::V4(manifest) => match manifest.surface.surface_type {
+                crate::v4::SurfaceType::OpenApi => SourceBackend::Http,
+                crate::v4::SurfaceType::Mcp => SourceBackend::Mcp,
+            },
         }
     }
 

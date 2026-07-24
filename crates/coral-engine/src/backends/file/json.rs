@@ -1,6 +1,5 @@
 //! JSON and JSONL file tables backed by `DataFusion` file scan primitives.
 
-use std::any::Any;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
@@ -161,10 +160,6 @@ pub(super) fn requires_custom_provider(table: &FileTableSpec) -> Result<bool> {
 
 #[async_trait]
 impl TableProvider for JsonFileTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -358,10 +353,6 @@ impl FileSource for CoralJsonSource {
             opener,
             self.table_schema.file_schema(),
         )
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn table_schema(&self) -> &TableSchema {

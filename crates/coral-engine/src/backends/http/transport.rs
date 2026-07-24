@@ -13,9 +13,10 @@ use tracing::Instrument as _;
 use tracing::field;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::auth::resolve_auth_headers;
+use crate::backends::http::auth::{
+    ensure_identity_headers_use_credential_safe_transport, resolve_auth_headers,
+};
 use crate::backends::http::error::provider_error;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
@@ -26,6 +27,10 @@ use crate::backends::http::trace::{
     trace_reqwest_error, trace_reqwest_error_type,
 };
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
+use crate::{
+    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator,
+    RequestIdentityHttpAuthenticatorError,
+};
 use coral_spec::backends::http::RateLimitSpec;
 use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat};
 
@@ -35,6 +40,8 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) auth: &'a AuthSpec,
     pub(super) request_headers: &'a [HeaderSpec],
     pub(super) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(super) request_identity_http_authenticator:
+        Option<&'a BoundRequestIdentityHttpAuthenticator>,
     pub(super) trace_context: Option<&'a OtelContext>,
     pub(super) table_headers: &'a [HeaderSpec],
     pub(super) table_name: &'a str,
@@ -74,6 +81,7 @@ pub(super) async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
+        request_identity_http_authenticator,
         trace_context,
         table_headers,
         table_name,
@@ -190,7 +198,7 @@ pub(super) async fn execute_request(
         }
 
         body_capture.record_request(&request_span, request_id, body);
-        let built = match resolve_auth_headers(
+        let mut built = match resolve_auth_headers(
             auth,
             request,
             request_authenticators,
@@ -202,6 +210,33 @@ pub(super) async fn execute_request(
                 return Err(error);
             }
         };
+        if let Some(authenticator) = request_identity_http_authenticator {
+            let identity_headers = match authenticator(&built, render_context.resolved_inputs).await
+            {
+                Ok(headers) => headers,
+                Err(error) => {
+                    let error =
+                        identity_http_authenticator_error(source_schema, table_name, &error);
+                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                    return Err(error);
+                }
+            };
+            if !identity_headers.is_empty()
+                && let Err(error) =
+                    ensure_identity_headers_use_credential_safe_transport(built.url())
+            {
+                record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                return Err(error);
+            }
+            for (name, value) in identity_headers {
+                if built.headers().contains_key(&name) {
+                    let error = identity_header_conflict_error(source_schema, table_name, &name);
+                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                    return Err(error);
+                }
+                built.headers_mut().insert(name, value);
+            }
+        }
         let response = match http.execute(built).instrument(request_span.clone()).await {
             Ok(response) => response,
             Err(error) => {
@@ -365,6 +400,40 @@ pub(super) async fn execute_request(
     }
 }
 
+fn identity_http_authenticator_error(
+    source_schema: &str,
+    table_name: &str,
+    error: &RequestIdentityHttpAuthenticatorError,
+) -> DataFusionError {
+    let detail = format!(
+        "request identity HTTP authenticator failed for source '{source_schema}' table '{table_name}': {error}"
+    );
+    let error = match error {
+        RequestIdentityHttpAuthenticatorError::InvalidInput(_) => {
+            RequestIdentityHttpAuthenticatorError::invalid_input(detail)
+        }
+        RequestIdentityHttpAuthenticatorError::FailedPrecondition(_) => {
+            RequestIdentityHttpAuthenticatorError::failed_precondition(detail)
+        }
+    };
+    DataFusionError::External(Box::new(error))
+}
+
+fn identity_header_conflict_error(
+    source_schema: &str,
+    table_name: &str,
+    name: &HeaderName,
+) -> DataFusionError {
+    DataFusionError::External(Box::new(
+        RequestIdentityHttpAuthenticatorError::failed_precondition(format!(
+            "request identity HTTP authenticator attempted to overwrite header '{}' for source '{}' table '{}'",
+            name.as_str(),
+            source_schema,
+            table_name
+        )),
+    ))
+}
+
 fn request_error(
     source_schema: &str,
     table_name: &str,
@@ -437,9 +506,12 @@ fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use datafusion::error::DataFusionError;
+    use reqwest::header::{AUTHORIZATION, HeaderValue};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
@@ -447,8 +519,9 @@ mod tests {
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
+    use crate::{BoundRequestIdentityHttpAuthenticator, RequestIdentityHttpAuthenticatorError};
     use coral_spec::backends::http::RateLimitSpec;
-    use coral_spec::{AuthSpec, HttpMethod, ResponseBodyFormat};
+    use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat, ValueSourceSpec};
 
     async fn spawn_hanging_http_server() -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -459,6 +532,40 @@ mod tests {
             let (socket, _) = listener.accept().await.expect("accept hanging request");
             let _socket = socket;
             std::future::pending::<()>().await;
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
+    async fn spawn_header_recorder(response_body: &'static str) -> (String, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind header recorder");
+        let addr = listener.local_addr().expect("local addr");
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut buffer = vec![0_u8; 8192];
+            let mut request = Vec::new();
+            loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend(buffer.iter().take(read).copied());
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            String::from_utf8_lossy(&request).into_owned()
         });
 
         (format!("http://{addr}"), task)
@@ -487,6 +594,7 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: None,
                 trace_context: None,
                 table_headers: &[],
                 table_name: "items",
@@ -536,5 +644,189 @@ mod tests {
             other => panic!("expected external provider error, got {other:?}"),
         }
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn request_identity_headers_cannot_overwrite_existing_headers() {
+        let request_timeout = Duration::from_secs(1);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let base_url = "https://api.example.test";
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let request_headers = vec![HeaderSpec {
+            name: "Authorization".to_string(),
+            value: ValueSourceSpec::Literal {
+                value: serde_json::Value::String("manifest-token".to_string()),
+            },
+        }];
+        let identity_authenticator: BoundRequestIdentityHttpAuthenticator =
+            Arc::new(|_request, _resolved_inputs| {
+                Box::pin(async {
+                    Ok::<Vec<_>, RequestIdentityHttpAuthenticatorError>(vec![(
+                        AUTHORIZATION,
+                        HeaderValue::from_static("identity-token"),
+                    )])
+                })
+            });
+
+        let error = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &request_headers,
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: Some(&identity_authenticator),
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect_err("identity headers must not overwrite existing headers");
+
+        let DataFusionError::External(inner) = error else {
+            panic!("expected external identity error, got {error:?}");
+        };
+        let identity_error = inner
+            .downcast_ref::<RequestIdentityHttpAuthenticatorError>()
+            .expect("identity conflict should use identity authenticator error");
+        assert!(
+            identity_error
+                .to_string()
+                .contains("attempted to overwrite header 'authorization'"),
+            "{identity_error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_identity_headers_require_safe_transport() {
+        let request_timeout = Duration::from_secs(1);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let base_url = "http://api.example.test";
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let identity_authenticator: BoundRequestIdentityHttpAuthenticator =
+            Arc::new(|_request, _resolved_inputs| {
+                Box::pin(async {
+                    Ok::<Vec<_>, RequestIdentityHttpAuthenticatorError>(vec![(
+                        AUTHORIZATION,
+                        HeaderValue::from_static("identity-token"),
+                    )])
+                })
+            });
+
+        let error = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: Some(&identity_authenticator),
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect_err("identity headers must not use unsafe transport");
+
+        let error = error.to_string();
+        assert!(error.contains("request identity HTTP headers require https"));
+        assert!(error.contains(base_url));
+        assert!(!error.contains("identity-token"));
+    }
+
+    #[tokio::test]
+    async fn request_identity_headers_are_injected() {
+        let (base_url, task) = spawn_header_recorder(r#"{"ok":true}"#).await;
+        let request_timeout = Duration::from_secs(1);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let identity_authenticator: BoundRequestIdentityHttpAuthenticator =
+            Arc::new(|_request, _resolved_inputs| {
+                Box::pin(async {
+                    Ok::<Vec<_>, RequestIdentityHttpAuthenticatorError>(vec![(
+                        reqwest::header::HeaderName::from_static("x-identity-token"),
+                        HeaderValue::from_static("identity-token"),
+                    )])
+                })
+            });
+
+        let response = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: Some(&identity_authenticator),
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect("identity-authenticated request should succeed");
+
+        assert!(response.is_some());
+        let raw_request = task.await.expect("header recorder should finish");
+        assert!(
+            raw_request.contains("\r\nx-identity-token: identity-token\r\n"),
+            "{raw_request}"
+        );
     }
 }

@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -30,9 +29,7 @@ use crate::runtime::dependent_join::fetcher::{BindingFetcher, BindingFetcherConf
 use crate::runtime::dependent_join::logical::BindingKey;
 use crate::runtime::dependent_join::output::{BuildJoinedBatchesConfig, build_joined_batches};
 use crate::runtime::dependent_join::state::{DependentJoinRuntimeState, ResolverCaps};
-use crate::runtime::memory::{
-    CoralExecutionPlan, CoralMemoryBehavior, RetainedMemory, RetainedRecordBatches,
-};
+use crate::runtime::memory::{RetainedMemory, RetainedRecordBatches};
 
 pub(crate) struct DependentJoinExec {
     resolver: Arc<dyn ExecutionPlan>,
@@ -206,18 +203,6 @@ impl DisplayAs for DependentJoinExec {
     }
 }
 
-impl CoralExecutionPlan for DependentJoinExec {
-    fn memory_behavior(&self) -> CoralMemoryBehavior {
-        CoralMemoryBehavior::RetainsMemory {
-            consumer_name: format!(
-                "DependentJoinExec({}.{})",
-                self.dependent_source_schema,
-                self.table.name()
-            ),
-        }
-    }
-}
-
 fn format_binding_keys(binding_keys: &[BindingKey]) -> String {
     let rendered = binding_keys
         .iter()
@@ -251,10 +236,6 @@ impl ExecutionPlan for DependentJoinExec {
         "DependentJoinExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.output_schema)
     }
@@ -263,8 +244,8 @@ impl ExecutionPlan for DependentJoinExec {
         &self.props
     }
 
-    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
-        Ok(Statistics::new_unknown(&self.schema()))
+    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Arc<Statistics>> {
+        Ok(Arc::new(Statistics::new_unknown(&self.schema())))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -331,10 +312,14 @@ impl ExecutionPlan for DependentJoinExec {
         let stream_schema = Arc::clone(&self.output_schema);
         let retained_stream_schema = Arc::clone(&self.output_schema);
         let metrics = DependentJoinMetrics::new(&self.metrics, partition);
-        let memory = self
-            .memory_behavior()
-            .retained_memory(context.as_ref())
-            .expect("DependentJoinExec must retain memory");
+        let memory = RetainedMemory::for_operator(
+            context.as_ref(),
+            format!(
+                "DependentJoinExec({}.{})",
+                self.dependent_source_schema,
+                self.table.name()
+            ),
+        );
 
         let output = stream::once(async move {
             execute_dependent_join(

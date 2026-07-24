@@ -1,11 +1,10 @@
-import classNames from 'classnames'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Form, useNavigate, useRevalidator } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
-import { Dialog } from '@/wax/components'
+import { Dialog, Tabs } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
@@ -22,10 +21,15 @@ import type {
   CatalogSourceInputSpec,
 } from '@/lib/sources'
 import { routePath } from '@/routing/routemap'
-import { toSentenceCase } from '@/utils/to-sentence-case'
 
-import { formatSourceName, ProviderLogo } from '@/components/sources'
 import * as styles from './source-install.css'
+import {
+  formatFieldName,
+  SourceError,
+  SourceIdentityHeader,
+  SourceInputField,
+  SourceNoConfiguration,
+} from './source-presentation'
 
 type InstallProgress =
   | { kind: 'idle' }
@@ -42,14 +46,11 @@ type InstallProgress =
   | { kind: 'oauth-completed'; inputKey: string }
   | { kind: 'success'; name: string }
 
-function formatFieldName(key: string): string {
-  return toSentenceCase(key.replace(/_/g, ' '))
-}
-
 export function SourceInstallDialog({
   actionError,
   entry,
   fetchOAuthInstall = fetch,
+  onOAuthInstallComplete,
   open,
   openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
   onOpenChange,
@@ -59,6 +60,7 @@ export function SourceInstallDialog({
   actionError?: string | null
   entry: CatalogEntry | null
   fetchOAuthInstall?: typeof fetch
+  onOAuthInstallComplete?: () => Promise<void> | void
   open: boolean
   openAuthorization?: (url: string) => unknown
   onOpenChange: (open: boolean) => void
@@ -75,6 +77,7 @@ export function SourceInstallDialog({
               actionError={actionError}
               entry={entry}
               fetchOAuthInstall={fetchOAuthInstall}
+              onOAuthInstallComplete={onOAuthInstallComplete}
               onCancel={() => onOpenChange(false)}
               openAuthorization={openAuthorization}
               submitting={submitting ?? false}
@@ -91,6 +94,7 @@ function SourceInstallDialogContent({
   actionError,
   entry,
   fetchOAuthInstall,
+  onOAuthInstallComplete,
   onCancel,
   openAuthorization,
   submitting,
@@ -99,6 +103,7 @@ function SourceInstallDialogContent({
   actionError?: string | null
   entry: CatalogEntry
   fetchOAuthInstall: typeof fetch
+  onOAuthInstallComplete?: () => Promise<void> | void
   onCancel: () => void
   openAuthorization: (url: string) => unknown
   submitting: boolean
@@ -112,8 +117,6 @@ function SourceInstallDialogContent({
   const [methodChoices, setMethodChoices] = useState<Record<string, number>>({})
   const [progress, setProgress] = useState<InstallProgress>({ kind: 'idle' })
   const [streamError, setStreamError] = useState<string | null>(null)
-  const sourceDisplayName = formatSourceName(entry.name)
-
   const inputSpecs = entry.inputSpecs
   const inputs: CatalogSourceInputSpec[] = inputSpecs ?? []
   const oauthBusy = progress.kind !== 'idle'
@@ -157,6 +160,15 @@ function SourceInstallDialogContent({
     onCancel()
   }
 
+  function changeMethod(input: CatalogSourceInputSpec, index: number) {
+    const previousIndex = effectiveChoice(input)
+    if (index === previousIndex) return
+
+    const keys = credentialMethodValueKeys(input, previousIndex)
+    setValues((previous) => clearValues(previous, keys))
+    setMethodChoices((previous) => ({ ...previous, [input.key]: index }))
+  }
+
   async function submitOAuthInstall() {
     if (!formRef.current || oauthBusy) return
     setStreamError(null)
@@ -197,7 +209,9 @@ function SourceInstallDialogContent({
         setProgress({ kind: 'success', name: source.name })
         await revalidator.revalidate()
         if (!abortController.signal.aborted) {
-          await navigate(routePath('workspaceSources', { workspaceId }))
+          await (onOAuthInstallComplete
+            ? onOAuthInstallComplete()
+            : navigate(routePath('workspaceSources', { workspaceId })))
         }
       }
     } catch (error) {
@@ -220,30 +234,17 @@ function SourceInstallDialogContent({
       <input type="hidden" name="_intent" value="install" />
       <input type="hidden" name="name" value={entry.name} />
 
-      <div className={styles.header}>
-        <ProviderLogo name={entry.name} size="large" />
-        <div className={styles.headerText}>
-          <Dialog.Title className={styles.headerTitleRow}>
-            <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-              {sourceDisplayName}
-            </Typography.HeadingMedium>
-            <span className={styles.headerPill}>Core</span>
-          </Dialog.Title>
-          <Dialog.Description render={<div />}>
-            <Markdown>{entry.description}</Markdown>
-          </Dialog.Description>
-        </div>
-      </div>
+      <SourceIdentityHeader
+        description={entry.description}
+        name={entry.name}
+        origin={entry.origin}
+        version={entry.version}
+      />
 
       {!inputSpecs ? (
-        <div className={classNames(styles.alertBox, styles.alertError)}>
-          <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>Source metadata is unavailable.</Typography.BodySmall>
-        </div>
+        <SourceError>Source metadata is unavailable.</SourceError>
       ) : inputs.length === 0 ? (
-        <Typography.BodySmall variant="tertiary">
-          No configuration needed — click Add source to install.
-        </Typography.BodySmall>
+        <SourceNoConfiguration />
       ) : (
         <div className={styles.fieldGroup}>
           {inputs.map((input) => (
@@ -254,7 +255,7 @@ function SourceInstallDialogContent({
               values={values}
               disabled={busy}
               onValueChange={(key, value) => setValues((p) => ({ ...p, [key]: value }))}
-              onMethodChange={(key, index) => setMethodChoices((p) => ({ ...p, [key]: index }))}
+              onMethodChange={(index) => changeMethod(input, index)}
             />
           ))}
         </div>
@@ -294,19 +295,9 @@ function SourceInstallDialogContent({
         </div>
       ) : null}
 
-      {streamError ? (
-        <div className={classNames(styles.alertBox, styles.alertError)}>
-          <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>{streamError}</Typography.BodySmall>
-        </div>
-      ) : null}
+      {streamError ? <SourceError>{streamError}</SourceError> : null}
 
-      {actionError ? (
-        <div className={classNames(styles.alertBox, styles.alertError)}>
-          <Icon color="inherit" name="CircleAlert" size="14" />
-          <Typography.BodySmall>{actionError}</Typography.BodySmall>
-        </div>
-      ) : null}
+      {actionError ? <SourceError>{actionError}</SourceError> : null}
 
       <Dialog.Actions>
         <ButtonContainer disabled={submitting} onClick={cancel} size="32" variant="bare">
@@ -340,20 +331,21 @@ function InputRow({
   values: Record<string, string>
   disabled: boolean
   onValueChange: (key: string, value: string) => void
-  onMethodChange: (key: string, index: number) => void
+  onMethodChange: (index: number) => void
 }) {
   if (input.input.case === 'variable') {
     const def = input.input.value.defaultValue
     return (
-      <Field input={input}>
+      <SourceInputField input={input}>
         <TextInput
+          ariaLabel={formatFieldName(input.key)}
           name={`var:${input.key}`}
           value={values[input.key] ?? def}
           onChange={(value) => onValueChange(input.key, value)}
           placeholder={def || formatFieldName(input.key)}
           disabled={disabled}
         />
-      </Field>
+      </SourceInputField>
     )
   }
 
@@ -364,66 +356,120 @@ function InputRow({
   const selected = methods[methodIndex]
 
   return (
-    <Field input={input} fullWidth={methods.length > 1 || isOAuth(selected)}>
+    <SourceInputField input={input} showHint={methods.length <= 1} showLabel={methods.length <= 1}>
       {methods.length > 0 ? (
         <input type="hidden" name={`method:${input.key}`} value={methodIndex} />
       ) : null}
 
       {methods.length > 1 ? (
-        <div className={styles.methodTabs}>
-          {methods.map((m, i) => (
-            <button
-              key={i}
-              type="button"
-              className={styles.methodTab}
-              data-active={i === methodIndex ? 'true' : 'false'}
-              disabled={disabled}
-              onClick={() => onMethodChange(input.key, i)}
-            >
-              {methodLabel(m, i)}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {!selected || selected.method.case === 'sourceConfig' ? (
-        <TextInput
-          name={`sec:${input.key}`}
-          type="password"
-          value={values[input.key] ?? ''}
-          onChange={(value) => onValueChange(input.key, value)}
-          placeholder={formatFieldName(input.key)}
+        <Tabs.Root
+          className={styles.methodTabsRoot}
+          onValueChange={(value) => onMethodChange(Number(value))}
+          value={methodIndex}
+        >
+          <Tabs.List
+            aria-label={`${formatFieldName(input.key)} setup method`}
+            className={styles.methodTabs}
+          >
+            {methods.map((method, index) => (
+              <Tabs.Tab disabled={disabled} key={index} value={index}>
+                {methodLabel(method, index)}
+              </Tabs.Tab>
+            ))}
+            <Tabs.Indicator />
+          </Tabs.List>
+          <div className={styles.methodPanels}>
+            {methods.map((method, index) => (
+              <div aria-hidden="true" className={styles.methodSizer} inert key={`sizer:${index}`}>
+                <CredentialMethodContent
+                  disabled
+                  hint={input.hint}
+                  inputKey={input.key}
+                  method={method}
+                  onValueChange={onValueChange}
+                  values={values}
+                />
+              </div>
+            ))}
+            {methods.map((method, index) => (
+              <Tabs.Panel className={styles.methodPanel} key={index} value={index}>
+                <CredentialMethodContent
+                  disabled={disabled || index !== methodIndex}
+                  hint={input.hint}
+                  inputKey={input.key}
+                  method={method}
+                  onValueChange={onValueChange}
+                  values={values}
+                />
+              </Tabs.Panel>
+            ))}
+          </div>
+        </Tabs.Root>
+      ) : (
+        <CredentialMethodFields
           disabled={disabled}
-        />
-      ) : selected.method.case === 'oauth' ? (
-        <OAuthFields
-          fields={oauthInputs(selected.method.value)}
           inputKey={input.key}
-          values={values}
-          disabled={disabled}
+          method={selected}
           onValueChange={onValueChange}
+          values={values}
         />
-      ) : null}
-    </Field>
+      )}
+    </SourceInputField>
   )
 }
 
-function Field({
-  input,
-  children,
-  fullWidth,
-}: {
-  input: CatalogSourceInputSpec
-  children: React.ReactNode
-  fullWidth?: boolean
-}) {
+function CredentialMethodContent({
+  hint,
+  ...fieldProps
+}: React.ComponentProps<typeof CredentialMethodFields> & { hint: string }) {
   return (
-    <div className={classNames(styles.fieldItem, fullWidth ? styles.fieldItemFull : null)}>
-      <Typography.Body className={styles.fieldLabel}>{formatFieldName(input.key)}</Typography.Body>
-      {children}
-      {input.hint ? <Markdown>{input.hint}</Markdown> : null}
+    <div className={styles.methodPanelContent}>
+      <CredentialMethodFields {...fieldProps} />
+      {hint ? <Markdown>{hint}</Markdown> : null}
     </div>
   )
+}
+
+function CredentialMethodFields({
+  disabled,
+  inputKey,
+  method,
+  onValueChange,
+  values,
+}: {
+  disabled: boolean
+  inputKey: string
+  method: CatalogSourceCredentialMethod | undefined
+  onValueChange: (key: string, value: string) => void
+  values: Record<string, string>
+}) {
+  if (!method || method.method.case === 'sourceConfig') {
+    return (
+      <TextInput
+        ariaLabel={formatFieldName(inputKey)}
+        disabled={disabled}
+        name={`sec:${inputKey}`}
+        onChange={(value) => onValueChange(inputKey, value)}
+        placeholder={formatFieldName(inputKey)}
+        type="password"
+        value={values[inputKey] ?? ''}
+      />
+    )
+  }
+
+  if (method.method.case === 'oauth') {
+    return (
+      <OAuthFields
+        disabled={disabled}
+        fields={oauthInputs(method.method.value)}
+        inputKey={inputKey}
+        onValueChange={onValueChange}
+        values={values}
+      />
+    )
+  }
+
+  return null
 }
 
 function methodLabel(method: CatalogSourceCredentialMethod, index: number): string {
@@ -431,10 +477,6 @@ function methodLabel(method: CatalogSourceCredentialMethod, index: number): stri
   if (method.method.case === 'sourceConfig') return 'Paste token'
   if (method.method.case === 'oauth') return 'OAuth'
   return `Method ${index + 1}`
-}
-
-function isOAuth(method: CatalogSourceCredentialMethod | undefined): boolean {
-  return method?.method.case === 'oauth'
 }
 
 interface OAuthInput extends OAuthField {
@@ -473,6 +515,25 @@ function oauthMethodReady(
     if (!input.required) return true
     return (values[input.key] ?? input.defaultValue ?? '').trim().length > 0
   })
+}
+
+function credentialMethodValueKeys(input: CatalogSourceInputSpec, methodIndex: number): string[] {
+  if (input.input.case !== 'secret') return []
+
+  const method = input.input.value.credential?.methods[methodIndex]
+  if (!method || method.method.case === 'sourceConfig') return [input.key]
+  if (method.method.case === 'oauth') {
+    return oauthInputs(method.method.value).map((field) => field.key)
+  }
+  return []
+}
+
+function clearValues(values: Record<string, string>, keys: string[]): Record<string, string> {
+  if (!keys.some((key) => key in values)) return values
+
+  const next = { ...values }
+  for (const key of keys) delete next[key]
+  return next
 }
 
 function oauthInstallEndpoint(workspaceId: string, name: string): string {

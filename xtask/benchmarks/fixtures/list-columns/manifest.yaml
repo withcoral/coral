@@ -1,0 +1,180 @@
+name: benchmark_columns
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: Synthetic source for MCP representation-efficiency benchmarks.
+tables:
+  - name: wide_table
+    description: A synthetic wide table with varied column metadata.
+    format: jsonl
+    source:
+      location: "__FIXTURE_DATA_URL__"
+      glob: "wide-table.jsonl"
+    columns:
+      - name: issue_id
+        type: Int64
+        nullable: false
+        description: Stable issue identifier.
+      - name: repository_id
+        type: Int64
+        nullable: false
+      - name: issue_number
+        type: Int64
+        nullable: false
+        description: Repository-scoped issue number.
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Human-readable issue title.
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Optional issue body in Markdown.
+      - name: state
+        type: Utf8
+        nullable: false
+      - name: state_reason
+        type: Utf8
+        nullable: true
+        description: Reason the issue entered its current state.
+      - name: author_login
+        type: Utf8
+        nullable: false
+      - name: author_association
+        type: Utf8
+        nullable: true
+      - name: assignee_login
+        type: Utf8
+        nullable: true
+        description: Login of the primary assignee when present.
+      - name: assignee_type
+        type: Utf8
+        nullable: true
+      - name: milestone_title
+        type: Utf8
+        nullable: true
+        description: Title of the associated milestone.
+      - name: milestone_number
+        type: Int64
+        nullable: true
+      - name: milestone_state
+        type: Utf8
+        nullable: true
+      - name: locked
+        type: Boolean
+        nullable: false
+        description: Whether discussion is locked.
+      - name: active_lock_reason
+        type: Utf8
+        nullable: true
+      - name: comments_count
+        type: Int64
+        nullable: false
+        description: Number of issue comments.
+      - name: reactions_total_count
+        type: Int64
+        nullable: true
+      - name: thumbs_up_count
+        type: Int64
+        nullable: true
+      - name: thumbs_down_count
+        type: Int64
+        nullable: true
+      - name: laugh_count
+        type: Int64
+        nullable: true
+      - name: hooray_count
+        type: Int64
+        nullable: true
+      - name: confused_count
+        type: Int64
+        nullable: true
+      - name: heart_count
+        type: Int64
+        nullable: true
+      - name: rocket_count
+        type: Int64
+        nullable: true
+      - name: eyes_count
+        type: Int64
+        nullable: true
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp in RFC 3339 format.
+      - name: updated_at
+        type: Utf8
+        nullable: false
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        description: Closure timestamp when the issue is closed.
+      - name: api_url
+        type: Utf8
+        nullable: false
+      - name: html_url
+        type: Utf8
+        nullable: false
+        description: Browser URL for the issue.
+      - name: comments_url
+        type: Utf8
+        nullable: false
+      - name: events_url
+        type: Utf8
+        nullable: false
+      - name: labels_url
+        type: Utf8
+        nullable: false
+      - name: repository_url
+        type: Utf8
+        nullable: false
+      - name: node_id
+        type: Utf8
+        nullable: false
+        description: Stable graph node identifier.
+      - name: draft
+        type: Boolean
+        nullable: true
+      - name: pull_request_url
+        type: Utf8
+        nullable: true
+      - name: pull_request_diff_url
+        type: Utf8
+        nullable: true
+      - name: pull_request_patch_url
+        type: Utf8
+        nullable: true
+      - name: priority_score
+        type: Float64
+        nullable: true
+        description: Synthetic prioritization score.
+      - name: estimated_effort
+        type: Float64
+        nullable: true
+      - name: project_name
+        type: Utf8
+        nullable: true
+      - name: project_status
+        type: Utf8
+        nullable: true
+        description: Current status in the associated project.
+      - name: iteration_title
+        type: Utf8
+        nullable: true
+      - name: team_slug
+        type: Utf8
+        nullable: true
+      - name: organization_login
+        type: Utf8
+        nullable: true
+        description: Owning organization login.
+      - name: external_reference
+        type: Utf8
+        nullable: true
+      - name: sync_enabled
+        type: Boolean
+        nullable: false
+      - name: metadata_json
+        type: Utf8
+        nullable: true
+        description: Synthetic serialized metadata.

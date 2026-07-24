@@ -7,6 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderName, HeaderValue};
+use url::Host;
 
 use coral_spec::{AuthSpec, BasicAuthSpec, HeaderAuthSpec};
 
@@ -130,6 +131,38 @@ pub(crate) fn resolve_auth_headers(
     Ok(built)
 }
 
+pub(super) fn ensure_identity_headers_use_credential_safe_transport(
+    url: &reqwest::Url,
+) -> Result<()> {
+    if is_credential_safe_auth_transport(url) {
+        return Ok(());
+    }
+    Err(DataFusionError::Execution(format!(
+        "request identity HTTP headers require https or loopback http, got '{}'",
+        auth_transport_url_label(url)
+    )))
+}
+
+pub(super) fn is_credential_safe_auth_transport(url: &reqwest::Url) -> bool {
+    url.scheme() == "https" || is_loopback_http_url(url)
+}
+
+fn is_loopback_http_url(url: &reqwest::Url) -> bool {
+    if url.scheme() != "http" {
+        return false;
+    }
+    match url.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+fn auth_transport_url_label(url: &reqwest::Url) -> String {
+    url.origin().ascii_serialization()
+}
+
 fn get_custom_authenticator<'a>(
     request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     spec: &coral_spec::CustomAuthSpec,
@@ -146,4 +179,50 @@ fn get_custom_authenticator<'a>(
 
 fn authenticator_error(name: &str, error: &crate::RequestAuthenticatorError) -> DataFusionError {
     DataFusionError::Execution(format!("custom authenticator '{name}' failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coral_spec::{HeaderSpec, ParsedTemplate, ValueSourceSpec};
+
+    fn bearer_auth() -> AuthSpec {
+        AuthSpec::HeaderAuth(HeaderAuthSpec {
+            headers: vec![HeaderSpec {
+                name: "Authorization".to_string(),
+                value: ValueSourceSpec::Template {
+                    template: ParsedTemplate::parse("Bearer {{input.API_TOKEN}}")
+                        .expect("auth template"),
+                },
+            }],
+        })
+    }
+
+    fn resolve_bearer_auth_for_url(url: &str) -> Result<reqwest::Request> {
+        let http = reqwest::Client::new();
+        let request = http.get(url);
+        let resolved_inputs = BTreeMap::from([("API_TOKEN".to_string(), "secret".to_string())]);
+        resolve_auth_headers(&bearer_auth(), request, &HashMap::new(), &resolved_inputs)
+    }
+
+    #[test]
+    fn legacy_auth_headers_keep_existing_transport_behavior() {
+        let built = resolve_bearer_auth_for_url("http://api.example.test/items")
+            .expect("legacy source auth behavior should remain unchanged");
+
+        assert_eq!(
+            built.headers().get(reqwest::header::AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer secret"))
+        );
+    }
+
+    #[test]
+    fn auth_transport_url_label_contains_only_the_origin() {
+        let url = reqwest::Url::parse(
+            "http://member:secret@api.example.test/items?api_key=hidden#fragment",
+        )
+        .expect("test URL");
+
+        assert_eq!(auth_transport_url_label(&url), "http://api.example.test");
+    }
 }

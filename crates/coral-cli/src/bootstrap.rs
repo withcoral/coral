@@ -68,6 +68,21 @@ pub(crate) async fn start_ui_server(
     Ok(server)
 }
 
+pub(crate) async fn start_standalone_server(
+    feature_overrides: FeatureOverrides,
+) -> Result<RunningServer, BootstrapError> {
+    let server = configure_server_builder(
+        ServerBuilder::configured_standalone_grpc(),
+        BootstrapOptions {
+            feature_overrides,
+            ..BootstrapOptions::default()
+        },
+    )
+    .start()
+    .await?;
+    Ok(server)
+}
+
 fn configure_server_builder(builder: ServerBuilder, options: BootstrapOptions) -> ServerBuilder {
     builder
         .with_stderr_logs(options.enable_stderr_logs)

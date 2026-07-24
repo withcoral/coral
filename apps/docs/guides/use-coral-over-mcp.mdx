@@ -3,12 +3,16 @@ title: "Use Coral over MCP"
 description: "Set up MCP for Claude Code, Cursor, and other agents."
 ---
 
-Coral ships with a built-in MCP server that presents Coral to agents as a read-only SQL database with catalog discovery.
+Coral ships with a built-in MCP server that lets agents discover where data lives across your connected sources, then query it through a read-only SQL interface.
 
 <Note>
 Before setting up a client, make sure you have [connected at least one source](/getting-started/quickstart).
 
 </Note>
+
+If you use Coral Desktop, finish onboarding and open the **Manual** tab to copy the MCP
+configuration for Desktop's bundled Coral runtime. You do not need to install the Coral CLI
+separately.
 
 ## Client setup
 
@@ -193,6 +197,7 @@ If it works, the agent should return installed schemas and tables. You do not ne
 Coral gives your agent a read-only SQL view over the sources you have installed locally. That means your agent can:
 
 - inspect the available sources, tables, columns, filters, and table functions
+- search values Coral observed during earlier queries to find the right table and column
 - query connected sources without configuring a separate MCP server for each provider
 - join and aggregate across sources when the question needs more than one API call
 - use the same local credentials and workspace state as the Coral CLI
@@ -211,7 +216,11 @@ When your agent has many tools available, name Coral explicitly:
 
 > "Use Coral. Search the catalog for the relevant table or table function, then query the best match."
 
-When the right table or table function is not obvious, ask the agent to [search the catalog](/guides/search-the-catalog) first. For questions that span connected sources, ask it to combine the data in Coral when possible.
+> "Use Coral to find where `payments-api` appeared, then query the matching data."
+
+When the right table or table function is not obvious, ask the agent to [search with Coral](/guides/search-with-coral). The `search` tool returns catalog metadata and optionally locally observed values.
+
+If an answer needs data from multiple connected sources, ask the agent to combine the data in Coral when possible.
 
 ## Workspaces
 

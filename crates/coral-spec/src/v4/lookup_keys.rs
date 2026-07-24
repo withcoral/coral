@@ -1,11 +1,11 @@
 //! Heuristic inference of lookup key joinability for REST surfaces.
 //!
-//! During `OpenAPI` import Coral guesses which REST query parameters are NOT
-//! complete exact lookups and stamps that fact into the semantic IR. Excluded
-//! parameters stay pushdown filters; they just cannot anchor dependent joins
+//! During `OpenAPI` import Coral guesses which REST query parameters are
+//! complete exact lookups and records the positive allowlist in operation
+//! metadata. Other parameters stay pushdown filters; they just cannot anchor dependent joins
 //! (`FilterSpec.lookup_key` stays false). MCP pagination is handled separately
-//! by MCP import/projection code, and MCP inputs do not use lookup-key
-//! exclusions. The heuristic excludes aggressively: a wrong exclusion only
+//! by MCP import/projection code, and MCP inputs never enter REST lookup-key
+//! allowlists. The heuristic excludes aggressively: a wrong exclusion only
 //! makes a join fall back to the regular plan, while a wrong inclusion lets the
 //! dependent-join optimizer trust incomplete or fuzzy result sets and produce
 //! wrong rows.
@@ -46,31 +46,25 @@ const SEARCH_NAME_LEXICON: &[&str] = &[
     "filter", "filters", "keyword", "keywords", "q", "query", "search",
 ];
 
-pub(in crate::v4) fn infer_rest_lookup_key_exclusions(
-    inputs: &mut [IrOperationInput],
+pub(in crate::v4) fn infer_rest_lookup_keys(
+    inputs: &[IrOperationInput],
     pagination: &PaginationSpec,
-) {
+) -> Vec<String> {
     let pagination_params = pagination_query_param_names(pagination);
-    for input in inputs {
-        input.exclude_from_lookup_keys = false;
-        if input.location != IrInputLocation::Query {
-            continue;
-        }
-        // Pagination-owned parameters are internal today, but a later
-        // pagination override can remap the scheme and surface them as
-        // filters. Detection has proven they are windowing, so record that
-        // in the IR instead of relying on their exposure.
-        if pagination_params.contains(input.name.as_str()) || !joinable_param_name(&input.name) {
-            input.exclude_from_lookup_keys = true;
-        }
-    }
+    inputs
+        .iter()
+        .filter(|input| input.location == IrInputLocation::Query)
+        .filter(|input| !pagination_params.contains(input.name.as_str()))
+        .filter(|input| joinable_param_name(&input.name))
+        .map(|input| input.name.clone())
+        .collect()
 }
 
 /// Exact lexicon match only: token-level matching (e.g. treating
 /// `sort_field` as presentation) also caught identity keys like `order_id`,
 /// and losing joinability on a foreign key costs more than missing a
-/// presentation alias. Unrecognized names stay joinable; the semantic IR is
-/// the audit trail for correcting either direction.
+/// presentation alias. Unrecognized names stay joinable; operation metadata
+/// is the audit trail for correcting either direction.
 fn joinable_param_name(name: &str) -> bool {
     let normalized = normalized_param_name(name);
     !(SEARCH_NAME_LEXICON.contains(&normalized.as_str())
@@ -91,16 +85,16 @@ mod tests {
     use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
     use crate::{PaginationMode, PaginationSpec};
 
-    use super::infer_rest_lookup_key_exclusions;
+    use super::infer_rest_lookup_keys;
 
     #[test]
-    fn infers_exclusions_for_presentation_and_search_params() {
+    fn infers_positive_allowlist_without_presentation_search_or_pagination_params() {
         let page_pagination = PaginationSpec {
             mode: PaginationMode::Page,
             page_param: Some("page".to_string()),
             ..PaginationSpec::default()
         };
-        let mut widgets = query_inputs(&[
+        let widgets = query_inputs(&[
             "order_by",
             "sort ",
             "sort_field",
@@ -110,43 +104,34 @@ mod tests {
             "category",
             "page",
         ]);
-        let mut gadgets = query_inputs(&["filter", "since"]);
+        let gadgets = query_inputs(&["filter", "since"]);
 
         // `order_by`/`sort_field` are exact presentation hits after name
         // normalization, `q`/`search`/`filter` are search-like, and
-        // pagination-owned `page` is recorded as non-joinable so a later
-        // pagination remap cannot surface it as a lookup key. Padded `sort `
-        // is still excluded because no generated side file has to represent
-        // the raw padded name. `state`/`category`/`since` remain joinable.
-        infer_rest_lookup_key_exclusions(&mut widgets, &page_pagination);
-        infer_rest_lookup_key_exclusions(&mut gadgets, &PaginationSpec::default());
-        assert!(input_excluded(&widgets, "order_by"));
-        assert!(input_excluded(&widgets, "sort "));
-        assert!(input_excluded(&widgets, "sort_field"));
-        assert!(input_excluded(&widgets, "q"));
-        assert!(input_excluded(&widgets, "search"));
-        assert!(input_excluded(&widgets, "page"));
-        assert!(input_excluded(&gadgets, "filter"));
-        assert!(!input_excluded(&widgets, "state"));
-        assert!(!input_excluded(&widgets, "category"));
-        assert!(!input_excluded(&gadgets, "since"));
+        // pagination-owned `page` is omitted so a later pagination remap
+        // cannot surface it as a lookup key. Padded `sort ` is still omitted.
+        // `state`/`category`/`since` remain joinable.
+        let widget_keys = infer_rest_lookup_keys(&widgets, &page_pagination);
+        let gadget_keys = infer_rest_lookup_keys(&gadgets, &PaginationSpec::default());
+        assert_eq!(widget_keys, ["state", "category"]);
+        assert_eq!(gadget_keys, ["since"]);
     }
 
     #[test]
-    fn pagination_exclusions_are_scoped_to_the_owning_operation() {
+    fn pagination_omission_is_scoped_to_the_owning_operation() {
         let pagination = PaginationSpec {
             mode: PaginationMode::CursorQuery,
             cursor_param: Some("cursor".to_string()),
             ..PaginationSpec::default()
         };
-        let mut paginated = query_inputs(&["cursor"]);
-        let mut ordinary = query_inputs(&["cursor"]);
+        let paginated = query_inputs(&["cursor"]);
+        let ordinary = query_inputs(&["cursor"]);
 
-        infer_rest_lookup_key_exclusions(&mut paginated, &pagination);
-        infer_rest_lookup_key_exclusions(&mut ordinary, &PaginationSpec::default());
-
-        assert!(input_excluded(&paginated, "cursor"));
-        assert!(!input_excluded(&ordinary, "cursor"));
+        assert!(infer_rest_lookup_keys(&paginated, &pagination).is_empty());
+        assert_eq!(
+            infer_rest_lookup_keys(&ordinary, &PaginationSpec::default()),
+            ["cursor"]
+        );
     }
 
     fn query_inputs(query_params: &[&str]) -> Vec<IrOperationInput> {
@@ -159,16 +144,7 @@ mod tests {
                 data_type: IrScalarType::String,
                 default_value: None,
                 description: String::new(),
-                exclude_from_lookup_keys: false,
             })
             .collect()
-    }
-
-    fn input_excluded(inputs: &[IrOperationInput], input_name: &str) -> bool {
-        inputs
-            .iter()
-            .find(|input| input.name == input_name)
-            .expect("input")
-            .exclude_from_lookup_keys
     }
 }

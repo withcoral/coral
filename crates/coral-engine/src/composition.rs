@@ -7,10 +7,13 @@ use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
+use futures::future::BoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
+use serde_json::Value;
 
 use crate::CoreError;
 use crate::contracts::{QueryExecutionProvenance, QuerySource};
+use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 /// One source's table providers keyed by manifest table name.
@@ -174,6 +177,56 @@ impl SourceInputResolverError {
     }
 }
 
+/// Neutral error type for request identity-selection failures.
+#[derive(Debug, thiserror::Error)]
+pub enum RequestIdentitySelectionError {
+    /// The selector was configured with invalid input.
+    #[error("{0}")]
+    InvalidInput(String),
+    /// The selector could not proceed because a precondition was unmet.
+    #[error("{0}")]
+    FailedPrecondition(String),
+}
+
+impl RequestIdentitySelectionError {
+    #[must_use]
+    /// Builds an invalid-input error.
+    pub fn invalid_input(detail: impl Into<String>) -> Self {
+        Self::InvalidInput(detail.into())
+    }
+
+    #[must_use]
+    /// Builds a failed-precondition error.
+    pub fn failed_precondition(detail: impl Into<String>) -> Self {
+        Self::FailedPrecondition(detail.into())
+    }
+}
+
+/// Neutral error type for request identity HTTP-authentication failures.
+#[derive(Debug, thiserror::Error)]
+pub enum RequestIdentityHttpAuthenticatorError {
+    /// The authenticator was configured with invalid input.
+    #[error("{0}")]
+    InvalidInput(String),
+    /// The authenticator could not proceed because a precondition was unmet.
+    #[error("{0}")]
+    FailedPrecondition(String),
+}
+
+impl RequestIdentityHttpAuthenticatorError {
+    #[must_use]
+    /// Builds an invalid-input error.
+    pub fn invalid_input(detail: impl Into<String>) -> Self {
+        Self::InvalidInput(detail.into())
+    }
+
+    #[must_use]
+    /// Builds a failed-precondition error.
+    pub fn failed_precondition(detail: impl Into<String>) -> Self {
+        Self::FailedPrecondition(detail.into())
+    }
+}
+
 /// Request-time source input-resolution context exposed to source input resolvers.
 ///
 /// This carries only the source identity and declared input state needed to
@@ -246,6 +299,109 @@ impl SourceInputResolutionContext {
     }
 }
 
+/// Runtime-build identity-selection context exposed to request identity selectors.
+#[derive(Debug, Clone)]
+pub struct RequestIdentitySelectionContext {
+    source_name: Arc<str>,
+    identity_requirements: Arc<IdentityRequirements>,
+}
+
+impl RequestIdentitySelectionContext {
+    #[must_use]
+    /// Builds identity-selection context for one executable source.
+    pub fn new(
+        source_name: impl Into<Arc<str>>,
+        identity_requirements: IdentityRequirements,
+    ) -> Self {
+        Self {
+            source_name: source_name.into(),
+            identity_requirements: Arc::new(identity_requirements),
+        }
+    }
+
+    #[must_use]
+    /// Returns the canonical source name.
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    #[must_use]
+    /// Returns this source's identity requirements.
+    pub fn identity_requirements(&self) -> &IdentityRequirements {
+        &self.identity_requirements
+    }
+
+    #[must_use]
+    /// Returns whether a candidate identity satisfies this source's contract.
+    ///
+    /// Accepted identity entries have OR semantics. Within one accepted entry,
+    /// the candidate identity spec id must be listed in `identity_specs`, and
+    /// the accepted `audience` must be a subset of the candidate audience. The
+    /// candidate may carry additional audience entries.
+    ///
+    /// Audience values are compared with exact JSON equality, including JSON
+    /// type. For example, an integer requirement does not match a string or
+    /// floating-point candidate with the same rendered value.
+    pub fn accepts_identity(
+        &self,
+        identity_spec_id: &str,
+        audience: &BTreeMap<String, Value>,
+    ) -> bool {
+        self.identity_requirements.accepts.iter().any(|accepted| {
+            accepted
+                .identity_specs
+                .iter()
+                .any(|accepted_spec_id| accepted_spec_id == identity_spec_id)
+                && accepted
+                    .audience
+                    .iter()
+                    .all(|(key, required_value)| audience.get(key) == Some(required_value))
+        })
+    }
+}
+
+/// App-selected request identity for one executable source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedRequestIdentity {
+    identity_id: Arc<str>,
+    identity_spec_id: Arc<str>,
+    audience: Arc<BTreeMap<String, Value>>,
+}
+
+impl SelectedRequestIdentity {
+    #[must_use]
+    /// Builds one selected request identity.
+    pub fn new(
+        identity_id: impl Into<Arc<str>>,
+        identity_spec_id: impl Into<Arc<str>>,
+        audience: BTreeMap<String, Value>,
+    ) -> Self {
+        Self {
+            identity_id: identity_id.into(),
+            identity_spec_id: identity_spec_id.into(),
+            audience: Arc::new(audience),
+        }
+    }
+
+    #[must_use]
+    /// Returns the opaque app-owned identity handle.
+    pub fn identity_id(&self) -> &str {
+        &self.identity_id
+    }
+
+    #[must_use]
+    /// Returns the installed identity spec id for this selected identity.
+    pub fn identity_spec_id(&self) -> &str {
+        &self.identity_spec_id
+    }
+
+    #[must_use]
+    /// Returns the selected identity audience metadata.
+    pub fn audience(&self) -> &BTreeMap<String, Value> {
+        &self.audience
+    }
+}
+
 /// Request-time HTTP authenticator registered through engine extensions.
 pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     /// Stable authenticator name used in diagnostics and manifest dispatch.
@@ -277,6 +433,52 @@ pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     ) -> Result<(), RequestAuthenticatorError> {
         Ok(())
     }
+}
+
+/// Bound request-time HTTP authenticator for one selected identity.
+///
+/// The engine invokes this after applying authored request headers and source
+/// auth. Returned headers must not overwrite an existing header. Non-empty
+/// identity headers are accepted only for HTTPS or loopback HTTP requests, and
+/// the corresponding HTTP client permits redirects only within the same safe
+/// origin.
+pub type BoundRequestIdentityHttpAuthenticator = Arc<
+    dyn for<'a> Fn(
+            &'a reqwest::Request,
+            &'a BTreeMap<String, String>,
+        ) -> BoxFuture<
+            'a,
+            Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError>,
+        > + Send
+        + Sync,
+>;
+
+/// Factory that binds a selected identity to an HTTP request authenticator.
+pub type RequestIdentityHttpAuthenticatorFactory = Arc<
+    dyn Fn(
+            SelectedRequestIdentity,
+        )
+            -> Result<BoundRequestIdentityHttpAuthenticator, RequestIdentityHttpAuthenticatorError>
+        + Send
+        + Sync,
+>;
+
+/// Runtime-build selector for app-managed request identities.
+///
+/// The engine calls this once per selected DSL v4 source that declares identity
+/// requirements while building a query runtime.
+#[async_trait]
+pub trait RequestIdentitySelector: Send + Sync + std::fmt::Debug {
+    /// Selects the app-owned identity to use for one source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestIdentitySelectionError`] when no suitable identity is
+    /// bound or the selected identity cannot be used.
+    async fn select_identity(
+        &self,
+        identity: &RequestIdentitySelectionContext,
+    ) -> Result<SelectedRequestIdentity, RequestIdentitySelectionError>;
 }
 
 /// Request-time resolver for source inputs owned by the app layer.
@@ -391,9 +593,26 @@ mod tests {
     use std::collections::BTreeMap;
 
     use coral_spec::parse_source_manifest_value;
-    use serde_json::json;
+    use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
+    use serde_json::{Value, json};
 
-    use crate::{QuerySource, SourceInputResolutionContext};
+    use crate::{QuerySource, RequestIdentitySelectionContext, SourceInputResolutionContext};
+
+    fn identity_context(
+        identity_specs: &[&str],
+        audience: BTreeMap<String, Value>,
+    ) -> RequestIdentitySelectionContext {
+        RequestIdentitySelectionContext::new(
+            "github_v4",
+            IdentityRequirements {
+                accepts: vec![AcceptedIdentityRequirement {
+                    id: "github_rest_read".to_string(),
+                    identity_specs: identity_specs.iter().map(ToString::to_string).collect(),
+                    audience,
+                }],
+            },
+        )
+    }
 
     #[test]
     fn source_input_resolution_context_keeps_only_request_input_contract() {
@@ -480,5 +699,48 @@ mod tests {
             Some("fresh-token")
         );
         assert!(!refreshed.secrets().contains_key("OPTIONAL_TOKEN"));
+    }
+
+    #[test]
+    fn request_identity_context_matches_accepted_spec_id() {
+        let audience = BTreeMap::from([("host".to_string(), json!("api.github.com"))]);
+        let context = identity_context(&["github_oauth", "github_pat"], audience.clone());
+
+        assert!(context.accepts_identity("github_oauth", &audience));
+        assert!(context.accepts_identity("github_pat", &audience));
+        assert!(!context.accepts_identity("gitlab_oauth", &audience));
+    }
+
+    #[test]
+    fn request_identity_context_accepts_audience_subset() {
+        let context = identity_context(
+            &["github_oauth"],
+            BTreeMap::from([("host".to_string(), json!("api.github.com"))]),
+        );
+
+        assert!(context.accepts_identity(
+            "github_oauth",
+            &BTreeMap::from([
+                ("host".to_string(), json!("api.github.com")),
+                ("tenant".to_string(), json!("acme")),
+            ]),
+        ));
+    }
+
+    #[test]
+    fn request_identity_context_rejects_json_type_mismatch() {
+        let context = identity_context(
+            &["github_oauth"],
+            BTreeMap::from([("port".to_string(), json!(443))]),
+        );
+
+        assert!(!context.accepts_identity(
+            "github_oauth",
+            &BTreeMap::from([("port".to_string(), json!(443.0))]),
+        ));
+        assert!(!context.accepts_identity(
+            "github_oauth",
+            &BTreeMap::from([("port".to_string(), json!("443"))]),
+        ));
     }
 }

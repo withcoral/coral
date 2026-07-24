@@ -27,21 +27,23 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
     DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
     DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
-    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
-    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
-    ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse,
-    ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
-    QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
-    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
-    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
-    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response, search_maintenance_result,
-    search_result, source_input_spec::Input as ProtoSourceInput,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, DrainSearchQueueRequest,
+    DrainSearchQueueResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
+    ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest,
+    ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest,
+    ListWorkspacesResponse, ObservedDrainResult, ObservedRebuildResult, PaginationRequest,
+    PaginationResponse, QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
+    SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult,
+    SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
+    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchStorageCleanupResult, SearchSurfaceKind, SearchTableColumnPreview,
+    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, Table, TableFunction, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    import_source_response, search_maintenance_result, search_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -354,7 +356,16 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "issues"),
             mock_table("github", "pull_requests"),
         ],
-        table_functions: Vec::new(),
+        table_functions: vec![TableFunction {
+            workspace: Some(workspace()),
+            schema_name: "github".to_string(),
+            name: "search_issues".to_string(),
+            description: "Search issues".to_string(),
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: 0,
+            search_limits: None,
+        }],
         query_tests: Vec::new(),
     }
 }
@@ -447,16 +458,67 @@ fn mock_search_response() -> SearchResponse {
 
 fn mock_rebuild_search_index_response() -> RebuildSearchIndexResponse {
     RebuildSearchIndexResponse {
+        results: vec![
+            SearchMaintenanceResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                state: SearchMaintenanceState::Completed as i32,
+                note: "force rebuilt catalog search projection".to_string(),
+                detail: Some(search_maintenance_result::Detail::CatalogRebuild(
+                    CatalogRebuildResult {
+                        old_document_count: 2,
+                        new_document_count: 3,
+                        projection_changed: false,
+                        rebuild_performed: true,
+                    },
+                )),
+            },
+            SearchMaintenanceResult {
+                provider: SearchProvider::ObservedValues as i32,
+                state: SearchMaintenanceState::Partial as i32,
+                note: "attempted 3 observed-value queue job(s), then rebuilt observed-value FTS projection from 4 row(s); 1 failed job(s) left for retry".to_string(),
+                detail: Some(search_maintenance_result::Detail::ObservedRebuild(
+                    ObservedRebuildResult {
+                        canonical_rows_scanned: 4,
+                        fts_rows_rebuilt: 3,
+                        drain: Some(ObservedDrainResult {
+                            queue_jobs_processed: 2,
+                            stale_jobs_skipped: 0,
+                            failed_jobs: 1,
+                            canonical_rows_upserted: 2,
+                            fts_rows_written: 2,
+                            remaining_queue_depth: 1,
+                            budget_exhausted: false,
+                            stale_rows_purged: 0,
+                            evicted_rows: 0,
+                            storage_limit_reached: false,
+                            storage_jobs_dropped: 0,
+                        }),
+                    },
+                )),
+            },
+        ],
+    }
+}
+
+fn mock_drain_search_queue_response() -> DrainSearchQueueResponse {
+    DrainSearchQueueResponse {
         results: vec![SearchMaintenanceResult {
-            provider: SearchProvider::CatalogMetadata as i32,
-            state: SearchMaintenanceState::Completed as i32,
-            note: "force rebuilt catalog search projection".to_string(),
-            detail: Some(search_maintenance_result::Detail::CatalogRebuild(
-                CatalogRebuildResult {
-                    old_document_count: 2,
-                    new_document_count: 3,
-                    projection_changed: false,
-                    rebuild_performed: true,
+            provider: SearchProvider::ObservedValues as i32,
+            state: SearchMaintenanceState::Partial as i32,
+            note: "drained 2 observed-value queue job(s); 1 queued observation job(s) omitted to preserve storage headroom".to_string(),
+            detail: Some(search_maintenance_result::Detail::ObservedDrain(
+                ObservedDrainResult {
+                    queue_jobs_processed: 2,
+                    stale_jobs_skipped: 0,
+                    failed_jobs: 0,
+                    canonical_rows_upserted: 2,
+                    fts_rows_written: 2,
+                    remaining_queue_depth: 0,
+                    budget_exhausted: false,
+                    stale_rows_purged: 0,
+                    evicted_rows: 0,
+                    storage_limit_reached: false,
+                    storage_jobs_dropped: 1,
                 },
             )),
         }],
@@ -622,6 +684,7 @@ pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     search: MockResult<SearchResponse>,
     rebuild_search_index: MockResult<RebuildSearchIndexResponse>,
+    drain_search_queue: MockResult<DrainSearchQueueResponse>,
     clear_search_data: MockResult<ClearSearchDataResponse>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
@@ -639,6 +702,7 @@ impl Default for MockServerConfig {
             execute_sql_override: None,
             search: MockResult::ok(mock_search_response()),
             rebuild_search_index: MockResult::ok(mock_rebuild_search_index_response()),
+            drain_search_queue: MockResult::ok(mock_drain_search_queue_response()),
             clear_search_data: MockResult::ok(mock_clear_search_data_response()),
             discover_sources: MockResult::ok(mock_discover_response()),
             list_sources: MockResult::ok(ListSourcesResponse {
@@ -800,6 +864,7 @@ struct Captured {
     search: Mutex<Vec<SearchRequest>>,
     execute_sql_task_ids: Mutex<Vec<Option<String>>>,
     rebuild_search_index: Mutex<Vec<RebuildSearchIndexRequest>>,
+    drain_search_queue: Mutex<Vec<DrainSearchQueueRequest>>,
     clear_search_data: Mutex<Vec<ClearSearchDataRequest>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
@@ -873,6 +938,20 @@ impl SearchService for MockSearchService {
                 .rebuild_search_index
                 .clone()
                 .into_tonic_result()?,
+        ))
+    }
+
+    async fn drain_search_queue(
+        &self,
+        request: Request<DrainSearchQueueRequest>,
+    ) -> Result<Response<DrainSearchQueueResponse>, Status> {
+        self.captured
+            .drain_search_queue
+            .lock()
+            .expect("drain search queue capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.drain_search_queue.clone().into_tonic_result()?,
         ))
     }
 
@@ -1491,6 +1570,14 @@ impl MockServer {
             .rebuild_search_index
             .lock()
             .expect("rebuild search index capture")
+            .clone()
+    }
+
+    pub(crate) fn drain_search_queue_requests(&self) -> Vec<DrainSearchQueueRequest> {
+        self.captured
+            .drain_search_queue
+            .lock()
+            .expect("drain search queue capture")
             .clone()
     }
 

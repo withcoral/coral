@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
+use crate::v4::OperationMetadata;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
     IrOperationNaming, IrScalarType, OutputCardinality, RestExecutionAttachment,
     RestParameterBinding, RestRequestBody,
 };
-use crate::v4::lookup_keys::infer_rest_lookup_key_exclusions;
+use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
@@ -26,7 +27,7 @@ impl OpenApiImporter<'_> {
         path_item: &Map<String, Value>,
         method_name: &str,
         operation: &Value,
-    ) -> Result<IrOperation> {
+    ) -> Result<(IrOperation, OperationMetadata)> {
         let op_obj = operation.as_object().ok_or_else(|| {
             ManifestError::validation(format!(
                 "OpenAPI operation {method_name} {path} must be a mapping"
@@ -40,15 +41,12 @@ impl OpenApiImporter<'_> {
         let naming = openapi_operation_naming(op_obj, raw_operation_id, &operation_id);
         let method = parse_http_method(method_name);
         let mut diagnostics = Vec::new();
-        let mut parameters =
-            self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
+        let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
         let pagination = detect_pagination(&parameters, &pagination_context);
-        // All REST inputs must be present before lookup-key exclusion inference:
-        // the same vector becomes both operation inputs and parameter bindings.
-        infer_rest_lookup_key_exclusions(&mut parameters, &pagination);
+        let lookup_keys = infer_rest_lookup_keys(&parameters, &pagination);
         let rest_parameters = parameters
             .iter()
             .map(|input| RestParameterBinding {
@@ -59,7 +57,7 @@ impl OpenApiImporter<'_> {
                 data_type: input.data_type,
             })
             .collect();
-        Ok(IrOperation {
+        let operation = IrOperation {
             id: operation_id.clone(),
             method_name: op_obj
                 .get("operationId")
@@ -87,10 +85,16 @@ impl OpenApiImporter<'_> {
                 parameters: rest_parameters,
                 request_body,
                 response,
-                pagination,
             })),
             diagnostics,
-        })
+        };
+        Ok((
+            operation,
+            OperationMetadata::Rest {
+                pagination,
+                lookup_keys,
+            },
+        ))
     }
 
     fn import_parameters(
@@ -121,7 +125,6 @@ impl OpenApiImporter<'_> {
                 diagnostics.push(Diagnostic::warning(
                     "OPENAPI_PARAMETER_INVALID",
                     format!("operation '{operation_id}' has a parameter that is not an object"),
-                    self.surface.id.clone(),
                     Some(operation_id.to_string()),
                 ));
                 continue;
@@ -130,7 +133,6 @@ impl OpenApiImporter<'_> {
                 diagnostics.push(Diagnostic::warning(
                     "OPENAPI_PARAMETER_INVALID",
                     format!("operation '{operation_id}' has a parameter without a string name"),
-                    self.surface.id.clone(),
                     Some(operation_id.to_string()),
                 ));
                 continue;
@@ -143,7 +145,6 @@ impl OpenApiImporter<'_> {
                 diagnostics.push(Diagnostic::warning(
                     "OPENAPI_PARAMETER_SERIALIZATION_UNSUPPORTED",
                     format!("operation '{operation_id}' has unsupported parameter location"),
-                    self.surface.id.clone(),
                     Some(operation_id.to_string()),
                 ));
                 continue;
@@ -174,7 +175,6 @@ impl OpenApiImporter<'_> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    exclude_from_lookup_keys: false,
                 })
             })
             .collect()
@@ -195,7 +195,6 @@ impl OpenApiImporter<'_> {
                     "parameter '{name}' has unsupported schema type '{}'",
                     json_schema_type_display(&resolved)
                 ),
-                self.surface.id.clone(),
                 Some(operation_id.to_string()),
             ));
             return None;
@@ -226,7 +225,6 @@ impl OpenApiImporter<'_> {
         diagnostics.push(Diagnostic::warning(
             "OPENAPI_REQUEST_BODY_UNPUBLISHED",
             format!("operation '{operation_id}' has a request body and will not be published"),
-            self.surface.id.clone(),
             Some(operation_id.to_string()),
         ));
         Some(RestRequestBody {
@@ -386,7 +384,7 @@ fn detect_cursor_query_pagination(
 }
 
 fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
-    let offset_input = find_query_input(
+    let offset_input = find_numeric_query_input(
         inputs,
         &["offset", "offsetindex", "pageoffset", "skip", "startindex"],
     )?;
@@ -402,7 +400,7 @@ fn detect_offset_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpe
 }
 
 fn detect_page_pagination(inputs: &[IrOperationInput]) -> Option<PaginationSpec> {
-    let page_input = find_page_input(inputs)?;
+    let page_input = find_numeric_page_input(inputs)?;
     let page_size = detect_page_size(inputs)?;
     Some(PaginationSpec {
         mode: PaginationMode::Page,
@@ -419,7 +417,7 @@ fn detect_page_size(inputs: &[IrOperationInput]) -> Option<PageSizeSpec> {
 }
 
 fn detect_page_size_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_query_input(
+    find_numeric_query_input(
         inputs,
         &[
             "amount",
@@ -438,20 +436,11 @@ fn detect_page_size_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInp
     )
 }
 
-fn find_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_query_input(
+fn find_numeric_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
+    find_numeric_query_input(
         inputs,
         &["currentpage", "page", "pageindex", "pagenumber", "pagenum"],
     )
-}
-
-fn find_numeric_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationInput> {
-    find_page_input(inputs).filter(|input| {
-        matches!(
-            input.data_type,
-            IrScalarType::Integer | IrScalarType::Number
-        ) || numeric_input_default(input).is_some()
-    })
 }
 
 fn find_query_input<'a>(
@@ -462,6 +451,21 @@ fn find_query_input<'a>(
         .iter()
         .filter(|input| input.location == IrInputLocation::Query)
         .find(|input| candidate_tokens.contains(&name_token(&input.name).as_str()))
+}
+
+/// Pagination metadata validation only accepts numeric inputs for page,
+/// offset, and page-size parameters, so detection must not select inputs of
+/// any other type.
+fn find_numeric_query_input<'a>(
+    inputs: &'a [IrOperationInput],
+    candidate_tokens: &[&str],
+) -> Option<&'a IrOperationInput> {
+    find_query_input(inputs, candidate_tokens).filter(|input| {
+        matches!(
+            input.data_type,
+            IrScalarType::Integer | IrScalarType::Number
+        )
+    })
 }
 
 fn find_optional_string_query_input<'a>(

@@ -120,7 +120,6 @@ impl ToolCallOutcome {
 struct TaskCallContext {
     task_id: Option<TaskId>,
     task_id_metadata: Option<MetadataValue<Ascii>>,
-    intent: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,10 +153,9 @@ impl TaskCallContext {
         if requirement == TaskContextRequirement::None {
             return Ok(Self::default());
         }
-        let intent = requirement
-            .requires_intent()
-            .then(|| required_tool_intent_argument(arguments, "intent"))
-            .transpose()?;
+        if requirement.requires_intent() {
+            required_tool_intent_argument(arguments, "intent")?;
+        }
         let task_id = requirement
             .requires_task_id()
             .then(|| required_task_id_argument(arguments, "task_id"))
@@ -177,16 +175,12 @@ impl TaskCallContext {
         Ok(Self {
             task_id,
             task_id_metadata,
-            intent,
         })
     }
 
     fn record_telemetry(&self, span: &tracing::Span) {
         if let Some(task_id) = self.task_id.as_ref() {
             telemetry::record_task_id(span, &task_id.to_string());
-        }
-        if let Some(intent) = self.intent.as_ref() {
-            telemetry::record_tool_intent(span, intent);
         }
     }
 
@@ -212,6 +206,33 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
     }
 }
 
+/// Cloneable factory for constructing an independent MCP handler per session.
+#[derive(Clone)]
+pub struct CoralMcpServerFactory {
+    app: AppClient,
+    options: McpOptions,
+}
+
+impl CoralMcpServerFactory {
+    /// Creates a handler factory with the tools selected by `options`.
+    ///
+    /// The caller must ensure that `app` is authorized for every session
+    /// created by this factory. A transport may share one factory only when
+    /// those sessions share the same authorization context. An authenticated
+    /// transport must use a client bound to the validated session and must not
+    /// fall back to a shared unauthenticated client.
+    #[must_use]
+    pub fn new(app: AppClient, options: McpOptions) -> Self {
+        Self { app, options }
+    }
+
+    /// Constructs a fresh handler for one MCP session.
+    #[must_use]
+    pub fn create(&self) -> impl ServerHandler + Clone + use<> {
+        CoralMcpServer::new(&self.app, self.options.clone())
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
     source: SourceClient,
@@ -225,7 +246,7 @@ pub(crate) struct CoralMcpServer {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct McpStartupContext {
+struct McpStartupContext {
     source_names: Vec<String>,
     query_examples: Vec<McpQueryExample>,
 }
@@ -263,12 +284,12 @@ impl McpStartupContext {
 }
 
 impl CoralMcpServer {
-    pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
+    fn new(app: &AppClient, options: McpOptions) -> Self {
         let startup_context = McpStartupContext::from_options(&options);
         Self::new_with_startup_context(app, options, startup_context)
     }
 
-    pub(crate) fn new_with_startup_context(
+    fn new_with_startup_context(
         app: &AppClient,
         options: McpOptions,
         startup_context: McpStartupContext,
@@ -282,6 +303,18 @@ impl CoralMcpServer {
             task: app.task_client(),
             startup_context,
             options,
+        }
+    }
+
+    fn tool_allowed(&self, tool: ToolName) -> bool {
+        match tool {
+            ToolName::Sql
+            | ToolName::Search
+            | ToolName::ListCatalog
+            | ToolName::DescribeTable
+            | ToolName::ListColumns => true,
+            ToolName::StartTask | ToolName::EndTask => self.options.tasks_enabled,
+            ToolName::Feedback => self.options.feedback_enabled,
         }
     }
 
@@ -603,8 +636,21 @@ impl CoralMcpServer {
         request: CallToolRequestParams,
         task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        match request.name.as_ref().parse::<ToolName>().ok() {
-            Some(ToolName::Sql) => {
+        let Some(tool) = request
+            .name
+            .as_ref()
+            .parse::<ToolName>()
+            .ok()
+            .filter(|tool| self.tool_allowed(*tool))
+        else {
+            return Err(ErrorData::invalid_params(
+                format!("tool '{}' not found", request.name),
+                None,
+            ));
+        };
+
+        match tool {
+            ToolName::Sql => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
                 match self
                     .execute_sql_batch(arguments.queries, task_id_metadata)
@@ -617,20 +663,20 @@ impl CoralMcpServer {
                     }),
                 }
             }
-            Some(ToolName::ListCatalog) => {
+            ToolName::ListCatalog => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::Search) => self.search_tool_result(request.arguments.as_ref()).await,
-            Some(ToolName::DescribeTable) => {
+            ToolName::Search => self.search_tool_result(request.arguments.as_ref()).await,
+            ToolName::DescribeTable => {
                 self.describe_table_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::ListColumns) => {
+            ToolName::ListColumns => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::StartTask) if self.options.tasks_enabled => {
+            ToolName::StartTask => {
                 let arguments = start_task_arguments(request.arguments.as_ref())?;
                 match self.start_task_value(arguments).await {
                     Ok(value) => Ok(ToolCallOutcome::success(value)),
@@ -643,14 +689,14 @@ impl CoralMcpServer {
                     }),
                 }
             }
-            Some(ToolName::EndTask) if self.options.tasks_enabled => {
+            ToolName::EndTask => {
                 let arguments = end_task_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
                     "Task end",
                     self.end_task_value(arguments).await,
                 ))
             }
-            Some(ToolName::Feedback) if self.options.feedback_enabled => {
+            ToolName::Feedback => {
                 let arguments = feedback_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
                     "Feedback submission",
@@ -662,9 +708,6 @@ impl CoralMcpServer {
                     .await,
                 ))
             }
-            None | Some(ToolName::StartTask | ToolName::EndTask | ToolName::Feedback) => Err(
-                ErrorData::invalid_params(format!("tool '{}' not found", request.name), None),
-            ),
         }
     }
 
@@ -736,6 +779,7 @@ impl ServerHandler for CoralMcpServer {
             &self.workspace().name,
             self.startup_context.source_names(),
             self.startup_context.query_examples(),
+            self.options.observed_values_search_enabled,
         ))
     }
 
@@ -770,6 +814,7 @@ impl ServerHandler for CoralMcpServer {
                 ToolAvailability {
                     tasks_enabled: self.options.tasks_enabled,
                     feedback_enabled: self.options.feedback_enabled,
+                    observed_values_search_enabled: self.options.observed_values_search_enabled,
                 },
             );
             Ok(ListToolsResult::with_all_items(tools))
@@ -850,7 +895,12 @@ impl ServerHandler for CoralMcpServer {
                         .map_err(|status| status_to_error_data(&status))?;
                     Ok(ReadResourceResult::new(vec![
                         ResourceContents::text(
-                            guide_resource_content(&sources, &tables, &table_function_schema_names),
+                            guide_resource_content(
+                                &sources,
+                                &tables,
+                                &table_function_schema_names,
+                                self.options.observed_values_search_enabled,
+                            ),
                             request.uri,
                         )
                         .with_mime_type("text/markdown"),
@@ -1069,5 +1119,70 @@ mod startup_context_tests {
             context.query_examples().last().map(McpQueryExample::sql),
             Some("SELECT 4")
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_call_telemetry_tests {
+    use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use serde_json::{Map, Value};
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::finish_tool_call;
+    use crate::surface::list_catalog_arguments;
+    use crate::telemetry::{self, MCP_PROTOCOL_ERROR_MESSAGE};
+
+    #[test]
+    fn finish_tool_call_returns_details_without_recording_them() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("mcp-tool-error-privacy-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let sentinel = "SENSITIVE_LIST_CATALOG_KIND_MARKER";
+        let arguments = Map::from_iter([("kind".to_string(), Value::String(sentinel.to_string()))]);
+        let Err(error) = list_catalog_arguments(Some(&arguments)) else {
+            panic!("unknown list_catalog kind should fail argument parsing");
+        };
+        let span = telemetry::call_tool_span("list_catalog", None);
+        let returned = finish_tool_call(&span, Err(error))
+            .expect_err("invalid list_catalog kind should remain a caller-visible protocol error");
+        assert!(returned.message.contains(sentinel));
+        drop(span);
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let tool_call = spans
+            .iter()
+            .find(|span| span.name == "coral.mcp.call_tool")
+            .expect("tool call span");
+
+        assert_eq!(
+            string_attribute(tool_call, "error.type"),
+            Some("INVALID_PARAMS".to_string())
+        );
+        assert_eq!(
+            string_attribute(tool_call, "exception.message"),
+            Some(MCP_PROTOCOL_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(
+            tool_call.status,
+            OtelStatus::error(MCP_PROTOCOL_ERROR_MESSAGE)
+        );
+        assert!(!format!("{tool_call:?}").contains(sentinel));
+
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    fn string_attribute(span: &SpanData, name: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == name)
+            .map(|attribute| attribute.value.as_str().into_owned())
     }
 }

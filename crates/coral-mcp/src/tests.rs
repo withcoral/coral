@@ -13,16 +13,23 @@ use coral_client::{
     local::{RunningServer, ServerBuilder},
 };
 use jsonschema::Validator;
+use opentelemetry::trace::{SpanKind, TracerProvider as _};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use rmcp::{
-    RoleClient, ServiceExt,
+    RoleClient, ServerHandler, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt as _;
 
-use crate::{CoralMcpServer, McpOptions};
+use crate::{CoralMcpServerFactory, McpOptions};
+
+type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -191,7 +198,7 @@ struct TestSession {
     source_client: SourceClient,
     client: RunningService<RoleClient, ()>,
     app_server: RunningServer,
-    mcp_server_task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    mcp_server_task: McpServerTask,
 }
 
 impl TestSession {
@@ -202,11 +209,7 @@ impl TestSession {
             mcp_server_task,
             ..
         } = self;
-        client.cancel().await.expect("cancel client");
-        mcp_server_task
-            .await
-            .expect("join mcp task")
-            .expect("mcp server result");
+        shutdown_mcp_session(client, mcp_server_task).await;
         app_server.shutdown().await.expect("shutdown app server");
     }
 }
@@ -226,20 +229,35 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         .await
         .expect("connect client");
     let source_client = app.source_client();
+    let factory = CoralMcpServerFactory::new(app, options);
+    let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
 
-    let (server_transport, client_transport) = tokio::io::duplex(4096);
-    let mcp_server_task = tokio::spawn(async move {
-        let server = Box::pin(CoralMcpServer::new(&app, options).serve(server_transport)).await?;
-        server.waiting().await?;
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    });
-    let client = ().serve(client_transport).await.expect("start rmcp client");
     TestSession {
         source_client,
         client,
         app_server: server,
         mcp_server_task,
     }
+}
+
+async fn start_mcp_session(
+    server: impl ServerHandler + Clone,
+) -> (RunningService<RoleClient, ()>, McpServerTask) {
+    let (server_transport, client_transport) = tokio::io::duplex(4096);
+    let mcp_server_task = tokio::spawn(async move {
+        let server = Box::pin(server.serve(server_transport)).await?;
+        server.waiting().await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    });
+    let client = ().serve(client_transport).await.expect("start rmcp client");
+    (client, mcp_server_task)
+}
+
+async fn shutdown_mcp_session(client: RunningService<RoleClient, ()>, task: McpServerTask) {
+    client.cancel().await.expect("cancel client");
+    task.await
+        .expect("join mcp task")
+        .expect("mcp server result");
 }
 
 #[tokio::test]
@@ -277,6 +295,83 @@ async fn initialize_instructions_keep_workspace_name_to_a_single_line() {
     );
 
     session.shutdown().await;
+}
+
+#[tokio::test]
+async fn observed_value_feature_controls_mcp_discovery_surfaces() {
+    let disabled = Box::pin(mcp_search_discovery_text(false)).await;
+    assert!(disabled.0.contains("filters in Coral's local catalog"));
+    assert!(!disabled.0.contains("observed"));
+    assert!(disabled.1.contains("Coral's local catalog"));
+    assert!(!disabled.1.contains("observed"));
+    assert!(disabled.2.contains("Coral catalog entries"));
+    assert!(!disabled.2.contains("observed"));
+    assert!(
+        disabled
+            .3
+            .contains("Search catalog metadata, inspect tables")
+    );
+    assert!(!disabled.3.contains("observed"));
+
+    let enabled = Box::pin(mcp_search_discovery_text(true)).await;
+    assert!(
+        enabled
+            .0
+            .contains("values Coral observed during earlier queries")
+    );
+    assert!(enabled.1.contains("locally observed values"));
+    assert!(enabled.2.contains("values observed during earlier queries"));
+    assert!(
+        enabled
+            .3
+            .contains("Search catalog metadata and local observations")
+    );
+}
+
+async fn mcp_search_discovery_text(
+    observed_values_search_enabled: bool,
+) -> (String, String, String, String) {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            observed_values_search_enabled,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let peer_info = session.client.peer_info().expect("initialize result");
+    let instructions = peer_info
+        .instructions
+        .as_deref()
+        .expect("initialize instructions")
+        .to_string();
+    let tools = session.client.list_all_tools().await.expect("tools");
+    let search_tool = tool_by_name(&tools, "search");
+    let search_description = search_tool
+        .description
+        .as_deref()
+        .expect("search description")
+        .to_string();
+    let query_description = search_tool
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("query"))
+        .and_then(Value::as_object)
+        .and_then(|query| query.get("description"))
+        .and_then(Value::as_str)
+        .expect("query input description")
+        .to_string();
+    let guide = session
+        .client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect("guide");
+    let guide = text_content(&guide).to_string();
+    session.shutdown().await;
+
+    (instructions, search_description, query_description, guide)
 }
 
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
@@ -657,6 +752,106 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     assert_eq!(raw_after_error.lines().count(), 2);
 
     session.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn task_intent_is_persisted_but_not_exported_to_telemetry() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("mcp-task-intent-privacy-test");
+    let trace_targets = "coral_mcp=trace,coral_client::grpc=trace,coral_app::transport=trace"
+        .parse::<Targets>()
+        .expect("MCP and gRPC trace filter");
+    let subscriber = tracing_subscriber::Registry::default().with(
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(trace_targets),
+    );
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let sentinel = "SENSITIVE_RAW_TASK_INTENT_TELEMETRY_MARKER";
+
+    let started = session
+        .client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": sentinel
+            }))),
+        )
+        .await
+        .expect("start task");
+    assert_eq!(started.is_error, Some(false));
+    assert_structured_content_only(&started);
+    let task_id = started
+        .structured_content
+        .expect("start task structured content")["task_id"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    uuid::Uuid::parse_str(&task_id).expect("task id is a UUID");
+
+    let tasks_path = temp
+        .path()
+        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
+    let persisted = fs::read_to_string(tasks_path).expect("task file should exist");
+    let start_record = persisted
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
+        .find(|record| record["task_id"] == task_id && record["event"] == "start")
+        .expect("task start record");
+    assert_eq!(start_record["intent"], sentinel);
+
+    session.shutdown().await;
+    provider.force_flush().expect("flush spans");
+    let spans = exporter.get_finished_spans().expect("finished spans");
+    let tool_call = spans
+        .iter()
+        .find(|span| {
+            span.name == "coral.mcp.call_tool"
+                && span.attributes.iter().any(|attribute| {
+                    attribute.key.as_str() == "mcp.tool.name"
+                        && attribute.value.as_str() == "start_task"
+                })
+        })
+        .expect("start_task tool call span");
+    assert!(
+        tool_call
+            .attributes
+            .iter()
+            .all(|attribute| attribute.key.as_str() != "mcp.tool.intent")
+    );
+    assert!(
+        spans.iter().any(|span| {
+            span.name == "coral.v1.TaskService/StartTask" && span.span_kind == SpanKind::Client
+        }),
+        "start_task should export its client gRPC span"
+    );
+    assert!(
+        spans.iter().any(|span| {
+            span.name == "coral.v1.TaskService/StartTask" && span.span_kind == SpanKind::Server
+        }),
+        "start_task should export its server gRPC span"
+    );
+    let leaked = spans
+        .iter()
+        .filter(|span| format!("{span:?}").contains(sentinel))
+        .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "exported spans contained the raw intent: {leaked:#?}"
+    );
+
+    provider.shutdown().expect("provider shutdown");
 }
 
 #[tokio::test]
@@ -1354,6 +1549,63 @@ async fn list_catalog_surfaces_table_functions() {
     assert_matches_output_schema(catalog_tool, &functions);
 
     session.shutdown().await;
+}
+
+#[tokio::test]
+async fn factory_shares_client_and_configured_tools_across_sessions() {
+    let temp = TempDir::new().expect("temp dir");
+    let app_server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(app_server.endpoint_uri())
+        .await
+        .expect("connect client");
+    let factory = CoralMcpServerFactory::new(
+        app,
+        McpOptions {
+            feedback_enabled: true,
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    );
+
+    let (first_client, first_task) = start_mcp_session(factory.create()).await;
+    let (second_client, second_task) = start_mcp_session(factory.create()).await;
+
+    for client in [&first_client, &second_client] {
+        let tools = client.list_all_tools().await.expect("tools");
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec![
+                "sql",
+                "search",
+                "list_catalog",
+                "describe_table",
+                "list_columns",
+                "start_task",
+                "end_task",
+                "feedback"
+            ]
+        );
+        let resources = client.list_all_resources().await.expect("resources");
+        assert_eq!(
+            resources
+                .iter()
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["coral://guide", "coral://tables"]
+        );
+    }
+
+    shutdown_mcp_session(first_client, first_task).await;
+    shutdown_mcp_session(second_client, second_task).await;
+    app_server.shutdown().await.expect("shutdown app server");
 }
 
 #[tokio::test]

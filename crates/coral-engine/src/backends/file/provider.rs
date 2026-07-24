@@ -1,6 +1,5 @@
 //! Native file table providers built on `DataFusion` file scan primitives.
 
-use std::any::Any;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -274,10 +273,6 @@ fn strip_partition_columns(
 
 #[async_trait]
 impl TableProvider for FileTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         match &self.inner {
             FileTableProviderInner::Listing(inner) => inner.schema(),

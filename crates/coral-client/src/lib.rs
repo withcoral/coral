@@ -1,4 +1,4 @@
-//! Thin local transport bootstrap and shared query-result helpers for Coral.
+//! Thin transport bootstrap and shared query-result helpers for Coral.
 //!
 //! `coral-client` intentionally stays narrow today. It owns:
 //!
@@ -45,7 +45,7 @@ pub use client::{
     SearchClient, SourceClient, TaskClient, WorkspaceClient, default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
-pub use propagation::with_task_metadata;
+pub use propagation::{BearerToken, with_task_metadata};
 pub use search::{
     SearchResponseValue, format_schema_table_equivalent, format_search_response_json,
     format_search_response_text, format_sql_identifier, minimal_table_function_call_example,

@@ -1,6 +1,9 @@
 import { useCallback, useRef, useState } from 'react'
-import { useRevalidator } from 'react-router'
+import { Link, useRevalidator } from 'react-router'
 
+import { Container as ButtonContainer } from '@/wax/components/button/container'
+import { Icon as ButtonIcon } from '@/wax/components/button/icon'
+import { Text as ButtonText } from '@/wax/components/button/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 
 import { SourceCatalogSurface } from '@/components/sources'
@@ -39,6 +42,17 @@ export function SourcesIndex({
         errorMessage={loadError}
         getEntryTo={(entry) =>
           routePath('workspaceSource', { sourceName: entry.name, workspaceId })
+        }
+        headerAction={
+          <ButtonContainer
+            as={Link}
+            size="36"
+            to={routePath('workspaceSourceInstall', { workspaceId })}
+            variant="primary"
+          >
+            <ButtonIcon name="Plus" />
+            <ButtonText>Create source</ButtonText>
+          </ButtonContainer>
         }
         loadState={loadError ? 'error' : loading ? 'loading' : 'idle'}
         onRetry={() => revalidator.revalidate()}

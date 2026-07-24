@@ -9,7 +9,11 @@ const CANONICAL_PATTERNS = {
   workspaces: '/workspaces',
   workspaceSchema: '/workspaces/:workspaceId/schema',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
+  workspaceSchemaTableFunction:
+    '/workspaces/:workspaceId/schema/:schemaName/functions/:functionName',
   workspaceSource: '/workspaces/:workspaceId/sources/:sourceName',
+  workspaceSourceDiscovery: '/workspaces/:workspaceId/sources/discover',
+  workspaceSourceInstall: '/workspaces/:workspaceId/sources/install',
   workspaceSources: '/workspaces/:workspaceId/sources',
   workspaceTrace: '/workspaces/:workspaceId/traces/:traceId',
   workspaceTraces: '/workspaces/:workspaceId/traces',
@@ -40,10 +44,19 @@ describe('route map', () => {
         tableName: 'issues',
         workspaceId: 'analytics',
       }),
+      workspaceSchemaTableFunction: routePath('workspaceSchemaTableFunction', {
+        functionName: 'search_issues',
+        schemaName: 'github',
+        workspaceId: 'analytics',
+      }),
       workspaceSource: routePath('workspaceSource', {
         sourceName: 'github',
         workspaceId: 'analytics',
       }),
+      workspaceSourceDiscovery: routePath('workspaceSourceDiscovery', {
+        workspaceId: 'analytics',
+      }),
+      workspaceSourceInstall: routePath('workspaceSourceInstall', { workspaceId: 'analytics' }),
       workspaceSources: routePath('workspaceSources', { workspaceId: 'analytics' }),
       workspaceTrace: routePath('workspaceTrace', {
         traceId: 'trace_123',
@@ -58,7 +71,10 @@ describe('route map', () => {
       workspaces: '/workspaces',
       workspaceSchema: '/workspaces/analytics/schema',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
+      workspaceSchemaTableFunction: '/workspaces/analytics/schema/github/functions/search_issues',
       workspaceSource: '/workspaces/analytics/sources/github',
+      workspaceSourceDiscovery: '/workspaces/analytics/sources/discover',
+      workspaceSourceInstall: '/workspaces/analytics/sources/install',
       workspaceSources: '/workspaces/analytics/sources',
       workspaceTrace: '/workspaces/analytics/traces/trace_123',
       workspaceTraces: '/workspaces/analytics/traces',

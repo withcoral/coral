@@ -17,6 +17,7 @@ use coral_api::{
     },
 };
 use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
+use coral_telemetry::{GRPC_REQUEST_ERROR_MESSAGE, record_failure};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Service, http};
@@ -24,7 +25,7 @@ use tonic::metadata::MetadataMap;
 use tonic::{Code, Request, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 use tower::Layer;
-use tracing::{Instrument as _, field};
+use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::{AppError, app_status, core_status, status_with_bounded_detail};
@@ -73,8 +74,8 @@ impl Extractor for MetadataExtractor<'_> {
 /// read typed context from the request.
 ///
 /// The wrapper also authenticates the inbound metadata once before dispatching
-/// to a service handler, so every registered gRPC route is covered by the same
-/// principal-selection path.
+/// to a service handler, so every application gRPC route in the layered tree is
+/// covered by the same principal-selection path.
 #[derive(Clone)]
 pub(crate) struct GrpcRequestContextLayer {
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
@@ -324,41 +325,21 @@ fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>)
         span.record("status", "ok");
         span.set_status(OtelStatus::Ok);
     } else {
-        let error = status.map_or_else(
-            || GrpcErrorTelemetry {
-                error_type: response_status_code.to_string(),
-                message: response_status_code.to_string(),
-            },
-            decode_grpc_error,
-        );
-        span.record("status", "error");
-        span.record("error.type", error.error_type.as_str());
-        span.record("exception.message", field::display(error.message.as_str()));
-        span.set_status(OtelStatus::error(error.message));
+        let error_type = status.map_or_else(|| response_status_code.to_string(), grpc_error_type);
+        record_failure(span, error_type.as_str(), GRPC_REQUEST_ERROR_MESSAGE);
     }
 }
 
-struct GrpcErrorTelemetry {
-    error_type: String,
-    message: String,
-}
-
-fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
+fn grpc_error_type(status: &Status) -> String {
     for detail in status.get_error_details_vec() {
         if let ErrorDetail::ErrorInfo(info) = detail
             && info.domain == CORAL_ERROR_DOMAIN
         {
-            return GrpcErrorTelemetry {
-                error_type: info.reason,
-                message: status.message().to_string(),
-            };
+            return info.reason;
         }
     }
 
-    GrpcErrorTelemetry {
-        error_type: grpc_response_status_code(status.code()).to_string(),
-        message: status.message().to_string(),
-    }
+    grpc_response_status_code(status.code()).to_string()
 }
 
 pub(crate) fn query_status(error: QueryManagerError) -> Status {
@@ -617,14 +598,23 @@ mod tests {
         reason = "proto shape assertions intentionally fail loudly in tests"
     )]
 
+    use std::collections::HashMap;
+
     use coral_api::{
-        CORAL_TASK_ID_METADATA_KEY, grpc_response_status_code,
+        CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_SUMMARY, CORAL_TASK_ID_METADATA_KEY,
+        grpc_response_status_code,
         v1::{QueryTestFailure, Workspace, query_test_result},
     };
-    use tonic::{Code, Request};
+    use opentelemetry::Value;
+    use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use tonic::{Code, Request, Status};
+    use tonic_types::{ErrorDetail, StatusExt as _};
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, annotate_request_context, grpc_method, query_status,
+        GRPC_REQUEST_ERROR_MESSAGE, GrpcMethodMetadata, GrpcServerMethod, annotate_request_context,
+        grpc_method, grpc_span_for_metadata, instrument_grpc, query_status,
         query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
         table_to_proto, user_principal_provider_status, workspace_name_from_proto,
         workspace_to_proto,
@@ -668,6 +658,99 @@ mod tests {
             "INVALID_ARGUMENT"
         );
         assert_eq!(grpc_response_status_code(Code::Unavailable), "UNAVAILABLE");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plain_grpc_status_message_is_not_exported() {
+        let sentinel = "SENSITIVE_SERVER_GRPC_ERROR_MARKER";
+        let status = Status::invalid_argument(format!("invalid input: {sentinel}"));
+
+        let (returned_status, span) = export_grpc_status(status).await;
+
+        assert!(returned_status.message().contains(sentinel));
+        assert_eq!(
+            string_attribute(&span, "error.type"),
+            Some("INVALID_ARGUMENT".to_string())
+        );
+        assert_eq!(
+            string_attribute(&span, "exception.message"),
+            Some(GRPC_REQUEST_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(span.status, OtelStatus::error(GRPC_REQUEST_ERROR_MESSAGE));
+        assert!(!format!("{span:?}").contains(sentinel));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn structured_grpc_status_keeps_only_its_categorical_reason() {
+        let sentinel = "SENSITIVE_SERVER_STRUCTURED_ERROR_MARKER";
+        let metadata = HashMap::from([(
+            CORAL_ERROR_METADATA_SUMMARY.to_string(),
+            format!("summary containing {sentinel}"),
+        )]);
+        let status = Status::with_error_details_vec(
+            Code::InvalidArgument,
+            format!("fallback containing {sentinel}"),
+            vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                "INVALID_CATALOG_KIND",
+                CORAL_ERROR_DOMAIN,
+                metadata,
+            ))],
+        );
+
+        let (returned_status, span) = export_grpc_status(status).await;
+
+        assert!(returned_status.message().contains(sentinel));
+        assert_eq!(
+            string_attribute(&span, "error.type"),
+            Some("INVALID_CATALOG_KIND".to_string())
+        );
+        assert_eq!(
+            string_attribute(&span, "exception.message"),
+            Some(GRPC_REQUEST_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(span.status, OtelStatus::error(GRPC_REQUEST_ERROR_MESSAGE));
+        assert!(!format!("{span:?}").contains(sentinel));
+    }
+
+    async fn export_grpc_status(status: Status) -> (Status, SpanData) {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("coral-server-error-privacy-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let guard = tracing::subscriber::set_default(subscriber);
+        let span = grpc_span_for_metadata(
+            &GrpcMethodMetadata::new("coral.v1.QueryService", "ExecuteSql"),
+            &tonic::metadata::MetadataMap::new(),
+        );
+
+        let returned_status = instrument_grpc(span, async { Err::<(), Status>(status) })
+            .await
+            .expect_err("gRPC status should be returned to the caller");
+        drop(guard);
+
+        provider.force_flush().expect("spans should flush");
+        let span = exporter
+            .get_finished_spans()
+            .expect("finished spans should be readable")
+            .into_iter()
+            .find(|span| span.name == "coral.v1.QueryService/ExecuteSql")
+            .expect("server span should export");
+        (returned_status, span)
+    }
+
+    fn string_attribute(span: &SpanData, name: &str) -> Option<String> {
+        span.attributes.iter().find_map(|attribute| {
+            if attribute.key.as_str() == name
+                && let Value::String(value) = &attribute.value
+            {
+                Some(value.as_ref().to_string())
+            } else {
+                None
+            }
+        })
     }
 
     #[test]

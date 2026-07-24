@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { fn } from 'storybook/test'
+import { expect, fn } from 'storybook/test'
 
 import type { CatalogEntry } from '@/lib/sources'
+import { Button } from '@/wax/components'
 import { theme } from '@/wax/theme/theme.css'
 
 import { SourceCatalogSurface } from './source-catalog-surface'
@@ -66,6 +67,31 @@ export const Full: Story = {
     onPick: fn(),
     onSearchChange: fn(),
     search: '',
+  },
+}
+
+export const WithHeaderAction: Story = {
+  args: {
+    entries,
+    headerAction: (
+      <Button.Container size="36" variant="primary">
+        <Button.Icon name="Plus" />
+        <Button.Text>Create source</Button.Text>
+      </Button.Container>
+    ),
+    loadState: 'idle',
+    onPick: fn(),
+    onSearchChange: fn(),
+    search: '',
+  },
+  play: async ({ canvas }) => {
+    const search = canvas.getByPlaceholderText('Search sources…')
+    const action = canvas.getByRole('button', { name: 'Create source' })
+
+    expect(search.getBoundingClientRect().width).toBeLessThanOrEqual(280)
+    expect(
+      Math.abs(action.getBoundingClientRect().height - search.getBoundingClientRect().height),
+    ).toBeLessThanOrEqual(1)
   },
 }
 

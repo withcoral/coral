@@ -2037,9 +2037,12 @@ headers = "from=config"
 	enabled = false
 	retention_days = 3
 
-	[features]
-	feedback = true
-	future_feature = "not-yet-known"
+[features]
+feedback = true
+future_feature = "not-yet-known"
+
+[server]
+bind_addr = "127.0.0.1:14555"
 
 [engine.dependent_join]
 enabled = false
@@ -2098,6 +2101,14 @@ origin = "bundled"
         assert!(
             raw.contains("future_feature = \"not-yet-known\""),
             "future feature override should be preserved"
+        );
+        assert!(
+            raw.contains("[server]"),
+            "server section should be preserved"
+        );
+        assert!(
+            raw.contains("bind_addr = \"127.0.0.1:14555\""),
+            "server bind address should be preserved"
         );
         assert!(
             raw.contains("[engine.dependent_join]"),

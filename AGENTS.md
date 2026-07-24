@@ -6,7 +6,7 @@
 - `crates/coral-app`: local server composition, state, workspaces, source
   lifecycle, and workspace-scoped catalog discovery behavior.
 - `crates/coral-cli`: terminal adapter.
-- `crates/coral-client`: intentionally thin local transport bootstrap plus
+- `crates/coral-client`: intentionally thin transport bootstrap plus
   Arrow IPC decode/render helpers.
 - `crates/coral-engine`: engine-side backend compilation, runtime registration,
   and query execution.
@@ -35,8 +35,8 @@
   you need a stable port. Use `make postgres-start` when you only need the
   server, `make postgres-stop` when finished, and `make postgres-clean` to
   remove the reusable container.
-- Run `make schema-check` before submitting PRs that touch generated source
-  manifest schemas or the Rust helpers that generate them. Use
+- Run `make schema-check` before submitting PRs that touch generated manifest
+  schemas or the Rust helpers that generate them. Use
   `make schema-generate` to refresh generated schema files. The Validate
   workflow enforces this through its `schema-freshness` job when schema inputs
   change.
@@ -44,16 +44,29 @@
 - Reef changes must pass `npm run check --prefix apps/reef`,
   `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, and
   `npm run build --prefix apps/reef` before submitting.
+- Desktop changes must pass `npm run check --prefix apps/desktop` and
+  `npm test --prefix apps/desktop` before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
   fails when release `coral sql "select * from coral.tables"` has a hyperfine
   mean above 750 ms.
+- Pull requests do not automatically build macOS Desktop packages. Use manual
+  dispatch for an unsigned packaging preflight when a distribution-sensitive
+  change warrants one. Validation artifacts stay unsigned and must not be
+  reused for a release; Desktop release publishing must rebuild from a clean
+  checkout with signing and notarization.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.
   Keep that draft gate aligned between the initial change detector and final
   aggregate `validate` job.
+- Keep Release Please branch updates coalesced and cheap to supersede. The
+  `release-please` workflow may create multiple local regeneration commits, but
+  must push them together through its final push step. `Validate` intentionally
+  gives `release-please--*` pull requests a 120-second settle period before
+  checkout and change detection so concurrency cancellation stops intermediate
+  branch states before expensive jobs fan out.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`
@@ -71,14 +84,28 @@
   resource routes using `apps/reef/app/lib/coral-request.server.ts`. Do not
   expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
   explicit server route when browser-triggered Coral behavior is needed.
+- The packaged Reef server resolves its external runtime packages from the
+  Electron app. Keep every `apps/reef` production dependency represented in
+  `apps/desktop` production dependencies; the desktop config tests enforce this
+  packaging contract.
+- Use `CORAL_DESKTOP_APP=1` as Reef's single external desktop build marker.
+  React Router route composition may read it from `process.env`, while
+  `apps/reef/vite.config.ts` exposes only its compiled boolean value as
+  `import.meta.env.CORAL_DESKTOP_APP`. Do not add a parallel
+  `VITE_CORAL_DESKTOP_APP` marker or expose broader `CORAL_*` values to browser
+  code.
 - For DSL v4 materialization, the user owns when a source is generated or
   regenerated. Coral materializes at source add, queries only from the
   installed materialized package, and never silently refreshes descriptors,
   projections, or persisted artifacts. Treat fingerprints, producer versions,
   identity metadata, and raw-document hashes as advisory provenance: report
   mismatches through tracing, but load readable, structurally compatible
-  artifacts. Degrade per surface and isolate source-local compatibility
-  failures without hiding operational failures.
+  artifacts. Isolate source-local compatibility failures without hiding
+  operational failures.
+- A DSL v4 source declares top-level `inputs:` and exactly one singular
+  `surface:`. The source `name` is its SQL namespace. Do not add surface ids,
+  namespace suffixes, or multiple surfaces to one manifest; represent distinct
+  provider interfaces as distinct source specs instead.
 - Keep cross-crate W3C trace-context propagation helpers in
   `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
   or `coral-mcp` depend on each other just to share telemetry carrier logic.
@@ -97,8 +124,10 @@
   When docs are warranted, choose the best existing location first and make the
   amount of space match the feature's user-facing weight and visibility.
 - Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
-  specs under `sources/v4/[provider]/manifest.yaml` with distinct manifest names
-  (defined in the manifest's `name` field) such as `<name>_v4`. Do not bundle
+  specs under `sources/v4/[source]/manifest.yaml` with distinct manifest names
+  (defined in the manifest's `name` field) such as `<name>_v4`. When a provider
+  has distinct interfaces, use sibling source directories such as `github` and
+  `github_mcp`. Do not bundle
   `sources/v4` into the binary; install preview v4 sources with
   `coral source add --file`. Do not replace or migrate an existing v3 source
   merely because a preview v4 spec exists.
@@ -109,9 +138,21 @@
   bash Coral installer and installer-specific support.
 - Keep `xtask` organized by workflow: docs generation lives under
   `xtask/src/docs/`, shared source-manifest discovery lives in
-  `xtask/src/sources.rs`, performance checks live in `xtask/src/perf.rs`, and
-  skill export lives in `xtask/src/skills.rs`. Release signing and
-  notarization automation lives in `xtask/src/release.rs`.
+  `xtask/src/sources.rs`, command-latency checks live in `xtask/src/perf.rs`,
+  representation-efficiency benchmark dispatch lives under
+  `xtask/src/benchmarks/`, and the isolated benchmark package and fixtures live
+  under `xtask/benchmarks/`. Skill export lives in `xtask/src/skills.rs`.
+  Release signing and notarization automation lives in `xtask/src/release.rs`.
+- Use `cargo run --locked -p xtask -- benchmark list-columns` to measure the
+  complete MCP `list_columns` response for the checked-in synthetic wide-table
+  fixture with the `o200k_base` tokenizer. The benchmark must call the real MCP
+  tool in-process, report without enforcing a token budget, and keep
+  benchmark-only code out of production crates.
+- The Electron desktop app version is tied to the CLI release version through
+  release-please. The release workflow builds the macOS desktop app from
+  `apps/desktop`, uploads its DMG/ZIP/update metadata to the same GitHub
+  Release as the CLI artifacts, and the website should link to the
+  `releases/latest/download` DMG rather than storing desktop binaries itself.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled

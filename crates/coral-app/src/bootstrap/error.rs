@@ -44,6 +44,14 @@ pub enum AppError {
         /// Human-readable description of the missing input or inputs.
         detail: String,
     },
+    /// This build cannot resolve a DSL v4 source's declared identities.
+    #[error(
+        "failed precondition: source '{source_name}' declares DSL v4 identity_requirements, but this Coral build cannot resolve source identities. Use a Coral build with identity runtime support before querying this source."
+    )]
+    UnsupportedV4IdentityRequirements {
+        /// Source containing unsupported identity requirements.
+        source_name: String,
+    },
     /// A DSL v4 source has missing or stale generated runtime artifacts.
     #[error(
         "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
@@ -52,6 +60,16 @@ pub enum AppError {
         /// Source name whose installed artifacts failed validation.
         source_name: String,
         /// Specific materialization mismatch or missing-artifact detail.
+        detail: String,
+    },
+    /// An installed DSL v4 manifest uses a no-longer-supported schema shape.
+    #[error(
+        "failed precondition: source '{source_name}' has an incompatible installed DSL v4 manifest: {detail}. Re-add the source with a current manifest."
+    )]
+    IncompatibleInstalledV4Manifest {
+        /// Source whose installed manifest is incompatible.
+        source_name: String,
+        /// Specific manifest incompatibility.
         detail: String,
     },
     /// A user-maintained DSL v4 projection override is malformed or stale.
@@ -64,6 +82,18 @@ pub enum AppError {
         /// Projection override path that failed validation.
         override_path: String,
         /// Specific override mismatch or malformed-artifact detail.
+        detail: String,
+    },
+    /// A user-maintained DSL v4 operation metadata override is malformed or stale.
+    #[error(
+        "failed precondition: source '{source_name}' has invalid DSL v4 operation metadata override '{override_path}': {detail}. Edit or remove the override file."
+    )]
+    InvalidV4OperationMetadataOverride {
+        /// Source name whose override failed validation.
+        source_name: String,
+        /// Operation metadata override path that failed validation.
+        override_path: String,
+        /// Specific override mismatch or malformed-file detail.
         detail: String,
     },
     /// Provider-managed credential refresh failed during active source use.
@@ -268,8 +298,11 @@ fn app_code(error: &AppError) -> Code {
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingSourceInputs { .. }
+        | AppError::UnsupportedV4IdentityRequirements { .. }
         | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::IncompatibleInstalledV4Manifest { .. }
         | AppError::InvalidV4ProjectionOverride { .. }
+        | AppError::InvalidV4OperationMetadataOverride { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
@@ -317,6 +350,26 @@ mod tests {
         assert_eq!(status.code(), Code::Unauthenticated);
         assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
         assert!(status.message().ends_with("… (truncated)"));
+    }
+
+    #[test]
+    fn app_status_explains_unsupported_v4_identity_requirements_without_readd_guidance() {
+        let status = app_status(AppError::UnsupportedV4IdentityRequirements {
+            source_name: "demo".to_string(),
+        });
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(
+            status
+                .message()
+                .contains("source 'demo' declares DSL v4 identity_requirements")
+        );
+        assert!(
+            status
+                .message()
+                .contains("cannot resolve source identities")
+        );
+        assert!(!status.message().contains("Re-add"));
     }
 
     #[test]

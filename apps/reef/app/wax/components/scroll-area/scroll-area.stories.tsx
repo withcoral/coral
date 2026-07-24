@@ -19,7 +19,11 @@ const meta: Meta<typeof Container> = {
     },
     fade: {
       control: 'select',
-      options: [undefined, 'top', 'bottom', 'both', 'none'],
+      options: [undefined, 'top', 'bottom', 'both', 'horizontal', 'none'],
+    },
+    scrollDirection: {
+      control: 'select',
+      options: [undefined, 'both', 'horizontal', 'vertical'],
     },
   },
   component: Container,
@@ -41,12 +45,13 @@ export default meta
 type Story = StoryObj<typeof Container>
 
 export const Default: Story = {
-  render: ({ constrainWidth, fade, horizontal }) => (
+  render: ({ constrainWidth, fade, horizontal, scrollDirection }) => (
     <Container
       constrainWidth={constrainWidth}
       fade={fade}
       height="200px"
       horizontal={horizontal}
+      scrollDirection={scrollDirection}
       width="300px"
     >
       <div

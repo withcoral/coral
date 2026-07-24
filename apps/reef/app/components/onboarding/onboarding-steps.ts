@@ -1,4 +1,4 @@
-export const ONBOARDING_STEPS = ['sources', 'query'] as const
+export const ONBOARDING_STEPS = ['sources', 'query', 'next-steps'] as const
 
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number]
 
@@ -10,7 +10,9 @@ export interface OnboardingStepState {
   total: number
 }
 
-export function getOnboardingStepState(step: OnboardingStep): OnboardingStepState {
+export function getOnboardingStepState(requestedStep: string | null): OnboardingStepState {
+  const step: OnboardingStep =
+    ONBOARDING_STEPS.find((candidate) => candidate === requestedStep) ?? ONBOARDING_STEPS[0]
   const currentIndex = ONBOARDING_STEPS.indexOf(step)
   const nextStep = ONBOARDING_STEPS[currentIndex + 1] ?? null
 

@@ -7,7 +7,6 @@
 //! scanned later during execution, using the same `http_json_exec` path as
 //! manifest-backed tables.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -117,10 +116,6 @@ impl fmt::Debug for HttpSourceFunctionCallTableProvider {
 
 #[async_trait::async_trait]
 impl TableProvider for HttpSourceFunctionCallTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.state.schema.clone()
     }

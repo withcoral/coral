@@ -6,6 +6,7 @@ import type { IconName } from '@/wax/components/icon'
 import * as styles from '@/wax/components/inputs/base-input.css'
 
 export interface TextInputProps {
+  ariaLabel?: string
   autoFocus?: boolean
   className?: string
   disabled?: boolean
@@ -17,12 +18,14 @@ export interface TextInputProps {
   onFocus?: () => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
   placeholder?: string
+  readOnly?: boolean
   ref?: React.Ref<HTMLInputElement>
   type?: 'email' | 'password' | 'search' | 'tel' | 'text' | 'url'
   value?: string
 }
 
 export function TextInput({
+  ariaLabel,
   autoFocus,
   className,
   disabled,
@@ -34,6 +37,7 @@ export function TextInput({
   onFocus,
   onKeyDown,
   placeholder,
+  readOnly,
   ref,
   type = 'text',
   value,
@@ -54,6 +58,7 @@ export function TextInput({
           />
         )}
         <Field.Control
+          aria-label={ariaLabel}
           autoFocus={autoFocus}
           className={classNames(styles.input, { [styles.inputWithIcon]: !!icon }, className)}
           id={id}
@@ -63,6 +68,7 @@ export function TextInput({
           onFocus={onFocus}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
+          readOnly={readOnly}
           ref={ref}
           type={type}
           value={value}
