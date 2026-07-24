@@ -229,6 +229,7 @@ tables:
       - name: rules
         type: Utf8
         nullable: true
+        do_not_index: true
         description: Policy rules document returned by OpenBao.
         expr: {kind: path, path: [rules]}
       - name: modified
@@ -252,6 +253,7 @@ tables:
       - name: raw
         type: Json
         nullable: true
+        do_not_index: true
         description: Full policy detail payload returned by OpenBao.
         expr: {kind: path, path: []}
 
@@ -292,11 +294,13 @@ tables:
       - name: options
         type: Json
         nullable: true
+        do_not_index: true
         description: Audit device options. Sensitive option values may be HMAC'd by OpenBao.
         expr: {kind: path, path: [options]}
       - name: raw
         type: Json
         nullable: true
+        do_not_index: true
         description: Full audit device payload returned by OpenBao.
         expr: {kind: path, path: []}
 
@@ -378,16 +382,19 @@ tables:
       - name: custom_metadata
         type: Json
         nullable: true
+        do_not_index: true
         description: User-provided custom metadata for the secret path.
         expr: {kind: path, path: [custom_metadata]}
       - name: versions
         type: Json
         nullable: true
+        do_not_index: true
         description: Version metadata object. Use kv_secret_versions for one row per version.
         expr: {kind: path, path: [versions]}
       - name: raw
         type: Json
         nullable: true
+        do_not_index: true
         description: Full KV metadata payload returned by OpenBao.
         expr: {kind: path, path: []}
 
@@ -450,5 +457,6 @@ tables:
       - name: raw
         type: Json
         nullable: true
+        do_not_index: true
         description: Full version metadata payload returned by OpenBao.
         expr: {kind: path, path: []}
