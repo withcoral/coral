@@ -1738,6 +1738,40 @@ surface:
         path
     }
 
+    fn installed_operation_metadata(layout: &AppStateLayout) -> OperationMetadataCatalog {
+        read_yaml(
+            &layout
+                .v4_materialized_dir(&workspace_name(), &source_name())
+                .join(OPERATION_METADATA_FILENAME),
+        )
+        .expect("read installed operation metadata")
+    }
+
+    fn write_operation_metadata_override(
+        layout: &AppStateLayout,
+        metadata: &OperationMetadataCatalog,
+    ) -> PathBuf {
+        let path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
+        std::fs::create_dir_all(path.parent().expect("override parent"))
+            .expect("create override dir");
+        write_yaml(&path, metadata).expect("write operation metadata override");
+        path
+    }
+
+    fn remove_state_lookup_key(metadata: &mut OperationMetadataCatalog) {
+        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        lookup_keys.retain(|key| key != "state");
+    }
+
     #[test]
     fn build_v4_materialization_persists_lookup_keys_in_operation_metadata() {
         let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
@@ -2057,6 +2091,229 @@ surface:
                 .message
                 .contains("projection override was copied from generator version")
         }));
+    }
+
+    #[test]
+    fn load_v4_materialization_preserves_persisted_projection_input_policy() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projection_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog: ProjectionCatalog =
+            read_yaml(&projection_path).expect("read installed projections");
+        let projection = catalog.projections.first_mut().expect("projection");
+        let order_by = projection
+            .inputs
+            .iter_mut()
+            .find(|input| input.wire_name == "order_by")
+            .expect("order_by");
+        order_by.sql_exposure = coral_spec::v4::SqlInputExposure::Internal;
+        let state = projection
+            .inputs
+            .iter_mut()
+            .find(|input| input.wire_name == "state")
+            .expect("state");
+        state.lookup_key = false;
+        write_yaml(&projection_path, &catalog).expect("write selected projections");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("conservative persisted projection policy should load");
+        let projection = materialized
+            .projections
+            .projections
+            .first()
+            .expect("loaded projection");
+
+        assert_eq!(
+            projection
+                .inputs
+                .iter()
+                .find(|input| input.wire_name == "order_by")
+                .expect("loaded order_by")
+                .sql_exposure,
+            coral_spec::v4::SqlInputExposure::Internal
+        );
+        assert!(
+            !projection
+                .inputs
+                .iter()
+                .find(|input| input.wire_name == "state")
+                .expect("loaded state")
+                .lookup_key
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_removed_lookup_key_used_by_projection() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        remove_state_lookup_key(&mut metadata);
+        write_operation_metadata_override(&layout, &metadata);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("selected metadata must authorise persisted lookup keys");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("wire input 'state' is not authorised"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_accepts_new_lookup_key_left_disabled_in_projection() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        lookup_keys.push("q".to_string());
+        write_operation_metadata_override(&layout, &metadata);
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("new authorised lookup key may remain disabled");
+        let q = materialized
+            .projections
+            .projections
+            .first()
+            .expect("projection")
+            .inputs
+            .iter()
+            .find(|input| input.wire_name == "q")
+            .expect("q");
+
+        assert!(
+            !q.lookup_key,
+            "loading must not enable a persisted lookup key"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_public_input_newly_owned_by_pagination() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        let coral_spec::v4::OperationMetadata::Rest { pagination, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        pagination.mode = coral_spec::PaginationMode::CursorQuery;
+        pagination.cursor_param = Some("q".to_string());
+        pagination.response_cursor_path = vec!["next".to_string()];
+        write_operation_metadata_override(&layout, &metadata);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("public pagination-owned projection input must fail");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("input 'q' on operation 'issues_list' is owned by pagination"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn projection_metadata_mismatches_use_generic_error_for_all_artifact_origins() {
+        for (projection_override, metadata_override) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+            let mut metadata = installed_operation_metadata(&layout);
+            remove_state_lookup_key(&mut metadata);
+            if metadata_override {
+                write_operation_metadata_override(&layout, &metadata);
+            } else {
+                write_yaml(
+                    &layout
+                        .v4_materialized_dir(&workspace_name(), &source_name())
+                        .join(OPERATION_METADATA_FILENAME),
+                    &metadata,
+                )
+                .expect("write generated metadata");
+            }
+            if projection_override {
+                let catalog = installed_projection_catalog_value(&layout);
+                write_projection_override(&layout, &catalog);
+            }
+
+            let error = load_v4_materialization(
+                &layout,
+                &workspace_name(),
+                &source_name(),
+                &manifest_yaml,
+                &manifest,
+            )
+            .expect_err("lookup-key mismatch must fail for every selected origin");
+            let message = error.to_string();
+
+            assert!(
+                matches!(
+                    error,
+                    AppError::MissingOrIncompatibleV4Materialization { .. }
+                ),
+                "projection_override={projection_override}, metadata_override={metadata_override}: {error:#}"
+            );
+            assert!(
+                message.contains("wire input 'state' is not authorised"),
+                "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
+            );
+            assert!(
+                message.contains("Re-add the source or reconcile the selected artifact files"),
+                "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
+            );
+            assert!(
+                !message.contains("override '"),
+                "compatibility error must not attribute the mismatch: {message}"
+            );
+        }
     }
 
     #[test]

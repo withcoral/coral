@@ -645,6 +645,78 @@ mod tests {
         }
     }
 
+    fn rest_materialized_surface_with_inputs(
+        operation_id: &str,
+        input_names: &[&str],
+        lookup_keys: Vec<String>,
+    ) -> MaterializedSurface {
+        let inputs = input_names
+            .iter()
+            .map(|name| test_input(name, IrInputLocation::Query))
+            .collect::<Vec<_>>();
+        let semantic_ir = SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            surface_type: SurfaceType::OpenApi,
+            importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+            operations: vec![IrOperation {
+                id: operation_id.to_string(),
+                method_name: operation_id.to_string(),
+                description: String::new(),
+                deprecated: false,
+                read_only: true,
+                naming: None,
+                inputs: inputs.clone(),
+                output: IrOperationOutput {
+                    cardinality: coral_spec::v4::OutputCardinality::List,
+                    type_ref: "item".to_string(),
+                },
+                entity: None,
+                execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
+                    method: HttpMethod::Get,
+                    path_template: "/items".to_string(),
+                    parameters: inputs
+                        .iter()
+                        .map(|input| RestParameterBinding {
+                            input_name: input.name.clone(),
+                            location: input.location,
+                            wire_name: input.name.clone(),
+                            required: input.required,
+                            data_type: input.data_type,
+                        })
+                        .collect(),
+                    request_body: None,
+                    response: RestResponseAttachment {
+                        status_code: 200,
+                        media_type: "application/json".to_string(),
+                        response: ResponseSpec::default(),
+                    },
+                })),
+                diagnostics: Vec::new(),
+            }],
+            types: vec![test_object_type("item")],
+            diagnostics: Vec::new(),
+        };
+        let operation_metadata = OperationMetadataCatalog {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+            operations: BTreeMap::from([(
+                operation_id.to_string(),
+                OperationMetadata::Rest {
+                    pagination: PaginationSpec::default(),
+                    lookup_keys,
+                },
+            )]),
+        };
+        MaterializedSurface {
+            plan: ValidatedSurfacePlan::new(semantic_ir, operation_metadata).expect("plan"),
+            source_document_sha256: None,
+            normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
+            raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
+        }
+    }
+
     fn manifest_with_surface(surface: V4Surface) -> V4SourceManifest {
         V4SourceManifest {
             common: V4SourceCommon {
@@ -826,6 +898,24 @@ mod tests {
             }),
             detail_hints: Vec::new(),
             diagnostics: Vec::new(),
+        }
+    }
+
+    fn persisted_projection_input(
+        name: &str,
+        sql_exposure: SqlInputExposure,
+        lookup_key: bool,
+    ) -> ProjectionInput {
+        ProjectionInput {
+            name: name.to_string(),
+            sql_exposure,
+            source_location: IrInputLocation::Query,
+            wire_name: name.to_string(),
+            required: false,
+            data_type: ManifestDataType::Int64,
+            default_value: None,
+            description: String::new(),
+            lookup_key,
         }
     }
 
@@ -1101,6 +1191,67 @@ mod tests {
             http.functions.first().expect("http function").guide,
             "Prefer this function for issue lookup."
         );
+    }
+
+    #[test]
+    fn rest_runtime_component_uses_persisted_projection_filters_and_arguments() {
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            identity_requirements: None,
+            declared_inputs: Vec::new(),
+            surface: openapi_surface(),
+        };
+        let mut table = published_projection("items_list");
+        table.name = "items".to_string();
+        table.inputs = vec![
+            persisted_projection_input("q", SqlInputExposure::Filter, true),
+            persisted_projection_input("state", SqlInputExposure::Internal, false),
+        ];
+        let mut function = published_projection("items_list");
+        function.name = "search_items".to_string();
+        function.kind = ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Search,
+        };
+        function.inputs = vec![
+            persisted_projection_input("q", SqlInputExposure::Internal, false),
+            persisted_projection_input("state", SqlInputExposure::FunctionArg, false),
+        ];
+        let materialized = V4MaterializedSource {
+            fingerprint: None,
+            surface: rest_materialized_surface_with_inputs(
+                "items_list",
+                &["q", "state"],
+                vec!["q".to_string()],
+            ),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: None,
+                projections: vec![table, function],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let component = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect("runtime component")
+            .expect("published component");
+        let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+            panic!("expected HTTP component");
+        };
+        let filters = &http.tables.first().expect("table").common.filters;
+        assert_eq!(filters.len(), 1);
+        let filter = filters.first().expect("filter");
+        assert_eq!(filter.name, "q");
+        assert!(filter.lookup_key);
+        let args = &http.functions.first().expect("function").args;
+        assert_eq!(args.len(), 1);
+        assert_eq!(args.first().expect("arg").name, "state");
     }
 
     #[test]
