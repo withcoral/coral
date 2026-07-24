@@ -33,6 +33,18 @@ impl WorkspacePoolRegistries {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(workspace_name);
     }
+
+    pub(crate) fn remove_catalog(&self, workspace_name: &WorkspaceName, catalog_name: &str) {
+        let registry = self
+            .registries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(workspace_name)
+            .cloned();
+        if let Some(registry) = registry {
+            registry.remove_catalog(catalog_name);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -63,5 +75,17 @@ mod tests {
         let after = registries.for_workspace(&workspace);
 
         assert!(!Arc::ptr_eq(&before, &after));
+    }
+
+    #[test]
+    fn catalog_removal_keeps_the_workspace_registry() {
+        let registries = WorkspacePoolRegistries::default();
+        let workspace = WorkspaceName::parse("catalog-removal").expect("workspace");
+
+        let before = registries.for_workspace(&workspace);
+        registries.remove_catalog(&workspace, "orders");
+        let after = registries.for_workspace(&workspace);
+
+        assert!(Arc::ptr_eq(&before, &after));
     }
 }

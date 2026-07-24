@@ -393,7 +393,8 @@ impl ServerBuilder {
             layout.clone(),
             workspace_lifecycle_lock.clone(),
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registries(Arc::clone(&workspace_pool_registries));
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),

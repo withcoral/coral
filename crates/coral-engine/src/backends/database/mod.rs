@@ -2,7 +2,8 @@
 
 mod catalog;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,8 +21,6 @@ use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnect
 use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
 use datafusion_table_providers::util::secrets::to_secret_map;
-use sha2::{Digest as _, Sha256};
-use tokio::sync::Mutex;
 
 use self::catalog::{
     DatabaseCatalog, DatabaseRelation, boxed_provider_error, build_database_catalog, provider_error,
@@ -42,7 +41,7 @@ const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Coral's application layer creates one registry per workspace and passes it
 /// into every query runtime built for that workspace.
 pub struct DatabasePoolRegistry {
-    pools: Mutex<HashMap<PoolKey, DatabasePool>>,
+    pools: Mutex<HashMap<String, DatabasePool>>,
 }
 
 impl DatabasePoolRegistry {
@@ -54,54 +53,39 @@ impl DatabasePoolRegistry {
         }
     }
 
-    async fn postgres_pool(
+    async fn get_or_create(
         &self,
-        key: PoolKey,
-        params: HashMap<String, String>,
-    ) -> DataFusionResult<Arc<PostgresConnectionPool>> {
-        let mut pools = self.pools.lock().await;
-        if let Some(pool) = pools.get(&key) {
-            return match pool {
-                DatabasePool::Postgres(pool) => Ok(Arc::clone(pool)),
-                DatabasePool::MySql(_) => Err(DataFusionError::Internal(
-                    "database pool registry key resolved to the wrong provider".to_string(),
-                )),
-            };
+        catalog_name: &str,
+        create: impl Future<Output = DataFusionResult<DatabasePool>>,
+    ) -> DataFusionResult<DatabasePool> {
+        if let Some(pool) = self
+            .pools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(catalog_name)
+            .cloned()
+        {
+            return Ok(pool);
         }
 
-        let pool = Arc::new(
-            PostgresConnectionPool::new(to_secret_map(params))
-                .await
-                .map_err(provider_error)?
-                // The MySQL adapter has no equivalent unsupported-type policy.
-                .with_unsupported_type_action(UnsupportedTypeAction::String),
-        );
-        pools.insert(key, DatabasePool::Postgres(Arc::clone(&pool)));
-        Ok(pool)
+        let pool = create.await?;
+        let mut pools = self
+            .pools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(pools
+            .entry(catalog_name.to_string())
+            .or_insert(pool)
+            .clone())
     }
 
-    async fn mysql_pool(
-        &self,
-        key: PoolKey,
-        params: HashMap<String, String>,
-    ) -> DataFusionResult<Arc<MySQLConnectionPool>> {
-        let mut pools = self.pools.lock().await;
-        if let Some(pool) = pools.get(&key) {
-            return match pool {
-                DatabasePool::MySql(pool) => Ok(Arc::clone(pool)),
-                DatabasePool::Postgres(_) => Err(DataFusionError::Internal(
-                    "database pool registry key resolved to the wrong provider".to_string(),
-                )),
-            };
-        }
-
-        let pool = Arc::new(
-            MySQLConnectionPool::new(to_secret_map(params))
-                .await
-                .map_err(provider_error)?,
-        );
-        pools.insert(key, DatabasePool::MySql(Arc::clone(&pool)));
-        Ok(pool)
+    /// Removes the pool owned by one catalog without disturbing other catalogs
+    /// in the workspace.
+    pub fn remove_catalog(&self, catalog_name: &str) {
+        self.pools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(catalog_name);
     }
 }
 
@@ -111,31 +95,12 @@ impl Default for DatabasePoolRegistry {
     }
 }
 
+#[derive(Clone)]
 enum DatabasePool {
     Postgres(Arc<PostgresConnectionPool>),
     MySql(Arc<MySQLConnectionPool>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct PoolKey([u8; 32]);
-
-impl PoolKey {
-    fn new(provider: &str, params: &HashMap<String, String>) -> Self {
-        let mut sorted = params.iter().collect::<Vec<_>>();
-        sorted.sort();
-        let mut hasher = Sha256::new();
-        hash_pool_key_component(&mut hasher, provider);
-        for (key, value) in sorted {
-            hash_pool_key_component(&mut hasher, key);
-            hash_pool_key_component(&mut hasher, value);
-        }
-        Self(hasher.finalize().into())
-    }
-}
-
-fn hash_pool_key_component(hasher: &mut Sha256, value: &str) {
-    hasher.update((value.len() as u64).to_le_bytes());
-    hasher.update(value.as_bytes());
+    #[cfg(test)]
+    Test,
 }
 
 pub(crate) fn compile_manifest(
@@ -163,6 +128,7 @@ trait DatabaseCatalogStrategy: Send + Sync {
 
     async fn build_catalog(
         &self,
+        catalog_name: &str,
         context: &RenderContext<'_>,
         pool_registry: &DatabasePoolRegistry,
     ) -> DataFusionResult<DatabaseCatalog>;
@@ -203,7 +169,7 @@ impl CompiledBackendSource for CompiledDatabaseSource {
         let context = RenderContext::source_scoped(&resolved_inputs);
         let strategy = database_strategy(&self.manifest.connection);
         let database_catalog = strategy
-            .build_catalog(&context, &self.pool_registry)
+            .build_catalog(&self.manifest.common.name, &context, &self.pool_registry)
             .await?;
         let source = registered_source_for_catalog(
             &self.manifest.common,
@@ -231,6 +197,7 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
 
     async fn build_catalog(
         &self,
+        catalog_name: &str,
         context: &RenderContext<'_>,
         pool_registry: &DatabasePoolRegistry,
     ) -> DataFusionResult<DatabaseCatalog> {
@@ -248,8 +215,22 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
             params.insert("sslmode".to_string(), render_template(sslmode, context)?);
         }
         remote_database_catalog(self.provider_name(), async move {
-            let key = PoolKey::new(self.provider_name(), &params);
-            let pool = pool_registry.postgres_pool(key, params).await?;
+            let pool = pool_registry
+                .get_or_create(catalog_name, async move {
+                    Ok(DatabasePool::Postgres(Arc::new(
+                        PostgresConnectionPool::new(to_secret_map(params))
+                            .await
+                            .map_err(provider_error)?
+                            // The MySQL adapter has no equivalent unsupported-type policy.
+                            .with_unsupported_type_action(UnsupportedTypeAction::String),
+                    )))
+                })
+                .await?;
+            let DatabasePool::Postgres(pool) = pool else {
+                return Err(DataFusionError::Internal(format!(
+                    "database catalog '{catalog_name}' resolved to a non-Postgres pool"
+                )));
+            };
             build_database_catalog(pool, POSTGRES_RELATIONS_SQL, Arc::new(PostgreSqlDialect {}))
                 .await
         })
@@ -265,6 +246,7 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
 
     async fn build_catalog(
         &self,
+        catalog_name: &str,
         context: &RenderContext<'_>,
         pool_registry: &DatabasePoolRegistry,
     ) -> DataFusionResult<DatabaseCatalog> {
@@ -289,8 +271,20 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
         };
         params.insert("tcp_port".to_string(), tcp_port.to_string());
         remote_database_catalog(self.provider_name(), async move {
-            let key = PoolKey::new(self.provider_name(), &params);
-            let pool = pool_registry.mysql_pool(key, params).await?;
+            let pool = pool_registry
+                .get_or_create(catalog_name, async move {
+                    Ok(DatabasePool::MySql(Arc::new(
+                        MySQLConnectionPool::new(to_secret_map(params))
+                            .await
+                            .map_err(provider_error)?,
+                    )))
+                })
+                .await?;
+            let DatabasePool::MySql(pool) = pool else {
+                return Err(DataFusionError::Internal(format!(
+                    "database catalog '{catalog_name}' resolved to a non-MySQL pool"
+                )));
+            };
             build_database_catalog(pool, MYSQL_RELATIONS_SQL, Arc::new(MySqlDialect {})).await
         })
         .await
@@ -315,6 +309,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
 
     async fn build_catalog(
         &self,
+        _catalog_name: &str,
         context: &RenderContext<'_>,
         _pool_registry: &DatabasePoolRegistry,
     ) -> DataFusionResult<DatabaseCatalog> {
@@ -406,14 +401,14 @@ fn database_relation_inventory(relations: &[DatabaseRelation]) -> Vec<Registered
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
 
     use coral_spec::{
         DatabaseConnectionSpec, DatabaseSourceManifest, MySqlConnectionSpec, ParsedTemplate,
         SourceManifestCommon, SqliteConnectionSpec,
     };
 
-    use super::{DatabaseCatalogStrategy, PoolKey};
+    use super::{DatabaseCatalogStrategy, DatabasePool, DatabasePoolRegistry};
     use crate::backends::shared::template::RenderContext;
     use crate::{
         CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
@@ -489,41 +484,25 @@ mod tests {
     }
 
     #[test]
-    fn pool_key_is_independent_of_parameter_insertion_order() {
-        let first = HashMap::from([
-            ("host".to_string(), "localhost".to_string()),
-            ("database".to_string(), "coral".to_string()),
-        ]);
-        let second = HashMap::from([
-            ("database".to_string(), "coral".to_string()),
-            ("host".to_string(), "localhost".to_string()),
-        ]);
+    fn removing_one_catalog_pool_preserves_other_catalogs() {
+        let registry = DatabasePoolRegistry::new();
+        {
+            let mut pools = registry
+                .pools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pools.insert("orders".to_string(), DatabasePool::Test);
+            pools.insert("inventory".to_string(), DatabasePool::Test);
+        }
 
-        assert_eq!(
-            PoolKey::new("postgres", &first),
-            PoolKey::new("postgres", &second)
-        );
-    }
+        registry.remove_catalog("orders");
 
-    #[test]
-    fn pool_key_distinguishes_provider_and_parameters() {
-        let params = HashMap::from([
-            ("host".to_string(), "localhost".to_string()),
-            ("database".to_string(), "coral".to_string()),
-        ]);
-        let changed_params = HashMap::from([
-            ("host".to_string(), "db.internal".to_string()),
-            ("database".to_string(), "coral".to_string()),
-        ]);
-
-        assert_ne!(
-            PoolKey::new("postgres", &params),
-            PoolKey::new("mysql", &params)
-        );
-        assert_ne!(
-            PoolKey::new("postgres", &params),
-            PoolKey::new("postgres", &changed_params)
-        );
+        let pools = registry
+            .pools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!pools.contains_key("orders"));
+        assert!(pools.contains_key("inventory"));
     }
 
     #[tokio::test]
@@ -542,7 +521,10 @@ mod tests {
             let connection = mysql_connection(port);
             let context = RenderContext::source_scoped(&resolved_inputs);
             let registry = super::DatabasePoolRegistry::new();
-            let Err(error) = connection.build_catalog(&context, &registry).await else {
+            let Err(error) = connection
+                .build_catalog("coral_db", &context, &registry)
+                .await
+            else {
                 panic!("invalid MySQL port should fail before provider fallback");
             };
             let message = error.to_string();
