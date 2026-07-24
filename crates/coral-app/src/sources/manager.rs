@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use coral_spec::v4::SurfaceDescriptor;
 use serde_yaml::Value as YamlValue;
@@ -30,7 +31,9 @@ use crate::sources::materialization::{
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName};
+use crate::workspaces::{
+    WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName, WorkspacePoolRegistries,
+};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
@@ -46,6 +49,7 @@ pub(crate) struct SourceManager {
     lifecycle_lock: WorkspaceLifecycleLock,
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
+    pool_registries: Arc<WorkspacePoolRegistries>,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -233,7 +237,16 @@ impl SourceManager {
             lifecycle_lock,
             diagnostic_reporter,
             search_observations: None,
+            pool_registries: Arc::new(WorkspacePoolRegistries::default()),
         }
+    }
+
+    pub(crate) fn with_pool_registries(
+        mut self,
+        pool_registries: Arc<WorkspacePoolRegistries>,
+    ) -> Self {
+        self.pool_registries = pool_registries;
+        self
     }
 
     pub(crate) fn with_search_observation_handle(
@@ -704,6 +717,8 @@ impl SourceManager {
             }
             return Err(error);
         }
+        self.pool_registries
+            .remove_catalog(workspace_name, source_name.as_str());
         source_dir_backup.commit()?;
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
         cleanup_empty_parent(
@@ -896,6 +911,8 @@ impl SourceManager {
         cleanup_materialization_backup(materialization_backup);
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
+        self.pool_registries
+            .remove_catalog(workspace_name, source_name.as_str());
         drop(state_lock);
         self.clear_source_lifecycle_search_state_best_effort(workspace_name, &source_name);
         Ok(resolved)
