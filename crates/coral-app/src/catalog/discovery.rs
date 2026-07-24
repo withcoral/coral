@@ -389,7 +389,7 @@ impl CatalogDiscovery {
 fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &str, &'static str) {
     match item {
         CatalogItem::Table(table) => (
-            &table.catalog_name,
+            table.catalog_name.as_deref().unwrap_or_default(),
             &table.schema_name,
             &table.table_name,
             "table",
@@ -465,7 +465,10 @@ fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadata
     let addressable_schema = table_addressable_schema_name(table);
     let name = table_addressable_name(table);
     let mut matches = Vec::new();
-    let catalog_matched = !table.catalog_name.is_empty() && regex.is_match(&table.catalog_name);
+    let catalog_matched = table
+        .catalog_name
+        .as_deref()
+        .is_some_and(|catalog_name| regex.is_match(catalog_name));
     let schema_matched = regex.is_match(&table.schema_name);
     if catalog_matched {
         matches.push(CatalogMetadataField::CatalogName);
@@ -601,17 +604,18 @@ fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
     let literal = literal.to_lowercase();
     let schema_name = table_addressable_schema_name(table);
     let name = table_addressable_name(table);
-    let candidates = [
-        table.catalog_name.as_str(),
-        table.schema_name.as_str(),
-        schema_name.as_str(),
-        table.table_name.as_str(),
-        name.as_str(),
-        table.description.as_str(),
-        table.guide.as_str(),
-    ];
-    candidates
+    table
+        .catalog_name
+        .as_deref()
         .into_iter()
+        .chain([
+            table.schema_name.as_str(),
+            schema_name.as_str(),
+            table.table_name.as_str(),
+            name.as_str(),
+            table.description.as_str(),
+            table.guide.as_str(),
+        ])
         .any(|value| value.to_lowercase().contains(&literal))
         || table
             .required_filters
@@ -620,10 +624,9 @@ fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
 }
 
 fn table_addressable_schema_name(table: &TableInfo) -> String {
-    if table.catalog_name.is_empty() {
-        table.schema_name.clone()
-    } else {
-        format!("{}.{}", table.catalog_name, table.schema_name)
+    match table.catalog_name.as_deref() {
+        Some(catalog_name) => format!("{catalog_name}.{}", table.schema_name),
+        None => table.schema_name.clone(),
     }
 }
 
@@ -640,7 +643,7 @@ fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool 
 }
 
 fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
-    table.catalog_name == table_ref.catalog_name.unwrap_or_default()
+    table.catalog_name.as_deref() == table_ref.catalog_name
         && table.schema_name == table_ref.schema_name
 }
 
@@ -694,7 +697,7 @@ mod tests {
 
     fn database_table(schema_name: &str, table_name: &str) -> TableInfo {
         let mut table = table(Vec::new());
-        table.catalog_name = "coral_db".to_string();
+        table.catalog_name = Some("coral_db".to_string());
         table.schema_name = schema_name.to_string();
         table.table_name = table_name.to_string();
         table
@@ -773,7 +776,7 @@ mod tests {
         );
         assert_eq!(same_schema.len(), 1);
         let same_schema_table = same_schema.first().expect("same schema table");
-        assert_eq!(same_schema_table.catalog_name, "coral_db");
+        assert_eq!(same_schema_table.catalog_name.as_deref(), Some("coral_db"));
         assert_eq!(same_schema_table.schema_name, "main");
         assert_eq!(same_schema_table.table_name, "users");
 
@@ -784,7 +787,7 @@ mod tests {
         );
         assert_eq!(suggestions.len(), 1);
         let suggestion = suggestions.first().expect("suggestion");
-        assert_eq!(suggestion.catalog_name, "coral_db");
+        assert_eq!(suggestion.catalog_name.as_deref(), Some("coral_db"));
         assert_eq!(suggestion.schema_name, "main");
         assert_eq!(suggestion.table_name, "users");
         assert!(table_metadata_contains_literal(

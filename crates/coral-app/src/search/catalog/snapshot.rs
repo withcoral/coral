@@ -194,7 +194,7 @@ fn normalized_runtime_schema_owners(
 
 fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
     debug_assert!(
-        table.catalog_name.is_empty(),
+        table.catalog_name.is_none(),
         "catalog search documents do not yet support catalog-qualified tables"
     );
     let qualified_name = qualified_name(&table.schema_name, &table.table_name);
