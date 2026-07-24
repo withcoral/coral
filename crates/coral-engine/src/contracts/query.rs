@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
-use coral_spec::backends::database::DatabaseSourceManifest;
+use coral_spec::backends::database::{DatabaseConnectionSpec, DatabaseSourceManifest};
 use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
@@ -23,7 +23,7 @@ use crate::{
 };
 
 /// One managed source selected into the current query runtime.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QuerySource {
     source_name: String,
     authored_version: Option<String>,
@@ -56,7 +56,7 @@ pub struct RuntimeSourcePackage {
 }
 
 /// One backend-ready component inside an app-assembled query source package.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum RuntimeSourceComponent {
     /// Relational database-backed runtime component.
     Database(DatabaseSourceManifest),
@@ -66,6 +66,44 @@ pub enum RuntimeSourceComponent {
     File(FileSourceManifest),
     /// MCP-backed runtime component.
     Mcp(McpSourceManifest),
+}
+
+impl fmt::Debug for QuerySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QuerySource")
+            .field("source_name", &self.source_name)
+            .field("authored_version", &self.authored_version)
+            .field("description", &self.description)
+            .field("declared_inputs", &self.declared_inputs)
+            .field("test_queries", &self.test_queries)
+            .field("components", &self.components)
+            .field("variables", &self.variables)
+            .field("secret_count", &self.secrets.len())
+            .finish()
+    }
+}
+
+impl fmt::Debug for RuntimeSourceComponent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Database(manifest) => {
+                let provider = match &manifest.connection {
+                    DatabaseConnectionSpec::Postgres(_) => "postgres",
+                    DatabaseConnectionSpec::MySql(_) => "mysql",
+                    DatabaseConnectionSpec::Sqlite(_) => "sqlite",
+                };
+                formatter
+                    .debug_struct("Database")
+                    .field("source_name", &manifest.common.name)
+                    .field("provider", &provider)
+                    .finish_non_exhaustive()
+            }
+            Self::Http(manifest) => formatter.debug_tuple("Http").field(manifest).finish(),
+            Self::File(manifest) => formatter.debug_tuple("File").field(manifest).finish(),
+            Self::Mcp(manifest) => formatter.debug_tuple("Mcp").field(manifest).finish(),
+        }
+    }
 }
 
 impl QuerySource {
