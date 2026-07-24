@@ -76,8 +76,9 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Joins across schemas work with standard SQL after table scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
-- `list_catalog` shows queryable tables and parameterized table functions in pages; pass `schema`, `kind`, `limit`, and `offset` to narrow large catalogs. Omit `kind` or pass `null` to list all item kinds.
+- `list_catalog` shows queryable tables and parameterized table functions in pages; pass `catalog`, `schema`, `kind`, `limit`, and `offset` to narrow large catalogs. Omit `kind` or pass `null` to list all item kinds.
 {{SEARCH_TOOL_GUIDANCE}}
 - `describe_table` returns one compact table detail with guide text, required filters, and column count; use `coral.columns` when you need full column details.
 - `list_columns` lists columns for one table; pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively. Existing tables return field names once in `fields` and positional values in `rows`, plus `total`, `has_more`, and optional `next_offset`; use each field's index to read corresponding row values, including regex `matched_fields`. Missing tables return `found: false` with suggested recovery calls instead of an empty page.
+- For database tables, pass `catalog` separately from `schema` to `describe_table` and `list_columns`; omit `catalog` for two-part tables.
 - `coral://tables` shows table summaries for query-visible source tables and Coral catalog tables, including `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`; those catalog tables provide richer SQL metadata.

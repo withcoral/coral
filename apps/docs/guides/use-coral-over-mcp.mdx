@@ -200,7 +200,10 @@ The `coral://tables` resource exposes `catalog_name`, `schema_name`, and
 
 Tables with an empty `catalog_name` use two-part `schema.table` names. Database
 tables have a catalog and use three-part `catalog.schema.table` names. Use the
-provided `sql_reference`, which quotes each identifier when required.
+provided `sql_reference`, which quotes each identifier when required. When
+calling `list_catalog`, `describe_table`, or `list_columns` for a database
+table, pass its catalog separately from its schema; omit the catalog for
+two-part tables.
 
 ## What your agent can do
 
