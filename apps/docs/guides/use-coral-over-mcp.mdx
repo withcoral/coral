@@ -192,6 +192,16 @@ Once your client is connected, ask the agent to list available Coral tables or r
 
 If it works, the agent should return installed schemas and tables. You do not need to know the MCP tool names; the agent gets discovery helpers and a read-only SQL interface to the same sources you use from `coral sql`.
 
+### Catalog-qualified table names
+
+The `coral://tables` resource exposes `catalog_name`, `schema_name`, and
+`table_name` separately for every table. It also provides `name` for display and
+`sql_reference` for use in `FROM` and `JOIN` clauses.
+
+Tables with an empty `catalog_name` use two-part `schema.table` names. Database
+tables have a catalog and use three-part `catalog.schema.table` names. Use the
+provided `sql_reference`, which quotes each identifier when required.
+
 ## What your agent can do
 
 Coral gives your agent a read-only SQL view over the sources you have installed locally. That means your agent can:
