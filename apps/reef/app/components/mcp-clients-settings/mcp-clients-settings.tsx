@@ -43,7 +43,7 @@ export function McpClientsSettings({
   return (
     <section className={styles.section}>
       <header className={styles.header}>
-        <Typography.HeadingLarge as="h1">MCP Clients</Typography.HeadingLarge>
+        <Typography.HeadingLarge as="h2">MCP Clients</Typography.HeadingLarge>
         <Typography.Body variant="secondary">
           Choose the Coral workspace each MCP client can access.{' '}
           <Button.ExternalLink
