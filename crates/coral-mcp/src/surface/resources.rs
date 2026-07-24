@@ -310,6 +310,13 @@ mod tests {
         }
     }
 
+    fn catalog_table(catalog_name: &str, schema_name: &str, name: &str) -> TableSummary {
+        TableSummary {
+            catalog_name: catalog_name.to_string(),
+            ..table(schema_name, name)
+        }
+    }
+
     fn query(sql: impl Into<String>) -> McpQueryExample {
         McpQueryExample::new(sql)
     }
@@ -539,6 +546,22 @@ WHERE title LIKE '%bug%'",
                 "Use each table's `sql_reference` from `list_catalog` or `coral://tables`"
             )
         );
+    }
+
+    #[test]
+    fn guide_content_qualifies_catalog_schema_and_column_example() {
+        let content = guide_resource_content(
+            &[source("warehouse")],
+            &[catalog_table("warehouse", "public", "orders")],
+            &[],
+            false,
+        );
+
+        assert!(content.contains("Visible schemas:\n- warehouse.public"));
+        assert!(content.contains(
+            "FROM coral.columns WHERE catalog_name = 'warehouse' AND schema_name = 'public' \
+             AND table_name = 'orders' ORDER BY ordinal_position;"
+        ));
     }
 
     #[test]
