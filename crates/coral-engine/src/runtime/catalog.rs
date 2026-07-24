@@ -530,7 +530,7 @@ fn system_table_infos() -> Vec<TableInfo> {
     SYSTEM_TABLE_DEFINITIONS
         .iter()
         .map(|table| TableInfo {
-            catalog_name: String::new(),
+            catalog_name: None,
             schema_name: SYSTEM_SCHEMA.to_string(),
             table_name: table.table_name.to_string(),
             description: table.description.to_string(),
@@ -564,8 +564,7 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
             catalog_name: source
                 .qualified_name
                 .catalog_name()
-                .unwrap_or_default()
-                .to_string(),
+                .map(ToString::to_string),
             schema_name: table
                 .schema_name
                 .clone()

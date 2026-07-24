@@ -507,7 +507,7 @@ fn table_qualifier_matches(
     catalog_filter: Option<&str>,
     schema_filter: Option<&str>,
 ) -> bool {
-    catalog_filter.is_none_or(|value| table.catalog_name == value)
+    catalog_filter.is_none_or(|value| table.catalog_name.as_deref() == Some(value))
         && schema_filter.is_none_or(|value| table.schema_name == value)
 }
 
@@ -516,7 +516,7 @@ fn table_reference_matches(
     catalog_name: Option<&str>,
     schema_name: &str,
 ) -> bool {
-    table.catalog_name == non_default_catalog_name(catalog_name).unwrap_or_default()
+    table.catalog_name.as_deref() == non_default_catalog_name(catalog_name)
         && table.schema_name == schema_name
 }
 
@@ -622,12 +622,9 @@ impl QueryRuntimeAdapter {
             tables: self
                 .tables
                 .iter()
-                .filter(|table| {
-                    if table.catalog_name.is_empty() {
-                        schema_names.contains(&table.schema_name.as_str())
-                    } else {
-                        catalog_names.contains(&table.catalog_name.as_str())
-                    }
+                .filter(|table| match table.catalog_name.as_deref() {
+                    None => schema_names.contains(&table.schema_name.as_str()),
+                    Some(catalog_name) => catalog_names.contains(&catalog_name),
                 })
                 .cloned()
                 .collect(),
@@ -966,7 +963,7 @@ impl QueryRuntimeAdapter {
         };
         let catalog_name = non_default_catalog_name(table_reference.catalog());
         if self.tables.iter().any(|table| {
-            table.catalog_name == catalog_name.unwrap_or_default()
+            table.catalog_name.as_deref() == catalog_name
                 && table.schema_name == schema_name
                 && table.table_name == table_name
         }) {
@@ -1452,7 +1449,7 @@ mod tests {
             source_function_names: HashSet::new(),
             udfs_installed: false,
             tables: vec![TableInfo {
-                catalog_name: String::new(),
+                catalog_name: None,
                 schema_name: "demo".to_string(),
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
