@@ -273,7 +273,8 @@ SELECT table_schema AS schema_name,
        table_name,
        table_type AS relation_type
 FROM information_schema.tables
-WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+  AND table_type IN ('BASE TABLE', 'VIEW')";
 
 const MYSQL_RELATIONS_SQL: &str = "
 SELECT TABLE_SCHEMA AS schema_name,
