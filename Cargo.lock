@@ -1413,12 +1413,12 @@ dependencies = [
 name = "coral-mcp"
 version = "0.7.1"
 dependencies = [
- "async-trait",
  "axum",
  "coral-api",
  "coral-app",
  "coral-client",
  "coral-telemetry",
+ "futures",
  "jsonschema",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -1431,6 +1431,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-types",
  "tower",

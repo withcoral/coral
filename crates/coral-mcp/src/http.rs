@@ -5,15 +5,13 @@
 //! a safe construction path for a long-running, non-loopback server.
 
 use std::collections::HashMap;
-use std::error::Error;
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
@@ -22,17 +20,30 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_client::{AppClient, default_workspace};
-use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ProtocolVersion};
-use rmcp::transport::common::http_header::HEADER_MCP_PROTOCOL_VERSION;
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService,
-    session::{SessionManager, local::LocalSessionManager},
+use futures::{Stream, StreamExt as _};
+use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ServerJsonRpcMessage};
+use rmcp::transport::{
+    WorkerTransport,
+    common::{
+        http_header::HEADER_MCP_PROTOCOL_VERSION, server_side_http::session_id as new_session_id,
+    },
+    streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService,
+        session::{
+            ServerSseMessage, SessionId, SessionManager,
+            local::{
+                LocalSessionHandle, LocalSessionManager, LocalSessionManagerError,
+                LocalSessionWorker, SessionConfig, SessionError, create_local_session,
+            },
+        },
+    },
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request as GrpcRequest;
 use tower::ServiceExt;
 use url::{Host, Position, Url};
@@ -41,12 +52,10 @@ use crate::{CoralMcpServerFactory, McpOptions};
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
-const MAX_MCP_REQUEST_BODY_SIZE: usize = 1_048_576;
 const SESSION_ID_HEADER: &str = "mcp-session-id";
 const METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
 const METADATA_ROUTE: &str = "/.well-known/oauth-protected-resource/{*resource_path}";
-const MAX_BOUND_SESSIONS: usize = 4096;
-const BOUND_SESSION_IDLE_TIMEOUT: Duration = Duration::from_hours(1);
+const MAX_MCP_REQUEST_BODY_SIZE: usize = 1_048_576;
 
 type ProbeFuture = Pin<Box<dyn Future<Output = Result<(), tonic::Code>> + Send>>;
 type Fut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -54,66 +63,210 @@ type TokenValidator = Arc<dyn Fn(String) -> Fut<Result<(), ()>> + Send + Sync>;
 type SessionClientFactory = Arc<dyn Fn(String) -> Fut<Result<AppClient, ()>> + Send + Sync>;
 type AuthState = Arc<AuthenticatedHttpState>;
 
-/// Error returned by an authenticated MCP session-binding store.
-pub type SessionBindingStoreError = Box<dyn Error + Send + Sync + 'static>;
-
-/// Bearer-token fingerprint used to bind an MCP session to its authorization context.
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct SessionBindingFingerprint([u8; 32]);
+struct BearerFingerprint([u8; 32]);
 
-impl SessionBindingFingerprint {
-    /// Returns the fingerprint bytes for storage.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Result of authorizing a request against a stored session binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum SessionBindingStatus {
-    /// The supplied authorization context owns the session.
+enum SessionAuthorization {
     Authorized,
-    /// No active binding exists for the session.
     Missing,
-    /// The session belongs to a different authorization context.
     Mismatch,
 }
 
-/// Storage seam for binding MCP session IDs to authorization contexts.
-///
-/// Implementations must atomically compare and refresh a binding in
-/// [`SessionBindingStore::authorize_and_touch`]. Live MCP handlers remain
-/// process-local and outside this store.
-#[async_trait]
-pub trait SessionBindingStore: Send + Sync + 'static {
-    /// Creates or replaces a session binding.
-    async fn bind(
-        &self,
-        session_id: &str,
-        fingerprint: SessionBindingFingerprint,
-    ) -> Result<(), SessionBindingStoreError>;
-
-    /// Atomically authorizes and refreshes a session binding.
-    async fn authorize_and_touch(
-        &self,
-        session_id: &str,
-        fingerprint: &SessionBindingFingerprint,
-    ) -> Result<SessionBindingStatus, SessionBindingStoreError>;
-
-    /// Removes a session binding.
-    async fn remove(&self, session_id: &str) -> Result<(), SessionBindingStoreError>;
+struct AuthenticatedSessions {
+    records: RwLock<HashMap<SessionId, AuthenticatedSession>>,
+    config: SessionConfig,
 }
 
-#[derive(Default)]
-struct InMemorySessionBindingStore {
-    bindings: Mutex<HashMap<String, InMemorySessionBinding>>,
+struct AuthenticatedSession {
+    fingerprint: BearerFingerprint,
+    handle: LocalSessionHandle,
 }
 
-struct InMemorySessionBinding {
-    fingerprint: SessionBindingFingerprint,
-    last_seen: Instant,
+#[derive(Clone)]
+struct AuthenticatedSessionManager {
+    sessions: Arc<AuthenticatedSessions>,
+    fingerprint: BearerFingerprint,
+}
+
+impl AuthenticatedSessions {
+    async fn authorize(
+        &self,
+        session_id: &SessionId,
+        fingerprint: &BearerFingerprint,
+    ) -> SessionAuthorization {
+        let records = self.records.read().await;
+        let Some(session) = records.get(session_id) else {
+            return SessionAuthorization::Missing;
+        };
+        if session.fingerprint == *fingerprint {
+            SessionAuthorization::Authorized
+        } else {
+            SessionAuthorization::Mismatch
+        }
+    }
+
+    async fn close_all(&self) {
+        let handles: Vec<_> = self
+            .records
+            .write()
+            .await
+            .drain()
+            .map(|(_session_id, session)| session.handle)
+            .collect();
+        for handle in handles {
+            let _close_result = close_session_handle(handle).await;
+        }
+    }
+
+    #[cfg(test)]
+    async fn len(&self) -> usize {
+        self.records.read().await.len()
+    }
+}
+
+impl Default for AuthenticatedSessions {
+    fn default() -> Self {
+        Self {
+            records: RwLock::new(HashMap::new()),
+            config: SessionConfig::default(),
+        }
+    }
+}
+
+async fn close_session_handle(handle: LocalSessionHandle) -> Result<(), LocalSessionManagerError> {
+    match handle.close().await {
+        Ok(()) | Err(SessionError::SessionServiceTerminated) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+impl AuthenticatedSessionManager {
+    async fn session_handle(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<LocalSessionHandle, LocalSessionManagerError> {
+        self.sessions
+            .records
+            .read()
+            .await
+            .get(session_id)
+            .filter(|session| session.fingerprint == self.fingerprint)
+            .map(|session| session.handle.clone())
+            .ok_or_else(|| LocalSessionManagerError::SessionNotFound(session_id.clone()))
+    }
+}
+
+impl SessionManager for AuthenticatedSessionManager {
+    type Error = LocalSessionManagerError;
+    type Transport = WorkerTransport<LocalSessionWorker>;
+
+    async fn create_session(&self) -> Result<(SessionId, Self::Transport), Self::Error> {
+        let mut records = self.sessions.records.write().await;
+        let session_id = new_session_id();
+        let (handle, worker) =
+            create_local_session(session_id.clone(), self.sessions.config.clone());
+        records.insert(
+            session_id.clone(),
+            AuthenticatedSession {
+                fingerprint: self.fingerprint,
+                handle,
+            },
+        );
+        drop(records);
+        Ok((session_id, WorkerTransport::spawn(worker)))
+    }
+
+    async fn initialize_session(
+        &self,
+        session_id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<ServerJsonRpcMessage, Self::Error> {
+        let handle = self.session_handle(session_id).await?;
+        Ok(handle.initialize(message).await?)
+    }
+
+    async fn has_session(&self, session_id: &SessionId) -> Result<bool, Self::Error> {
+        Ok(self
+            .sessions
+            .records
+            .read()
+            .await
+            .get(session_id)
+            .is_some_and(|session| session.fingerprint == self.fingerprint))
+    }
+
+    async fn close_session(&self, session_id: &SessionId) -> Result<(), Self::Error> {
+        let handle = {
+            let mut records = self.sessions.records.write().await;
+            match records.get(session_id) {
+                None => None,
+                Some(session) if session.fingerprint != self.fingerprint => {
+                    return Err(LocalSessionManagerError::SessionNotFound(
+                        session_id.clone(),
+                    ));
+                }
+                Some(_) => records.remove(session_id).map(|session| session.handle),
+            }
+        };
+        match handle {
+            Some(handle) => close_session_handle(handle).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn create_stream(
+        &self,
+        session_id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
+        let handle = self.session_handle(session_id).await?;
+        let receiver = handle.establish_request_wise_channel().await?;
+        let request_id = receiver.http_request_id;
+        handle.push_message(message, request_id).await?;
+        let priming = self.sessions.config.sse_retry.map(|retry| {
+            let event_id = request_id.map_or_else(|| "0".to_string(), |id| format!("0/{id}"));
+            ServerSseMessage::priming(event_id, retry)
+        });
+        Ok(futures::stream::iter(priming).chain(ReceiverStream::new(receiver.inner)))
+    }
+
+    async fn accept_message(
+        &self,
+        session_id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<(), Self::Error> {
+        self.session_handle(session_id)
+            .await?
+            .push_message(message, None)
+            .await?;
+        Ok(())
+    }
+
+    async fn create_standalone_stream(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
+        let receiver = self
+            .session_handle(session_id)
+            .await?
+            .establish_common_channel()
+            .await?;
+        Ok(ReceiverStream::new(receiver.inner))
+    }
+
+    async fn resume(
+        &self,
+        session_id: &SessionId,
+        last_event_id: String,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
+        let receiver = self
+            .session_handle(session_id)
+            .await?
+            .resume(last_event_id.parse()?)
+            .await?;
+        Ok(ReceiverStream::new(receiver.inner))
+    }
 }
 
 /// Configuration for the auth-disabled loopback MCP HTTP server.
@@ -146,9 +299,8 @@ impl McpHttpConfig {
 #[derive(Clone, Debug)]
 pub struct AuthenticatedMcpHttpConfig {
     bind_addr: SocketAddr,
-    resource_url: String,
+    public_url: String,
     authorization_server: String,
-    scope: String,
     metadata_path: String,
     challenge: HeaderValue,
     allowed_hosts: Vec<String>,
@@ -156,24 +308,20 @@ pub struct AuthenticatedMcpHttpConfig {
 
 impl AuthenticatedMcpHttpConfig {
     /// # Errors
-    /// Validates OAuth configuration, returning an error for unsafe URLs, scopes, or headers.
+    /// Validates OAuth configuration, returning an error for unsafe URLs or headers.
     pub fn new(
         bind_addr: SocketAddr,
-        resource_url: impl Into<String>,
+        public_url: impl Into<String>,
         authorization_server: impl Into<String>,
-        scope: impl Into<String>,
     ) -> Result<Self, McpHttpError> {
-        let resource = validated_oauth_url(&resource_url.into())?;
+        let resource = validated_oauth_url(&public_url.into())?;
         let authorization_server = validated_oauth_url(&authorization_server.into())?;
-        let scope = scope.into();
-        let valid = scope.bytes().all(|b| matches!(b, 33 | 35..=91 | 93..=126));
-        if scope.is_empty() || !valid {
-            return Err(McpHttpError::InvalidAuthConfig("invalid OAuth scope"));
-        }
         let (metadata_url, metadata_path) = protected_resource_metadata_url(&resource);
-        let challenge = format!("Bearer resource_metadata=\"{metadata_url}\", scope=\"{scope}\"");
+        let challenge = format!("Bearer resource_metadata=\"{metadata_url}\"");
         let challenge = HeaderValue::from_str(&challenge)
             .map_err(|_error| McpHttpError::InvalidAuthConfig("invalid challenge header"))?;
+        let public_url = canonical_oauth_identifier(&resource);
+        let authorization_server = canonical_oauth_identifier(&authorization_server);
         let mut allowed_hosts = vec![
             "localhost".to_string(),
             "127.0.0.1".to_string(),
@@ -191,9 +339,8 @@ impl AuthenticatedMcpHttpConfig {
         }
         Ok(Self {
             bind_addr,
-            resource_url: resource.to_string(),
-            authorization_server: authorization_server.to_string(),
-            scope,
+            public_url,
+            authorization_server,
             metadata_path,
             challenge,
             allowed_hosts,
@@ -208,7 +355,6 @@ pub struct AuthenticatedMcpHttpRuntime {
     session_client_factory: SessionClientFactory,
     options: McpOptions,
     readiness: ReadinessProbe,
-    session_bindings: Arc<dyn SessionBindingStore>,
 }
 
 impl AuthenticatedMcpHttpRuntime {
@@ -233,19 +379,7 @@ impl AuthenticatedMcpHttpRuntime {
             session_client_factory: Arc::new(move |token| Box::pin(session_client_factory(token))),
             options,
             readiness: ReadinessProbe(Arc::new(move || Box::pin(readiness()))),
-            session_bindings: Arc::new(InMemorySessionBindingStore::default()),
         }
-    }
-
-    /// Configures storage for binding MCP sessions to authorization contexts.
-    ///
-    /// This store protects the authorization association for each MCP session.
-    /// Live MCP handlers remain process-local, so deployments must use
-    /// process-sticky routing.
-    #[must_use]
-    pub fn with_session_binding_store(mut self, store: Arc<dyn SessionBindingStore>) -> Self {
-        self.session_bindings = store;
-        self
     }
 }
 
@@ -271,6 +405,13 @@ fn validated_oauth_url(value: &str) -> Result<Url, McpHttpError> {
         ));
     }
     Ok(url)
+}
+
+fn canonical_oauth_identifier(url: &Url) -> String {
+    match url.path() {
+        "/" => url[..Position::BeforePath].to_string(),
+        _ => url.to_string(),
+    }
 }
 
 fn protected_resource_metadata_url(resource: &Url) -> (String, String) {
@@ -359,7 +500,7 @@ impl RunningMcpHttpServer {
         let state = self.state.clone();
         let drain = async {
             let quiescence = state.requests.write().await;
-            close_sessions(state.sessions.as_ref()).await;
+            state.sessions.close_all().await;
             drop(quiescence);
             (&mut self.task).await
         };
@@ -386,13 +527,6 @@ fn join_server(
         .map_err(McpHttpError::Server)
 }
 
-async fn close_sessions(sessions: &LocalSessionManager) {
-    let ids: Vec<_> = sessions.sessions.read().await.keys().cloned().collect();
-    for id in ids {
-        let _close_result = sessions.close_session(&id).await;
-    }
-}
-
 /// Starts the loopback-only, authentication-disabled MCP HTTP server.
 ///
 /// The supplied unauthenticated client is shared across independent MCP
@@ -416,23 +550,12 @@ pub async fn start_auth_disabled(
     let local_addr = listener.local_addr().map_err(McpHttpError::Server)?;
     let readiness = ReadinessProbe::from_app(app.clone());
     let (router, state) = auth_disabled_router(app, options, readiness, local_addr.ip());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let task_state = state.clone();
-    let task = tokio::spawn(async move {
-        let result = axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                let _shutdown_result = shutdown_rx.await;
-            })
-            .await;
-        close_sessions(task_state.sessions.as_ref()).await;
-        result
-    });
-    Ok(RunningMcpHttpServer {
+    Ok(spawn_http_server(
+        listener,
         local_addr,
-        shutdown: Some(shutdown_tx),
-        task,
-        state,
-    })
+        router,
+        state.server.clone(),
+    ))
 }
 
 /// Starts authenticated serving; fails when the listener cannot bind.
@@ -450,20 +573,37 @@ pub async fn start_authenticated(
         })?;
     let local_addr = listener.local_addr().map_err(McpHttpError::Server)?;
     let (router, state) = authenticated_router(config, runtime);
+    Ok(spawn_http_server(
+        listener,
+        local_addr,
+        router,
+        state.server.clone(),
+    ))
+}
+
+fn spawn_http_server(
+    listener: TcpListener,
+    local_addr: SocketAddr,
+    router: Router,
+    state: Arc<ServerState>,
+) -> RunningMcpHttpServer {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task_state = state.clone();
     let task = tokio::spawn(async move {
-        axum::serve(listener, router)
+        let result = axum::serve(listener, router)
             .with_graceful_shutdown(async move {
                 let _shutdown_result = shutdown_rx.await;
             })
-            .await
+            .await;
+        task_state.sessions.close_all().await;
+        result
     });
-    Ok(RunningMcpHttpServer {
+    RunningMcpHttpServer {
         local_addr,
         shutdown: Some(shutdown_tx),
         task,
         state,
-    })
+    }
 }
 
 #[derive(Clone)]
@@ -497,19 +637,20 @@ fn auth_disabled_router(
     options: McpOptions,
     readiness: ReadinessProbe,
     advertised_ip: IpAddr,
-) -> (Router, Arc<ServerState>) {
+) -> (Router, Arc<HttpState>) {
     let factory = CoralMcpServerFactory::new(app, options);
     let config =
         StreamableHttpServerConfig::default().with_allowed_hosts([advertised_ip.to_string()]);
     let sessions = Arc::new(LocalSessionManager::default());
     let server = Arc::new(ServerState {
-        sessions,
+        sessions: SessionOwner::Local(sessions.clone()),
         config,
         requests: RwLock::new(()),
     });
     let state = Arc::new(HttpState {
         factory,
         readiness,
+        sessions,
         server: server.clone(),
     });
     let router = Router::new()
@@ -517,23 +658,46 @@ fn auth_disabled_router(
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .with_state(state.clone());
-    (router, server)
+    (router, state)
 }
 
 struct HttpState {
     factory: CoralMcpServerFactory,
     readiness: ReadinessProbe,
+    sessions: Arc<LocalSessionManager>,
     server: Arc<ServerState>,
 }
 
+enum SessionOwner {
+    Local(Arc<LocalSessionManager>),
+    Authenticated(Arc<AuthenticatedSessions>),
+}
+
+impl SessionOwner {
+    async fn close_all(&self) {
+        match self {
+            Self::Local(sessions) => {
+                let session_ids: Vec<_> = sessions.sessions.read().await.keys().cloned().collect();
+                for session_id in session_ids {
+                    let _close_result = sessions.close_session(&session_id).await;
+                }
+            }
+            Self::Authenticated(sessions) => sessions.close_all().await,
+        }
+    }
+}
+
 struct ServerState {
-    sessions: Arc<LocalSessionManager>,
+    sessions: SessionOwner,
     config: StreamableHttpServerConfig,
     requests: RwLock<()>,
 }
 
 async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Response {
     let _request = state.server.requests.read().await;
+    if request.headers().contains_key(header::ORIGIN) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let request = tokio::select! {
         biased;
         () = state.server.config.cancellation_token.cancelled() => {
@@ -547,16 +711,13 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
     serve_mcp_request(
         request,
         Some(state.factory.clone()),
-        state.server.sessions.clone(),
+        state.sessions.clone(),
         state.server.config.clone(),
     )
     .await
 }
 
 async fn validate_mcp_request(request: Request<Body>) -> Result<Request<Body>, Response> {
-    if request.headers().contains_key(header::ORIGIN) {
-        return Err(StatusCode::FORBIDDEN.into_response());
-    }
     if request.method() != Method::POST {
         return Ok(request);
     }
@@ -603,17 +764,19 @@ fn initialize_protocol_header_matches(headers: &HeaderMap, body_protocol: &str) 
 fn authenticated_router(
     config: AuthenticatedMcpHttpConfig,
     runtime: AuthenticatedMcpHttpRuntime,
-) -> (Router, Arc<ServerState>) {
+) -> (Router, AuthState) {
     let streamable_config =
         StreamableHttpServerConfig::default().with_allowed_hosts(config.allowed_hosts.clone());
+    let sessions = Arc::new(AuthenticatedSessions::default());
     let server = Arc::new(ServerState {
-        sessions: Arc::new(LocalSessionManager::default()),
+        sessions: SessionOwner::Authenticated(sessions.clone()),
         config: streamable_config,
         requests: RwLock::new(()),
     });
     let state = Arc::new(AuthenticatedHttpState {
         config,
         runtime,
+        sessions,
         server: server.clone(),
     });
     let router = Router::new()
@@ -623,17 +786,21 @@ fn authenticated_router(
         .route(METADATA_ROOT, get(metadata))
         .route(METADATA_ROUTE, get(metadata))
         .with_state(state.clone());
-    (router, server)
+    (router, state)
 }
 
 struct AuthenticatedHttpState {
     config: AuthenticatedMcpHttpConfig,
     runtime: AuthenticatedMcpHttpRuntime,
+    sessions: Arc<AuthenticatedSessions>,
     server: Arc<ServerState>,
 }
 
 async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body>) -> Response {
     let _request = state.server.requests.read().await;
+    if request.headers().contains_key(header::ORIGIN) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if request.method() == Method::OPTIONS {
         return StatusCode::NO_CONTENT.into_response();
     }
@@ -648,87 +815,40 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
     if validation.is_err() {
         return unauthorized_response(&state.config);
     }
+    let request = tokio::select! {
+        biased;
+        () = state.server.config.cancellation_token.cancelled() => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        request = validate_mcp_request(request) => match request {
+            Ok(request) => request,
+            Err(response) => return response,
+        },
+    };
     let binding_fingerprint = binding_fingerprint(&token);
     let request_session = match session_id(request.headers()) {
         Ok(session) => session.map(str::to_string),
         Err(()) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let closes_session = request.method() == Method::DELETE;
-    let request = if request_session.is_none() {
-        tokio::select! {
-            biased;
-            () = state.server.config.cancellation_token.cancelled() => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            request = initialize_request(request) => match request {
-                Ok(request) => request,
-                Err(response) => return response,
-            },
-        }
-    } else {
-        request
-    };
+    let sessions = Arc::new(AuthenticatedSessionManager {
+        sessions: state.sessions.clone(),
+        fingerprint: binding_fingerprint,
+    });
     let factory = if let Some(session_id) = request_session.as_deref() {
         if let Err(status) = authorize_bound_session(&state, session_id, &binding_fingerprint).await
         {
             return status.into_response();
         }
         None
-    } else {
+    } else if request.method() == Method::POST {
         match create_session_factory(&state, token).await {
             Ok(factory) => Some(factory),
             Err(status) => return status.into_response(),
         }
+    } else {
+        None
     };
-    let response = serve_mcp_request(
-        request,
-        factory,
-        state.server.sessions.clone(),
-        state.server.config.clone(),
-    )
-    .await;
-    finalize_authenticated_response(
-        &state,
-        request_session.as_deref(),
-        binding_fingerprint,
-        closes_session,
-        response,
-    )
-    .await
-}
-
-async fn finalize_authenticated_response(
-    state: &AuthenticatedHttpState,
-    request_session: Option<&str>,
-    binding_fingerprint: SessionBindingFingerprint,
-    closes_session: bool,
-    response: Response,
-) -> Response {
-    if request_session.is_none()
-        && response.status().is_success()
-        && let Ok(Some(session_id)) = session_id(response.headers())
-    {
-        if let Err(_error) = state
-            .runtime
-            .session_bindings
-            .bind(session_id, binding_fingerprint)
-            .await
-        {
-            remove_managed_session(state.server.as_ref(), session_id).await;
-            let _remove_result = state.runtime.session_bindings.remove(session_id).await;
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
-    } else if (closes_session && response.status().is_success()
-        || response.status() == StatusCode::NOT_FOUND)
-        && let Some(session_id) = request_session
-        && state
-            .runtime
-            .session_bindings
-            .remove(session_id)
-            .await
-            .is_err()
-    {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    response
+    serve_mcp_request(request, factory, sessions, state.server.config.clone()).await
 }
 
 async fn create_session_factory(
@@ -749,55 +869,15 @@ async fn create_session_factory(
 async fn authorize_bound_session(
     state: &AuthenticatedHttpState,
     session_id: &str,
-    fingerprint: &SessionBindingFingerprint,
+    fingerprint: &BearerFingerprint,
 ) -> Result<(), StatusCode> {
-    let status = state
-        .runtime
-        .session_bindings
-        .authorize_and_touch(session_id, fingerprint)
-        .await
-        .map_err(|_error| StatusCode::SERVICE_UNAVAILABLE)?;
-    if status == SessionBindingStatus::Missing {
-        remove_managed_session(state.server.as_ref(), session_id).await;
-    }
+    let session_id = Arc::from(session_id);
+    let status = state.sessions.authorize(&session_id, fingerprint).await;
     match status {
-        SessionBindingStatus::Authorized => Ok(()),
-        SessionBindingStatus::Missing => Err(StatusCode::NOT_FOUND),
-        SessionBindingStatus::Mismatch => Err(StatusCode::FORBIDDEN),
+        SessionAuthorization::Authorized => Ok(()),
+        SessionAuthorization::Missing => Err(StatusCode::NOT_FOUND),
+        SessionAuthorization::Mismatch => Err(StatusCode::FORBIDDEN),
     }
-}
-
-async fn initialize_request(request: Request<Body>) -> Result<Request<Body>, Response> {
-    let (parts, body) = request.into_parts();
-    let mut protocols = parts.headers.get_all("mcp-protocol-version").iter();
-    let protocol = protocols.next();
-    let versions = ProtocolVersion::KNOWN_VERSIONS;
-    if protocols.next().is_some()
-        || protocol.is_some_and(|header| !versions.iter().any(|v| header == v.as_str()))
-    {
-        return Err(StatusCode::BAD_REQUEST.into_response());
-    }
-    let bytes = axum::body::to_bytes(body, 1_048_576)
-        .await
-        .map_err(|_error| StatusCode::PAYLOAD_TOO_LARGE.into_response())?;
-    let Ok(ClientJsonRpcMessage::Request(request)) =
-        serde_json::from_slice::<ClientJsonRpcMessage>(&bytes)
-    else {
-        return Err(StatusCode::UNPROCESSABLE_ENTITY.into_response());
-    };
-    let ClientRequest::InitializeRequest(initialize) = request.request else {
-        return Err(StatusCode::UNPROCESSABLE_ENTITY.into_response());
-    };
-    let body_protocol = initialize.params.protocol_version.as_str();
-    let supported = versions.iter().any(|v| v.as_str() == body_protocol);
-    if !supported || protocol.is_some_and(|header| header != body_protocol) {
-        return Err(StatusCode::BAD_REQUEST.into_response());
-    }
-    Ok(Request::from_parts(parts, Body::from(bytes)))
-}
-
-async fn remove_managed_session(server: &ServerState, id: &str) {
-    let _close_result = server.sessions.close_session(&Arc::from(id)).await;
 }
 
 async fn authenticated_readyz(State(state): State<Arc<AuthenticatedHttpState>>) -> StatusCode {
@@ -815,9 +895,8 @@ async fn metadata(State(state): State<AuthState>, uri: Uri) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
         json!({
-            "resource": state.config.resource_url,
+            "resource": state.config.public_url,
             "authorization_servers": [state.config.authorization_server],
-            "scopes_supported": [state.config.scope],
             "bearer_methods_supported": ["header"],
         })
         .to_string(),
@@ -862,105 +941,22 @@ fn session_id(headers: &HeaderMap) -> Result<Option<&str>, ()> {
     Ok(Some(value))
 }
 
-fn binding_fingerprint(token: &str) -> SessionBindingFingerprint {
-    SessionBindingFingerprint(Sha256::digest(token.as_bytes()).into())
-}
-
-#[async_trait]
-impl SessionBindingStore for InMemorySessionBindingStore {
-    async fn bind(
-        &self,
-        session_id: &str,
-        fingerprint: SessionBindingFingerprint,
-    ) -> Result<(), SessionBindingStoreError> {
-        let mut bindings = self.bindings.lock().await;
-        insert_session_binding(&mut bindings, session_id, fingerprint, Instant::now());
-        Ok(())
-    }
-
-    async fn authorize_and_touch(
-        &self,
-        session_id: &str,
-        fingerprint: &SessionBindingFingerprint,
-    ) -> Result<SessionBindingStatus, SessionBindingStoreError> {
-        let mut bindings = self.bindings.lock().await;
-        Ok(authorize_session_binding(
-            &mut bindings,
-            session_id,
-            fingerprint,
-            Instant::now(),
-        ))
-    }
-
-    async fn remove(&self, session_id: &str) -> Result<(), SessionBindingStoreError> {
-        self.bindings.lock().await.remove(session_id);
-        Ok(())
-    }
-}
-
-fn insert_session_binding(
-    bindings: &mut HashMap<String, InMemorySessionBinding>,
-    session_id: &str,
-    fingerprint: SessionBindingFingerprint,
-    now: Instant,
-) {
-    prune_expired_session_bindings(bindings, now);
-    if !bindings.contains_key(session_id)
-        && bindings.len() >= MAX_BOUND_SESSIONS
-        && let Some(oldest) = bindings
-            .iter()
-            .min_by_key(|(_, binding)| binding.last_seen)
-            .map(|(session_id, _)| session_id.clone())
-    {
-        bindings.remove(&oldest);
-    }
-    let binding = InMemorySessionBinding {
-        fingerprint,
-        last_seen: now,
-    };
-    bindings.insert(session_id.to_string(), binding);
-}
-
-fn authorize_session_binding(
-    bindings: &mut HashMap<String, InMemorySessionBinding>,
-    session_id: &str,
-    fingerprint: &SessionBindingFingerprint,
-    now: Instant,
-) -> SessionBindingStatus {
-    let Some(binding) = bindings.get(session_id) else {
-        return SessionBindingStatus::Missing;
-    };
-    if now.saturating_duration_since(binding.last_seen) > BOUND_SESSION_IDLE_TIMEOUT {
-        bindings.remove(session_id);
-        return SessionBindingStatus::Missing;
-    }
-    if binding.fingerprint != *fingerprint {
-        return SessionBindingStatus::Mismatch;
-    }
-    if let Some(binding) = bindings.get_mut(session_id) {
-        binding.last_seen = now;
-    }
-    SessionBindingStatus::Authorized
-}
-
-fn prune_expired_session_bindings(
-    bindings: &mut HashMap<String, InMemorySessionBinding>,
-    now: Instant,
-) {
-    bindings.retain(|_session_id, binding| {
-        now.saturating_duration_since(binding.last_seen) <= BOUND_SESSION_IDLE_TIMEOUT
-    });
+fn binding_fingerprint(token: &str) -> BearerFingerprint {
+    BearerFingerprint(Sha256::digest(token.as_bytes()).into())
 }
 
 // The service wrapper is intentionally request-scoped. Auth-required routing
 // can validate an initialize request and pass its bearer-bound factory here,
 // while later requests reuse the handler already held by `sessions`.
-async fn serve_mcp_request(
+async fn serve_mcp_request<M>(
     request: Request<Body>,
     factory: Option<CoralMcpServerFactory>,
-    sessions: Arc<LocalSessionManager>,
+    sessions: Arc<M>,
     config: StreamableHttpServerConfig,
-) -> Response {
+) -> Response
+where
+    M: SessionManager,
+{
     let cancellation = config.cancellation_token.clone();
     let service = StreamableHttpService::new(
         move || {
