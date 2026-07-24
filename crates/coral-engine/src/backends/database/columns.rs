@@ -55,12 +55,12 @@ WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%'";
 
 /// [`DatabaseColumnFetcher`] backed by a connection pool and one of the
 /// provider inventory queries above.
-pub(super) struct PooledColumnFetcher<T: 'static, P: 'static> {
+pub(super) struct DatabaseColumnInventoryFetcher<T: 'static, P: 'static> {
     pool: Pool<T, P>,
     base_sql: &'static str,
 }
 
-impl<T: 'static, P: 'static> PooledColumnFetcher<T, P> {
+impl<T: 'static, P: 'static> DatabaseColumnInventoryFetcher<T, P> {
     pub(super) fn new(pool: &Pool<T, P>, base_sql: &'static str) -> Arc<Self> {
         Arc::new(Self {
             pool: Arc::clone(pool),
@@ -69,17 +69,17 @@ impl<T: 'static, P: 'static> PooledColumnFetcher<T, P> {
     }
 }
 
-impl<T: 'static, P: 'static> fmt::Debug for PooledColumnFetcher<T, P> {
+impl<T: 'static, P: 'static> fmt::Debug for DatabaseColumnInventoryFetcher<T, P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("PooledColumnFetcher")
+            .debug_struct("DatabaseColumnInventoryFetcher")
             .field("base_sql", &self.base_sql)
             .finish_non_exhaustive()
     }
 }
 
 #[async_trait]
-impl<T: 'static, P: 'static> DatabaseColumnFetcher for PooledColumnFetcher<T, P> {
+impl<T: 'static, P: 'static> DatabaseColumnFetcher for DatabaseColumnInventoryFetcher<T, P> {
     async fn fetch_columns(
         &self,
         filter: &ColumnInventoryFilter,
@@ -279,7 +279,7 @@ mod tests {
         .await
         .expect("sqlite pool");
         let pool: Pool<_, _> = Arc::new(pool);
-        PooledColumnFetcher::new(&pool, SQLITE_COLUMNS_SQL)
+        DatabaseColumnInventoryFetcher::new(&pool, SQLITE_COLUMNS_SQL)
     }
 
     fn sqlite_fixture(dir: &std::path::Path) -> std::path::PathBuf {

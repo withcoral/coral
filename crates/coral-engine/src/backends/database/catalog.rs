@@ -18,7 +18,7 @@ use datafusion_table_providers::sql::db_connection_pool::dbconnection::query_arr
 use datafusion_table_providers::sql::sql_provider_datafusion::SqlTable;
 use futures::TryStreamExt as _;
 
-use super::columns::PooledColumnFetcher;
+use super::columns::DatabaseColumnInventoryFetcher;
 use crate::backends::DatabaseColumnFetcher;
 
 pub(super) type Pool<T, P> = Arc<dyn DbConnectionPool<T, P> + Send + Sync>;
@@ -46,7 +46,7 @@ pub(super) async fn build_database_catalog<T: 'static, P: 'static>(
     let relations = load_database_inventory(&pool, inventory_sql).await?;
     let provider = Arc::new(MemoryCatalogProvider::new());
     register_database_schemas(provider.as_ref(), &pool, &relations, &dialect)?;
-    let column_fetcher = PooledColumnFetcher::new(&pool, columns_sql);
+    let column_fetcher = DatabaseColumnInventoryFetcher::new(&pool, columns_sql);
     Ok(DatabaseCatalog {
         provider,
         relations,
