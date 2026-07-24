@@ -541,6 +541,17 @@ pub trait SourceDecorator: Send + Sync {
     /// Stable decorator name used in diagnostics.
     fn name(&self) -> &'static str;
 
+    /// Whether this decorator supports sources registered as `SQL` catalogs.
+    ///
+    /// Catalog-backed sources expose table providers lazily, so
+    /// [`SourceDecorator::decorate_source`] is not called for them. Decorators
+    /// should return `true` only when their guarantees remain intact without
+    /// decorating those table providers, such as when they only observe
+    /// registration lifecycle events.
+    fn supports_catalog_sources(&self) -> bool {
+        false
+    }
+
     /// Performs one-time setup before any sources are registered.
     ///
     /// # Errors

@@ -117,6 +117,10 @@ impl SourceDecorator for CatalogFailureRecorder {
         "catalog_failure_recorder"
     }
 
+    fn supports_catalog_sources(&self) -> bool {
+        true
+    }
+
     fn decorate_source(
         &mut self,
         _source: &QuerySource,
