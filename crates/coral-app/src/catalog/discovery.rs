@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
+use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo, normalize_catalog_name};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -18,7 +18,6 @@ const MAX_COLUMN_LIMIT: u32 = 200;
 const MAX_METADATA_PATTERN_BYTES: usize = 256;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1 << 20;
 const MISSING_TABLE_SUGGESTION_LIMIT: usize = 10;
-const DATAFUSION_DEFAULT_CATALOG: &str = "datafusion";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Pagination {
@@ -155,8 +154,7 @@ impl<'a> CatalogTableRef<'a> {
         table_name: &'a str,
     ) -> Self {
         Self {
-            catalog_name: catalog_name
-                .filter(|name| !name.eq_ignore_ascii_case(DATAFUSION_DEFAULT_CATALOG)),
+            catalog_name: normalize_catalog_name(catalog_name),
             schema_name,
             table_name,
         }
@@ -233,6 +231,7 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
+        let catalog_name = normalize_catalog_name(catalog_name);
         self.queries
             .list_catalog(workspace_name, catalog_name, schema_name, attribution)
             .await
