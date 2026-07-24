@@ -111,7 +111,8 @@ root.
 - Keep reusable database pools workspace-scoped. `coral-app` owns the
   workspace-to-registry map, removes a catalog's pool after successful source
   replacement or deletion, and removes the registry when its workspace is
-  deleted; `coral-engine` owns the provider-specific pool implementation.
+  deleted; `coral-engine` owns the provider-specific pool implementation and
+  verifies resolved connection identity before reusing a catalog's pool.
 - Credential backend selection stays inside `credentials/`. Managers pass
   explicit source credential-storage routes; CLI, MCP, source-spec, and engine
   code must not know backend implementation details.
