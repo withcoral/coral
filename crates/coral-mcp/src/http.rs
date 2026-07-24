@@ -14,11 +14,13 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_client::{AppClient, default_workspace};
+use rmcp::model::{ClientJsonRpcMessage, ClientRequest};
+use rmcp::transport::common::http_header::HEADER_MCP_PROTOCOL_VERSION;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::SessionManager,
     session::local::LocalSessionManager,
@@ -33,6 +35,8 @@ use crate::{CoralMcpServerFactory, McpOptions};
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
+const MAX_MCP_REQUEST_BODY_SIZE: usize = 1_048_576;
+const SESSION_ID_HEADER: &str = "mcp-session-id";
 
 type ProbeFuture = Pin<Box<dyn Future<Output = Result<(), tonic::Code>> + Send>>;
 
@@ -273,6 +277,16 @@ struct HttpState {
 
 async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Response {
     let _request = state.requests.read().await;
+    let request = tokio::select! {
+        biased;
+        () = state.config.cancellation_token.cancelled() => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        request = validate_mcp_request(request) => match request {
+            Ok(request) => request,
+            Err(response) => return response,
+        },
+    };
     serve_mcp_request(
         request,
         state.factory.clone(),
@@ -280,6 +294,53 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
         state.config.clone(),
     )
     .await
+}
+
+async fn validate_mcp_request(request: Request<Body>) -> Result<Request<Body>, Response> {
+    if request.headers().contains_key(header::ORIGIN) {
+        return Err(StatusCode::FORBIDDEN.into_response());
+    }
+    if request.method() != Method::POST {
+        return Ok(request);
+    }
+
+    let has_session = request
+        .headers()
+        .get(SESSION_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some();
+    let (parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, MAX_MCP_REQUEST_BODY_SIZE)
+        .await
+        .map_err(|_error| StatusCode::PAYLOAD_TOO_LARGE.into_response())?;
+    if !has_session {
+        let message = serde_json::from_slice::<ClientJsonRpcMessage>(&bytes)
+            .map_err(|_error| StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response())?;
+        let ClientJsonRpcMessage::Request(request) = message else {
+            return Err(StatusCode::BAD_REQUEST.into_response());
+        };
+        let ClientRequest::InitializeRequest(initialize) = request.request else {
+            return Err(StatusCode::BAD_REQUEST.into_response());
+        };
+        if !initialize_protocol_header_matches(
+            &parts.headers,
+            initialize.params.protocol_version.as_str(),
+        ) {
+            return Err(StatusCode::BAD_REQUEST.into_response());
+        }
+    }
+    Ok(Request::from_parts(parts, Body::from(bytes)))
+}
+
+fn initialize_protocol_header_matches(headers: &HeaderMap, body_protocol: &str) -> bool {
+    let mut protocols = headers.get_all(HEADER_MCP_PROTOCOL_VERSION).iter();
+    let protocol = protocols.next();
+    protocols.next().is_none()
+        && protocol.is_none_or(|header| {
+            header
+                .to_str()
+                .is_ok_and(|protocol| protocol == body_protocol)
+        })
 }
 
 // The service wrapper is intentionally request-scoped. Auth-required routing
