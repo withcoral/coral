@@ -27,6 +27,8 @@ impl WorkspacePoolRegistries {
         )
     }
 
+    /// Detaches the workspace registry so future runtimes cannot reuse pools
+    /// created from an earlier source snapshot.
     pub(crate) fn remove(&self, workspace_name: &WorkspaceName) {
         self.registries
             .lock()

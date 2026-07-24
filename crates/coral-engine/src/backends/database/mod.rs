@@ -21,6 +21,7 @@ use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnect
 use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
 use datafusion_table_providers::util::secrets::to_secret_map;
+use sha2::{Digest as _, Sha256};
 
 use self::catalog::{
     DatabaseCatalog, DatabaseRelation, boxed_provider_error, build_database_catalog, provider_error,
@@ -41,7 +42,7 @@ const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Coral's application layer creates one registry per workspace and passes it
 /// into every query runtime built for that workspace.
 pub struct DatabasePoolRegistry {
-    pools: Mutex<HashMap<String, DatabasePool>>,
+    pools: Mutex<HashMap<PoolId, DatabasePool>>,
 }
 
 impl DatabasePoolRegistry {
@@ -55,17 +56,20 @@ impl DatabasePoolRegistry {
 
     async fn get_or_create(
         &self,
-        catalog_name: &str,
+        id: PoolId,
         create: impl Future<Output = DataFusionResult<DatabasePool>>,
     ) -> DataFusionResult<DatabasePool> {
-        if let Some(pool) = self
-            .pools
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(catalog_name)
-            .cloned()
         {
-            return Ok(pool);
+            let mut pools = self
+                .pools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pools.retain(|existing, _pool| {
+                existing.catalog_name != id.catalog_name || existing == &id
+            });
+            if let Some(pool) = pools.get(&id).cloned() {
+                return Ok(pool);
+            }
         }
 
         let pool = create.await?;
@@ -73,19 +77,15 @@ impl DatabasePoolRegistry {
             .pools
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(pools
-            .entry(catalog_name.to_string())
-            .or_insert(pool)
-            .clone())
+        Ok(pools.entry(id).or_insert(pool).clone())
     }
 
-    /// Removes the pool owned by one catalog without disturbing other catalogs
-    /// in the workspace.
+    /// Removes one catalog's pool without disturbing other workspace sources.
     pub fn remove_catalog(&self, catalog_name: &str) {
         self.pools
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(catalog_name);
+            .retain(|id, _pool| id.catalog_name != catalog_name);
     }
 }
 
@@ -101,6 +101,34 @@ enum DatabasePool {
     MySql(Arc<MySQLConnectionPool>),
     #[cfg(test)]
     Test,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PoolId {
+    catalog_name: String,
+    connection_fingerprint: [u8; 32],
+}
+
+impl PoolId {
+    fn new(catalog_name: &str, provider: &str, params: &HashMap<String, String>) -> Self {
+        let mut sorted = params.iter().collect::<Vec<_>>();
+        sorted.sort();
+        let mut hasher = Sha256::new();
+        hash_pool_id_component(&mut hasher, provider);
+        for (key, value) in sorted {
+            hash_pool_id_component(&mut hasher, key);
+            hash_pool_id_component(&mut hasher, value);
+        }
+        Self {
+            catalog_name: catalog_name.to_string(),
+            connection_fingerprint: hasher.finalize().into(),
+        }
+    }
+}
+
+fn hash_pool_id_component(hasher: &mut Sha256, value: &str) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
 }
 
 pub(crate) fn compile_manifest(
@@ -214,9 +242,10 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
         if let Some(sslmode) = self.sslmode.as_ref() {
             params.insert("sslmode".to_string(), render_template(sslmode, context)?);
         }
+        let pool_id = PoolId::new(catalog_name, self.provider_name(), &params);
         remote_database_catalog(self.provider_name(), async move {
             let pool = pool_registry
-                .get_or_create(catalog_name, async move {
+                .get_or_create(pool_id, async move {
                     Ok(DatabasePool::Postgres(Arc::new(
                         PostgresConnectionPool::new(to_secret_map(params))
                             .await
@@ -270,9 +299,10 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
             }
         };
         params.insert("tcp_port".to_string(), tcp_port.to_string());
+        let pool_id = PoolId::new(catalog_name, self.provider_name(), &params);
         remote_database_catalog(self.provider_name(), async move {
             let pool = pool_registry
-                .get_or_create(catalog_name, async move {
+                .get_or_create(pool_id, async move {
                     Ok(DatabasePool::MySql(Arc::new(
                         MySQLConnectionPool::new(to_secret_map(params))
                             .await
@@ -491,8 +521,20 @@ mod tests {
                 .pools
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            pools.insert("orders".to_string(), DatabasePool::Test);
-            pools.insert("inventory".to_string(), DatabasePool::Test);
+            pools.insert(
+                PoolId {
+                    catalog_name: "orders".to_string(),
+                    connection_fingerprint: [1; 32],
+                },
+                DatabasePool::Test,
+            );
+            pools.insert(
+                PoolId {
+                    catalog_name: "inventory".to_string(),
+                    connection_fingerprint: [2; 32],
+                },
+                DatabasePool::Test,
+            );
         }
 
         registry.remove_catalog("orders");
@@ -501,8 +543,8 @@ mod tests {
             .pools
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!pools.contains_key("orders"));
-        assert!(pools.contains_key("inventory"));
+        assert!(!pools.keys().any(|id| id.catalog_name == "orders"));
+        assert!(pools.keys().any(|id| id.catalog_name == "inventory"));
     }
 
     #[tokio::test]
