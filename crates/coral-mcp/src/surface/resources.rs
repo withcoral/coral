@@ -109,15 +109,18 @@ FROM coral.columns WHERE schema_name = '<schema>' AND table_name = '<table>' ORD
                 .to_string()
         },
         |(catalog_name, schema_name, table_name)| {
+            let schema_name = sql_string_literal(schema_name);
+            let table_name = sql_string_literal(table_name);
             if catalog_name.is_empty() {
                 format!(
                     "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
-FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
+FROM coral.columns WHERE schema_name = {schema_name} AND table_name = {table_name} ORDER BY ordinal_position;"
                 )
             } else {
+                let catalog_name = sql_string_literal(catalog_name);
                 format!(
                     "SELECT column_name, data_type, is_nullable, is_virtual, is_required_filter, filter_mode, description \
-FROM coral.columns WHERE catalog_name = '{catalog_name}' AND schema_name = '{schema_name}' AND table_name = '{table_name}' ORDER BY ordinal_position;"
+FROM coral.columns WHERE catalog_name = {catalog_name} AND schema_name = {schema_name} AND table_name = {table_name} ORDER BY ordinal_position;"
                 )
             }
         },
@@ -169,6 +172,10 @@ fn guide_resource_description(
 
 fn tables_resource_description(visible_table_count: usize) -> String {
     format!("Fully qualified database tables in Coral ({visible_table_count} table(s)).")
+}
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str, &str)> {
